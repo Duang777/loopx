@@ -45,6 +45,7 @@ from .control_plane.todos.contract import (
     normalize_todo_resume_when,
     normalize_supported_todo_resume_when,
     normalize_todo_status,
+    normalize_todo_task_domain,
     normalize_todo_task_repository,
     parse_todo_metadata_line,
     require_todo_excluded_agents,
@@ -318,13 +319,17 @@ def _merge_todo_projection_fields(
         "event_only_todo_ids": [],
         "overlaid_todo_ids": [],
     }
+
+    # A todo_id is goal-wide identity. Merge both sources before splitting by
+    # role so an event-projected role change replaces the stale Markdown item.
+    by_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    markdown_ids: set[str] = set()
+    markdown_ids_by_role: dict[str, set[str]] = {"user": set(), "agent": set()}
+    event_ids: set[str] = set()
+    event_order: list[str] = []
     for role in ("user", "agent"):
         markdown_items = _summary_items(markdown_fields, role)
-        event_items = _summary_items(event_fields, role)
-        if not markdown_items and not event_items:
-            continue
-        by_id: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
         for item in markdown_items:
             todo_id = normalize_todo_id(item.get("todo_id")) or build_todo_id(
                 role=role,
@@ -334,9 +339,12 @@ def _merge_todo_projection_fields(
             )
             if todo_id not in by_id:
                 order.append(todo_id)
+            markdown_ids.add(todo_id)
+            markdown_ids_by_role[role].add(todo_id)
             by_id[todo_id] = dict(item)
-        markdown_ids = set(order)
-        event_ids: set[str] = set()
+
+    for role in ("user", "agent"):
+        event_items = _summary_items(event_fields, role)
         for item in event_items:
             todo_id = normalize_todo_id(item.get("todo_id")) or build_todo_id(
                 role=role,
@@ -344,20 +352,39 @@ def _merge_todo_projection_fields(
                 index=item.get("index"),
                 text=item.get("text"),
             )
-            event_ids.add(todo_id)
             if todo_id not in by_id:
                 order.append(todo_id)
-                overlay["event_only_todo_ids"].append(todo_id)
-            else:
-                overlay["overlaid_todo_ids"].append(todo_id)
+            if todo_id not in event_ids:
+                event_order.append(todo_id)
+                event_ids.add(todo_id)
             by_id[todo_id] = dict(item)
-        overlay["markdown_only_todo_ids"].extend(sorted(markdown_ids - event_ids))
+
+    markdown_only_todo_ids: list[str] = []
+    seen_markdown_only_ids: set[str] = set()
+    for role in ("user", "agent"):
+        for todo_id in sorted(markdown_ids_by_role[role] - event_ids):
+            if todo_id not in seen_markdown_only_ids:
+                markdown_only_todo_ids.append(todo_id)
+                seen_markdown_only_ids.add(todo_id)
+    overlay["markdown_only_todo_ids"] = markdown_only_todo_ids
+    overlay["event_only_todo_ids"] = [
+        todo_id for todo_id in event_order if todo_id not in markdown_ids
+    ]
+    overlay["overlaid_todo_ids"] = [
+        todo_id for todo_id in event_order if todo_id in markdown_ids
+    ]
+
+    for todo_id in order:
+        item = by_id[todo_id]
+        final_role = "user" if item.get("role") == "user" else "agent"
+        merged_items[final_role].append(item)
+
+    for role in ("user", "agent"):
         source_section = str(
             (markdown_fields.get(f"{role}_todos") or {}).get("source_section")
             or (event_fields.get(f"{role}_todos") or {}).get("source_section")
             or TODO_SECTION_HEADINGS[role]
         )
-        merged_items[role] = [by_id[todo_id] for todo_id in order]
         source_sections[role] = source_section
 
     resume_source_items = [*merged_items["user"], *merged_items["agent"]]
@@ -603,6 +630,7 @@ def add_todo_to_lines(
     status: str | None = None,
     task_class: str | None = None,
     action_kind: str | None = None,
+    task_domain: str | None = None,
     capability_binding_ref: str | None = None,
     task_repository: str | None = None,
     continuation_policy: str | None = None,
@@ -680,6 +708,7 @@ def add_todo_to_lines(
             status=normalized_status,
             task_class=task_class,
             action_kind=action_kind,
+            task_domain=task_domain,
             capability_binding_ref=capability_binding_ref,
             task_repository=task_repository,
             continuation_policy=continuation_policy,
@@ -719,6 +748,8 @@ def add_todo_to_lines(
             updates["task_class"] = task_class
         if action_kind:
             updates["action_kind"] = action_kind
+        if task_domain:
+            updates["task_domain"] = task_domain
         if capability_binding_ref:
             requested_binding_ref = normalize_todo_capability_binding_ref(
                 capability_binding_ref
@@ -795,6 +826,9 @@ def add_todo_to_lines(
         "status": normalize_todo_status(effective_metadata.get("status")) or normalized_status,
         "task_class": effective_metadata.get("task_class") or task_class,
         "action_kind": effective_metadata.get("action_kind") or action_kind,
+        "task_domain": normalize_todo_task_domain(
+            effective_metadata.get("task_domain") or task_domain
+        ),
         "capability_binding_ref": effective_metadata.get("capability_binding_ref")
         or capability_binding_ref,
         "task_repository": normalize_todo_task_repository(
@@ -849,6 +883,7 @@ def add_goal_todo(
     status: str | None = None,
     task_class: str | None = None,
     action_kind: str | None = None,
+    task_domain: str | None = None,
     capability_binding_ref: str | None = None,
     task_repository: str | None = None,
     continuation_policy: str | None = None,
@@ -894,6 +929,8 @@ def add_goal_todo(
         )
     if task_repository and role != "agent":
         raise ValueError("task_repository is only valid for agent todos")
+    if task_domain and role != "agent":
+        raise ValueError("task_domain is only valid for agent todos")
     if capability_binding_ref and role != "agent":
         raise ValueError("capability_binding_ref is only valid for agent todos")
     normalized_status = normalize_todo_status(status) if status else TODO_STATUS_OPEN
@@ -909,7 +946,11 @@ def add_goal_todo(
         state_file=state_file,
     )
 
-    with exclusive_file_lock(resolved_state_file):
+    with exclusive_file_lock(
+        resolved_state_file,
+        agent_id=agent_id or claimed_by,
+        operation="todo_add",
+    ):
         original = resolved_state_file.read_text(encoding="utf-8")
         lines = original.splitlines()
         updated_at = now_local()
@@ -1018,6 +1059,7 @@ def add_goal_todo(
             status=normalized_status,
             task_class=task_class,
             action_kind=action_kind,
+            task_domain=task_domain,
             capability_binding_ref=capability_binding_ref,
             task_repository=task_repository,
             continuation_policy=continuation_policy,
@@ -1129,6 +1171,7 @@ def update_goal_todo(
     reason: str | None = None,
     task_class: str | None = None,
     action_kind: str | None = None,
+    task_domain: str | None = None,
     task_repository: str | None = None,
     continuation_policy: str | None = None,
     required_write_scopes: list[str] | None = None,
@@ -1176,7 +1219,11 @@ def update_goal_todo(
         project=project,
         state_file=state_file,
     )
-    with exclusive_file_lock(resolved_state_file):
+    with exclusive_file_lock(
+        resolved_state_file,
+        agent_id=agent_id or claimed_by,
+        operation="todo_update",
+    ):
         original = resolved_state_file.read_text(encoding="utf-8")
         lines = original.splitlines()
         updated_at = now_local()
@@ -1234,6 +1281,7 @@ def update_goal_todo(
             clear_claim=clear_claim,
             other_values=(
                 text, status, note, evidence, reason, task_class, action_kind,
+                task_domain,
                 task_repository, continuation_policy, required_write_scopes,
                 required_capabilities, target_capabilities,
                 explore_result_node_refs, decision_scope,
@@ -1268,6 +1316,8 @@ def update_goal_todo(
             )
         if task_repository and target_role != "agent":
             raise ValueError("task_repository is only valid for agent todos")
+        if task_domain and target_role != "agent":
+            raise ValueError("task_domain is only valid for agent todos")
         effective_excluded_agents = (
             []
             if clear_excluded_agents
@@ -1405,6 +1455,7 @@ def update_goal_todo(
             reason=reason,
             task_class=task_class,
             action_kind=action_kind,
+            task_domain=task_domain,
             task_repository=task_repository,
             continuation_policy=continuation_policy,
             required_write_scopes=required_write_scopes,
@@ -1517,7 +1568,11 @@ def complete_goal_todo(
         project=project,
         state_file=state_file,
     )
-    with exclusive_file_lock(resolved_state_file):
+    with exclusive_file_lock(
+        resolved_state_file,
+        agent_id=agent_id or claimed_by,
+        operation="todo_complete",
+    ):
         original = resolved_state_file.read_text(encoding="utf-8")
         lines = original.splitlines()
         updated_at = now_local()
@@ -1826,7 +1881,11 @@ def supersede_goal_todo(
         project=project,
         state_file=state_file,
     )
-    with exclusive_file_lock(resolved_state_file):
+    with exclusive_file_lock(
+        resolved_state_file,
+        agent_id=agent_id,
+        operation="todo_supersede",
+    ):
         original = resolved_state_file.read_text(encoding="utf-8")
         lines = original.splitlines()
         updated_at = now_local()
@@ -2028,7 +2087,7 @@ def archive_completed_todos(
         state_file=state_file,
     )
 
-    with exclusive_file_lock(resolved_state_file):
+    with exclusive_file_lock(resolved_state_file, operation="todo_archive_completed"):
         original = resolved_state_file.read_text(encoding="utf-8")
         lines = original.splitlines()
         archive_result = archive_completed_todo_lines(

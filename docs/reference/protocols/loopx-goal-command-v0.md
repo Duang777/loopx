@@ -39,6 +39,17 @@ When the user provides text after `/loopx`, the host should:
    - `opencode`: call `loopx_goal_activate` from the installed LoopX OpenCode
      bridge; the bridge gates idle continuation and timer wakes through
      `quota should-run` and completes only on validated terminal no-follow-up.
+   - `traex-cli`: set the visible TraeX TUI to `/goal <task_body>` through the
+     TraeX visible-goal renderer while quota remains bound to the generic
+     `generic_cli` runtime profile. TraeX `/goal` requires
+     `[features] goals = true` in `~/.trae/traecli.toml`; if goal mode is off,
+     show the pasteable `/goal <task_body>` gate. Do not route to `/loop`
+     unless a verified LoopX adapter is installed. LoopX ships no Codex App
+     automation and no slash-command installer for TraeX; it loads skills
+     from `~/.trae/skills`.
+   - `pi`: call `loopx_goal_activate` from the installed LoopX Pi extension;
+     the extension gates settled continuations and timer wakes through
+     `quota should-run` and stops only on validated terminal no-follow-up.
    - `manual` / `other-agent`: wire the external loop driver described by
      `loopx agent-onboard`.
 7. If the host cannot mutate that surface, report the exact pasteable gate
@@ -91,12 +102,19 @@ observations as durable grants, and owner-held capabilities such as credentials
 remain user gates. This contract is shared by local visible Goal hosts and Ark
 Managed Agent Goal mode without requiring prompt regeneration.
 
-Agent identity follows the same fail-closed rule. A goal with one registered
-agent may select that identity automatically. A goal with multiple registered
-agents and no `--agent-id` must project a concrete identity-selection gate with
-executable scoped choices; it must not advertise unscoped heartbeat or quota
-commands. Once selected, the identity must be preserved across `agent-onboard`,
-`bootstrap-command-pack`, `start-goal`, heartbeat prompt, and quota commands.
+Agent identity follows the same fail-closed rule. A new `agent-onboard` or
+argument-bearing `start-goal --guided` invocation with no `--agent-id` must
+default to fresh identity registration, even when the goal has zero or one
+registered agent. Its identity gate must expose a preview/apply
+`register-agent --require-new` path. The preview is advisory; todo writeback
+requires an execute result with `ok=true`, `changed=true`, `written=true`,
+successful global sync, and verified source/global registration readback.
+Existing identities are takeover choices, never an
+implicit default; selecting one requires explicit user intent for that exact
+agent. A continuation that already carries an explicit registered `--agent-id`
+keeps that identity across `agent-onboard`, `bootstrap-command-pack`,
+`start-goal`, heartbeat prompt, and quota commands. No gated path may advertise
+unscoped heartbeat or quota commands.
 
 The command pack preview is still read-only. It describes the commands and
 contracts; the slash invocation is what authorizes project-local state writes.

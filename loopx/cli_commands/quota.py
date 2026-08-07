@@ -34,6 +34,7 @@ from ..control_plane.scheduler.execution_context import (
     SchedulerRuntimeProfile,
     scheduler_execution_context_for_runtime_profile,
 )
+from ..file_lock import lock_timeout_error_fields
 from ..presentation.renderers.quota_event_markdown import (
     render_quota_monitor_poll_markdown,
     render_quota_slot_preview_markdown,
@@ -64,6 +65,7 @@ from .quota_request import (
     QUOTA_MONITOR_POLL_DETAIL_SECTIONS,
     QUOTA_SHOULD_RUN_DETAIL_SECTIONS,
     quota_detail_sections_from_args,
+    register_quota_monitor_poll_request_arguments,
     validate_quota_command_request,
 )
 
@@ -290,24 +292,7 @@ def register_quota_command(subparsers: argparse._SubParsersAction) -> None:
     )
     quota_parser.add_argument("--void-generated-at", help="generated_at timestamp of the quota_slot_spent run to void.")
     quota_parser.add_argument("--reason-summary", help="Public-safe reason for `quota void-slot`.")
-    quota_parser.add_argument("--todo-id", help="Monitor todo id for `quota monitor-poll` metadata writeback.")
-    quota_parser.add_argument("--target-key", help="Stable monitor target key for `quota monitor-poll` metadata writeback.")
-    quota_parser.add_argument("--result-hash", help="Public-safe result hash observed by `quota monitor-poll`.")
-    quota_parser.add_argument("--material-change", action="store_true", help="Mark a monitor poll as a material transition instead of unchanged evidence.")
-    quota_parser.add_argument("--cadence", help="Monitor cadence used to compute the next due timestamp, e.g. 30m, 2h, or 1d.")
-    quota_parser.add_argument("--next-due-at", help="Explicit ISO timestamp for the next monitor poll.")
-    quota_parser.add_argument("--next-agent-todo", help="Agent follow-up todo to add when `--material-change` is set.")
-    quota_parser.add_argument("--next-user-todo", help="User follow-up todo to add when `--material-change` is set.")
-    quota_parser.add_argument(
-        "--next-user-task-class",
-        choices=["user_gate", "user_action"],
-        help=(
-            "Required with monitor-poll `--next-user-todo`: user_gate for a "
-            "blocking owner decision or user_action for a visible reminder "
-            "that must not block the bound agent lane."
-        ),
-    )
-    quota_parser.add_argument("--next-claimed-by", help="Registered agent id to claim the `--next-agent-todo` follow-up.")
+    register_quota_monitor_poll_request_arguments(quota_parser)
     quota_parser.add_argument("--surface", default="codex_app", help="Scheduler surface for scheduler ACK/failure commands; defaults to codex_app.")
     quota_parser.add_argument("--state-key", default="scheduler_hint.codex_app.stateful_backoff", help="Scheduler state key for scheduler ACK/failure commands.")
     quota_parser.add_argument("--applied-rrule", help="RRULE successfully applied by the host before `quota scheduler-ack --execute`.")
@@ -436,6 +421,11 @@ def _prepare_quota_command_context(
     projection_cache_ttl_seconds = int(
         getattr(args, "projection_cache_ttl_seconds", 120)
     )
+    scheduler_context = (
+        _scheduler_execution_context_from_args(args)
+        if command in QUOTA_SCHEDULER_COMMANDS
+        else None
+    )
     status_payload = None
     cache_metadata = None
     if bool(getattr(args, "use_projection_cache", False)):
@@ -473,11 +463,6 @@ def _prepare_quota_command_context(
     elif isinstance(status_payload.get("projection_cache"), dict):
         cache_metadata = dict(status_payload["projection_cache"])
 
-    scheduler_context = (
-        _scheduler_execution_context_from_args(args)
-        if command in QUOTA_SCHEDULER_COMMANDS
-        else None
-    )
     validate_quota_command_request(args)
     return _QuotaCommandContext(
         runtime_root=runtime_root,
@@ -501,6 +486,7 @@ def _quota_failure_payload(
     error: Exception,
 ) -> dict[str, object]:
     command = args.quota_command
+    lock_timeout_fields = lock_timeout_error_fields(error)
     if command not in QUOTA_EVENT_KINDS:
         return {
             "ok": False,
@@ -525,6 +511,7 @@ def _quota_failure_payload(
                     "source": "quota",
                 }
             ],
+            **lock_timeout_fields,
         }
 
     payload: dict[str, object] = {
@@ -541,7 +528,10 @@ def _quota_failure_payload(
         "recommended_action": (
             "fix quota/status collection before spending automatic compute"
         ),
+        **lock_timeout_fields,
     }
+    if lock_timeout_fields:
+        payload["recommended_action"] = "inspect the lock holder before retrying"
     if command == "monitor-poll":
         payload.update(
             {
@@ -730,6 +720,11 @@ def handle_quota_command(
                 cadence=args.cadence,
                 next_due_at=args.next_due_at,
                 next_agent_todo=args.next_agent_todo,
+                next_action_kind=args.next_action_kind,
+                next_task_repository=args.next_task_repository,
+                next_required_capabilities=args.next_required_capabilities,
+                next_continuation_policy=args.next_continuation_policy,
+                next_target_key=args.next_target_key,
                 next_user_todo=args.next_user_todo,
                 next_user_task_class=args.next_user_task_class,
                 next_claimed_by=args.next_claimed_by,
@@ -840,6 +835,15 @@ def handle_quota_command(
             "source": payload.get("source") or "",
             "todo_id": payload.get("todo_id") or "",
             "target_key": payload.get("target_key") or "",
+            "successor_todo_ids": ",".join(
+                str(todo_id)
+                for todo_id in (
+                    payload.get("successor_todo_ids")
+                    if isinstance(payload.get("successor_todo_ids"), list)
+                    else []
+                )
+                if str(todo_id).strip()
+            ),
             "applied_rrule": payload.get("applied_rrule") or "",
         }
         if heartbeat_turn_id and args.quota_command == "should-run":

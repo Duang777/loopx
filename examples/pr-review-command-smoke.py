@@ -7,8 +7,8 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -67,12 +67,29 @@ def main() -> int:
         "Each card must stand on its own",
         "one concrete positive walkthrough",
         "one concrete negative or failure walkthrough",
+        "Motivation Causal Chain",
+        "who pays the cost",
+        "Implementation Execution Chain",
+        "authoritative input or state",
+        "Key Code Explanation Gate",
+        "`### 关键代码讲解` subsection inside `具体改动`",
+        "2-5 behavior-bearing symbols",
+        "exact-head `file:line` and symbol name",
+        "critical condition, branch, transition, or invariant",
+        "return value, receipt, projection, or downstream consumer",
+        "Include 1-3 short excerpts from the exact reviewed head",
+        "For a docs-only PR, use `### 关键内容讲解`",
+        "relationship map",
         "state the minimum repair plus regression test",
         "Code Volume And Simplification Review",
         "Classify the volume as `necessary`, `partly avoidable`, or `not yet proven`",
         "A code-volume conclusion without diff and call-site evidence is incomplete",
-        "Do not use this skill to approve",
-        "Route those decisions to `loopx-pr-merge`",
+        "submit a formal `REQUEST_CHANGES` review",
+        "A plain PR comment is not an adequate substitute for `REQUEST_CHANGES`",
+        "keep the workflow read-only only when the user explicitly says `local-only`",
+        "the GitHub review state must match the written verdict",
+        "After publication, include the GitHub review/comment URL",
+        "route approval, merge, self-merge, and admin-bypass actions to `loopx-pr-merge`",
     ):
         assert phrase in skill_text, phrase
 
@@ -194,11 +211,16 @@ def main() -> int:
         assert "quota.py" not in section["agent_instruction"], section
     assert [section["word_hint"] for section in template["sections"]] == [
         "200-350字",
-        "250-450字",
-        "300-600字",
+        "300-500字",
+        "450-800字",
         "250-500字",
         "150-300字",
     ], template
+    concrete_change = next(
+        section for section in template["sections"] if section["label"] == "具体改动"
+    )
+    assert "### 关键代码讲解" in concrete_change["agent_instruction"], concrete_change
+    assert "2-5 个行为关键符号" in concrete_change["agent_instruction"], concrete_change
     assert "headRefOid" in first["evidence_commands"][0], first["evidence_commands"]
     assert "headRefOid" in first["evidence_commands"][-1], first["evidence_commands"]
     assert template["review_order"][0] == "docs/guides/newcomer-command-path.md", template
@@ -220,6 +242,105 @@ def main() -> int:
         run_cli("--format", "json", "pr-review", "--fixture", str(FIXTURE)).stdout
     )
     assert default_payload["request"]["limit"] == 100, default_payload["request"]
+    assert "autonomous_review" not in default_payload, default_payload
+
+    observed = json.loads(
+        run_cli(
+            "--format",
+            "json",
+            "pr-review",
+            "--fixture",
+            str(FIXTURE),
+            "--state",
+            "open",
+            "--autonomous-observation",
+        ).stdout
+    )
+    observation = observed["autonomous_review"]
+    assert observed["request"]["autonomous_observation"] is True, observed["request"]
+    assert "autonomous_review" in observed["request"]["include"], observed["request"]
+    assert (
+        observation["schema_version"] == "pull_request_review_queue_observation_v0"
+    ), observation
+    assert observation["observation_state"] == "material_transition", observation
+    assert observation["candidate_count"] == 1, observation
+    assert observation["candidate"]["number"] == 773, observation
+    assert (
+        observation["candidate"]["head_oid"]
+        == "7730000000000000000000000000000000000000"
+    ), observation
+    assert observation["write_authority_granted"] is False, observation
+    assert_public_safe(observed)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        previous_path = Path(temp_dir) / "previous.json"
+        previous_path.write_text(json.dumps(observed), encoding="utf-8")
+        unchanged = json.loads(
+            run_cli(
+                "--format",
+                "json",
+                "pr-review",
+                "--fixture",
+                str(FIXTURE),
+                "--state",
+                "open",
+                "--autonomous-observation",
+                "--previous-observation-json",
+                str(previous_path),
+            ).stdout
+        )
+        progressed = json.loads(
+            run_cli(
+                "--format",
+                "json",
+                "pr-review",
+                "--fixture",
+                str(FIXTURE),
+                "--state",
+                "open",
+                "--autonomous-observation",
+                "--previous-observation-json",
+                str(previous_path),
+                "--handled-exact-head",
+                "773@7730000000000000000000000000000000000000",
+            ).stdout
+        )
+    assert unchanged["request"]["previous_observation_supplied"] is True, unchanged[
+        "request"
+    ]
+    assert (
+        unchanged["autonomous_review"]["observation_state"] == "observed_unchanged"
+    ), unchanged
+    assert unchanged["autonomous_review"]["candidate"] is None, unchanged
+    progressed_observation = progressed["autonomous_review"]
+    assert (
+        progressed_observation["observation_state"] == "observed_unchanged"
+    ), progressed
+    assert progressed_observation["candidate"]["number"] == 771, progressed
+    assert (
+        progressed_observation["candidate_selection_reason"]
+        == "unhandled_backlog_progression"
+    ), progressed
+    assert progressed_observation["handled_exact_head_count"] == 1, progressed
+
+    incomplete_observation = json.loads(
+        run_cli(
+            "--format",
+            "json",
+            "pr-review",
+            "--fixture",
+            str(FIXTURE),
+            "--state",
+            "open",
+            "--limit",
+            "1",
+            "--autonomous-observation",
+        ).stdout
+    )["autonomous_review"]
+    assert incomplete_observation["observation_state"] == "not_observed", (
+        incomplete_observation
+    )
+    assert incomplete_observation["candidate"] is None, incomplete_observation
 
     repository, fixture_prs = load_pr_fixture(FIXTURE)
     merged_fixture = next(item for item in fixture_prs if item.get("state") == "MERGED")
@@ -303,6 +424,13 @@ def main() -> int:
     assert len(depth["evidence_layers"]) == 4, depth
     assert len(depth["necessity_questions"]) == 3, depth
     assert depth["runtime_walkthroughs"]["positive"], depth
+    key_code = depth["key_code_explanation"]
+    assert key_code["schema_version"] == "pr_review_key_code_explanation_v0", key_code
+    assert key_code["required_for_code_changes"] is True, key_code
+    assert key_code["subsection"] == "关键代码讲解", key_code
+    assert len(key_code["per_symbol_fields"]) == 7, key_code
+    assert "short exact-head excerpts" in key_code["source_form"], key_code
+    assert key_code["docs_only_alternative"], key_code
     assert "authority, permission, or scope bypass" in depth["risk_scan"], depth
     assert "head SHA" in depth["freshness"], depth
     assert any("Do not stop at the queue/table summary" in item for item in response_contract["instructions"])
@@ -383,6 +511,7 @@ def main() -> int:
     assert "explanation_depth_contract" in markdown, markdown
     assert "remote head SHA" in markdown, markdown
     assert "Required card headings: `动机`, `改动思路`, `具体改动`, `对主干的风险`, `我的整体评价`" in markdown, markdown
+    assert "`关键代码讲解`" in markdown, markdown
     assert "## Unmerged PRs" in markdown, markdown
     assert "## Merged PRs" in markdown, markdown
     assert "#770" in markdown, markdown
@@ -393,8 +522,8 @@ def main() -> int:
     assert "- 推荐阅读顺序:" in markdown, markdown
     assert "- 五块模板（留空给 agentloop 填写）:" in markdown, markdown
     assert "动机（200-350字）" in markdown, markdown
-    assert "改动思路（250-450字）" in markdown, markdown
-    assert "具体改动（300-600字）" in markdown, markdown
+    assert "改动思路（300-500字）" in markdown, markdown
+    assert "具体改动（450-800字）" in markdown, markdown
     assert "对主干的风险（250-500字）" in markdown, markdown
     assert "我的整体评价（150-300字）" in markdown, markdown
     assert "main regression risk:" not in markdown, markdown

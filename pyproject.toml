@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools==82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopx"
-version = "0.4.1"
+version = "0.4.2"
 description = "A lightweight Loop Engineering control plane for long-running agent goals."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "LoopX contributors" }]
 dependencies = []
 
@@ -23,7 +24,7 @@ test = [
 ]
 
 [project.scripts]
-loopx = "loopx.cli:main"
+loopx = "loopx.entrypoint:main"
 loopx-lark-provider = "loopx.extensions.lark.provider:main"
 loopx-openviking-semantic-preference = "loopx.extensions.openviking_semantic_preference.provider:main"
 
@@ -36,6 +37,7 @@ include = ["loopx*"]
 "loopx.extensions.openviking_periodic_report" = ["extension.toml"]
 "loopx.extensions.openviking_semantic_preference" = ["extension.toml"]
 "loopx.opencode_goal_mode" = ["*.js", "*.mjs", "README.md"]
+"loopx.pi_goal_mode" = ["*.ts", "*.mjs", "README.md"]
 
 [tool.mypy]
 python_version = "3.11"

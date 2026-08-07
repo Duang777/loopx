@@ -16,7 +16,7 @@ from loopx.control_plane.testing.canary_harness import (
     write_fixture_registry,
 )
 from loopx.control_plane.todos.contract import resolve_next_user_task_class
-from loopx.quota import record_quota_monitor_poll
+from loopx.quota import build_quota_should_run, record_quota_monitor_poll
 from loopx.status import collect_status
 from loopx.todos import add_goal_todo, list_goal_todos, update_goal_todo
 
@@ -153,6 +153,8 @@ def test_material_poll_reloads_status_and_projects_declared_successor(
         AGENT_ID,
         "--runtime-profile",
         "generic_cli",
+        "--available-capability",
+        "network",
         "--todo-id",
         monitor["todo_id"],
         "--target-key",
@@ -162,6 +164,16 @@ def test_material_poll_reloads_status_and_projects_declared_successor(
         "--material-change",
         "--next-agent-todo",
         "Validate the exact merged release head.",
+        "--next-action-kind",
+        "validate_release_head",
+        "--next-task-repository",
+        "git:github.com/huangruiteng/loopx",
+        "--next-required-capability",
+        "network",
+        "--next-continuation-policy",
+        "same_agent_non_delivery",
+        "--next-target-key",
+        "release-head:huangruiteng/loopx#42@merged-42",
         "--next-claimed-by",
         AGENT_ID,
         "--execute",
@@ -171,9 +183,73 @@ def test_material_poll_reloads_status_and_projects_declared_successor(
 
     successor = result["todo_writeback"]["next_todos"][0]
     assert successor["status"] == "open"
+    assert successor["action_kind"] == "validate_release_head"
+    assert successor["task_repository"] == "git:github.com/huangruiteng/loopx"
+    assert successor["continuation_policy"] == "same_agent_non_delivery"
+    assert successor["required_capabilities"] == ["network"]
+    assert successor["target_key"] == "release-head:huangruiteng/loopx#42@merged-42"
+    assert result["successor_todo_ids"] == [successor["todo_id"]]
     assert result["after"]["selected_todo"]["todo_id"] == successor["todo_id"]
     assert result["after"]["effective_action"] == "normal_run"
     assert "Validate the exact merged release head." in state.read_text(encoding="utf-8")
+
+
+def test_unchanged_due_poll_reloads_status_before_followthrough_decision(
+    tmp_path: Path,
+) -> None:
+    registry, runtime, _state = _write_fixture(tmp_path)
+    monitor = _add_monitor(
+        registry,
+        text="Poll a public release target.",
+        target_key="public-release:42",
+        next_due_at="2000-01-01T00:00:00+00:00",
+    )
+    status_payload = collect_status(
+        registry_path=registry,
+        runtime_root_override=str(runtime),
+        scan_roots=[Path(__file__).resolve()],
+        limit=20,
+    )
+    reloaded_status: dict | None = None
+
+    def reload_status() -> dict:
+        nonlocal reloaded_status
+        reloaded_status = collect_status(
+            registry_path=registry,
+            runtime_root_override=str(runtime),
+            scan_roots=[Path(__file__).resolve()],
+            limit=20,
+        )
+        return reloaded_status
+
+    result = record_quota_monitor_poll(
+        status_payload,
+        goal_id=GOAL_ID,
+        registry_path=registry,
+        execute=True,
+        source="heartbeat",
+        agent_id=AGENT_ID,
+        todo_id=monitor["todo_id"],
+        target_key="public-release:42",
+        result_hash="unchanged-42",
+        status_reloader=reload_status,
+    )
+
+    assert result["todo_writeback"]["material_change"] is False
+    assert reloaded_status is not None
+    fresh = build_quota_should_run(
+        reloaded_status,
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+    )
+    assert result["after"]["should_run"] == fresh["should_run"]
+    assert result["after"]["effective_action"] == fresh["effective_action"]
+    assert result["after"].get("selected_todo") == fresh.get("selected_todo")
+    assert result["decision_summary"]["after"]["should_run"] == fresh["should_run"]
+    assert (
+        result["decision_summary"]["after"]["effective_action"]
+        == fresh["effective_action"]
+    )
 
 
 def test_material_poll_user_action_does_not_block_existing_advancement(
@@ -411,6 +487,7 @@ def test_material_poll_reload_failure_reports_persisted_writeback(
         result_hash="merged-42",
         material_change=True,
         next_agent_todo="Validate the persisted material transition successor.",
+        next_action_kind="validate_material_transition",
         status_reloader=fail_status_reload,
     )
 
@@ -422,7 +499,11 @@ def test_material_poll_reload_failure_reports_persisted_writeback(
     assert warning["after_projection_fresh"] is False
     assert "rerun quota should-run" in warning["recommended_action"]
     assert result["monitor_event"]["status_reload_warning"] == warning
-    assert result["todo_writeback"]["next_todos"]
+    successor = result["todo_writeback"]["next_todos"][0]
+    assert successor["continuation_policy"] == "independent_handoff"
+    assert successor["target_key"].startswith(
+        f"monitor-successor:{monitor['todo_id']}:"
+    )
     assert "Validate the persisted material transition successor." in state.read_text(
         encoding="utf-8"
     )

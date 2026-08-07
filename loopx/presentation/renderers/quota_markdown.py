@@ -10,7 +10,12 @@ from ...control_plane.quota.states import QUOTA_STATE_ORDER
 from ...control_plane.runtime.decision_freshness import (
     DECISION_FRESHNESS_WARNING_ITEM_LIMIT,
 )
-from ..markdown import as_dict, as_list, markdown_scalar
+from ..markdown import (
+    append_operator_action_markdown,
+    as_dict,
+    as_list,
+    markdown_scalar,
+)
 
 
 def _append_fallback_projection_markdown(
@@ -267,6 +272,7 @@ def render_quota_markdown(payload: dict[str, Any]) -> str:
                 lines.append(f"  - agent_command: `{item.get('agent_command')}`")
             if item.get("next_handoff_condition"):
                 lines.append(f"  - next_handoff_condition: {item.get('next_handoff_condition')}")
+    append_operator_action_markdown(lines, payload)
     return "\n".join(lines)
 
 
@@ -297,6 +303,7 @@ def render_quota_scheduler_ack_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"- scheduler_state_path: `{payload.get('scheduler_state_path')}`")
     if payload.get("reason"):
         lines.append(f"- reason: {payload.get('reason')}")
+    append_operator_action_markdown(lines, payload)
     return "\n".join(lines)
 
 
@@ -326,6 +333,7 @@ def render_quota_scheduler_failure_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"- scheduler_state_path: `{payload.get('scheduler_state_path')}`")
     if payload.get("reason"):
         lines.append(f"- reason: {payload.get('reason')}")
+    append_operator_action_markdown(lines, payload)
     return "\n".join(lines)
 
 
@@ -479,12 +487,18 @@ def render_quota_should_run_markdown(payload: dict[str, Any]) -> str:
                 )
     task_orchestration = as_dict(payload.get("task_orchestration_contract"))
     if task_orchestration:
-        peer_lanes = as_list(task_orchestration.get("eligible_peer_lanes"))
+        lanes = as_list(task_orchestration.get("eligible_child_lanes"))
+        if not lanes:
+            lanes = as_list(task_orchestration.get("eligible_peer_lanes"))
+        blocked_lanes = as_list(task_orchestration.get("blocked_lanes"))
+        if not blocked_lanes:
+            blocked_lanes = as_list(task_orchestration.get("blocked_peer_lanes"))
         lines.append(
             "- task_orchestration: "
             f"mode={task_orchestration.get('mode')} "
             f"activation_required={task_orchestration.get('activation_required')} "
-            f"peer_lanes={len(peer_lanes)} "
+            f"lanes={len(lanes)} "
+            f"blocked_lanes={len(blocked_lanes)} "
             f"writeback_owner={task_orchestration.get('writeback_owner')}"
         )
     replan_decision = as_dict(payload.get("autonomous_replan_decision"))
@@ -1094,4 +1108,5 @@ def render_quota_should_run_markdown(payload: dict[str, Any]) -> str:
             f"next_automatic_turn={summary.get('next_automatic_turn') or 'none'} "
             f"{state_text}"
         )
+    append_operator_action_markdown(lines, payload)
     return "\n".join(lines)

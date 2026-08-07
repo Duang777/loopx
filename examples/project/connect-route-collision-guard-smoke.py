@@ -151,6 +151,27 @@ def assert_sync_collision_guard(root: Path) -> None:
 def assert_register_agent_uses_source_registry(root: Path) -> None:
     runtime, source_registry, _intruder_registry, global_registry = write_fixture(root)
 
+    collision = payload(
+        run_cli(
+            None,
+            "--runtime-root",
+            str(runtime),
+            "register-agent",
+            "--goal-id",
+            GOAL_ID,
+            "--agent-id",
+            "codex-main-control",
+            "--require-new",
+            check=False,
+        )
+    )
+    assert collision["ok"] is False, collision
+    assert collision["error_kind"] == "agent_identity_already_registered", collision
+    assert collision["changed"] is False, collision
+    assert only_goal(source_registry)["coordination"]["registered_agents"] == [
+        "codex-main-control"
+    ]
+
     preview = payload(
         run_cli(
             None,
@@ -161,6 +182,7 @@ def assert_register_agent_uses_source_registry(root: Path) -> None:
             GOAL_ID,
             "--agent-id",
             "codex-product-capability",
+            "--require-new",
         )
     )
     assert preview["ok"] is True, preview
@@ -178,16 +200,85 @@ def assert_register_agent_uses_source_registry(root: Path) -> None:
             GOAL_ID,
             "--agent-id",
             "codex-product-capability",
+            "--require-new",
             "--execute",
         )
     )
     assert applied["ok"] is True, applied
     assert applied["written"] is True, applied
+    assert applied["global_sync"]["ok"] is True, applied
+    assert applied["registration_readback"]["verified"] is True, applied
     source_agents = only_goal(source_registry)["coordination"]["registered_agents"]
     assert source_agents == ["codex-main-control", "codex-product-capability"], source_agents
     global_agents = only_goal(global_registry)["coordination"]["registered_agents"]
     assert global_agents == source_agents, global_agents
     assert Path(only_goal(global_registry)["source_registry"]).resolve() == source_registry.resolve()
+
+    idempotent = payload(
+        run_cli(
+            None,
+            "--runtime-root",
+            str(runtime),
+            "register-agent",
+            "--goal-id",
+            GOAL_ID,
+            "--agent-id",
+            "codex-product-capability",
+        )
+    )
+    assert idempotent["ok"] is True, idempotent
+    assert idempotent["changed"] is False, idempotent
+
+    stale_preview = payload(
+        run_cli(
+            None,
+            "--runtime-root",
+            str(runtime),
+            "register-agent",
+            "--goal-id",
+            GOAL_ID,
+            "--agent-id",
+            "codex-stale-preview",
+            "--require-new",
+        )
+    )
+    assert stale_preview["changed"] is True, stale_preview
+    assert stale_preview["written"] is False, stale_preview
+
+    competing_apply = payload(
+        run_cli(
+            None,
+            "--runtime-root",
+            str(runtime),
+            "register-agent",
+            "--goal-id",
+            GOAL_ID,
+            "--agent-id",
+            "codex-stale-preview",
+            "--require-new",
+            "--execute",
+        )
+    )
+    assert competing_apply["ok"] is True, competing_apply
+
+    stale_apply = payload(
+        run_cli(
+            None,
+            "--runtime-root",
+            str(runtime),
+            "register-agent",
+            "--goal-id",
+            GOAL_ID,
+            "--agent-id",
+            "codex-stale-preview",
+            "--require-new",
+            "--execute",
+            check=False,
+        )
+    )
+    assert stale_apply["ok"] is False, stale_apply
+    assert stale_apply["error_kind"] == "agent_identity_already_registered", stale_apply
+    assert stale_apply["written"] is False, stale_apply
 
 
 def assert_register_agent_preserves_default_global_route(root: Path) -> None:

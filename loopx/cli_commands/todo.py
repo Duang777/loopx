@@ -13,6 +13,7 @@ from ..todo_suggestion_prompt import (
 )
 from ..todo_followups import capture_followup_todos
 from ..control_plane.todos.markdown import render_todo_markdown
+from ..file_lock import lock_timeout_error_fields
 from ..todos import (
     ARCHIVE_COMPLETED_DEFAULT_MAX_ACTIVE_DONE,
     archive_completed_todos,
@@ -46,7 +47,10 @@ PrintPayload = Callable[
 ]
 
 
-def register_todo_command(subparsers: argparse._SubParsersAction) -> None:
+def register_todo_command(
+    subparsers: argparse._SubParsersAction,
+    add_subcommand_format: Callable[[argparse.ArgumentParser], None],
+) -> None:
     todo_parser = subparsers.add_parser(
         "todo",
         help="Add a user or agent todo to a goal's active state.",
@@ -56,6 +60,7 @@ def register_todo_command(subparsers: argparse._SubParsersAction) -> None:
             "unsupported combinations fail before state is read or written."
         ),
     )
+    add_subcommand_format(todo_parser)
     todo_parser.add_argument(
         "todo_command",
         nargs="?",
@@ -116,6 +121,13 @@ def register_todo_command(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "For todo add, optional public-safe action token such as run_eval, "
             "rebuild_score, compact_blocker_writeback, or monitor."
+        ),
+    )
+    todo_parser.add_argument(
+        "--task-domain",
+        help=(
+            "For agent todo add/update, declare the bounded responsibility domain "
+            "used by adaptive child admission, such as code, docs, or validation."
         ),
     )
     todo_parser.add_argument(
@@ -395,6 +407,7 @@ def handle_todo_command(
     runtime_root_arg: str | None,
     print_payload: PrintPayload,
     append_cli_rollout_event: RolloutEventAppender,
+    format_name: str | None = None,
 ) -> int:
     renderer = (
         render_todo_suggestion_prompt_markdown
@@ -426,6 +439,7 @@ def handle_todo_command(
                 status=args.status,
                 task_class=args.task_class,
                 action_kind=args.action_kind,
+                task_domain=args.task_domain,
                 capability_binding_ref=args.capability_binding_ref,
                 task_repository=args.task_repository,
                 continuation_policy=args.continuation_policy,
@@ -480,6 +494,7 @@ def handle_todo_command(
                 reason=args.reason,
                 task_class=args.task_class,
                 action_kind=args.action_kind,
+                task_domain=args.task_domain,
                 task_repository=args.task_repository,
                 continuation_policy=args.continuation_policy,
                 required_write_scopes=args.required_write_scopes,
@@ -627,6 +642,7 @@ def handle_todo_command(
             "role": args.role,
             "todo": args.text or "",
             "error": str(exc),
+            **lock_timeout_error_fields(exc),
         }
     append_todo_rollout_event(
         payload,
@@ -635,5 +651,9 @@ def handle_todo_command(
         runtime_root_arg=runtime_root_arg,
         append_cli_rollout_event=append_cli_rollout_event,
     )
-    print_payload(payload, args.format, renderer)
+    print_payload(
+        payload,
+        format_name or str(getattr(args, "format", None) or "markdown"),
+        renderer,
+    )
     return 0 if payload.get("ok") else 1

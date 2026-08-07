@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -45,6 +45,7 @@ def run_cli(
         text=True,
         capture_output=True,
         env=env,
+        timeout=300,
     )
 
 
@@ -58,6 +59,8 @@ def main() -> int:
         "codex-cli",
         "claude-code",
         "opencode",
+        "traex-cli",
+        "pi",
         "manual",
         "other-agent",
     } <= agent_types
@@ -75,7 +78,11 @@ def main() -> int:
     assert agent_type_for_host_surface("codex-ide") == "codex-ide-plugin"
     assert agent_type_for_host_surface("codex-cli-tui") == "codex-cli"
     assert agent_type_for_host_surface("opencode") == "opencode"
+    assert agent_type_for_host_surface("pi") == "pi"
+    assert agent_type_for_host_surface("pi-tui") == "pi"
     assert agent_type_for_host_surface("ark-managed-agent") == "ark-managed-agent"
+    assert agent_type_for_host_surface("traex-cli") == "traex-cli"
+    assert agent_type_for_host_surface("traex") == "traex-cli"
 
     codex_app = build_host_loop_activation_packet(agent_type="codex-app", goal_id="demo")
     codex_app_ssh = build_host_loop_activation_packet(
@@ -86,10 +93,12 @@ def main() -> int:
     codex_cli = build_host_loop_activation_packet(agent_type="codex-cli", goal_id="demo")
     claude_code = build_host_loop_activation_packet(agent_type="claude-code", goal_id="demo")
     opencode = build_host_loop_activation_packet(agent_type="opencode", goal_id="demo")
+    pi = build_host_loop_activation_packet(agent_type="pi", goal_id="demo")
     ark_managed_agent = build_host_loop_activation_packet(
         agent_type="ark-managed-agent",
         goal_id="demo",
     )
+    traex_cli = build_host_loop_activation_packet(agent_type="traex-cli", goal_id="demo")
     assert codex_app["activation_method"] == "create_or_update_codex_app_automation", codex_app
     assert codex_app_ssh["activation_method"] == "set_visible_goal", codex_app_ssh
     assert codex_app_ssh["host_surface"] == "codex_app_ssh_visible_goal_mode", codex_app_ssh
@@ -115,8 +124,41 @@ def main() -> int:
     assert opencode["activation_method"] == "activate_loopx_opencode_goal_bridge", opencode
     assert opencode["host_mutation"]["host_tool"] == "loopx_goal_activate", opencode
     assert "--runtime-profile generic_cli" in opencode["commands"]["heartbeat_prompt"], opencode
+    assert pi["activation_method"] == "activate_loopx_pi_goal_extension", pi
+    assert pi["host_surface"] == "pi_visible_goal_mode", pi
+    assert pi["host_mutation"]["host_tool"] == "loopx_goal_activate", pi
+    assert pi["host_mutation"]["tool_argument_mapping"]["goalId"] == (
+        "heartbeat_prompt.goal_id"
+    ), pi
+    assert "--runtime-profile generic_cli" in pi["commands"]["heartbeat_prompt"], pi
     assert ark_managed_agent["activation_method"] == "submit_goal_once", ark_managed_agent
     assert ark_managed_agent["host_surface"] == "ark_managed_agent_goal_mode", ark_managed_agent
+    assert traex_cli["activation_method"] == "set_visible_goal", traex_cli
+    assert traex_cli["host_surface"] == "traex_visible_goal_mode", traex_cli
+    assert traex_cli["host_mutation"]["host_command"] == "/goal <task_body>", traex_cli
+    assert traex_cli["host_mutation"]["requires_host_feature_flag"] == (
+        "[features] goals = true in ~/.trae/traecli.toml"
+    ), traex_cli
+    assert "--runtime-profile generic_cli" in traex_cli["commands"]["heartbeat_prompt"], traex_cli
+    assert all(
+        "--visible-goal-host traex-cli" in traex_cli["commands"][key]
+        for key in (
+            "heartbeat_prompt",
+            "heartbeat_prompt_json",
+            "visible_goal_prompt_json",
+        )
+    ), traex_cli
+    assert traex_cli["commands"]["heartbeat_prompt_json"] == (
+        traex_cli["commands"]["visible_goal_prompt_json"]
+    ), traex_cli
+    assert traex_cli["activation_input_command"] == (
+        traex_cli["commands"]["visible_goal_prompt_json"]
+    ), traex_cli
+    assert "automation_update" not in str(traex_cli), traex_cli
+    assert re.search(
+        r"(?<![a-z0-9_/])/loop(?![a-z0-9_-])",
+        str(traex_cli).lower(),
+    ) is None, traex_cli
     gated_activation = build_host_loop_activation_packet(
         agent_type="codex-app",
         goal_id="multi-agent-demo",
@@ -183,12 +225,22 @@ def main() -> int:
     assert payload["agent_type"] == "codex-cli", payload
     activation = payload["host_loop_activation"]
     assert activation["host_surface"] == "codex_cli_visible_goal_mode", activation
+    assert activation["activation_allowed"] is False, activation
+    assert activation["activation_state"] == "invalid_selection", activation
+    fresh_registration = activation["identity_selection_gate"][
+        "fresh_agent_registration"
+    ]
+    assert fresh_registration["agent_id"] == "codex-value-explorer", fresh_registration
+    assert fresh_registration["preview_command"].endswith(
+        "--agent-id codex-value-explorer --require-new"
+    ), fresh_registration
+    assert fresh_registration["execute_command"].endswith("--execute"), fresh_registration
     contract = payload["goal_start_contract"]
     assert contract["activation"]["host_loop_required_after_todo_writeback"] is True, contract
     assert payload["safety_contract"]["explicit_goal_start_must_activate_host_loop"] is True, payload
     message = payload["message"]
-    assert "/goal <task_body>" in message, message
-    assert "agent-onboard" in message, message
+    assert "register-agent" in message, message
+    assert "explicit takeover" in message, message
 
     with tempfile.TemporaryDirectory(prefix="loopx-agent-onboard-identity-") as tmp:
         root = Path(tmp)
@@ -241,16 +293,23 @@ def main() -> int:
             for choice in gate["choices"]
             if choice["agent_id"] == "codex-product-capability"
         )
-        assert "--agent-id codex-product-capability" in selected_choice["heartbeat_prompt_json"]
-        assert "--agent-scope" in selected_choice["heartbeat_prompt_json"]
+        assert "--agent-id codex-product-capability" in (
+            selected_choice["activation_input_command"]
+        )
+        assert "--agent-scope" in selected_choice["activation_input_command"]
+        assert selected_choice["heartbeat_prompt_json"] == (
+            selected_choice["activation_input_command"]
+        )
+        assert selected_choice["heartbeat_prompt"]
 
         choice_run = subprocess.run(
-            shlex.split(selected_choice["heartbeat_prompt_json"]),
+            shlex.split(selected_choice["activation_input_command"]),
             cwd=REPO_ROOT,
             env={**os.environ, "HOME": str(home)},
             check=True,
             text=True,
             capture_output=True,
+            timeout=120,
         )
         choice_payload = json.loads(choice_run.stdout)
         assert choice_payload["ok"] is True, choice_payload
@@ -280,7 +339,7 @@ def main() -> int:
         )
         transaction = guided_gate["guided_transaction"]
         assert transaction["blocked_by"] == "agent_identity_selection", transaction
-        assert transaction["ordered_steps"][1]["id"] == "select_agent_identity", transaction
+        assert transaction["ordered_steps"][2]["id"] == "select_agent_identity", transaction
 
         selected_pack = build_loopx_bootstrap_command_pack(
             project=project,
@@ -353,6 +412,7 @@ def main() -> int:
             check=True,
             text=True,
             capture_output=True,
+            timeout=120,
         )
         app_ssh_prompt = json.loads(app_ssh_prompt_run.stdout)
         assert app_ssh_prompt["ok"] is True, app_ssh_prompt
@@ -401,6 +461,7 @@ def main() -> int:
             check=True,
             text=True,
             capture_output=True,
+            timeout=120,
         )
         app_ssh_quota = json.loads(app_ssh_quota_run.stdout)
         execution_context = app_ssh_quota["scheduler_hint"]["execution_context"]
@@ -427,6 +488,7 @@ def main() -> int:
             check=True,
             text=True,
             capture_output=True,
+            timeout=120,
         )
         cli_prompt = json.loads(cli_prompt_run.stdout)
         assert cli_prompt["interface_budget"]["mode"] == "visible_goal", cli_prompt
@@ -445,6 +507,38 @@ def main() -> int:
             "--surface opencode --with-goal-bridge"
         )
         assert opencode_onboarding["host_loop_activation"]["host_mutation"]["host_tool"] == (
+            "loopx_goal_activate"
+        )
+
+        pi_onboarding = build_agent_onboarding_packet(
+            project=project,
+            agent_type="pi",
+            goal_id="multi-agent-goal",
+            agent_id="codex-product-capability",
+            cli_bin=cli_bin,
+        )
+        pi_facade = pi_onboarding["commands"]["install_command_facade"]
+        assert "--surface pi" in pi_facade, pi_facade
+        # The Pi install command must use the CLI's public --pi-project flag
+        # with the resolved project, so it parses and targets the right
+        # project even when agent-onboard runs from another cwd.
+        assert f"--pi-project {shlex.quote(str(project.resolve()))}" in pi_facade, pi_facade
+        assert "--project ." not in pi_facade, pi_facade
+        # Execute the returned setup command from a different cwd (run_cli
+        # always runs from REPO_ROOT, not the temp project): it must parse and
+        # land in the project's .pi/extensions/.
+        pi_install = json.loads(
+            run_cli(*shlex.split(pi_facade)[1:]).stdout
+        )
+        assert pi_install["ok"] is True, pi_install
+        assert (project / ".pi" / "extensions" / "loopx-goal.ts").is_file()
+        pi_runtime = project / ".pi" / "extensions" / "pi-goal-loop-runtime.mjs"
+        assert pi_runtime.is_file()
+        # The quota/wait/store loop core lives in the runtime module; the
+        # adapter only wires Pi events into it.
+        assert "pi.on(\"session_shutdown\"" not in pi_runtime.read_text(encoding="utf-8")
+        assert "terminal_no_followup" in pi_runtime.read_text(encoding="utf-8")
+        assert pi_onboarding["host_loop_activation"]["host_mutation"]["host_tool"] == (
             "loopx_goal_activate"
         )
 
@@ -470,6 +564,7 @@ def main() -> int:
         assert set(delivery["required_skill_ids"]) == {
             "loopx",
             "loopx-project",
+            "loopx-pr-program",
             "loopx-pr-review",
             "loopx-doc-registry",
             "loopx-self-repair",
@@ -533,6 +628,17 @@ def main() -> int:
         assert "project-skill status" in quality_commands[0]["status"]
         assert "project-skill install" in quality_commands[0]["apply_install"]
         assert quality_commands[0]["apply_install"].endswith("--execute")
+
+        quality_pi = build_agent_onboarding_packet(
+            project=project,
+            agent_type="pi",
+            goal_id="multi-agent-goal",
+            agent_id="codex-product-capability",
+            cli_bin=cli_bin,
+        )
+        pi_quality_commands = quality_pi["skill_delivery"]["project_skill_commands"]
+        assert len(pi_quality_commands) == 1, quality_pi
+        assert pi_quality_commands[0]["surface"] == "pi", quality_pi
 
         doctor_home = root / "doctor-home"
         doctor_home.mkdir()

@@ -25,6 +25,7 @@ from loopx.extensions.runtime import (
 BUILTIN_IDS = [
     "integration-branch-reconcile",
     "change-quality-qualification",
+    "pull-request-review",
     "issue-fix",
     "decision-context",
     "project-skill-delivery",
@@ -391,6 +392,20 @@ def test_active_explore_and_auto_research_records_point_to_real_smokes() -> None
             prefix = "python3 "
             assert command.startswith(prefix)
             assert (repository / command.removeprefix(prefix)).is_file()
+
+
+def test_issue_fix_capability_exposes_discovered_issue_promotion() -> None:
+    capability = build_capability_detail_packet("issue-fix")["capability"]
+    commands = [item["command"] for item in capability["commands"]]
+
+    assert any(
+        command.startswith("loopx issue-fix promote-discovered-issue ")
+        for command in commands
+    )
+    assert any(
+        protocol["schema_version"] == "issue_fix_discovered_issue_promotion_v0"
+        for protocol in capability["implemented_protocols"]
+    )
 
 
 def test_context_provider_factory_dispatches_through_registered_builder() -> None:

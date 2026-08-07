@@ -33,7 +33,7 @@ REQUIRED_HOST_SKILL_IDS = ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS
 CHANGE_QUALITY_SKILL_ID = "loopx-change-quality"
 
 
-def _surface_install_command(agent_type: str, cli_bin: str) -> str | None:
+def _surface_install_command(agent_type: str, cli_bin: str, project: str) -> str | None:
     if agent_type in {"codex-app", "codex-app-ssh", "codex-ide-plugin", "codex-cli"}:
         return f"{shell_arg(cli_bin)} slash-commands --install --surface codex"
     if agent_type == "claude-code":
@@ -42,6 +42,14 @@ def _surface_install_command(agent_type: str, cli_bin: str) -> str | None:
         return (
             f"{shell_arg(cli_bin)} slash-commands --install --surface opencode "
             "--with-goal-bridge"
+        )
+    if agent_type == "pi":
+        # The slash-commands installer resolves the Pi extension target through
+        # --pi-project; pass the resolved project so the command stays correct
+        # when agent-onboard runs from any cwd.
+        return (
+            f"{shell_arg(cli_bin)} slash-commands --install --surface pi "
+            f"--pi-project {shell_arg(project)}"
         )
     return None
 
@@ -58,6 +66,8 @@ def _project_skill_surface(agent_type: str) -> str | None:
         return "claude-code"
     if agent_type == "opencode":
         return "opencode"
+    if agent_type == "pi":
+        return "pi"
     return None
 
 
@@ -240,6 +250,8 @@ def _bootstrap_pack_command(
         "codex-cli": "codex-cli-tui",
         "claude-code": "claude-code",
         "opencode": "opencode",
+        "traex-cli": "traex-cli",
+        "pi": "pi",
         "ark-managed-agent": "ark-managed-agent",
         "manual": "shell",
         "other-agent": "other-agent",
@@ -275,6 +287,10 @@ def _start_instruction(agent_type: str) -> str:
     if agent_type == "claude-code":
         return "Run `/loopx <task>` to arm LoopX, then run native `/loop`."
     if agent_type == "opencode":
+        return "Run `/loopx <task>`; after todo writeback, call `loopx_goal_activate` with the generated heartbeat task body."
+    if agent_type == "traex-cli":
+        return "Use `$loopx <task>` or select the LoopX skill from `/skills`; after todos are written, set `/goal <task_body>` in the visible TraeX TUI (enable `[features] goals = true` first if goal mode is off)."
+    if agent_type == "pi":
         return "Run `/loopx <task>`; after todo writeback, call `loopx_goal_activate` with the generated heartbeat task body."
     if agent_type == "ark-managed-agent":
         return (
@@ -337,13 +353,14 @@ def build_agent_onboarding_packet(
         agent_id=agent_id,
         registered_agents=registered_agents,
         available_capabilities=available_capabilities,
+        fresh_agent_default=True,
     )
     selected_agent_id = host_loop_activation.get("agent_id")
     activation_allowed = bool(host_loop_activation.get("activation_allowed"))
     normalized_available_capabilities = list(
         host_loop_activation.get("available_capabilities") or []
     )
-    install_command = _surface_install_command(canonical_agent_type, cli_bin)
+    install_command = _surface_install_command(canonical_agent_type, cli_bin, resolved_project)
     bootstrap_pack_command = _bootstrap_pack_command(
         project=resolved_project,
         goal_id=resolved_goal_id,
@@ -411,7 +428,8 @@ def build_agent_onboarding_packet(
         "host_loop_activation": host_loop_activation,
         "skill_delivery": skill_delivery,
         "recommended_start": (
-            "Select one registered agent lane from identity_selection_gate, then rerun onboarding."
+            "Register a fresh agent id by default, or select an existing lane only "
+            "after explicit takeover intent; then rerun onboarding with --agent-id."
             if not activation_allowed
             else _start_instruction(canonical_agent_type)
         ),
@@ -584,11 +602,21 @@ def render_agent_onboarding_markdown(payload: dict[str, Any]) -> str:
     if identity_gate:
         lines.extend(["", "## Agent Identity Gate", ""])
         lines.append(f"- reason: {identity_gate.get('reason')}")
+        fresh_registration = identity_gate.get("fresh_agent_registration")
+        if isinstance(fresh_registration, dict):
+            lines.extend(
+                [
+                    "- default_action: `register_fresh_agent`",
+                    f"- preview: `{fresh_registration.get('preview_command')}`",
+                    f"- apply: `{fresh_registration.get('execute_command')}`",
+                    "- existing identities below require explicit takeover intent:",
+                ]
+            )
         for choice in identity_gate.get("choices") or []:
             if isinstance(choice, dict):
                 lines.append(
-                    f"- `{choice.get('agent_id')}` ({choice.get('role')}): "
-                    f"`{choice.get('heartbeat_prompt_json')}`"
+                    f"- takeover `{choice.get('agent_id')}`: "
+                    f"`{choice.get('activation_input_command')}`"
                 )
     lines.extend(
         [

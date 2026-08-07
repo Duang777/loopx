@@ -34,7 +34,7 @@ def register_starter_bootstrap_commands(subparsers: argparse._SubParsersAction) 
     )
     agent_onboard_parser.add_argument(
         "--agent-type",
-        help="Agent runtime type: codex-app, codex-app-ssh, codex-ide-plugin, codex-cli, claude-code, opencode, manual, or other-agent.",
+        help="Agent runtime type: codex-app, codex-app-ssh, codex-ide-plugin, codex-cli, claude-code, opencode, pi, manual, or other-agent.",
     )
     agent_onboard_parser.add_argument(
         "--list-agent-types",
@@ -119,7 +119,11 @@ def register_starter_bootstrap_commands(subparsers: argparse._SubParsersAction) 
     start_goal_parser.add_argument("--goal-id", help="Goal id. Defaults to <project-name>-goal.")
     start_goal_parser.add_argument(
         "--agent-id",
-        help="Registered LoopX agent id to include in quota/heartbeat commands.",
+        help=(
+            "Explicit registered LoopX identity for an ongoing session or exact "
+            "user-requested takeover. When omitted, new onboarding defaults to fresh "
+            "agent registration."
+        ),
     )
     start_goal_parser.add_argument(
         "--cli-bin",
@@ -141,11 +145,7 @@ def register_starter_bootstrap_commands(subparsers: argparse._SubParsersAction) 
         help="Capability available in this host loop. Repeat for multiple capabilities.",
     )
     _add_capability_route_argument(start_goal_parser)
-    start_goal_parser.add_argument(
-        "--goal-text",
-        required=True,
-        help="Exact goal text to plan before todo writeback.",
-    )
+    start_goal_parser.add_argument("--goal-text", required=True, help="Exact goal text to plan before todo writeback.")
     start_goal_parser.add_argument(
         "--include-command-pack-detail",
         action="store_true",
