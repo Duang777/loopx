@@ -106,6 +106,11 @@ from .route_profile import (
     build_benchmark_route_profile,
     validate_benchmark_route_profile,
 )
+from .rendering import (
+    render_benchmark_artifact_path_filter_markdown,
+    render_benchmark_candidate_source_boundary_markdown,
+    render_benchmark_parity_check_markdown,
+)
 from .run_permissions import (
     DEFAULT_RUN_PERMISSION_ALLOWED_ACTIONS,
     DEFAULT_RUN_PERMISSION_FORBIDDEN_ACTIONS,
@@ -231,6 +236,9 @@ __all__ = [
     "optional_float",
     "optional_positive_int",
     "render_codex_app_parity_posthoc_check_markdown",
+    "render_benchmark_artifact_path_filter_markdown",
+    "render_benchmark_candidate_source_boundary_markdown",
+    "render_benchmark_parity_check_markdown",
     "render_loop_contract_packet_lines",
     "summarize_round_rewards",
     "validate_run_permission_policy",

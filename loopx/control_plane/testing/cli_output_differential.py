@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
+import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from datetime import datetime
+from typing import Any, Literal, cast
 
 from ..quota.turn_envelope import (
     ACTION_SIGNATURE_COVERAGE_V0,
@@ -15,6 +19,142 @@ CLI_OUTPUT_FIXTURE_CONTRACT_VERSION = "loopx_cli_output_public_fixture_v0"
 CLI_OUTPUT_DIFFERENTIAL_SCHEMA_VERSION = "loopx_cli_output_differential_v0"
 
 Metric = Literal["chars", "utf8_bytes", "lines", "compact_payload_chars"]
+
+_ISO_TIME = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})"
+)
+
+
+def is_iso_timestamp(value: str) -> bool:
+    """Return whether a value is a timezone-qualified ISO timestamp."""
+    if _ISO_TIME.fullmatch(value) is None:
+        return False
+    try:
+        parsed_value = (
+            value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value
+        )
+        datetime.fromisoformat(parsed_value)
+    except ValueError:
+        return False
+    return True
+
+
+def load_strict_cli_json(stdout: str) -> object:
+    """Load CLI JSON while rejecting ambiguous or non-standard JSON values."""
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        for key, value in pairs:
+            if key in payload:
+                raise ValueError(f"duplicate JSON object key: {key}")
+            payload[key] = value
+        return payload
+
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"non-standard JSON constant: {value}")
+
+    return json.loads(
+        stdout,
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_constant,
+    )
+
+
+def normalize_external_cli_stdout(
+    stdout: str,
+    *,
+    output_format: str,
+    temp_root: str | None,
+    iso_time_paths: tuple[tuple[str, ...], ...],
+    random_id_paths: Mapping[tuple[str, ...], str],
+) -> object:
+    """Normalize only explicitly declared nondeterminism in external CLI output."""
+    if temp_root is not None:
+        if not temp_root:
+            raise ValueError("temporary roots must be non-empty strings")
+        stdout = stdout.replace(temp_root, "<TEMP_ROOT>")
+    if output_format in {"markdown", "text"}:
+        if iso_time_paths or random_id_paths:
+            raise ValueError("field-path normalization is only supported for JSON")
+        return stdout
+    if output_format != "json":
+        raise ValueError(f"unsupported output format: {output_format}")
+    try:
+        payload = load_strict_cli_json(stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("JSON stdout is invalid") from exc
+
+    rules: list[tuple[tuple[str, ...], str, Callable[[str], object]]] = [
+        (path, "<ISO_TIME>", is_iso_timestamp) for path in iso_time_paths
+    ]
+    for path, expression in random_id_paths.items():
+        try:
+            pattern = re.compile(expression)
+        except re.error as exc:
+            raise ValueError(f"invalid random-ID regex at {path}") from exc
+        rules.append((path, "<RANDOM_ID>", pattern.fullmatch))
+
+    for path, replacement, validator in rules:
+        label = "$." + ".".join(path)
+        if not path:
+            raise ValueError("normalization paths must not be empty")
+        parent = payload
+        for field in path[:-1]:
+            if not isinstance(parent, dict) or field not in parent:
+                raise ValueError(f"normalization path is missing: {label}")
+            parent = parent[field]
+        if not isinstance(parent, dict) or path[-1] not in parent:
+            raise ValueError(f"normalization path is missing: {label}")
+        value = parent[path[-1]]
+        if not isinstance(value, str):
+            raise ValueError(f"normalization path is not a string: {label}")
+        if not validator(value):
+            raise ValueError(f"normalization value failed validation: {label}")
+        parent[path[-1]] = replacement
+    return payload
+
+
+def compare_external_cli_receipts(
+    baseline: Mapping[str, object],
+    candidate: Mapping[str, object],
+    *,
+    output_format: str,
+    baseline_temp_root: str | None = None,
+    candidate_temp_root: str | None = None,
+    iso_time_paths: tuple[tuple[str, ...], ...] = (),
+    random_id_paths: Mapping[tuple[str, ...], str] | None = None,
+) -> list[str]:
+    """Return exact receipt fields that differ after narrow stdout normalization."""
+    random_id_paths = random_id_paths or {}
+    for receipt in (baseline, candidate):
+        for field, expected_type in (
+            ("exit_code", int),
+            ("stdout", str),
+            ("stderr", str),
+        ):
+            if field not in receipt or type(receipt[field]) is not expected_type:
+                raise ValueError(f"receipt {field} is missing or has the wrong type")
+
+    differences: list[str] = []
+    if baseline["exit_code"] != candidate["exit_code"]:
+        differences.append("exit_code")
+    if normalize_external_cli_stdout(
+        cast(str, baseline["stdout"]),
+        output_format=output_format,
+        temp_root=baseline_temp_root,
+        iso_time_paths=iso_time_paths,
+        random_id_paths=random_id_paths,
+    ) != normalize_external_cli_stdout(
+        cast(str, candidate["stdout"]),
+        output_format=output_format,
+        temp_root=candidate_temp_root,
+        iso_time_paths=iso_time_paths,
+        random_id_paths=random_id_paths,
+    ):
+        differences.append("stdout")
+    if baseline["stderr"] != candidate["stderr"]:
+        differences.append("stderr")
+    return differences
 
 
 @dataclass(frozen=True)

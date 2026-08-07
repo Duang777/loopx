@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -132,6 +130,13 @@ from .cli_rollout import (
     append_benchmark_run_rollout_event,
     append_cli_rollout_event,
 )
+from .cli_contract import (
+    LoopXArgumentParser,
+    add_subcommand_format,
+    output_format,
+    resolve_global_output_format,
+    user_supplied_registry,
+)
 from .project_skill_cli import (
     handle_project_skill_command,
     register_project_skill_commands,
@@ -145,49 +150,13 @@ from .help_surface import (
 from .paths import DEFAULT_RUNTIME_ROOT, default_registry_path, global_registry_path
 
 
-class LoopXArgumentParser(argparse.ArgumentParser):
-    """Require complete option names across the automation-facing CLI."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        kwargs.setdefault("allow_abbrev", False)
-        super().__init__(*args, **kwargs)
-
-
 def print_payload(payload: dict[str, object], fmt: str, markdown_renderer) -> None:
     if fmt == "json":
+        import json
+
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(markdown_renderer(payload))
-
-
-def add_subcommand_format(arg_parser: argparse.ArgumentParser) -> None:
-    arg_parser.add_argument(
-        "--format",
-        dest="subcommand_format",
-        choices=["markdown", "json"],
-        help="Output format for this subcommand. Equivalent to global --format before the command.",
-    )
-
-
-def output_format(args: argparse.Namespace, *local_dests: str) -> str:
-    for dest in (*local_dests, "subcommand_format"):
-        value = getattr(args, dest, None)
-        if value:
-            return str(value)
-    return str(getattr(args, "format", None) or "markdown")
-
-
-def resolve_global_output_format(args: argparse.Namespace) -> str:
-    if getattr(args, "format", None):
-        return str(args.format)
-    if args.command == "quota" and getattr(args, "quota_command", None) == "should-run":
-        return "json"
-    return "markdown"
-
-
-def user_supplied_registry(argv: list[str] | None) -> bool:
-    values = sys.argv[1:] if argv is None else argv
-    return any(value == "--registry" or value.startswith("--registry=") for value in values)
 
 
 def build_parser() -> LoopXArgumentParser:

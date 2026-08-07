@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -60,6 +61,7 @@ REGISTRY_ATTENTION_FIELDS = (
     "recommended_action",
     "next_handoff_condition",
 )
+HISTORY_SEMANTIC_PAGE_SCHEMA_VERSION = "history_semantic_page_v1"
 
 
 def now_local() -> str:
@@ -696,6 +698,42 @@ def latest_status_run(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+def _history_semantic_revision(runs: list[dict[str, Any]]) -> str:
+    """Hash the complete ordered history without materializing public DTOs."""
+
+    digest = hashlib.sha256()
+    digest.update((HISTORY_SEMANTIC_PAGE_SCHEMA_VERSION + "\n").encode("utf-8"))
+    for run in runs:
+        artifact_identity = hashlib.sha256(
+            "\0".join(
+                (
+                    str(run.get("json_path") or ""),
+                    str(run.get("markdown_path") or ""),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        row = {
+            "goal_id": str(run.get("goal_id") or ""),
+            "generated_at": str(run.get("generated_at") or ""),
+            "classification": str(run.get("classification") or ""),
+            "agent_id": str(run.get("agent_id") or ""),
+            "delivery_outcome": str(run.get("delivery_outcome") or ""),
+            "progress_scope": str(run.get("progress_scope") or ""),
+            "json_available": bool(run.get("json_exists")),
+            "markdown_available": bool(run.get("markdown_exists")),
+            "artifact_identity": artifact_identity,
+        }
+        encoded = json.dumps(
+            row,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(encoded)
+        digest.update(b"\n")
+    return "sha256:" + digest.hexdigest()
+
+
 def collect_history(
     *,
     registry_path: Path,
@@ -703,7 +741,18 @@ def collect_history(
     goal_id: str | None,
     limit: int,
     include_runtime_goals: bool = True,
+    semantic_page_offset: int | None = None,
 ) -> dict[str, Any]:
+    if semantic_page_offset is not None and (
+        isinstance(semantic_page_offset, bool)
+        or not isinstance(semantic_page_offset, int)
+        or semantic_page_offset < 0
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 0
+    ):
+        raise ValueError("semantic history pagination requires non-negative integers")
+
     registry = load_registry(registry_path)
     goal_meta = {str(goal.get("id")): goal for goal in registry_goals(registry)}
     goals: list[dict[str, Any]] = []
@@ -771,7 +820,7 @@ def collect_history(
         goals.append(goal_record)
 
     all_runs.sort(key=lambda item: str(item.get("generated_at") or ""), reverse=True)
-    return {
+    payload = {
         "ok": True,
         "registry": str(registry_path),
         "runtime_root": str(runtime_root),
@@ -779,8 +828,19 @@ def collect_history(
         "goal_count": len(goals),
         "run_count": len(all_runs),
         "goals": goals,
-        "runs": all_runs[:limit],
+        "runs": all_runs[:limit]
+        if semantic_page_offset is None
+        else all_runs[semantic_page_offset : semantic_page_offset + limit],
     }
+    if semantic_page_offset is not None:
+        payload["semantic_page"] = {
+            "schema_version": HISTORY_SEMANTIC_PAGE_SCHEMA_VERSION,
+            "offset": semantic_page_offset,
+            "limit": limit,
+            "total_count": len(all_runs),
+            "revision": _history_semantic_revision(all_runs),
+        }
+    return payload
 
 
 def inspect_index_duplicates(

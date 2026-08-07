@@ -3,6 +3,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
 } from "@tanstack/react-router";
 import { z } from "zod";
 
@@ -31,6 +32,10 @@ const frontstageSearchSchema = z.object({
   todoQuery: z.string().optional().default(""),
 });
 
+const operatorSearchSchema = z.object({
+  goalId: z.string().optional().default(""),
+});
+
 export const rootRoute = createRootRoute({
   component: () => <Outlet />,
 });
@@ -55,10 +60,21 @@ export const frontstageDeveloperRoute = createRoute({
   component: FrontstageDeveloperPage,
 });
 
+export const operatorRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/operator",
+  validateSearch: (search) => operatorSearchSchema.parse(search),
+  component: lazyRouteComponent(
+    () => import("./views/operator-console-page"),
+    "OperatorConsolePage",
+  ),
+});
+
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
   frontstageRoute,
   frontstageDeveloperRoute,
+  operatorRoute,
 ]);
 
 function routerBasepathFromViteBase(baseUrl: string) {

@@ -1,0 +1,595 @@
+{
+  "schema_version": 1,
+  "shard": "capability-extension-presentation",
+  "defaults": {
+    "application_operation": null,
+    "scenario_coverage": [],
+    "output_coverage": [],
+    "state_side_effect_comparison": false,
+    "migration_status": "pending",
+    "evidence": [
+      "tests/cli_v2/capability_extension_presentation/test_inventory_and_parser.py::test_all_91_rows_have_one_durable_owner",
+      "typed_application_operation_missing: cohort-specific root service"
+    ]
+  },
+  "commands": [
+    {
+      "command": "capability list",
+      "application_operation": "application.capabilities.catalog.list",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/capability.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "capability show",
+      "application_operation": "application.capabilities.catalog.get",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/capability.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension init",
+      "application_operation": "application.extensions.initialize",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension list",
+      "application_operation": "application.extensions.list",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension install",
+      "application_operation": "application.extensions.install",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension upgrade",
+      "application_operation": "application.extensions.upgrade",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension enable",
+      "application_operation": "application.extensions.enable",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension disable",
+      "application_operation": "application.extensions.disable",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension rollback",
+      "application_operation": "application.extensions.rollback",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension doctor",
+      "application_operation": "application.extensions.doctor",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "extension run",
+      "application_operation": "application.extensions.run",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/extension.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "content-ops preview"
+    },
+    {
+      "command": "content-ops exploration-plan",
+      "application_operation": "application.capabilities.content_ops.exploration_plan",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/content_ops/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_exploration_plan_depth_closure_matches_exact_external_contract",
+        "tests/cli_v2/capability_extension_presentation/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract"
+      ]
+    },
+    {
+      "command": "content-ops issue-fix-intake"
+    },
+    {
+      "command": "content-ops issue-fix-metadata-preview"
+    },
+    {
+      "command": "content-ops observe-public-handle"
+    },
+    {
+      "command": "content-ops project-private-connector-gate"
+    },
+    {
+      "command": "content-ops aggregate-packets"
+    },
+    {
+      "command": "content-ops project-chatview-report"
+    },
+    {
+      "command": "content-ops walkthrough-artifact",
+      "application_operation": "application.capabilities.content_ops.walkthrough_artifact",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/content_ops/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_walkthrough_artifact_depth_closure_is_exact_public_safe_and_io_free",
+        "tests/cli_v2/capability_extension_presentation/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_walkthrough_provider_forces_no_fetch_and_never_opens_network",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_new_safe_batch_never_opens_network_process_or_write_seams"
+      ]
+    },
+    {
+      "command": "content-ops item-create",
+      "application_operation": "application.capabilities.content_ops.create_item",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/content_ops/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_item_create_depth_closure_matches_exact_external_contract",
+        "tests/cli_v2/capability_extension_presentation/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_new_safe_batch_never_opens_network_process_or_write_seams",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_item_create_digest_validation_is_actionable"
+      ]
+    },
+    {
+      "command": "content-ops item-transition"
+    },
+    {
+      "command": "decision-context architecture",
+      "application_operation": "application.capabilities.decision_context.describe_architecture",
+      "scenario_coverage": ["success"],
+      "output_coverage": ["json", "markdown", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/decision_context/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_decision_context_architecture_depth_closure_is_exact_and_io_free",
+        "tests/cli_v2/capability_extension_presentation/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "no_legal_failure_surface"
+      ]
+    },
+    {
+      "command": "decision-context inspect-profile",
+      "application_operation": "application.capabilities.decision_context.inspect_profile",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/decision_context/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_decision_context_inspect_profile_depth_closure_is_exact_and_read_only",
+        "tests/cli_v2/capability_extension_presentation/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_new_safe_batch_never_opens_network_process_or_write_seams",
+        "privacy_boundary: explicit profile read; no path, raw content, locator, or credentials emitted"
+      ]
+    },
+    {
+      "command": "decision-context source-manifest"
+    },
+    {
+      "command": "decision-context prepare-evidence"
+    },
+    {
+      "command": "material-lifecycle architecture",
+      "application_operation": "application.capabilities.material_lifecycle.describe_architecture",
+      "scenario_coverage": ["success"],
+      "output_coverage": ["json", "markdown", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/material_lifecycle/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_material_lifecycle_architecture_depth_closure_is_exact_and_io_free",
+        "tests/cli_v2/capability_extension_presentation/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "no_legal_failure_surface"
+      ]
+    },
+    {
+      "command": "material-lifecycle skill-status",
+      "application_operation": "application.capabilities.material_lifecycle.inspect_skill",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/material_lifecycle/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_new_safe_batch_never_opens_network_process_or_write_seams",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "material-lifecycle install-skill"
+    },
+    {
+      "command": "material-lifecycle uninstall-skill"
+    },
+    {
+      "command": "reward-memory architecture"
+    },
+    {
+      "command": "reward-memory corpus-registry",
+      "application_operation": "application.capabilities.reward_memory.corpus_registry",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/reward_memory/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_third_batch_malformed_owner_packets_fail_closed",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "reward-memory health-check",
+      "application_operation": "application.capabilities.reward_memory.health",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/reward_memory/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "reward-memory candidate-review",
+      "application_operation": "application.capabilities.reward_memory.candidate_review",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/reward_memory/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "tests/cli_v2/capability_extension_presentation/test_services.py::test_candidate_review_reducer_is_deterministic_and_has_no_persistence_seam",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "reward-memory ingest-event"
+    },
+    {
+      "command": "reward-memory experiment-status"
+    },
+    {
+      "command": "reward-memory evaluate"
+    },
+    {
+      "command": "reward-memory dogfood-evaluate"
+    },
+    {
+      "command": "reward-memory operator-control"
+    },
+    {
+      "command": "reward-memory route-check",
+      "application_operation": "application.capabilities.reward_memory.route",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/reward_memory/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "periodic-report compose-run"
+    },
+    {
+      "command": "periodic-report evaluate-trigger"
+    },
+    {
+      "command": "periodic-report inspect-profile"
+    },
+    {
+      "command": "periodic-report archive-openviking"
+    },
+    {
+      "command": "semantic-preference recall"
+    },
+    {
+      "command": "semantic-preference doctor"
+    },
+    {
+      "command": "semantic-preference openviking-provider"
+    },
+    {
+      "command": "semantic-preference receipt",
+      "application_operation": "application.capabilities.semantic_preference.application_receipt",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/semantic_preference/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "semantic-preference maintenance-receipt",
+      "application_operation": "application.capabilities.semantic_preference.maintenance_receipt",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/semantic_preference/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "value-connectors install-check",
+      "application_operation": "application.capabilities.value_connectors.install_check",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/value_connectors/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "value-connectors source-map",
+      "application_operation": "application.capabilities.value_connectors.source_map",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/capabilities/value_connectors/cli.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_github_public_source_map_only",
+        "github_public_channel_only_json_differential",
+        "finance_migration_compatibility_branch_held",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "value-connectors plan"
+    },
+    {
+      "command": "value-connectors github-public-probe"
+    },
+    {
+      "command": "value-connectors github-reply-monitor"
+    },
+    {
+      "command": "presentation package",
+      "application_operation": "application.presentations.package",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/presentation.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_json_differential_for_safe_read_preview_and_fixture_calls",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "presentation rollback",
+      "application_operation": "application.presentations.rollback",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/presentation.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "presentation verify-readback",
+      "application_operation": "application.presentations.verify_readback",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "legacy_owner: loopx/cli_commands/presentation.py",
+        "tests/cli_v2/capability_extension_presentation/test_dispatch_and_differential.py::test_all_29_bindings_dispatch_through_typed_services_only",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "lark-inbox drain"
+    },
+    {
+      "command": "lark-inbox ack"
+    },
+    {
+      "command": "lark-inbox reply"
+    },
+    {
+      "command": "lark-inbox ingest"
+    },
+    {
+      "command": "lark-inbox collector-plan"
+    },
+    {
+      "command": "lark-inbox collector-install"
+    },
+    {
+      "command": "lark-inbox collector-status"
+    },
+    {
+      "command": "lark-inbox collector-run"
+    },
+    {
+      "command": "lark-kanban schema"
+    },
+    {
+      "command": "lark-kanban config"
+    },
+    {
+      "command": "lark-kanban use"
+    },
+    {
+      "command": "lark-kanban setup"
+    },
+    {
+      "command": "lark-kanban doctor"
+    },
+    {
+      "command": "lark-kanban plan-create"
+    },
+    {
+      "command": "lark-kanban create-board"
+    },
+    {
+      "command": "lark-kanban seed-task"
+    },
+    {
+      "command": "lark-kanban seed-cases"
+    },
+    {
+      "command": "lark-kanban sync-loopx-todos"
+    },
+    {
+      "command": "lark-kanban sync-projection"
+    },
+    {
+      "command": "lark-kanban heartbeat"
+    },
+    {
+      "command": "explore schema"
+    },
+    {
+      "command": "explore node"
+    },
+    {
+      "command": "explore edge"
+    },
+    {
+      "command": "explore finding"
+    },
+    {
+      "command": "explore summary"
+    },
+    {
+      "command": "explore presentation"
+    },
+    {
+      "command": "explore source-history-reconcile"
+    },
+    {
+      "command": "explore graph"
+    },
+    {
+      "command": "explore todo-branch-plan"
+    },
+    {
+      "command": "explore worker-branch-plan"
+    },
+    {
+      "command": "explore feishu-setup"
+    },
+    {
+      "command": "explore feishu-visual-configure"
+    },
+    {
+      "command": "explore feishu-sync"
+    },
+    {
+      "command": "explore feishu-card"
+    }
+  ]
+}

@@ -13,7 +13,13 @@ authors = [{ name = "LoopX contributors" }]
 dependencies = []
 
 [project.optional-dependencies]
+http = [
+  "fastapi>=0.116,<1",
+  "pydantic>=2.12,<3",
+  "uvicorn>=0.35,<1",
+]
 test = [
+  "httpx>=0.28,<1",
   "jsonschema>=4.23,<5",
   "pytest>=8,<9",
   "pytest-cov>=5,<7",
@@ -24,6 +30,7 @@ test = [
 
 [project.scripts]
 loopx = "loopx.entrypoint:main"
+loopx-http-server = "loopx.http_server.__main__:main"
 loopx-lark-provider = "loopx.extensions.lark.provider:main"
 loopx-openviking-semantic-preference = "loopx.extensions.openviking_semantic_preference.provider:main"
 

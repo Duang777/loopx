@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..benchmark_core import (
     build_codex_app_parity_posthoc_check,
-    render_codex_app_parity_posthoc_check_markdown,
+    render_benchmark_parity_check_markdown,
 )
 from ..status import compact_benchmark_run
 
@@ -83,9 +83,7 @@ def handle_benchmark_run_ledger_parity_command(
         print_payload(
             payload,
             output_format(args),
-            lambda value: render_codex_app_parity_posthoc_check_markdown(
-                value["codex_app_parity_posthoc_check"]
-            ),
+            render_benchmark_parity_check_markdown,
         )
         return 0 if payload.get("ok") else 1
 

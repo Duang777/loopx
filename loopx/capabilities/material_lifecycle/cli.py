@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 
 from loopx.project_skill_delivery import PROJECT_SKILL_SURFACES
 
 from .architecture import build_material_lifecycle_architecture_packet
+from .markdown import render_material_lifecycle_markdown
 from .project_skill import (
     install_project_material_skill,
     inspect_project_material_skill,
@@ -18,51 +19,6 @@ PrintPayload = Callable[
 ]
 FormatSelector = Callable[..., str]
 AddFormat = Callable[[argparse.ArgumentParser], None]
-
-
-def _collection_size(value: object) -> int:
-    if isinstance(value, Collection) and not isinstance(value, (str, bytes)):
-        return len(value)
-    return 0
-
-
-def _render(payload: dict[str, object]) -> str:
-    if payload.get("skill_id") == "loopx-material":
-        lines = [
-            "# LoopX Material Project Skill",
-            "",
-            f"- status: `{payload.get('status')}`",
-            f"- mode: `{payload.get('mode') or 'inspect'}`",
-            f"- project_connected: `{payload.get('project_connected')}`",
-            f"- managed: `{payload.get('managed')}`",
-            f"- changed: `{payload.get('changed')}`",
-        ]
-        surface_items = payload.get("surfaces")
-        for item in surface_items if isinstance(surface_items, list) else []:
-            if isinstance(item, dict):
-                lines.append(
-                    f"- {item.get('surface')}: `{item.get('status')}` at "
-                    f"`{item.get('target')}`"
-                )
-        if payload.get("error"):
-            lines.append(f"- error: `{payload.get('error')}`")
-        return "\n".join([*lines, ""])
-    capability = payload.get("capability")
-    capability_id = (
-        capability.get("capability_id")
-        if isinstance(capability, dict)
-        else "material_lifecycle"
-    )
-    return "\n".join(
-        [
-            "# Material Lifecycle",
-            "",
-            f"- status: `{payload.get('status')}`",
-            f"- capability_id: `{capability_id}`",
-            f"- contract_schemas: `{_collection_size(payload.get('contract_schemas'))}`",
-            "",
-        ]
-    )
 
 
 def register_material_lifecycle_commands(
@@ -155,7 +111,15 @@ def handle_material_lifecycle_command(
             "error": str(exc),
             "surfaces": [],
         }
-        print_payload(payload, output_format(args), _render)
+        print_payload(
+            payload,
+            output_format(args),
+            render_material_lifecycle_markdown,
+        )
         return 2
-    print_payload(payload, output_format(args), _render)
+    print_payload(
+        payload,
+        output_format(args),
+        render_material_lifecycle_markdown,
+    )
     return 0

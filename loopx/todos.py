@@ -54,6 +54,7 @@ from .control_plane.todos.contract import (
     require_supported_todo_resume_when,
     todo_done_for_status,
     todo_marker_for_status,
+    todo_terminal_for_status,
 )
 from .control_plane.todos.active_state_editing import (
     TODO_SECTION_HEADINGS,
@@ -1596,16 +1597,23 @@ def complete_goal_todo(
                 event_context["project"] = resolved_project
                 completion_todo = dict(event_context["item"])
                 completion_todo["role"] = event_context["role"]
-        effective_decision_outcome = require_completion_decision_outcome(
-            completion_todo,
-            decision_outcome,
-            materialized=bool(completion_match),
-        )
         if completion_todo is None:
             normalized_todo_id = normalize_todo_id(todo_id) or todo_id
             raise ValueError(
                 f"todo_id {normalized_todo_id!r} was not found in active user or agent todos"
             )
+        completion_status = str(completion_todo.get("status") or "").strip()
+        if todo_terminal_for_status(completion_status):
+            normalized_todo_id = normalize_todo_id(todo_id) or todo_id
+            raise ValueError(
+                f"todo_id {normalized_todo_id!r} is already terminal with "
+                f"status={completion_status!r}; reopen it before completing again"
+            )
+        effective_decision_outcome = require_completion_decision_outcome(
+            completion_todo,
+            decision_outcome,
+            materialized=bool(completion_match),
+        )
         decision_target = None
         target_todo_id = normalize_todo_id(completion_todo.get("unblocks_todo_id"))
         if target_todo_id:

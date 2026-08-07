@@ -10,6 +10,7 @@ from loopx.control_plane.testing.cli_output_differential import (
     CLI_OUTPUT_FIXTURE_CONTRACT_VERSION,
     CLI_OUTPUT_PROBE_SCHEMA_VERSION,
     compare_cli_output_receipts,
+    compare_external_cli_receipts,
 )
 from loopx.control_plane.testing.cli_output_semantics import (
     action_signature_coverages,
@@ -45,6 +46,20 @@ def _receipt(*rows: dict[str, object]) -> dict[str, object]:
         "fixture_contract_version": CLI_OUTPUT_FIXTURE_CONTRACT_VERSION,
         "rows": list(rows),
     }
+
+
+def _external_receipt(
+    stdout: str, *, exit_code: int = 0, stderr: str = ""
+) -> dict[str, object]:
+    return {"exit_code": exit_code, "stdout": stdout, "stderr": stderr}
+
+
+def _external_json_receipt(**payload: object) -> dict[str, object]:
+    return _external_receipt(json.dumps(payload))
+
+
+_EXTERNAL_ISO_PATHS = (("generated_at",),)
+_EXTERNAL_RANDOM_ID_PATHS = {("request_id",): r"req_[0-9a-f]{8}"}
 
 
 def test_measurement_records_semantic_shape_without_runtime_hash_noise() -> None:
@@ -165,9 +180,7 @@ def test_unknown_action_signature_coverage_migration_fails_closed() -> None:
     result = compare_cli_output_receipts(_receipt(_row()), _receipt(candidate))
 
     assert result["ok"] is False
-    assert result["rows"][0]["failures"] == [
-        "action_signature semantic digest changed"
-    ]
+    assert result["rows"][0]["failures"] == ["action_signature semantic digest changed"]
 
 
 def test_observed_shape_removal_is_a_review_signal_not_a_permanent_red_light() -> None:
@@ -216,3 +229,178 @@ def test_fixture_contract_mismatch_fails_closed() -> None:
     candidate["fixture_contract_version"] = "different"
     with pytest.raises(ValueError, match="fixture_contract_version"):
         compare_cli_output_receipts(_receipt(_row()), candidate)
+
+
+def test_external_json_receipt_normalizes_only_declared_runtime_values() -> None:
+    baseline = _external_json_receipt(
+        status="ready",
+        generated_at="2026-08-07T10:11:12Z",
+        request_id="req_a1b2c3d4",
+        artifact="fixture-baseline/report.json",
+    )
+    candidate = _external_json_receipt(
+        artifact="fixture-candidate/report.json",
+        request_id="req_0123abcd",
+        generated_at="2026-08-07T10:12:13+00:00",
+        status="ready",
+    )
+
+    assert (
+        compare_external_cli_receipts(
+            baseline,
+            candidate,
+            output_format="json",
+            baseline_temp_root="fixture-baseline",
+            candidate_temp_root="fixture-candidate",
+            iso_time_paths=_EXTERNAL_ISO_PATHS,
+            random_id_paths=_EXTERNAL_RANDOM_ID_PATHS,
+        )
+        == []
+    )
+
+
+def test_external_json_receipt_does_not_hide_business_field_changes() -> None:
+    baseline = _external_json_receipt(
+        status="ready",
+        generated_at="2026-08-07T10:11:12Z",
+        request_id="req_a1b2c3d4",
+    )
+    candidate = _external_json_receipt(
+        status="blocked",
+        generated_at="2026-08-07T10:12:13Z",
+        request_id="req_0123abcd",
+    )
+
+    assert compare_external_cli_receipts(
+        baseline,
+        candidate,
+        output_format="json",
+        iso_time_paths=_EXTERNAL_ISO_PATHS,
+        random_id_paths=_EXTERNAL_RANDOM_ID_PATHS,
+    ) == ["stdout"]
+
+
+@pytest.mark.parametrize(
+    ("candidate_payload", "failure"),
+    [
+        (
+            {"request_id": "req_0123abcd"},
+            "normalization path is missing",
+        ),
+        (
+            {"generated_at": "2026-08-07T10:12:13Z", "request_id": 123},
+            "normalization path is not a string",
+        ),
+        (
+            {
+                "generated_at": "2026-08-07T10:12:13Z",
+                "request_id": "ordinary-business-value",
+            },
+            "normalization value failed validation",
+        ),
+        (
+            {"generated_at": "not-a-time", "request_id": "req_0123abcd"},
+            "normalization value failed validation",
+        ),
+    ],
+)
+def test_external_json_receipt_normalization_paths_fail_closed(
+    candidate_payload: dict[str, object],
+    failure: str,
+) -> None:
+    baseline = _external_json_receipt(
+        generated_at="2026-08-07T10:11:12Z",
+        request_id="req_a1b2c3d4",
+    )
+
+    with pytest.raises(ValueError, match=failure):
+        compare_external_cli_receipts(
+            baseline,
+            _external_receipt(json.dumps(candidate_payload)),
+            output_format="json",
+            iso_time_paths=_EXTERNAL_ISO_PATHS,
+            random_id_paths=_EXTERNAL_RANDOM_ID_PATHS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("baseline_stdout", "candidate_stdout", "failure"),
+    [
+        (
+            '{"status":"ready"}',
+            '{"status":"blocked","status":"ready"}',
+            "duplicate JSON object key: status",
+        ),
+        ('{"value":0}', '{"value":NaN}', "non-standard JSON constant: NaN"),
+        (
+            '{"value":0}',
+            '{"value":Infinity}',
+            "non-standard JSON constant: Infinity",
+        ),
+        (
+            '{"value":0}',
+            '{"value":-Infinity}',
+            "non-standard JSON constant: -Infinity",
+        ),
+    ],
+)
+def test_external_json_receipt_rejects_ambiguous_or_nonstandard_json(
+    baseline_stdout: str,
+    candidate_stdout: str,
+    failure: str,
+) -> None:
+    with pytest.raises(ValueError, match=failure):
+        compare_external_cli_receipts(
+            _external_receipt(baseline_stdout),
+            _external_receipt(candidate_stdout),
+            output_format="json",
+        )
+
+
+@pytest.mark.parametrize("output_format", ["markdown", "text"])
+def test_external_text_receipt_only_replaces_declared_temp_roots(
+    output_format: str,
+) -> None:
+    baseline = _external_receipt("artifact: fixture-baseline/report\nid: stable\n")
+    candidate = _external_receipt("artifact: fixture-candidate/report\nid: stable\n")
+    assert compare_external_cli_receipts(
+        baseline, candidate, output_format=output_format
+    ) == ["stdout"]
+    assert (
+        compare_external_cli_receipts(
+            baseline,
+            candidate,
+            output_format=output_format,
+            baseline_temp_root="fixture-baseline",
+            candidate_temp_root="fixture-candidate",
+        )
+        == []
+    )
+
+    changed = _external_receipt("artifact: fixture-candidate/report\nid: changed\n")
+    assert compare_external_cli_receipts(
+        baseline,
+        changed,
+        output_format=output_format,
+        baseline_temp_root="fixture-baseline",
+        candidate_temp_root="fixture-candidate",
+    ) == ["stdout"]
+    with pytest.raises(ValueError, match="only supported for JSON"):
+        compare_external_cli_receipts(
+            baseline,
+            candidate,
+            output_format=output_format,
+            iso_time_paths=(("generated_at",),),
+        )
+
+
+def test_external_receipt_detects_exit_code_and_stderr_changes() -> None:
+    baseline = _external_receipt("same output\n")
+    candidate = _external_receipt(
+        "same output\n", exit_code=2, stderr="unexpected warning\n"
+    )
+
+    assert compare_external_cli_receipts(baseline, candidate, output_format="text") == [
+        "exit_code",
+        "stderr",
+    ]

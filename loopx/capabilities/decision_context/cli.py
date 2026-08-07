@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .assembler import DecisionEvidenceRecords
 from .architecture import build_decision_context_architecture_packet
+from .markdown import render_decision_context_markdown
 from .profile import resolve_decision_context_activation
 from .runtime import assemble_profile_decision_evidence
 from .sources import build_decision_source_manifest
@@ -17,33 +18,6 @@ PrintPayload = Callable[
 ]
 FormatSelector = Callable[..., str]
 AddFormat = Callable[[argparse.ArgumentParser], None]
-
-
-def _collection_size(value: object) -> int:
-    if isinstance(value, Collection) and not isinstance(value, (str, bytes)):
-        return len(value)
-    return 0
-
-
-def _render(payload: dict[str, object]) -> str:
-    capability = payload.get("capability")
-    capability_id = (
-        capability.get("capability_id")
-        if isinstance(capability, dict)
-        else "decision_context"
-    )
-    return "\n".join(
-        [
-            "# Decision Context",
-            "",
-            f"- status: `{payload.get('status')}`",
-            f"- capability_id: `{capability_id}`",
-            f"- packet_schemas: `{_collection_size(payload.get('packet_schemas'))}`",
-            f"- source_schemas: `{_collection_size(payload.get('source_schemas'))}`",
-            f"- source_count: `{payload.get('source_count', 0)}`",
-            "",
-        ]
-    )
 
 
 def register_decision_context_commands(
@@ -190,5 +164,5 @@ def handle_decision_context_command(
             }
     else:
         raise ValueError("decision-context requires a supported subcommand")
-    print_payload(payload, output_format(args), _render)
+    print_payload(payload, output_format(args), render_decision_context_markdown)
     return 0

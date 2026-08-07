@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loopx.dev/schemas/cli-v2-command-inventory-v1.json",
+  "title": "LoopX CLI v2 command inventory shard",
+  "x-shard-ownership": {
+    "policy": "shard-only",
+    "central_files_read_only": [
+      "tests/cli_v2/test_command_inventory.py",
+      "tests/fixtures/cli_v2_parity/schema.json"
+    ],
+    "shard_editable_files": {
+      "core": "tests/fixtures/cli_v2_parity/core.json",
+      "project-system-registry": "tests/fixtures/cli_v2_parity/project-system-registry.json",
+      "capability-extension-presentation": "tests/fixtures/cli_v2_parity/capability-extension-presentation.json",
+      "maintainer-benchmark-agent": "tests/fixtures/cli_v2_parity/maintainer-benchmark-agent.json"
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "shard",
+    "defaults",
+    "commands"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "shard": {
+      "enum": [
+        "core",
+        "project-system-registry",
+        "capability-extension-presentation",
+        "maintainer-benchmark-agent"
+      ]
+    },
+    "defaults": {
+      "$ref": "#/$defs/defaults"
+    },
+    "root_invocations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/rootInvocation"
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/command"
+      }
+    }
+  },
+  "$defs": {
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_operation",
+        "scenario_coverage",
+        "output_coverage",
+        "state_side_effect_comparison",
+        "migration_status",
+        "evidence"
+      ],
+      "properties": {
+        "application_operation": {
+          "$ref": "#/$defs/command/properties/application_operation"
+        },
+        "scenario_coverage": {
+          "$ref": "#/$defs/command/properties/scenario_coverage"
+        },
+        "output_coverage": {
+          "$ref": "#/$defs/command/properties/output_coverage"
+        },
+        "state_side_effect_comparison": {
+          "$ref": "#/$defs/command/properties/state_side_effect_comparison"
+        },
+        "migration_status": {
+          "$ref": "#/$defs/command/properties/migration_status"
+        },
+        "evidence": {
+          "$ref": "#/$defs/command/properties/evidence"
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/commandPath"
+        },
+        "application_operation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scenario_coverage": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "success",
+              "error",
+              "dry_run",
+              "write"
+            ]
+          }
+        },
+        "output_coverage": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "json",
+              "markdown",
+              "stdout",
+              "stderr",
+              "exit_code"
+            ]
+          }
+        },
+        "state_side_effect_comparison": {
+          "type": "boolean"
+        },
+        "migration_status": {
+          "enum": [
+            "migrated",
+            "pending",
+            "pending_migration"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "aliases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/commandPath"
+          }
+        },
+        "selectors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/selector"
+          }
+        },
+        "subparser_base": {
+          "$ref": "#/$defs/subparserBase"
+        },
+        "rewrite_aliases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/rewriteAlias"
+          }
+        }
+      }
+    },
+    "rootInvocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface",
+        "argv"
+      ],
+      "properties": {
+        "surface": {
+          "type": "string",
+          "minLength": 1
+        },
+        "argv": {
+          "$ref": "#/$defs/argv"
+        },
+        "argv_aliases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/argvTemplate"
+          }
+        },
+        "application_operation": {
+          "$ref": "#/$defs/command/properties/application_operation"
+        },
+        "scenario_coverage": {
+          "$ref": "#/$defs/command/properties/scenario_coverage"
+        },
+        "output_coverage": {
+          "$ref": "#/$defs/command/properties/output_coverage"
+        },
+        "state_side_effect_comparison": {
+          "$ref": "#/$defs/command/properties/state_side_effect_comparison"
+        },
+        "migration_status": {
+          "$ref": "#/$defs/command/properties/migration_status"
+        },
+        "evidence": {
+          "$ref": "#/$defs/command/properties/evidence"
+        }
+      }
+    },
+    "commandPath": {
+      "type": "string",
+      "pattern": "^[^ ]+( [^ ]+)*$"
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dest",
+        "value"
+      ],
+      "properties": {
+        "dest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "implicit_default": {
+          "const": true
+        }
+      }
+    },
+    "subparserBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dest",
+        "value"
+      ],
+      "properties": {
+        "dest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "rewriteAlias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_argv",
+        "target_argv"
+      ],
+      "properties": {
+        "source_argv": {
+          "$ref": "#/$defs/argvTemplate"
+        },
+        "target_argv": {
+          "$ref": "#/$defs/argvTemplate"
+        }
+      }
+    },
+    "argvTemplate": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

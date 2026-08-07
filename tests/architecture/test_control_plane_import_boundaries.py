@@ -10,6 +10,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = REPOSITORY_ROOT / "loopx"
 SCRIPTS_ROOT = REPOSITORY_ROOT / "scripts"
 CONTROL_PLANE_ROOT = PACKAGE_ROOT / "control_plane"
+APPLICATION_ROOT = PACKAGE_ROOT / "application"
+APPLICATION_PREFIX = "loopx.application"
 EXPERIMENT_ROOT = PACKAGE_ROOT / "experiments"
 EXPERIMENT_PREFIX = "loopx.experiments"
 BENCHMARK_READ_MODELS_ROOT = PACKAGE_ROOT / "benchmarks" / "read_models"
@@ -45,6 +47,28 @@ FORBIDDEN_DEPENDENCY_PREFIXES = (
     "loopx.cli",
     "loopx.cli_commands",
     "loopx.presentation",
+)
+APPLICATION_DELIVERY_DEPENDENCY_PREFIXES = (
+    "argparse",
+    "fastapi",
+    "http",
+    "httpx",
+    "pydantic",
+    "requests",
+    "urllib",
+    "loopx.cli",
+    "loopx.cli_commands",
+    "loopx.cli_v2",
+    "loopx.dashboard",
+    "loopx.http_server",
+    "loopx.presentation",
+)
+APPLICATION_OUTWARD_ADAPTER_PREFIXES = (
+    "loopx.benchmark_adapters",
+    "loopx.claude_goal_mode",
+    "loopx.extensions",
+    "loopx.opencode_goal_mode",
+    "loopx.pi_goal_mode",
 )
 STATUS_FORBIDDEN_DEPENDENCY_PREFIXES = (
     "loopx.benchmark_adapters",
@@ -190,6 +214,55 @@ def test_control_plane_does_not_gain_outward_dependencies() -> None:
     assert not outward_dependencies, (
         "control-plane code must not depend on presentation, CLI, capability, or "
         f"benchmark-adapter layers; unexpected edges: {sorted(outward_dependencies)}"
+    )
+
+
+def test_control_plane_does_not_depend_on_application_layer() -> None:
+    forbidden_edges = {
+        (_module_name(path), dependency)
+        for path in CONTROL_PLANE_ROOT.rglob("*.py")
+        for dependency in _resolved_imports(path)
+        if dependency == APPLICATION_PREFIX
+        or dependency.startswith(APPLICATION_PREFIX + ".")
+    }
+
+    assert not forbidden_edges, (
+        "control-plane code must remain inward of application orchestration; "
+        f"unexpected edges: {sorted(forbidden_edges)}"
+    )
+
+
+def test_application_layer_does_not_depend_on_delivery_surfaces() -> None:
+    forbidden_edges = {
+        (_module_name(path), dependency)
+        for path in APPLICATION_ROOT.rglob("*.py")
+        for dependency in _resolved_imports(path)
+        if any(
+            dependency == prefix or dependency.startswith(prefix + ".")
+            for prefix in APPLICATION_DELIVERY_DEPENDENCY_PREFIXES
+        )
+    }
+
+    assert not forbidden_edges, (
+        "application code must stay independent of FastAPI, Pydantic, CLI, HTTP, "
+        f"dashboard, and presentation delivery surfaces: {sorted(forbidden_edges)}"
+    )
+
+
+def test_application_layer_does_not_depend_on_outward_adapters() -> None:
+    forbidden_edges = {
+        (_module_name(path), dependency)
+        for path in APPLICATION_ROOT.rglob("*.py")
+        for dependency in _resolved_imports(path)
+        if any(
+            dependency == prefix or dependency.startswith(prefix + ".")
+            for prefix in APPLICATION_OUTWARD_ADAPTER_PREFIXES
+        )
+    }
+
+    assert not forbidden_edges, (
+        "application code must depend inward on contracts, not outward on provider, "
+        f"benchmark, extension, or host adapters: {sorted(forbidden_edges)}"
     )
 
 

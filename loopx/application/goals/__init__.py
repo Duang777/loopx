@@ -1,0 +1,98 @@
+"""Goal-scoped application boundary."""
+
+from .configuration import (
+    ConfigurationApplyResult,
+    ConfigurationEffect,
+    ConfigurationPlan,
+    GoalConfigurationPatch,
+    GoalConfigurationService,
+    WriterCorrectness,
+)
+from .handle import GoalHandle
+from .history import GoalHistoryService, HistoryEntry, HistoryPage
+from .leases import (
+    GoalLeaseService,
+    TaskLease,
+    TaskLeaseInspection,
+    TaskLeaseMutationResult,
+)
+from .status import GoalOverview, GoalStatus
+from .quota import (
+    GoalQuotaService,
+    QuotaApplyResult,
+    QuotaBudget,
+    QuotaDecision,
+    QuotaMutationPlan,
+)
+from .todos import (
+    GoalTodoService,
+    TodoCompletion,
+    TodoCompletionPlan,
+    TodoItem,
+    TodoList,
+    TodoMutationResult,
+    TodoUpdatePatch,
+)
+from .turns import (
+    GoalTurnService,
+    TurnCommitCoordinator,
+    TurnEnvelopeSource,
+    TurnExecutionEffects,
+    TurnExecutionMode,
+    TurnExecutionResult,
+    TurnExecutor,
+    TurnHost,
+    TurnHostRequest,
+    TurnHostResult,
+    TurnPlan,
+    TurnPlanRequest,
+    TurnReceipt,
+    TurnSchedulerResult,
+    TurnTaskValidation,
+)
+
+__all__ = [
+    "ConfigurationApplyResult",
+    "ConfigurationEffect",
+    "ConfigurationPlan",
+    "GoalConfigurationPatch",
+    "GoalConfigurationService",
+    "GoalHandle",
+    "GoalHistoryService",
+    "GoalLeaseService",
+    "GoalOverview",
+    "GoalQuotaService",
+    "GoalStatus",
+    "GoalTodoService",
+    "GoalTurnService",
+    "HistoryEntry",
+    "HistoryPage",
+    "QuotaApplyResult",
+    "QuotaBudget",
+    "QuotaDecision",
+    "QuotaMutationPlan",
+    "TaskLease",
+    "TaskLeaseInspection",
+    "TaskLeaseMutationResult",
+    "TodoCompletion",
+    "TodoCompletionPlan",
+    "TodoItem",
+    "TodoList",
+    "TodoMutationResult",
+    "TodoUpdatePatch",
+    "TurnCommitCoordinator",
+    "TurnEnvelopeSource",
+    "TurnExecutionEffects",
+    "TurnExecutionMode",
+    "TurnExecutionResult",
+    "TurnExecutor",
+    "TurnHost",
+    "TurnHostRequest",
+    "TurnHostResult",
+    "TurnPlan",
+    "TurnPlanRequest",
+    "TurnReceipt",
+    "TurnSchedulerResult",
+    "TurnTaskValidation",
+    "WriterCorrectness",
+]

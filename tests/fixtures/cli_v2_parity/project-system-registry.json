@@ -1,0 +1,337 @@
+{
+  "schema_version": 1,
+  "shard": "project-system-registry",
+  "defaults": {
+    "application_operation": null,
+    "scenario_coverage": [],
+    "output_coverage": [],
+    "state_side_effect_comparison": false,
+    "migration_status": "pending",
+    "evidence": []
+  },
+  "commands": [
+    {
+      "command": "backup-state",
+      "application_operation": "application.system.backup.preview|application.system.backup.apply",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_markdown_renders_the_typed_projection",
+        "tests/cli_v2/project_system_registry/test_state_semantics_parity.py::test_backup_state_write_side_effects_match_on_isolated_fixtures",
+        "tests/application/test_application_system_services.py::test_backup_apply_repreviews_and_rejects_forged_or_stale_plan"
+      ]
+    },
+    {
+      "command": "upgrade-plan",
+      "application_operation": "application.system.upgrades.plan",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_dispatches_only_through_typed_application_services",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_markdown_renders_the_typed_projection",
+        "tests/application/test_application_system_services.py::test_upgrade_plan_malformed_provider_count_fails_closed"
+      ]
+    },
+    {
+      "command": "update"
+    },
+    {
+      "command": "registry",
+      "application_operation": "application.registry.inspect",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_dispatches_only_through_typed_application_services",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_markdown_renders_the_typed_projection",
+        "tests/application/test_application_registry_services.py::test_registry_inspection_malformed_count_fails_closed"
+      ]
+    },
+    {
+      "command": "registry-boundary",
+      "application_operation": "application.registry.inspect_boundary",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_dispatches_only_through_typed_application_services",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_markdown_renders_the_typed_projection",
+        "tests/application/test_application_registry_services.py::test_registry_boundary_policy_is_applied_to_typed_projection",
+        "real Git boundary differential intentionally not run in safe local batch"
+      ]
+    },
+    {
+      "command": "integration-branch configure"
+    },
+    {
+      "command": "integration-branch status"
+    },
+    {
+      "command": "integration-branch sync"
+    },
+    {
+      "command": "project-skill status",
+      "application_operation": "application.projects.skills.inspect",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_project_skill_status_matches_legacy_semantics_without_paths_or_writes",
+        "tests/application/test_application_project_history_diagnostics.py::test_project_skill_status_is_cli_only_and_projects_semantic_labels",
+        "tests/application/test_application_project_history_diagnostics.py::test_project_skill_malformed_provider_boolean_fails_closed"
+      ]
+    },
+    {
+      "command": "project-skill install",
+      "application_operation": "application.projects.skills.install.preview",
+      "scenario_coverage": ["success", "error", "dry_run"],
+      "output_coverage": ["json", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "preview_external_parity_passed; execute_and_markdown_pending",
+        "tests/cli_v2/project_system_registry/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_project_skill_preview_matches_legacy_exact_cli_without_writes",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_project_skill_install_preview_error_matches_legacy_exact_cli",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_project_skill_execute_remains_fail_closed_without_provider_writes",
+        "tests/application/test_application_project_history_diagnostics.py::test_project_skill_preview_is_typed_cli_only_and_never_requests_execute",
+        "tests/application/test_application_project_history_diagnostics.py::test_project_skill_preview_provider_execute_mode_fails_closed"
+      ]
+    },
+    {
+      "command": "project-skill uninstall",
+      "application_operation": "application.projects.skills.uninstall.preview",
+      "scenario_coverage": ["success", "dry_run"],
+      "output_coverage": ["json", "stdout", "stderr", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "preview_external_parity_passed; execute_and_markdown_pending",
+        "tests/cli_v2/project_system_registry/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_project_skill_preview_matches_legacy_exact_cli_without_writes",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_project_skill_execute_remains_fail_closed_without_provider_writes",
+        "tests/application/test_application_project_history_diagnostics.py::test_project_skill_preview_is_typed_cli_only_and_never_requests_execute",
+        "tests/application/test_application_project_history_diagnostics.py::test_project_skill_preview_provider_execute_mode_fails_closed"
+      ]
+    },
+    {
+      "command": "configure-goal",
+      "application_operation": "goal.configuration.preview|goal.configuration.apply",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; cli_compatibility_view_missing",
+        "tests/cli_v2/test_core_dispatch.py",
+        "tests/cli_v2/test_state_semantics_parity.py"
+      ]
+    },
+    {
+      "command": "register-agent"
+    },
+    {
+      "command": "archive-runtime",
+      "application_operation": "application.system.runtime_archive.preview|application.system.runtime_archive.apply",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_markdown_renders_the_typed_projection",
+        "tests/cli_v2/project_system_registry/test_state_semantics_parity.py::test_archive_runtime_write_side_effects_match_on_isolated_fixtures",
+        "tests/application/test_application_system_services.py::test_runtime_archive_repreview_rejects_changed_source_projection"
+      ]
+    },
+    {
+      "command": "retire-global-goal"
+    },
+    {
+      "command": "uninstall-project"
+    },
+    {
+      "command": "sync-global"
+    },
+    {
+      "command": "migrate-state",
+      "application_operation": "application.system.state_migration.preview|application.system.state_migration.apply",
+      "scenario_coverage": ["success", "error", "dry_run", "write"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_handlers.py::test_safe_batch_markdown_renders_the_typed_projection",
+        "tests/cli_v2/project_system_registry/test_state_semantics_parity.py::test_migrate_state_write_side_effects_match_on_isolated_fixtures",
+        "tests/application/test_application_system_services.py::test_state_migration_repreview_detects_stale_plan_before_write"
+      ]
+    },
+    {
+      "command": "register-authority-source"
+    },
+    {
+      "command": "import-doc-registry-authority"
+    },
+    {
+      "command": "history",
+      "application_operation": "goal.history.list",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; cli_compatibility_view_missing",
+        "tests/cli_v2/test_core_dispatch.py"
+      ],
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": null,
+          "implicit_default": true
+        }
+      ]
+    },
+    {
+      "command": "history append-benchmark-run",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "append-benchmark-run"
+        }
+      ]
+    },
+    {
+      "command": "history append-benchmark-result",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "append-benchmark-result"
+        }
+      ]
+    },
+    {
+      "command": "history append-benchmark-comparison",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "append-benchmark-comparison"
+        }
+      ]
+    },
+    {
+      "command": "history append-benchmark-learning-ledger",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "append-benchmark-learning-ledger"
+        }
+      ]
+    },
+    {
+      "command": "history append-benchmark-report",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "append-benchmark-report"
+        }
+      ]
+    },
+    {
+      "command": "history append-agents-last-exam-result-report",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "append-agents-last-exam-result-report"
+        }
+      ]
+    },
+    {
+      "command": "history append-active-user-assisted-pilot",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "append-active-user-assisted-pilot"
+        }
+      ]
+    },
+    {
+      "command": "history inspect-index-duplicates",
+      "application_operation": "application.system.history.inspect_index_duplicates",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_index_duplicate_inspection_matches_legacy_counts_without_raw_evidence",
+        "tests/application/test_application_project_history_diagnostics.py::test_history_duplicate_projection_omits_paths_and_raw_text",
+        "tests/application/test_application_project_history_diagnostics.py::test_history_duplicate_malformed_provider_count_fails_closed"
+      ],
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "inspect-index-duplicates"
+        }
+      ]
+    },
+    {
+      "command": "history repair-index-duplicates",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "repair-index-duplicates"
+        }
+      ]
+    },
+    {
+      "command": "history rebuild-index-collisions",
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "rebuild-index-collisions"
+        }
+      ]
+    },
+    {
+      "command": "history trajectory-hygiene",
+      "application_operation": "application.system.history.trajectory_hygiene",
+      "scenario_coverage": ["success", "error"],
+      "output_coverage": ["json", "markdown", "stdout", "exit_code"],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "typed_semantics_passed; full_external_parity_missing",
+        "tests/cli_v2/project_system_registry/test_inventory_and_parser.py::test_selected_argparse_namespaces_match_legacy_contract",
+        "tests/cli_v2/project_system_registry/test_local_read_diagnostics.py::test_trajectory_hygiene_matches_legacy_aggregates_and_ignores_raw_artifact",
+        "tests/application/test_application_project_history_diagnostics.py::test_trajectory_projection_is_aggregate_only",
+        "tests/application/test_application_project_history_diagnostics.py::test_trajectory_malformed_provider_ratio_fails_closed"
+      ],
+      "selectors": [
+        {
+          "dest": "history_action",
+          "value": "trajectory-hygiene"
+        }
+      ]
+    },
+    {
+      "command": "refresh-state"
+    },
+    {
+      "command": "read-only-map"
+    },
+    {
+      "command": "reward"
+    },
+    {
+      "command": "operator-gate"
+    }
+  ]
+}

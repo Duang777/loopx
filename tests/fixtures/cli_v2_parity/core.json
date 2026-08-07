@@ -1,0 +1,665 @@
+{
+  "schema_version": 1,
+  "shard": "core",
+  "defaults": {
+    "application_operation": null,
+    "scenario_coverage": [],
+    "output_coverage": [],
+    "state_side_effect_comparison": false,
+    "migration_status": "pending",
+    "evidence": []
+  },
+  "root_invocations": [
+    {
+      "surface": "concise-help",
+      "argv": [],
+      "argv_aliases": [
+        [
+          "-h"
+        ],
+        [
+          "--help"
+        ],
+        [
+          "--format",
+          "json",
+          "--help"
+        ],
+        [
+          "--format=json",
+          "--help"
+        ]
+      ]
+    },
+    {
+      "surface": "version",
+      "argv": [
+        "--version"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "command": "version"
+    },
+    {
+      "command": "commands"
+    },
+    {
+      "command": "bootstrap",
+      "aliases": [
+        "connect"
+      ]
+    },
+    {
+      "command": "agent-onboard"
+    },
+    {
+      "command": "bootstrap-command-pack"
+    },
+    {
+      "command": "start-goal"
+    },
+    {
+      "command": "new-project-prompt"
+    },
+    {
+      "command": "demo",
+      "selectors": [
+        {
+          "dest": "demo_kind",
+          "value": null,
+          "implicit_default": true
+        }
+      ]
+    },
+    {
+      "command": "demo impl-review",
+      "selectors": [
+        {
+          "dest": "demo_kind",
+          "value": "impl-review"
+        }
+      ]
+    },
+    {
+      "command": "doctor"
+    },
+    {
+      "command": "serve-status"
+    },
+    {
+      "command": "host-mode-plan"
+    },
+    {
+      "command": "preset list"
+    },
+    {
+      "command": "preset show daily-triage",
+      "selectors": [
+        {
+          "dest": "preset_id",
+          "value": "daily-triage"
+        }
+      ]
+    },
+    {
+      "command": "preset show changelog-draft",
+      "selectors": [
+        {
+          "dest": "preset_id",
+          "value": "changelog-draft"
+        }
+      ]
+    },
+    {
+      "command": "preset show pr-watch",
+      "selectors": [
+        {
+          "dest": "preset_id",
+          "value": "pr-watch"
+        }
+      ]
+    },
+    {
+      "command": "preset show ci-sweeper",
+      "selectors": [
+        {
+          "dest": "preset_id",
+          "value": "ci-sweeper"
+        }
+      ]
+    },
+    {
+      "command": "preset show dependency-sweeper",
+      "selectors": [
+        {
+          "dest": "preset_id",
+          "value": "dependency-sweeper"
+        }
+      ]
+    },
+    {
+      "command": "check"
+    },
+    {
+      "command": "status",
+      "application_operation": "application.list_goals|goal.overview",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_status_and_history_dispatch_only_through_application",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ]
+    },
+    {
+      "command": "diagnose"
+    },
+    {
+      "command": "review-packet"
+    },
+    {
+      "command": "global-summary"
+    },
+    {
+      "command": "slash-commands"
+    },
+    {
+      "command": "evidence-log"
+    },
+    {
+      "command": "todo add",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.todos.add"
+      ],
+      "aliases": [
+        "todo"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "add",
+          "implicit_default": true
+        }
+      ]
+    },
+    {
+      "command": "todo list",
+      "application_operation": "goal.todos.list",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_todo_variants_use_typed_services",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "list"
+        }
+      ]
+    },
+    {
+      "command": "todo claim",
+      "application_operation": "goal.todos.claim",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": false,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_todo_variants_use_typed_services",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "claim"
+        }
+      ]
+    },
+    {
+      "command": "todo update",
+      "application_operation": "goal.todos.update",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_todo_variants_use_typed_services",
+        "tests/cli_v2/test_state_semantics_parity.py::test_todo_update_has_isolated_state_semantics_parity",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "update"
+        }
+      ]
+    },
+    {
+      "command": "todo complete",
+      "application_operation": "goal.todos.complete.preview|goal.todos.complete.apply",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "dry_run",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": false,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_todo_variants_use_typed_services",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "complete"
+        }
+      ]
+    },
+    {
+      "command": "todo supersede",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.todos.supersede"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "supersede"
+        }
+      ]
+    },
+    {
+      "command": "todo archive-completed",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.todos.archive_completed"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "archive-completed"
+        }
+      ]
+    },
+    {
+      "command": "todo suggest",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.todos.suggest"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "suggest"
+        }
+      ]
+    },
+    {
+      "command": "todo capture-followups",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.todos.capture_followups"
+      ],
+      "selectors": [
+        {
+          "dest": "todo_command",
+          "value": "capture-followups"
+        }
+      ]
+    },
+    {
+      "command": "task-lease acquire",
+      "application_operation": "goal.lease.acquire",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": false,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_lease_and_quota_writes_preserve_cli_cas_and_source",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "task_lease_command",
+          "value": "acquire"
+        }
+      ]
+    },
+    {
+      "command": "task-lease renew",
+      "application_operation": "goal.lease.renew",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": false,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_lease_and_quota_writes_preserve_cli_cas_and_source",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "task_lease_command",
+          "value": "renew"
+        }
+      ]
+    },
+    {
+      "command": "task-lease transfer",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.lease.transfer"
+      ],
+      "selectors": [
+        {
+          "dest": "task_lease_command",
+          "value": "transfer"
+        }
+      ]
+    },
+    {
+      "command": "task-lease release",
+      "application_operation": "goal.lease.release",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_lease_and_quota_writes_preserve_cli_cas_and_source",
+        "tests/cli_v2/test_state_semantics_parity.py::test_task_lease_release_has_isolated_state_semantics_parity",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "task_lease_command",
+          "value": "release"
+        }
+      ]
+    },
+    {
+      "command": "task-lease inspect",
+      "application_operation": "goal.lease.inspect",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_lease_and_quota_writes_preserve_cli_cas_and_source",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "task_lease_command",
+          "value": "inspect"
+        }
+      ]
+    },
+    {
+      "command": "quota status",
+      "application_operation": "application.list_goals+goal.quota.should_run",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "aliases": [
+        "quota"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "status",
+          "implicit_default": true
+        }
+      ]
+    },
+    {
+      "command": "quota plan",
+      "application_operation": "application.list_goals+goal.quota.should_run",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "plan"
+        }
+      ]
+    },
+    {
+      "command": "quota should-run",
+      "application_operation": "goal.quota.should_run",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "should-run"
+        }
+      ]
+    },
+    {
+      "command": "quota monitor-poll",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.quota.monitor_poll"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "monitor-poll"
+        }
+      ]
+    },
+    {
+      "command": "quota scheduler-ack",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.quota.scheduler_ack"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "scheduler-ack"
+        }
+      ]
+    },
+    {
+      "command": "quota scheduler-ack-current",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.quota.scheduler_ack_current"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "scheduler-ack-current"
+        }
+      ]
+    },
+    {
+      "command": "quota scheduler-fail-current",
+      "migration_status": "pending",
+      "evidence": [
+        "typed_application_operation_missing: goal.quota.scheduler_fail_current"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "scheduler-fail-current"
+        }
+      ]
+    },
+    {
+      "command": "quota spend-slot",
+      "application_operation": "goal.quota.spend.preview|goal.quota.spend.apply",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "dry_run",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_lease_and_quota_writes_preserve_cli_cas_and_source",
+        "tests/cli_v2/test_state_semantics_parity.py::test_quota_spend_has_isolated_event_semantics_parity",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "spend-slot"
+        }
+      ]
+    },
+    {
+      "command": "quota void-slot",
+      "application_operation": "goal.quota.void.preview|goal.quota.void.apply",
+      "scenario_coverage": [
+        "success",
+        "error",
+        "dry_run",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": false,
+      "migration_status": "pending_migration",
+      "evidence": [
+        "tests/cli_v2/test_core_dispatch.py::test_lease_and_quota_writes_preserve_cli_cas_and_source",
+        "typed_semantics_passed; cli_compatibility_view_missing"
+      ],
+      "selectors": [
+        {
+          "dest": "quota_command",
+          "value": "void-slot"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1160 @@
+{
+  "schema_version": 1,
+  "shard": "maintainer-benchmark-agent",
+  "defaults": {
+    "application_operation": null,
+    "scenario_coverage": [],
+    "output_coverage": [],
+    "state_side_effect_comparison": false,
+    "migration_status": "pending",
+    "evidence": []
+  },
+  "commands": [
+    {
+      "command": "codex-cli-bootstrap-message",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.starter_bootstrap"
+      ]
+    },
+    {
+      "command": "codex-cli-tui-bootstrap-smoke-bundle",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.starter_bootstrap"
+      ]
+    },
+    {
+      "command": "codex-cli-exec-handoff",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.starter_bootstrap"
+      ]
+    },
+    {
+      "command": "codex-cli-one-message-loop-pilot",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_pilot"
+      ]
+    },
+    {
+      "command": "codex-cli-visible-local-driver-pilot",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_pilot"
+      ]
+    },
+    {
+      "command": "codex-cli-bounded-visible-pilot-adapter",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_pilot"
+      ]
+    },
+    {
+      "command": "codex-cli-visible-first-response-capture-plan",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_pilot"
+      ]
+    },
+    {
+      "command": "codex-cli-visible-attach-acceptance",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_pilot"
+      ]
+    },
+    {
+      "command": "codex-cli-visible-driver-plan",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_driver"
+      ]
+    },
+    {
+      "command": "codex-cli-local-driver-plan",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_driver"
+      ]
+    },
+    {
+      "command": "codex-cli-visible-driver-run",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_visible_driver"
+      ]
+    },
+    {
+      "command": "codex-cli-session-probe",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_session_runtime"
+      ]
+    },
+    {
+      "command": "codex-cli-visible-session-proof",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_session_runtime"
+      ]
+    },
+    {
+      "command": "codex-cli-runtime-idle-detector",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_session_runtime"
+      ]
+    },
+    {
+      "command": "codex-cli-local-scheduler-tick",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.starter_scheduler"
+      ]
+    },
+    {
+      "command": "codex-cli-local-scheduler-exec",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.starter_scheduler"
+      ]
+    },
+    {
+      "command": "worker-bridge",
+      "subparser_base": {
+        "dest": "worker_bridge_command",
+        "value": null
+      },
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.worker_bridge"
+      ]
+    },
+    {
+      "command": "worker-bridge contract",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.worker_bridge",
+        "typed_semantics_and_cli_compatibility_passed",
+        "fixture_json_markdown_stdout_stderr_exit_differential_passed",
+        "help_and_argparse_error_receipts_exact",
+        "legacy_v2_state_and_side_effect_noop_differential_passed",
+        "public_container_paths_preserved_without_host_path_leak",
+        "no_network_process_or_write",
+        "no_legal_failure_surface"
+      ],
+      "application_operation": "application.agents.worker_bridge.contract",
+      "scenario_coverage": [
+        "success"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "stderr",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated"
+    },
+    {
+      "command": "worker-bridge outcome",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.worker_bridge",
+        "typed_semantics_and_cli_compatibility_passed",
+        "fixture_json_markdown_stdout_stderr_exit_differential_passed",
+        "help_and_argparse_error_receipts_exact",
+        "legacy_v2_state_and_side_effect_noop_differential_passed",
+        "complete_and_incomplete_fact_statuses_exact",
+        "status_failure_preserves_ok_true_and_exit_zero",
+        "no_network_process_or_write"
+      ],
+      "application_operation": "application.agents.worker_bridge.outcome",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "stderr",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated"
+    },
+    {
+      "command": "worker-bridge benchmark-run",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.worker_bridge"
+      ]
+    },
+    {
+      "command": "worker-bridge active-user-contract",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.worker_bridge"
+      ]
+    },
+    {
+      "command": "worker-bridge active-user-codex-simulator-contract",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.worker_bridge"
+      ]
+    },
+    {
+      "command": "worker-bridge active-user-intervention",
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.worker_bridge",
+        "typed_semantics_and_cli_compatibility_passed",
+        "fixture_json_markdown_jsonl_stdout_stderr_exit_differential_passed",
+        "help_and_argparse_error_receipts_exact",
+        "legacy_v2_state_and_side_effect_noop_differential_passed",
+        "success_and_invalid_public_text_error_exact",
+        "no_oracle_and_public_evidence_boundary_preserved",
+        "private_input_rejected_without_echo",
+        "no_network_process_or_write"
+      ],
+      "application_operation": "application.agents.worker_bridge.active_user_intervention",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "stderr",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated"
+    },
+    {
+      "command": "worker-bridge active-user-simulator-output",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.worker_bridge",
+        "typed_semantics_passed; cli_compatibility_view_missing",
+        "fixture_json_stdout_stderr_exit_differential_passed",
+        "no_external_execution_surface_in_second_batch"
+      ],
+      "application_operation": "application.agents.worker_bridge.active_user_simulator_output",
+      "scenario_coverage": [
+        "success"
+      ],
+      "output_coverage": [
+        "json",
+        "stdout",
+        "stderr",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration"
+    },
+    {
+      "command": "worker-bridge active-user-observe",
+      "evidence": [
+        "owner=agent; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.worker_bridge"
+      ]
+    },
+    {
+      "command": "heartbeat-prompt",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.support_control"
+      ]
+    },
+    {
+      "command": "heartbeat-prequota",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.support_control"
+      ]
+    },
+    {
+      "command": "supervisor-prompt",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.support_control_supervisor"
+      ]
+    },
+    {
+      "command": "supervisor-observe",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.support_control_supervisor"
+      ]
+    },
+    {
+      "command": "supervisor-event propose",
+      "selectors": [
+        {
+          "dest": "supervisor_event_action",
+          "value": "propose"
+        }
+      ],
+      "evidence": [
+        "owner=agent; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.support_control_supervisor"
+      ]
+    },
+    {
+      "command": "supervisor-event receipt",
+      "selectors": [
+        {
+          "dest": "supervisor_event_action",
+          "value": "receipt"
+        }
+      ],
+      "evidence": [
+        "owner=agent; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.support_control_supervisor"
+      ]
+    },
+    {
+      "command": "supervisor-event list",
+      "selectors": [
+        {
+          "dest": "supervisor_event_action",
+          "value": "list"
+        }
+      ],
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.support_control_supervisor"
+      ]
+    },
+    {
+      "command": "promotion-gate",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.support_control"
+      ]
+    },
+    {
+      "command": "promotion-readiness record",
+      "evidence": [
+        "owner=canary; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.support_control"
+      ]
+    },
+    {
+      "command": "canary profiles",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.canary",
+        "typed_semantics_passed; cli_compatibility_view_missing",
+        "fixture_json_stdout_exit_differential_passed",
+        "no_external_execution_surface_in_first_batch"
+      ],
+      "application_operation": "application.maintenance.canary.profiles",
+      "scenario_coverage": [
+        "success"
+      ],
+      "output_coverage": [
+        "json",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration"
+    },
+    {
+      "command": "canary smoke-profiles",
+      "evidence": [
+        "owner=canary; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.cli_commands.canary",
+        "typed_semantics_passed; cli_compatibility_view_missing",
+        "fixture_json_stdout_exit_differential_passed",
+        "no_external_execution_surface_in_first_batch"
+      ],
+      "application_operation": "application.maintenance.canary.smoke_profiles",
+      "scenario_coverage": [
+        "success"
+      ],
+      "output_coverage": [
+        "json",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration"
+    },
+    {
+      "command": "canary smoke-health",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "canary release-qualification",
+      "evidence": [
+        "owner=canary; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "canary plan",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "canary run",
+      "evidence": [
+        "owner=canary; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "canary smoke-suite",
+      "evidence": [
+        "owner=canary; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "canary coverage-audit",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "canary quality-audit",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "canary premerge",
+      "evidence": [
+        "owner=canary; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "change-quality prepare",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "change-quality record",
+      "evidence": [
+        "owner=canary; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "change-quality verify",
+      "evidence": [
+        "owner=canary; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.canary"
+      ]
+    },
+    {
+      "command": "issue-fix repository-memory-sync",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix promote-discovered-issue",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix workflow-plan",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix feasibility",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix pr-lifecycle",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix pr-gate-reconcile",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix pr-review-reconcile",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix pr-review-reconcile-acked",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix pr-review-ack",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix outcome",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix metrics",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix metrics-supplement",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix repository-snapshot",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix reviewer-plan",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix reviewer-request",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix reviewer-notification-drain",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix reviewer-feedback-inbox",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix acceptance-fixture",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix repo-branch-fixture",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "issue-fix caller-repo-branch",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.issue_fix.cli"
+      ]
+    },
+    {
+      "command": "agent-turn-recall",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.agent_turn_recall.cli"
+      ]
+    },
+    {
+      "command": "review-batch compose",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.review_batch"
+      ]
+    },
+    {
+      "command": "review-batch bind-decisions",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.review_batch"
+      ]
+    },
+    {
+      "command": "ml-experiment preview",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.ml_experiment"
+      ]
+    },
+    {
+      "command": "ml-experiment volc-task-packet",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.ml_experiment"
+      ]
+    },
+    {
+      "command": "ml-experiment volc-result-ledger",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.ml_experiment"
+      ]
+    },
+    {
+      "command": "auto-research contract",
+      "rewrite_aliases": [
+        {
+          "source_argv": [
+            "auto-research",
+            "<question>"
+          ],
+          "target_argv": [
+            "auto-research",
+            "contract",
+            "<question>"
+          ]
+        }
+      ],
+      "evidence": [
+        "owner=agent; side_effect_risk=R0:pure_builder; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research start",
+      "evidence": [
+        "owner=agent; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research frontier",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research evidence",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research append-evidence",
+      "evidence": [
+        "owner=agent; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research capture-live-evidence",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research worker-turn",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research worker-loop",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research demo-supervisor",
+      "evidence": [
+        "owner=agent; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "auto-research demo-e2e",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.capabilities.auto_research.cli"
+      ]
+    },
+    {
+      "command": "multi-agent launch",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.multi_agent"
+      ]
+    },
+    {
+      "command": "multi-agent wake",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.multi_agent"
+      ]
+    },
+    {
+      "command": "turn plan",
+      "evidence": [
+        "owner=agent; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.turn",
+        "typed_cli_dispatch_covered; legacy_external_differential_missing",
+        "tests/cli_v2/test_core_dispatch.py::test_turn_plan_and_dry_run_use_the_typed_turn_service",
+        "tests/application/test_application_turns.py::test_plan_projects_ready_route_from_fresh_canonical_source_without_paths",
+        "tests/application/test_application_turns.py::test_turn_plan_rejects_non_json_envelope_provider_packet"
+      ],
+      "application_operation": "goal.turn.plan",
+      "scenario_coverage": [
+        "success"
+      ],
+      "output_coverage": [
+        "json",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": false,
+      "migration_status": "pending_migration"
+    },
+    {
+      "command": "turn run-once",
+      "evidence": [
+        "owner=agent; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.turn",
+        "typed_execute_and_dry_run_dispatch_covered; legacy_external_differential_missing",
+        "resume_turn_key_remains_pending_migration",
+        "tests/cli_v2/test_core_dispatch.py::test_turn_execute_passes_explicit_authority_to_run_once",
+        "tests/cli_v2/test_core_dispatch.py::test_turn_plan_and_dry_run_use_the_typed_turn_service",
+        "tests/cli_v2/test_turn_execution.py::test_turn_execute_uses_injected_fixture_executor_and_replays_locally",
+        "tests/application/test_application_turns.py::test_run_once_preview_is_pure_and_does_not_require_execution_providers",
+        "tests/application/test_application_turns.py::test_run_once_commits_and_replays_same_turn_without_duplicate_effects"
+      ],
+      "application_operation": "goal.turn.run_once",
+      "scenario_coverage": [
+        "success",
+        "dry_run",
+        "write"
+      ],
+      "output_coverage": [
+        "json",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": false,
+      "migration_status": "pending_migration"
+    },
+    {
+      "command": "ready-score",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.ready_score"
+      ]
+    },
+    {
+      "command": "benchmark parity-check",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_run_ledger_parity",
+        "typed_semantics_and_cli_compatibility_passed",
+        "fixture_json_markdown_stdout_stderr_exit_differential_passed",
+        "help_and_missing_argument_argparse_receipts_exact",
+        "legacy_v2_state_and_side_effect_noop_differential_passed",
+        "compact_input_only_no_raw_evidence_launch_upload_or_state_write"
+      ],
+      "application_operation": "application.benchmarks.inspection.parity_check",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "stderr",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated"
+    },
+    {
+      "command": "benchmark run terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark run skillsbench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "skillsbench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark run-ledger-archive",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark run-ledger-upsert",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark run-ledger-merge",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark run-ledger-aggregate",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark run-ledger-check",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark case-analysis-candidates",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_run_ledger"
+      ]
+    },
+    {
+      "command": "benchmark agentissue-codex-runner-flow",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.agentissue_runner_flow"
+      ]
+    },
+    {
+      "command": "benchmark classify-artifacts",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_boundary",
+        "typed_semantics_and_cli_compatibility_passed",
+        "fixture_json_markdown_stdout_stderr_exit_differential_passed",
+        "help_and_missing_argument_argparse_receipts_exact",
+        "no_artifact_read_no_path_leak_no_network_process_or_write"
+      ],
+      "application_operation": "application.benchmarks.inspection.classify_artifacts",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "stderr",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated"
+    },
+    {
+      "command": "benchmark candidate-source-boundary",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_boundary",
+        "typed_semantics_and_cli_compatibility_passed",
+        "fixture_json_markdown_stdout_stderr_exit_differential_passed",
+        "help_and_missing_argument_argparse_receipts_exact",
+        "legacy_v2_state_and_side_effect_noop_differential_passed",
+        "no_source_read_no_path_leak_no_network_process_or_write"
+      ],
+      "application_operation": "application.benchmarks.inspection.candidate_source_boundary",
+      "scenario_coverage": [
+        "success",
+        "error"
+      ],
+      "output_coverage": [
+        "json",
+        "markdown",
+        "stdout",
+        "stderr",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "migrated"
+    },
+    {
+      "command": "benchmark split-control-execution-seam",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_boundary",
+        "typed_semantics_passed; cli_compatibility_view_missing",
+        "fixture_json_stdout_exit_differential_passed",
+        "no_external_execution_surface_in_first_batch"
+      ],
+      "application_operation": "application.benchmarks.split_control.execution_seam",
+      "scenario_coverage": [
+        "success"
+      ],
+      "output_coverage": [
+        "json",
+        "stdout",
+        "exit_code"
+      ],
+      "state_side_effect_comparison": true,
+      "migration_status": "pending_migration"
+    },
+    {
+      "command": "benchmark release-outcome-baseline",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_release_outcome"
+      ]
+    },
+    {
+      "command": "benchmark terminal-bench-command-adapter terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.terminal_bench_adapter"
+      ]
+    },
+    {
+      "command": "benchmark terminal-bench-remote-materializer terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.terminal_bench_adapter"
+      ]
+    },
+    {
+      "command": "benchmark terminal-bench-remote-launch-adapter terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.terminal_bench_adapter"
+      ]
+    },
+    {
+      "command": "benchmark ale-local-preflight",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-local-dry-run-plan",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-local-runner-readiness",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-local-source-readiness",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-baked-task-input-readiness",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-baked-task-input-scan",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-task-material-readiness",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-candidate-task-data-scan",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-local-launch-packet",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-local-exact-dry-run-result",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-host-codex-cli-route",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-host-codex-cua-no-task-e2e",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark ale-validation-run-gate",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.agents_last_exam"
+      ]
+    },
+    {
+      "command": "benchmark review-claim",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark learning-ledger",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark attempt-learning-gate",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark review-adapter-kwargs",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark lifecycle-state",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark baseline-failure-gate",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark review-verifier-attribution",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark review-runner-invariants",
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.benchmark_review_lifecycle"
+      ]
+    },
+    {
+      "command": "benchmark summarize-post-launch terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "benchmark result-finalization-gate terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "benchmark environment-setup-gate terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "benchmark launch-environment-setup-probe terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "benchmark launch-worker-materialization-probe terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "benchmark launch-terminal-bench-run terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "benchmark resume-terminal-bench-job terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "benchmark poll-worker-materialization-probe terminal-bench",
+      "selectors": [
+        {
+          "dest": "benchmark_name",
+          "value": "terminal-bench"
+        }
+      ],
+      "evidence": [
+        "owner=benchmark; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.terminal_bench_environment_result"
+      ]
+    },
+    {
+      "command": "pr-review",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R3:external_process_network_repo_or_job; legacy_callsite=loopx.cli_commands.pr_review"
+      ]
+    },
+    {
+      "command": "dreaming dry-run",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R1:bounded_read_or_fixture; legacy_callsite=loopx.cli_commands.dreaming"
+      ]
+    },
+    {
+      "command": "dreaming decide",
+      "evidence": [
+        "owner=maintenance; side_effect_risk=R2:local_state_write; legacy_callsite=loopx.cli_commands.dreaming"
+      ]
+    }
+  ]
+}
