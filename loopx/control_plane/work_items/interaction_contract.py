@@ -47,6 +47,11 @@ class InteractionContractPacket(TypedDict, total=False):
     user_channel: dict[str, Any]
     agent_channel: dict[str, Any]
     cli_channel: dict[str, Any]
+    response_plan: dict[str, Any]
+    required_reads: list[dict[str, Any]]
+    post_writeback_actions: list[str]
+    vision_continuation_audit: dict[str, Any]
+    vision_wait_state: dict[str, Any]
     fallback_policy: dict[str, Any]
 
 
@@ -1214,7 +1219,7 @@ def build_interaction_contract(
     scheduler_execution_context: (
         Mapping[str, Any] | SchedulerExecutionContextResolution | None
     ) = None,
-) -> dict[str, Any]:
+) -> InteractionContractPacket:
     execution_obligation = (
         payload.get("execution_obligation")
         if isinstance(payload.get("execution_obligation"), dict)
@@ -1274,7 +1279,7 @@ def build_interaction_contract(
         delivery_allowed=delivery_allowed,
         quiet_noop_allowed=quiet_noop_allowed,
     )
-    contract = {
+    contract: InteractionContractPacket = {
         "schema_version": INTERACTION_CONTRACT_SCHEMA_VERSION,
         "mode": mode,
         "user_channel": user_channel,
