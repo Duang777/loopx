@@ -268,6 +268,44 @@ Each discovered Agent row should provide:
 - Do not silently transfer a running execution to another Agent.
 - Treat `Status only` as a deterministic read-only route.
 
+## Chat Execution And Todo Decisions
+
+The selected Chat route and the durable Todo owner remain separate fields:
+
+- the Agent selector routes the next message;
+- `claimed_by` identifies the Agent that owns an existing Todo;
+- changing the selector does not rewrite `claimed_by`;
+- the projection author always uses durable Todo ownership;
+- the Chat header and composer use the currently selected route.
+
+The MVP connects Codex through the local LoopX Chat server with a read-only
+sandbox and `never` approval policy. `Status only` stays local and makes no
+model call. A discovered Agent without a compatible Chat adapter remains
+visible with a clear unavailable explanation and a Codex fallback.
+
+When the selected Agent suggests new work, Chat adds a compact candidate card
+to the timeline:
+
+```text
+P1  Candidate Todo                         Launch Chat v1
+Run the focused Todo writeback smoke
+
+[Generate preview] [Reject] [Cancel]
+```
+
+The write path is deliberately two-stage:
+
+1. `Generate preview` calls the LoopX dry-run endpoint and locks the Goal
+   revision plus candidate identity.
+2. `Approve write` applies that exact preview and returns a Todo id and receipt.
+3. `Reject` and `Cancel` create local decision history only and perform zero
+   Goal writes.
+4. A stale preview returns a no-write receipt, clears the preview, and asks the
+   user to preview again.
+
+Candidate prose never counts as a durable Todo. Only a verified apply receipt
+and refreshed status projection establish that the Todo exists.
+
 ## Simplified Goal Detail
 
 The optional compact detail view contains four sections:
