@@ -128,7 +128,7 @@ class CodexChatAgentSession:
     messages: "queue.Queue[dict[str, Any] | Exception]"
     thread_id: str
     work_dir: Path
-    response_timeout_sec: float = 30.0
+    response_timeout_sec: float = 120.0
     next_request_id: int = 5
     _pending_events: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
@@ -140,7 +140,7 @@ class CodexChatAgentSession:
         work_dir: Path,
         goal_id: str,
         objective: str,
-        response_timeout_sec: float = 30.0,
+        response_timeout_sec: float = 120.0,
     ) -> "CodexChatAgentSession":
         resolved = shutil.which(codex_bin)
         if not resolved:

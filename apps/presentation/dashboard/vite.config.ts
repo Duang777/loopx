@@ -7,6 +7,12 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5173,
+    proxy: {
+      "/api/chat": {
+        target: "http://127.0.0.1:8767",
+        changeOrigin: false,
+      },
+    },
   },
   preview: {
     host: "127.0.0.1",
