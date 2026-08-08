@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Copy,
   Clock3,
@@ -13,16 +16,23 @@ import {
   History,
   Link2,
   LayoutDashboard,
+  MessageCircle,
+  MoreHorizontal,
   Moon,
+  Plus,
   Upload,
   Radar,
   RefreshCw,
   RotateCcw,
   Search,
+  Send,
+  Settings,
+  Sparkles,
   ShieldCheck,
   Sun,
   Terminal,
   Users,
+  X,
 } from "lucide-react";
 import {
   ColumnDef,
@@ -4522,6 +4532,1071 @@ function ShareEventLedgerStrip({ summary }: { summary?: EventLedgerSummary | nul
   );
 }
 
+type PersonalGoalState = "需修复" | "等你" | "等待条件" | "推进中" | "安静运行" | "已完成";
+
+type PersonalNeedsYouItem = {
+  actionKind: string | null;
+  blocking: boolean;
+  goalId: string;
+  taskClass: string | null;
+  text: string;
+  todoId: string;
+};
+
+type PersonalAgentTodoItem = {
+  claimedBy: string | null;
+  done: boolean;
+  evidence: string | null;
+  index: number;
+  status: string | null;
+  text: string;
+  todoId: string;
+};
+
+type PersonalRunEvidence = {
+  generatedAt: string;
+  label: string;
+  metadata: string;
+  summary: string;
+};
+
+type PersonalGoalItem = {
+  agentId: string;
+  agentSentence: string;
+  agentTodos: PersonalAgentTodoItem[];
+  goalId: string;
+  latestActivity: string;
+  needsYou: string | null;
+  needsYouActionKind: string | null;
+  needsYouBlocking: boolean;
+  needsYouTaskClass: string | null;
+  needsYouTodoId: string | null;
+  nextSentence: string;
+  runEvidence: PersonalRunEvidence | null;
+  state: PersonalGoalState;
+  title: string;
+};
+
+type PersonalHomeModel = {
+  blockingTodoCount: number;
+  goals: PersonalGoalItem[];
+  openUserTodoCount: number;
+  userTodos: PersonalNeedsYouItem[];
+  visibleUserTodos: PersonalNeedsYouItem[];
+};
+
+type PersonalManagerMessage = {
+  agentLabel?: string;
+  id: number;
+  lines: string[];
+  role: "assistant" | "user";
+  sourceLabel?: string;
+  text: string;
+};
+
+type PersonalAgentOption = {
+  agentId: string;
+  available: boolean;
+  capability: string;
+  label: string;
+  statusLabel: string;
+};
+
+const personalAgentSelectionStorageKey = "loopx.personal-agent-selection.v1";
+
+function readPersonalAgentSelections() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(personalAgentSelectionStorageKey) ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(value).filter((entry): entry is [string, string] =>
+        typeof entry[0] === "string" && typeof entry[1] === "string"
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+type PersonalManagerAnswer = {
+  lines: string[];
+  text: string;
+};
+
+const personalGoalStateVariant: Record<PersonalGoalState, BadgeVariant> = {
+  "需修复": "danger",
+  "等你": "warning",
+  "等待条件": "info",
+  "推进中": "success",
+  "安静运行": "neutral",
+  "已完成": "neutral",
+};
+
+function personalOpsHref(goalId?: string) {
+  const params = new URLSearchParams();
+  params.set("view", "ops");
+  if (goalId) {
+    params.set("goalId", goalId);
+  }
+  return `/?${params.toString()}`;
+}
+
+function personalGoalTitle(goalId: string) {
+  return goalId
+    .replace(/^loopx[-_]/i, "LoopX ")
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part, index) => index === 0 ? `${part.slice(0, 1).toUpperCase()}${part.slice(1)}` : part)
+    .join(" ");
+}
+
+function personalProjectionSentence(value: string | null | undefined, fallback = "") {
+  const cleaned = cleanShareText(value);
+  if (!cleaned || cleaned === "暂无") {
+    return fallback;
+  }
+  if (/refresh-state|latest_run|latest run-derived/i.test(cleaned)) {
+    return "刷新 LoopX 状态，确认当前进度仍然有效";
+  }
+  if (/first read-only adapter tick|read-only adapter/i.test(cleaned)) {
+    return "执行首次只读适配检查并保存进度";
+  }
+  if (/todo update recorded for/i.test(cleaned)) {
+    return "Todo 状态已经更新，正在确认下一步";
+  }
+  if (/^(loopx|python3|npm|git|run)\s|\s--[a-z0-9-]+|\b[a-z]+_[a-z_]+\b/i.test(cleaned)) {
+    return fallback || "Agent 正在整理下一步";
+  }
+  return compactShareText(cleaned, 120);
+}
+
+function personalAgentLabel(agentId: string) {
+  const normalized = agentId.toLowerCase();
+  if (normalized.includes("codex")) {
+    return "Codex";
+  }
+  if (normalized.includes("claude")) {
+    return "Claude Code";
+  }
+  if (normalized.includes("trae")) {
+    return "Trae CLI Agent";
+  }
+  if (normalized.includes("coco")) {
+    return "Coco Agent";
+  }
+  return personalGoalTitle(agentId);
+}
+
+function personalAgentCapability(agentId: string) {
+  const normalized = agentId.toLowerCase();
+  if (normalized.includes("codex")) {
+    return "代码与项目执行";
+  }
+  if (normalized.includes("claude")) {
+    return "复杂分析与长任务";
+  }
+  if (normalized.includes("trae")) {
+    return "前端与交互实现";
+  }
+  if (normalized.includes("coco")) {
+    return "通用任务";
+  }
+  return "已发现的项目 Agent";
+}
+
+function personalTodosForQueueItem(item: QueueItem, role: "user" | "agent") {
+  const projectAsset = item.project_asset;
+  return role === "user"
+    ? todosFromProjectAssetSummary(projectAsset?.user_todos, item.user_todos, "project_asset.user_todos")
+    : todosFromProjectAssetSummary(projectAsset?.agent_todos, item.agent_todos, "project_asset.agent_todos");
+}
+
+function personalTodoText(todo: TodoItem) {
+  return compactShareText(todo.title ?? todo.text, 112);
+}
+
+function personalAgentTodos(row: GoalDirectoryRow): PersonalAgentTodoItem[] {
+  return (getShareTodos(row, "agent")?.items ?? []).map((todo) => ({
+    claimedBy: todo.claimed_by ?? null,
+    done: todo.done,
+    evidence: todo.evidence ? compactShareText(todo.evidence, 96) : null,
+    index: todo.index,
+    status: todo.status ?? null,
+    text: personalTodoText(todo),
+    todoId: todo.todo_id?.trim() || `${row.goal.id}:agent:${todo.index}`,
+  }));
+}
+
+function personalValidationSentence(value: string | null | undefined) {
+  const cleaned = cleanShareText(value);
+  if (!cleaned) {
+    return "";
+  }
+  if (/\b(state_file|registry_goal|authority_sources|source_registry)\b|\b[a-z_]+\s+\d+\/\d+/i.test(cleaned)) {
+    return "Goal 状态、Todo 与注册信息已验证";
+  }
+  return personalProjectionSentence(cleaned, "最近验证已经记录");
+}
+
+function personalVisiblePlanTodos(todos: PersonalAgentTodoItem[], limit = 4) {
+  if (todos.length <= limit) {
+    return todos;
+  }
+  const firstOpenIndex = todos.findIndex((todo) => !todo.done);
+  if (firstOpenIndex < 0) {
+    return todos.slice(-limit);
+  }
+  const start = Math.max(0, Math.min(firstOpenIndex - 2, todos.length - limit));
+  return todos.slice(start, start + limit);
+}
+
+function personalRunEvidence(payload: StatusPayload, row: GoalDirectoryRow): PersonalRunEvidence | null {
+  const latestValidation = row.queueItem?.project_asset?.latest_validation;
+  const latestRun = row.latestRun;
+  const eventSummary = payload.event_ledger_summary?.goals.find((goal) => goal.goal_id === row.goal.id);
+  if (!latestValidation && !latestRun && !eventSummary) {
+    return null;
+  }
+  const summary = [
+    personalValidationSentence(latestValidation?.summary),
+    personalProjectionSentence(latestRun?.health_check),
+    personalProjectionSentence(latestRun?.recommended_action),
+  ]
+    .find((value) => value !== "" && value !== "暂无")
+    ?? "最近一次 LoopX 运行已经记录";
+  const eventCount = eventSummary?.events_24h ?? 0;
+  const metadata = eventCount > 0
+    ? `24 小时内 ${eventCount} 个事件`
+    : latestRun?.json_exists || latestRun?.markdown_exists
+      ? "存在可查看的运行证据"
+      : "公开安全状态投影";
+  return {
+    generatedAt: latestValidation?.generated_at ?? latestRun?.generated_at ?? eventSummary?.latest_event_at ?? "",
+    label: latestValidation ? "最近验证" : "最近运行",
+    metadata,
+    summary,
+  };
+}
+
+function personalDecisionPrimaryLabel(goal: PersonalGoalItem) {
+  const signal = `${goal.needsYouTaskClass ?? ""} ${goal.needsYouActionKind ?? ""}`.toLowerCase();
+  return /approve|approval|merge|release|submit|write|publish/.test(signal) ? "确认处理" : "回复 Agent";
+}
+
+function isPersonalGoalTerminal(row: GoalDirectoryRow) {
+  return [row.status, row.goal.status, row.latestRun?.classification, row.lifecyclePhase]
+    .filter(Boolean)
+    .some((value) => /(^|[_\s-])(done|complete|completed|finished|terminal|closed|success)([_\s-]|$)/i.test(value ?? ""));
+}
+
+function personalGoalRegistryFinding(payload: StatusPayload, row: GoalDirectoryRow) {
+  return payload.global_registry.findings.find((finding) =>
+    finding.severity === "high"
+    && (finding.goal_id === row.goal.id || finding.goal_ids.includes(row.goal.id)),
+  );
+}
+
+function personalGoalHasFailureStatus(row: GoalDirectoryRow) {
+  return [row.status, row.goal.status, row.latestRun?.classification, row.lifecyclePhase]
+    .filter(Boolean)
+    .some((value) =>
+      /(^|[_\s-])(failure|failed|error|broken|unhealthy|blocked[_\s-]?health|health[_\s-]?blocked)([_\s-]|$)/i
+        .test(value ?? ""),
+    );
+}
+
+function personalGoalNeedsRepair(payload: StatusPayload, row: GoalDirectoryRow) {
+  const staleWarning = row.queueItem?.stale_latest_run_warning;
+  return row.severity === "high"
+    || Boolean(personalGoalRegistryFinding(payload, row))
+    || Boolean(staleWarning?.requires_refresh_state || staleWarning?.severity === "high")
+    || personalGoalHasFailureStatus(row);
+}
+
+function personalRepairText(payload: StatusPayload, row: GoalDirectoryRow) {
+  const healthFinding = personalGoalRegistryFinding(payload, row);
+  return row.queueItem?.stale_latest_run_warning?.recommended_action
+    ?? row.queueItem?.stale_latest_run_warning?.reason
+    ?? healthFinding?.recommended_action
+    ?? healthFinding?.message
+    ?? row.queueItem?.recommended_action
+    ?? row.latestRun?.recommended_action
+    ?? "LoopX 状态异常，请进入管理页检查";
+}
+
+function personalGoalState(payload: StatusPayload, row: GoalDirectoryRow): PersonalGoalState {
+  const userTodos = getShareTodos(row, "user");
+  const agentTodos = getShareTodos(row, "agent");
+  const hasOpenUserTodo = Boolean(firstOpenTodo(userTodos));
+  const hasOpenAgentTodo = Boolean(firstOpenTodo(agentTodos));
+  if (personalGoalNeedsRepair(payload, row)) {
+    return "需修复";
+  }
+  if (["user_or_controller", "controller"].includes(row.waitingOn) || hasOpenUserTodo) {
+    return "等你";
+  }
+  if (row.waitingOn === "external_evidence") {
+    return "等待条件";
+  }
+  if (quotaStateForShare(row) === "eligible" || hasOpenAgentTodo) {
+    return "推进中";
+  }
+  if (isPersonalGoalTerminal(row)) {
+    return "已完成";
+  }
+  return "安静运行";
+}
+
+function personalAgentSentence(payload: StatusPayload, row: GoalDirectoryRow, state: PersonalGoalState) {
+  if (state === "需修复") {
+    return personalProjectionSentence(personalRepairText(payload, row), "LoopX 状态需要刷新");
+  }
+  if (state === "等你") {
+    return "Agent 等待你的决定";
+  }
+  if (state === "推进中") {
+    const todoText = (getShareTodos(row, "agent")?.items ?? [])
+      .filter((todo) => !todo.done)
+      .flatMap((todo) => [todo.title, todo.text])
+      .map((value) => cleanShareText(value))
+      .find((value) => value !== "" && value !== "暂无");
+    const progressText = [
+      todoText,
+      row.queueItem?.recommended_action,
+      row.latestRun?.recommended_action,
+    ].map((value) => cleanShareText(value))
+      .find((value) => value !== "" && value !== "暂无");
+    return progressText ? personalProjectionSentence(progressText, "Agent 正在推进当前 Goal") : "Agent 正在推进当前 Goal";
+  }
+  if (state === "等待条件") {
+    return "正在等待外部条件";
+  }
+  return "暂无需要你处理";
+}
+
+function personalManagerMatches(question: string, keywords: string[]) {
+  return keywords.some((keyword) => question.includes(keyword));
+}
+
+function answerPersonalManagerQuestion(
+  payload: StatusPayload,
+  model: PersonalHomeModel,
+  question: string,
+): PersonalManagerAnswer {
+  if (personalManagerMatches(question, ["Agent", "agent", "推进", "在做"])) {
+    const activeGoals = model.goals.filter((goal) =>
+      !["安静运行", "已完成"].includes(goal.state)
+    );
+    const shownGoals = (activeGoals.length > 0 ? activeGoals : model.goals).slice(0, 3);
+    if (shownGoals.length === 0) {
+      return { text: "当前状态里还没有 Goal 可供汇总。", lines: [] };
+    }
+    return {
+      text: activeGoals.length > 0 ? "Agent 当前关注这些 Goal：" : "当前 Goal 都比较安静：",
+      lines: shownGoals.map((goal) => `${goal.title} · ${goal.state} · ${goal.agentSentence}`),
+    };
+  }
+
+  if (personalManagerMatches(question, ["等我", "阻塞", "需要我"])) {
+    if (model.userTodos.length === 0) {
+      return { text: "目前没有 Goal 在等你，开放用户待办为 0。", lines: [] };
+    }
+    return {
+      text: `有 ${model.userTodos.length} 项开放用户待办，阻塞项优先：`,
+      lines: model.userTodos.slice(0, 3).map((todo) =>
+        `${personalGoalTitle(todo.goalId)} · ${todo.blocking ? "阻塞" : "待处理"} · ${todo.text}`
+      ),
+    };
+  }
+
+  if (personalManagerMatches(question, ["状态", "异常", "修复", "健康"])) {
+    const globalHealthFailed = !payload.ok
+      || !payload.contract.ok
+      || !payload.global_registry.ok
+      || payload.global_registry.summary.high > 0;
+    const repairGoals = model.goals.filter((goal) => goal.state === "需修复");
+    const lines = repairGoals.slice(0, globalHealthFailed ? 2 : 3)
+      .map((goal) => `${goal.title} · ${goal.agentSentence}`);
+    if (globalHealthFailed) {
+      lines.push("全局状态、契约或注册表健康检查未通过，请进入管理页检查。");
+    }
+    if (lines.length === 0) {
+      return { text: "当前没有发现 Goal 级或全局健康异常。", lines: [] };
+    }
+    return {
+      text: repairGoals.length > 0 ? "当前需要关注这些健康问题：" : "Goal 状态正常，但全局健康需要检查：",
+      lines,
+    };
+  }
+
+  if (personalManagerMatches(question, ["现在", "下一步", "我该", "该做什么"])) {
+    const nextTodo = model.userTodos[0];
+    if (nextTodo) {
+      return {
+        text: nextTodo.blocking ? "先处理这项阻塞事项。" : "当前最先需要你处理的是：",
+        lines: [`${personalGoalTitle(nextTodo.goalId)} · ${nextTodo.text}`],
+      };
+    }
+    const repairGoal = model.goals.find((goal) => goal.state === "需修复");
+    if (repairGoal) {
+      return {
+        text: "没有待办，但这个 Goal 需要先修复。",
+        lines: [`${repairGoal.title} · ${repairGoal.agentSentence}`],
+      };
+    }
+    const progressingGoal = model.goals.find((goal) => goal.state === "推进中");
+    if (progressingGoal) {
+      return {
+        text: "目前不需要你介入，Agent 正在推进。",
+        lines: [`${progressingGoal.title} · ${progressingGoal.agentSentence}`],
+      };
+    }
+    return { text: "当前系统很安静，没有需要你立即处理的事项。", lines: [] };
+  }
+
+  return {
+    text: "当前管家支持三类问题：下一步、等待你的事项、Agent 与健康状态。",
+    lines: [
+      "问“我现在该做什么？”",
+      "问“哪些 Goal 在等我？”",
+      "问“Agent 在做什么？”或当前健康状态",
+    ],
+  };
+}
+
+function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]): PersonalHomeModel {
+  const rowById = new Map(rows.map((row) => [row.goal.id, row]));
+  const agentRows = buildAgentManagementRows(rows, payload.todo_index, payload.agent_management_projection);
+  const allUserTodos = payload.attention_queue.items.flatMap((item, sourceOrder) => {
+    const blocking = ["user_or_controller", "controller"].includes(item.waiting_on);
+    return (personalTodosForQueueItem(item, "user")?.items ?? [])
+      .filter((todo) => !todo.done)
+      .map((todo, todoOrder): PersonalNeedsYouItem & { sourceOrder: number; todoOrder: number } => ({
+        actionKind: todo.action_kind ?? null,
+        blocking,
+        goalId: item.goal_id,
+        sourceOrder,
+        taskClass: todo.task_class ?? null,
+        text: personalTodoText(todo),
+        todoId: todo.todo_id?.trim() || `${item.goal_id}:user:${todo.index}`,
+        todoOrder,
+      }));
+  }).sort((left, right) =>
+    Number(right.blocking) - Number(left.blocking)
+    || left.sourceOrder - right.sourceOrder
+    || left.todoOrder - right.todoOrder
+  );
+  const goals = payload.run_history.goals.flatMap((goal) => {
+    const row = rowById.get(goal.id);
+    if (!row) {
+      return [];
+    }
+    const state = personalGoalState(payload, row);
+    if (state === "已完成") {
+      return [];
+    }
+    const needsYouTodo = allUserTodos.find((todo) => todo.goalId === goal.id);
+    const needsYou = needsYouTodo?.text ?? null;
+    const goalAgentTodos = personalAgentTodos(row);
+    const goalAgentRows = agentRows.filter(
+      (agent) => agent.goalIds.includes(goal.id) && !/unassigned|unknown/i.test(agent.agentId),
+    );
+    const agentRow =
+      goalAgentRows.find(
+        (agent) => /codex/i.test(agent.agentId) && agent.status.variant !== "danger",
+      ) ??
+      goalAgentRows.find((agent) => agent.status.variant !== "danger") ??
+      goalAgentRows.find((agent) => /codex/i.test(agent.agentId)) ??
+      goalAgentRows[0];
+    const nextSentence = [
+      row.queueItem?.recommended_action,
+      row.latestRun?.recommended_action,
+      personalAgentSentence(payload, row, state),
+    ].map((value) => personalProjectionSentence(value))
+      .find((value) => value !== "" && value !== "暂无") ?? "等待 LoopX 更新下一步";
+    return [{
+      agentId: agentRow?.agentId ?? "codex",
+      agentSentence: personalAgentSentence(payload, row, state),
+      agentTodos: goalAgentTodos,
+      goalId: goal.id,
+      latestActivity: row.latestRun?.generated_at ?? "",
+      needsYou,
+      needsYouActionKind: needsYouTodo?.actionKind ?? null,
+      needsYouBlocking: needsYouTodo?.blocking ?? false,
+      needsYouTaskClass: needsYouTodo?.taskClass ?? null,
+      needsYouTodoId: needsYouTodo?.todoId ?? null,
+      nextSentence,
+      runEvidence: personalRunEvidence(payload, row),
+      state,
+      title: personalGoalTitle(goal.id),
+    }];
+  });
+  return {
+    blockingTodoCount: allUserTodos.filter((todo) => todo.blocking).length,
+    goals,
+    openUserTodoCount: allUserTodos.length,
+    userTodos: allUserTodos,
+    visibleUserTodos: allUserTodos.slice(0, 5),
+  };
+}
+
+function PersonalGoalHome({
+  isLoading,
+  onSelectGoal,
+  onRefresh,
+  payload,
+  rows,
+  selectedGoalId,
+  source,
+  theme,
+  toggleTheme,
+}: {
+  isLoading: boolean;
+  onSelectGoal: (goalId: string) => void;
+  onRefresh: () => void;
+  payload: StatusPayload;
+  rows: GoalDirectoryRow[];
+  selectedGoalId: string;
+  source: DataSource;
+  theme: "light" | "dark";
+  toggleTheme: () => void;
+}) {
+  const model = buildPersonalHomeModel(payload, rows);
+  const selectedGoal = model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
+  const contextId = selectedGoal?.goalId ?? "manager";
+  const managerSummary = !payload.ok
+    || !payload.contract.ok
+    || !payload.global_registry.ok
+    || payload.global_registry.summary.high > 0
+    ? "LoopX 当前存在状态问题，可以打开运行详情查看原因。"
+    : model.openUserTodoCount > 0
+      ? `你有 ${model.openUserTodoCount} 项需要处理，其中 ${model.blockingTodoCount} 项正在阻塞 Agent。`
+      : "暂时没有需要你处理的事项，Agent 会按当前计划继续推进。";
+  const agentRows = buildAgentManagementRows(rows, payload.todo_index, payload.agent_management_projection);
+  const discoveredAgentByLabel = new Map<string, PersonalAgentOption>();
+  for (const agent of agentRows) {
+    if (/unassigned|unknown/i.test(agent.agentId)) {
+      continue;
+    }
+    const option: PersonalAgentOption = {
+      agentId: agent.agentId,
+      available: agent.status.variant !== "danger",
+      capability: personalAgentCapability(agent.agentId),
+      label: personalAgentLabel(agent.agentId),
+      statusLabel: agent.status.label,
+    };
+    const current = discoveredAgentByLabel.get(option.label);
+    if (!current || (!current.available && option.available)) {
+      discoveredAgentByLabel.set(option.label, option);
+    }
+  }
+  const discoveredAgents = Array.from(discoveredAgentByLabel.values());
+  const agentOptions = [
+    ...discoveredAgents,
+    {
+      agentId: "status-only",
+      available: true,
+      capability: "不调用模型",
+      label: "仅查状态",
+      statusLabel: "只读",
+    },
+  ];
+  const defaultAgentId = discoveredAgents.find((agent) => agent.label === "Codex" && agent.available)?.agentId
+    ?? discoveredAgents.find((agent) => agent.available)?.agentId
+    ?? "status-only";
+  const [selectedAgents, setSelectedAgents] = useState<Record<string, string>>(readPersonalAgentSelections);
+  const selectedAgentId = selectedAgents[contextId] ?? defaultAgentId;
+  const selectedAgent = agentOptions.find((agent) => agent.agentId === selectedAgentId)
+    ?? agentOptions.find((agent) => agent.agentId === defaultAgentId)
+    ?? agentOptions[agentOptions.length - 1];
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<"chat" | "goals">("chat");
+  const [managerInput, setManagerInput] = useState("");
+  const [messagesByContext, setMessagesByContext] = useState<Record<string, PersonalManagerMessage[]>>({});
+  const managerMessageId = useRef(1);
+  const agentMenuRef = useRef<HTMLDivElement>(null);
+  const agentTriggerRef = useRef<HTMLButtonElement>(null);
+  const detailsCloseRef = useRef<HTMLButtonElement>(null);
+  const detailsTriggerRef = useRef<HTMLButtonElement>(null);
+  const managerInputRef = useRef<HTMLInputElement>(null);
+  const managerQuickPrompts = ["我现在该做什么？", "哪些 Goal 在等我？", "Agent 在做什么？"];
+  const contextMessages = messagesByContext[contextId] ?? [];
+  const goalUserTodos = selectedGoal
+    ? model.userTodos.filter((todo) => todo.goalId === selectedGoal.goalId)
+    : model.userTodos;
+  const goalAgentTodos = selectedGoal?.agentTodos ?? [];
+  const visiblePlanTodos = personalVisiblePlanTodos(goalAgentTodos, selectedGoal?.needsYou ? 3 : 4);
+  const completedAgentTodoCount = goalAgentTodos.filter((todo) => todo.done).length;
+  const goalProgressLabel = goalAgentTodos.length > 0
+    ? `${completedAgentTodoCount}/${goalAgentTodos.length}`
+    : "暂无计划";
+  const questionModel = selectedGoal
+    ? {
+        ...model,
+        blockingTodoCount: goalUserTodos.filter((todo) => todo.blocking).length,
+        goals: [selectedGoal],
+        openUserTodoCount: goalUserTodos.length,
+        userTodos: goalUserTodos,
+        visibleUserTodos: goalUserTodos,
+      }
+    : model;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(personalAgentSelectionStorageKey, JSON.stringify(selectedAgents));
+    } catch {
+      // The selector remains usable when browser storage is unavailable.
+    }
+  }, [selectedAgents]);
+
+  useEffect(() => {
+    if (!agentMenuOpen) {
+      return;
+    }
+    const focusHandle = window.requestAnimationFrame(() => {
+      agentMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(focusHandle);
+      agentTriggerRef.current?.focus();
+    };
+  }, [agentMenuOpen]);
+
+  useEffect(() => {
+    if (!detailsOpen) {
+      return;
+    }
+    const focusHandle = window.requestAnimationFrame(() => detailsCloseRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(focusHandle);
+      detailsTriggerRef.current?.focus();
+    };
+  }, [detailsOpen]);
+
+  useEffect(() => {
+    if (!agentMenuOpen && !detailsOpen) {
+      return;
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setAgentMenuOpen(false);
+        setDetailsOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [agentMenuOpen, detailsOpen]);
+
+  function sendManagerQuestion(rawQuestion: string) {
+    const question = rawQuestion.trim();
+    if (!question) {
+      return;
+    }
+    const answer = answerPersonalManagerQuestion(payload, questionModel, question);
+    const nextId = managerMessageId.current;
+    managerMessageId.current += 2;
+    setMessagesByContext((messages) => ({
+      ...messages,
+      [contextId]: [
+        ...(messages[contextId] ?? []),
+        { id: nextId, lines: [], role: "user", text: question },
+        {
+          agentLabel: selectedAgent.agentId === "status-only" ? "仅查状态" : "LoopX 管家",
+          id: nextId + 1,
+          lines: answer.lines.slice(0, 3),
+          role: "assistant",
+          sourceLabel: selectedAgent.agentId === "status-only" ? "LoopX 状态投影 · 仅查状态" : "LoopX 状态投影",
+          text: answer.text,
+        },
+      ],
+    }));
+    setManagerInput("");
+  }
+
+  function chooseAgent(agentId: string) {
+    if (!agentOptions.some((agent) => agent.agentId === agentId && agent.available)) {
+      return;
+    }
+    setSelectedAgents((current) => ({ ...current, [contextId]: agentId }));
+    setAgentMenuOpen(false);
+  }
+
+  function openManagerChat() {
+    onSelectGoal("");
+    setMobilePanel("chat");
+  }
+
+  function openGoalList() {
+    onSelectGoal("");
+    setMobilePanel("goals");
+  }
+
+  function openGoalChat(goalId: string) {
+    onSelectGoal(goalId);
+    setMobilePanel("chat");
+  }
+
+  function beginDecisionReply(value: string) {
+    setManagerInput(value);
+    managerInputRef.current?.focus();
+  }
+
+  const selectedGoalStateVariant = selectedGoal ? personalGoalStateVariant[selectedGoal.state] : "neutral";
+  const selectedGoalHeaderSummary = selectedGoal
+    ? `${selectedAgent.label} · ${selectedGoal.state}${goalAgentTodos.length > 0 ? ` ${goalProgressLabel}` : ""}${goalUserTodos.length > 0 ? ` · ${goalUserTodos.length} 项等你` : ""}`
+    : "跨 Goal 的个人工作入口";
+
+  return (
+    <div className={theme === "dark" ? "dark" : ""}>
+      <main className={cn("personal-workspace", selectedGoal && "has-selected-goal", mobilePanel === "goals" && "mobile-goals-visible")} data-testid="personal-goal-home">
+        <aside className="personal-global-rail">
+          <a className="personal-rail-logo" href="/" aria-label="LoopX 管家首页">
+            <GitBranch className="h-4 w-4" />
+          </a>
+          <nav aria-label="个人工作区主导航">
+            <button aria-label="Chat" className="is-active" onClick={openManagerChat} type="button">
+              <MessageCircle className="h-4 w-4" />
+            </button>
+            <button aria-label="Goals" onClick={openGoalList} type="button">
+              <LayoutDashboard className="h-4 w-4" />
+            </button>
+            <button aria-label="设置，预览中暂不可用" disabled type="button">
+              <Settings className="h-4 w-4" />
+            </button>
+          </nav>
+          <span className={cn("personal-health-dot", payload.ok ? "is-healthy" : "is-unhealthy")} title={payload.ok ? "LoopX 运行正常" : "LoopX 需要检查"} />
+        </aside>
+
+        <aside className="personal-goal-sidebar" data-testid="personal-goal-list">
+          <header>
+            <h1>Goals</h1>
+            <button aria-label="新建 Goal，预览中暂不可用" disabled type="button"><Plus className="h-4 w-4" /></button>
+          </header>
+          <button
+            className={cn("personal-manager-row", !selectedGoal && "is-selected")}
+            data-testid="personal-manager-home"
+            onClick={openManagerChat}
+            type="button"
+          >
+            <span className="personal-goal-icon"><Sparkles className="h-4 w-4" /></span>
+            <span>
+              <strong>LoopX 管家</strong>
+              <small>{model.openUserTodoCount > 0 ? `${model.openUserTodoCount} 项需要你` : "汇总所有 Goals"}</small>
+            </span>
+          </button>
+          <div className="personal-goal-scroll">
+            {model.goals.map((goal) => (
+              <button
+                aria-label={`${goal.title}；${goal.agentSentence}；${goal.state}；Goal id ${goal.goalId}`}
+                className={cn("personal-goal-list-row", selectedGoal?.goalId === goal.goalId && "is-selected")}
+                data-testid="personal-goal-row"
+                key={goal.goalId}
+                onClick={() => openGoalChat(goal.goalId)}
+                type="button"
+              >
+                <span className={cn("personal-state-dot", goal.state === "等你" && "is-blocking", goal.state === "推进中" && "is-progressing", goal.state === "需修复" && "is-repair")} />
+                <span className="personal-goal-list-copy">
+                  <strong>{goal.title}</strong>
+                  <small>{goal.agentSentence}</small>
+                </span>
+                <Badge variant={personalGoalStateVariant[goal.state]}>{goal.state}</Badge>
+              </button>
+            ))}
+          </div>
+          <footer>
+            <span>{model.goals.length} 个活跃 Goal</span>
+            <button aria-label="刷新 Goals" disabled={isLoading} onClick={onRefresh} type="button">
+              <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
+            </button>
+          </footer>
+        </aside>
+
+        <section className="personal-chat-pane">
+          <header className="personal-chat-header">
+            <div className="personal-chat-title">
+              {selectedGoal ? (
+                <button aria-label="返回 Goals" className="personal-chat-back" onClick={openGoalList} type="button">
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+              ) : (
+                <>
+                  <button aria-label="打开 Goals" className="personal-mobile-goals-button" onClick={openGoalList} type="button">
+                    <LayoutDashboard className="h-4 w-4" />
+                  </button>
+                  <span className="personal-manager-icon"><Bot className="h-4 w-4" /></span>
+                </>
+              )}
+              <div>
+                <h2>{selectedGoal?.title ?? "LoopX 管家"}</h2>
+                <p>{selectedGoalHeaderSummary}</p>
+              </div>
+            </div>
+            <div className="personal-chat-actions">
+              <div className="personal-agent-picker">
+                <button
+                  aria-expanded={agentMenuOpen}
+                  aria-haspopup="menu"
+                  className="personal-agent-trigger"
+                  data-testid="personal-agent-trigger"
+                  onClick={() => setAgentMenuOpen((open) => !open)}
+                  ref={agentTriggerRef}
+                  type="button"
+                >
+                  <Bot className="h-4 w-4" />
+                  {selectedAgent.label}
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </button>
+                {agentMenuOpen ? (
+                  <>
+                    <button aria-label="关闭 Agent 选择器" className="personal-agent-menu-backdrop" onClick={() => setAgentMenuOpen(false)} type="button" />
+                    <div aria-label="选择 Agent" className="personal-agent-menu" data-testid="personal-agent-menu" ref={agentMenuRef} role="menu">
+                      <div className="personal-agent-menu-title">选择 Agent</div>
+                      {agentOptions.map((agent) => (
+                        <button
+                          className={cn(agent.agentId === selectedAgent.agentId && "is-selected")}
+                          data-testid="personal-agent-option"
+                          disabled={!agent.available}
+                          key={agent.agentId}
+                          onClick={() => chooseAgent(agent.agentId)}
+                          role="menuitem"
+                          type="button"
+                        >
+                          <span className="personal-agent-avatar">{agent.label.slice(0, 1)}</span>
+                          <span>
+                            <strong>{agent.label}</strong>
+                            <small>{agent.capability} · {agent.statusLabel}</small>
+                          </span>
+                          <span className={cn("personal-agent-online", !agent.available && "is-offline")} />
+                          {agent.agentId === selectedAgent.agentId ? <CheckCircle2 className="h-4 w-4" /> : null}
+                        </button>
+                      ))}
+                      <div className="personal-agent-menu-footer">来自 LoopX Agent 状态投影；不可用 Agent 暂不能选择</div>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <span className="personal-live-badge" data-testid="personal-source-label"><span />{source.kind === "url" ? "实时" : source.kind === "file" ? "文件" : "示例"}</span>
+              <button aria-label="切换主题" onClick={toggleTheme} type="button">
+                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
+              <button
+                aria-label={selectedGoal?.state === "需修复" ? "查看原因" : selectedGoal ? "打开 Goal 进度" : "打开运行详情"}
+                className={cn(selectedGoal && "personal-progress-trigger")}
+                data-testid="personal-running-details-trigger"
+                onClick={() => setDetailsOpen(true)}
+                ref={detailsTriggerRef}
+                type="button"
+              >
+                {selectedGoal ? <><Gauge className="h-4 w-4" /><span>{selectedGoal.state === "需修复" ? "查看原因" : "Goal 进度"}</span></> : <MoreHorizontal className="h-4 w-4" />}
+              </button>
+            </div>
+          </header>
+
+          <div className="personal-chat-scroll">
+            <StatusContractFreshnessWarning payload={payload} source={source} />
+
+            {selectedGoal ? (
+              <div className="personal-goal-projection" data-source-goal-id={selectedGoal.goalId} data-testid="personal-goal-summary">
+                <div className="personal-projection-author" data-source-agent-id={selectedGoal.agentId}>
+                  <span className="personal-agent-avatar">{selectedAgent.label.slice(0, 1)}</span>
+                  <div>
+                    <strong>{selectedAgent.label}</strong>
+                    <small>来自 LoopX Goal、Todo 与运行状态投影</small>
+                  </div>
+                </div>
+
+                {goalAgentTodos.length > 0 ? (
+                  <section className="personal-plan-card" data-testid="personal-agent-plan-card">
+                    <header>
+                      <div>
+                        <strong>计划进度</strong>
+                        <small>来自 {goalAgentTodos.length} 项 Agent Todo</small>
+                      </div>
+                      <span>{goalProgressLabel}</span>
+                    </header>
+                    <div className="personal-plan-list">
+                      {visiblePlanTodos.map((todo) => (
+                        <div
+                          className={cn("personal-plan-row", todo.done && "is-done")}
+                          data-source-todo-id={todo.todoId}
+                          key={todo.todoId}
+                        >
+                          {todo.done ? <CheckCircle2 className="h-4 w-4" /> : <Clock3 className="h-4 w-4" />}
+                          <span>{todo.text}</span>
+                          {todo.claimedBy ? <small>{personalAgentLabel(todo.claimedBy)}</small> : null}
+                        </div>
+                      ))}
+                    </div>
+                    {goalAgentTodos.length > visiblePlanTodos.length ? (
+                      <button onClick={() => setDetailsOpen(true)} type="button">
+                        查看全部 {goalAgentTodos.length} 项 Todo
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </section>
+                ) : (
+                  <section className="personal-plan-card is-empty" data-testid="personal-agent-plan-card">
+                    <header>
+                      <div>
+                        <strong>当前工作</strong>
+                        <small>暂未投影结构化 Agent Todo</small>
+                      </div>
+                    </header>
+                    <p>{selectedGoal.agentSentence}</p>
+                  </section>
+                )}
+
+                {selectedGoal.runEvidence ? (
+                  <button
+                    className="personal-run-evidence-card"
+                    data-source-generated-at={selectedGoal.runEvidence.generatedAt || undefined}
+                    data-testid="personal-run-evidence-card"
+                    onClick={() => setDetailsOpen(true)}
+                    type="button"
+                  >
+                    <span className="personal-evidence-icon"><FileCheck2 className="h-4 w-4" /></span>
+                    <span>
+                      <strong>{selectedGoal.runEvidence.label}</strong>
+                      <small>{selectedGoal.runEvidence.summary}</small>
+                    </span>
+                    <em>{selectedGoal.runEvidence.metadata}</em>
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <section className="personal-chat-welcome" data-testid="personal-manager-summary">
+                <span className="personal-manager-icon"><Bot className="h-4 w-4" /></span>
+                <div>
+                  <h3>你好，我是 LoopX 管家</h3>
+                  <p>{managerSummary}</p>
+                </div>
+              </section>
+            )}
+
+            {selectedGoal?.needsYou ? (
+              <section
+                aria-label={`需要你处理：${selectedGoal.needsYou}`}
+                className="personal-decision-card"
+                data-source-goal-id={selectedGoal.goalId}
+                data-source-todo-id={selectedGoal.needsYouTodoId ?? undefined}
+                data-testid="personal-needs-you"
+              >
+                <div>
+                  <span>需要你</span>
+                  {selectedGoal.needsYouTodoId ? <span className="sr-only">来源 Todo {selectedGoal.needsYouTodoId}</span> : null}
+                  <h3>{selectedGoal.needsYou}</h3>
+                  <p>{selectedGoal.needsYouBlocking ? "这项决定正在阻塞当前执行路径。" : "这项用户待办会保留，直到你回复或明确暂缓。"}</p>
+                </div>
+                <div className="personal-decision-actions">
+                  <button onClick={() => beginDecisionReply(`暂缓处理：${selectedGoal.needsYou}`)} type="button">稍后</button>
+                  <button onClick={() => beginDecisionReply(`关于「${selectedGoal.needsYou}」：`)} type="button">{personalDecisionPrimaryLabel(selectedGoal)}</button>
+                </div>
+              </section>
+            ) : null}
+
+            {!selectedGoal && contextMessages.length === 0 ? (
+              <div className="personal-manager-quick-actions">
+                {managerQuickPrompts.map((prompt) => (
+                  <button data-testid="personal-manager-quick-action" key={prompt} onClick={() => sendManagerQuestion(prompt)} type="button">
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            <div aria-live="polite" className="personal-manager-thread" data-testid="personal-manager-thread">
+              {contextMessages.map((message) => (
+                <article className={cn("personal-manager-message", `is-${message.role}`)} key={message.id}>
+                  {message.role === "assistant" ? <span className="personal-message-author">{message.agentLabel ?? selectedAgent.label}</span> : null}
+                  <p>{message.text}</p>
+                  {message.lines.length > 0 ? <ul>{message.lines.map((line) => <li key={line}>{line}</li>)}</ul> : null}
+                  {message.sourceLabel ? <small>{message.sourceLabel}</small> : null}
+                </article>
+              ))}
+            </div>
+
+          </div>
+
+          <form
+            aria-label={selectedGoal ? `${selectedGoal.title} 的 Goal Chat 输入区` : "LoopX 管家输入区"}
+            className="personal-manager-composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              sendManagerQuestion(managerInput);
+            }}
+          >
+            <div className="personal-composer-tools">
+              <button
+                aria-label={`切换当前 Agent：${selectedAgent.label}`}
+                onClick={() => setAgentMenuOpen(true)}
+                type="button"
+              >
+                <Bot className="h-3.5 w-3.5" />
+                <span>{selectedAgent.label}</span>
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            </div>
+            <input
+              aria-label={selectedGoal ? `向 ${selectedAgent.label} 发送消息` : "向 LoopX 管家提问"}
+              data-testid="personal-manager-composer"
+              onChange={(event) => setManagerInput(event.target.value)}
+              placeholder={selectedGoal ? `向 ${selectedAgent.label} 发送消息…` : "问问 Goals，或交代一个任务…"}
+              ref={managerInputRef}
+              type="text"
+              value={managerInput}
+            />
+            <button aria-label="发送问题" className="personal-send-button" data-testid="personal-manager-send" disabled={!managerInput.trim()} type="submit">
+              <Send className="h-4 w-4" />
+            </button>
+          </form>
+        </section>
+
+        {detailsOpen ? (
+          <div className="personal-details-backdrop" onClick={(event) => event.currentTarget === event.target && setDetailsOpen(false)}>
+            <aside aria-label="运行详情" aria-modal="true" className="personal-running-details" data-testid="personal-running-details" role="dialog">
+              <header>
+                <div><h2>{selectedGoal ? "Goal 进度" : "运行详情"}</h2><p>{selectedGoal?.title ?? "全部 Goals"}</p></div>
+                <button aria-label="关闭运行详情" autoFocus onClick={() => setDetailsOpen(false)} ref={detailsCloseRef} type="button"><X className="h-4 w-4" /></button>
+              </header>
+              <section className="personal-diagnosis-card">
+                <span>{selectedGoal?.state === "需修复" || !payload.ok ? "需要关注" : "运行正常"}</span>
+                <h3>{selectedGoal?.state === "需修复" ? selectedGoal.agentSentence : "当前没有阻止 Agent 继续的运行异常"}</h3>
+                <dl>
+                  <div><dt>影响</dt><dd>{selectedGoal?.state === "需修复" ? "可见进度可能已经过期" : "Agent 可以按当前计划继续"}</dd></div>
+                  <div><dt>建议</dt><dd>{selectedGoal?.nextSentence ?? "继续观察跨 Goal 状态"}</dd></div>
+                  <div><dt>负责人</dt><dd>{selectedGoal ? personalAgentLabel(selectedGoal.agentId) : "LoopX 管家"}</dd></div>
+                </dl>
+              </section>
+              <details>
+                <summary>完整 Todo 投影</summary>
+                <p>{selectedGoal ? `${goalUserTodos.length} 项开放用户 Todo；${completedAgentTodoCount}/${goalAgentTodos.length} 项 Agent Todo 已完成。` : `${model.openUserTodoCount} 项开放用户 Todo。`}</p>
+                {selectedGoal && goalAgentTodos.length > 0 ? (
+                  <ul className="personal-details-todo-list">
+                    {goalAgentTodos.map((todo) => <li className={cn(todo.done && "is-done")} key={todo.todoId}>{todo.text}</li>)}
+                  </ul>
+                ) : null}
+              </details>
+              <details>
+                <summary>Agent 运行记录</summary>
+                <p>{selectedGoal?.runEvidence?.summary ?? (selectedGoal?.latestActivity ? `最近状态时间：${selectedGoal.latestActivity}` : "当前投影没有提供活动时间。")}</p>
+              </details>
+              <details><summary>证据与状态源</summary><p>状态来自公开安全的 LoopX 投影。原始日志与本机路径不会在这里展示。</p></details>
+              <a className="personal-ops-link" href={personalOpsHref(selectedGoal?.goalId)}>打开完整控制台<ChevronRight className="h-4 w-4" /></a>
+            </aside>
+          </div>
+        ) : null}
+      </main>
+    </div>
+  );
+}
+
 function ShareEvidenceView({
   isLoading,
   onRefresh,
@@ -7006,11 +8081,13 @@ export function DashboardPage() {
 
   if (search.view !== "ops") {
     return (
-      <ShareEvidenceView
+      <PersonalGoalHome
         isLoading={isLoading}
+        onSelectGoal={selectGoal}
         onRefresh={() => void loadFromUrl(source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl))}
         payload={payload}
         rows={goalRows}
+        selectedGoalId={search.goalId}
         source={source}
         theme={theme}
         toggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
