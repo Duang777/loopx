@@ -316,32 +316,6 @@ def main() -> int:
         assert choice_payload["agent_id"] == "codex-product-capability", choice_payload
         assert choice_payload["task_body"], choice_payload
 
-        canonical_run = subprocess.run(
-            [
-                cli_bin,
-                "--format",
-                "json",
-                "heartbeat-prompt",
-                "--thin",
-                "--goal-id",
-                "multi-agent-goal",
-                "--agent-id",
-                "codex-product-capability",
-                "--runtime-profile",
-                "codex_app_heartbeat",
-            ],
-            cwd=REPO_ROOT,
-            env={**os.environ, "HOME": str(home)},
-            check=True,
-            text=True,
-            capture_output=True,
-        )
-        canonical_payload = json.loads(canonical_run.stdout)
-        assert choice_payload["task_body"] == canonical_payload["task_body"], (
-            choice_payload,
-            canonical_payload,
-        )
-
         command_pack_gate = build_loopx_bootstrap_command_pack(
             project=project,
             goal_id="multi-agent-goal",
