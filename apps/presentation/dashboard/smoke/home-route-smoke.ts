@@ -107,8 +107,16 @@ includes(dashboardSource, "我现在该做什么？", "manager next action quick
 includes(dashboardSource, "哪些 Goal 在等我？", "manager waiting quick prompt");
 includes(dashboardSource, "Agent 在做什么？", "manager activity quick prompt");
 includes(dashboardSource, 'agentId: "status-only"', "deterministic status-only Agent option");
-includes(dashboardSource, 'selectedAgent.agentId === "status-only" ? "LoopX 状态投影 · 仅查状态"', "status-only answer attribution");
-includes(dashboardSource, 'selectedAgent.agentId === "status-only" ? "仅查状态" : "LoopX 管家"', "deterministic answer author attribution");
+includes(dashboardSource, 'sourceLabel: "LoopX 状态投影 · 仅查状态"', "status-only answer attribution");
+includes(dashboardSource, 'agentLabel: "仅查状态"', "deterministic answer author attribution");
+includes(dashboardSource, "createChatSession(targetGoal.goalId)", "Codex Goal Chat session creation");
+includes(dashboardSource, "sendChatTurn(sessionId, question)", "Codex Goal Chat turn");
+includes(dashboardSource, "previewTodo(card.goalId, card.proposal.text)", "Todo dry-run preview");
+includes(dashboardSource, "applyTodo(card.goalId, card.proposal.text, card.previewId)", "Todo preview-locked apply");
+includes(dashboardSource, 'state: "rejected" | "cancelled"', "zero-write reject and cancel decisions");
+includes(dashboardSource, "todoNoWriteReceiptFromPayload(error.payload)", "stale preview no-write receipt");
+includes(dashboardSource, 'data-testid="personal-proposal-card"', "compact Todo candidate card");
+includes(dashboardSource, "personalAgentLabel(selectedGoal.agentId)", "durable Todo owner attribution");
 includes(dashboardSource, "`${goal.title} · ${goal.state} · ${goal.agentSentence}`", "human Goal titles in manager answers");
 includes(dashboardSource, "`${selectedAgent.label} · ${selectedGoal.state}", "Goal interaction summary subtitle");
 includes(dashboardSource, 'agent.label === "Codex" && agent.available', "Codex available default");
