@@ -369,7 +369,14 @@ def _heartbeat_commands(
         "manual": "External scheduler or manual shell LoopX poll",
         "other-agent": "Custom agent host loop gated by LoopX",
     }
-    agent_scope = scope_by_type.get(agent_type, scope_by_type["other-agent"])
+    # Codex App upgrade checks rebuild the prompt from the registered agent
+    # profile. Keep onboarding on that same durable source so a freshly
+    # installed automation cannot be classified as stale immediately.
+    agent_scope = (
+        None
+        if agent_type == "codex-app"
+        else scope_by_type.get(agent_type, scope_by_type["other-agent"])
+    )
     scheduler_binding = scheduler_command_binding_for_agent_type(agent_type)
     renderer_binding = (
         {"visible_goal_host": "traex-cli"}
