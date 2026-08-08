@@ -192,7 +192,7 @@ def render_heartbeat_prompt_command(
     *,
     cli_bin: str = "loopx",
     agent_id: str | None = None,
-    agent_scope: str = "Codex CLI /goal visible TUI loop",
+    agent_scope: str | None = "Codex CLI /goal visible TUI loop",
     body: str = "thin",
     available_capabilities: Any = None,
     runtime_profile: str | None = None,
@@ -200,7 +200,7 @@ def render_heartbeat_prompt_command(
     visible_goal_host: str | None = None,
 ) -> str:
     agent_arg = f" --agent-id {shell_arg(agent_id)}" if agent_id else ""
-    scope_arg = f" --agent-scope {shell_arg(agent_scope)}" if agent_id else ""
+    scope_arg = f" --agent-scope {shell_arg(agent_scope)}" if agent_id and agent_scope else ""
     capability_args = render_available_capability_args(available_capabilities)
     scheduler_args = render_scheduler_execution_args(
         runtime_profile=runtime_profile,
@@ -223,7 +223,7 @@ def render_heartbeat_prompt_json_command(
     *,
     cli_bin: str = "loopx",
     agent_id: str | None = None,
-    agent_scope: str = "Codex CLI /goal visible TUI loop",
+    agent_scope: str | None = "Codex CLI /goal visible TUI loop",
     body: str = "thin",
     available_capabilities: Any = None,
     runtime_profile: str | None = None,
@@ -231,7 +231,7 @@ def render_heartbeat_prompt_json_command(
     visible_goal_host: str | None = None,
 ) -> str:
     agent_arg = f" --agent-id {shell_arg(agent_id)}" if agent_id else ""
-    scope_arg = f" --agent-scope {shell_arg(agent_scope)}" if agent_id else ""
+    scope_arg = f" --agent-scope {shell_arg(agent_scope)}" if agent_id and agent_scope else ""
     capability_args = render_available_capability_args(available_capabilities)
     scheduler_args = render_scheduler_execution_args(
         runtime_profile=runtime_profile,

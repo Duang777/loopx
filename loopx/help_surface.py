@@ -61,6 +61,10 @@ COMMAND_GROUPS: list[dict[str, object]] = [
         "commands": [
             {"command": "loopx status", "purpose": "Show goals, gates, attention queue, and next action."},
             {
+                "command": "loopx chat --goal-id <goal-id>",
+                "purpose": "Open Goal Studio, ask the read-only Agent for a bounded Todo, and approve its preview before writeback.",
+            },
+            {
                 "command": "loopx diagnose --goal-id <goal-id>",
                 "purpose": "Build a compact evidence packet when behavior is surprising.",
             },
