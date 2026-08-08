@@ -36,7 +36,6 @@ CAPABILITY_OWNER_GATE_HINTS = {
     "credentials",
     "production_access",
 }
-NON_GATING_CAPABILITY_HINTS = frozenset({"project_branch"})
 
 
 def runtime_capabilities_for_cli_projection(value: Any) -> list[str]:
@@ -55,9 +54,7 @@ def _capability_missing_action(missing: list[str]) -> str:
         return "run"
     if missing_set & CAPABILITY_OWNER_GATE_HINTS:
         return "ask_owner"
-    if missing_set & CAPABILITY_REPAIR_BRIDGE_HINTS:
-        return "repair_bridge"
-    return "skip"
+    return "repair_bridge"
 
 
 def _capability_resolution(missing: list[str]) -> dict[str, Any]:
@@ -69,13 +66,7 @@ def _capability_resolution(missing: list[str]) -> dict[str, Any]:
     repair_missing = [
         capability
         for capability in missing
-        if capability in CAPABILITY_REPAIR_BRIDGE_HINTS
-    ]
-    unsupported_missing = [
-        capability
-        for capability in missing
         if capability not in CAPABILITY_OWNER_GATE_HINTS
-        and capability not in CAPABILITY_REPAIR_BRIDGE_HINTS
     ]
     action = _capability_missing_action(missing)
     decision_owner = (
@@ -102,20 +93,12 @@ def _capability_resolution(missing: list[str]) -> dict[str, Any]:
                 "capabilities": repair_missing,
             }
         )
-    if unsupported_missing:
-        resolution_steps.append(
-            {
-                "owner": "capability_gate",
-                "action": "unsupported",
-                "capabilities": unsupported_missing,
-            }
-        )
     return {
         "action": action,
         "decision_owner": decision_owner,
         "owner_missing": owner_missing,
         "repair_missing": repair_missing,
-        "unsupported_missing": unsupported_missing,
+        "unsupported_missing": [],
         "resolution_steps": resolution_steps,
     }
 
@@ -209,13 +192,7 @@ def missing_required_capabilities(
     available_capabilities: Any,
 ) -> list[str]:
     available = set(available_capabilities_with_defaults(available_capabilities))
-    required = [
-        capability
-        for capability in normalize_required_capabilities(
-            item.get("required_capabilities")
-        )
-        if capability not in NON_GATING_CAPABILITY_HINTS
-    ]
+    required = normalize_required_capabilities(item.get("required_capabilities"))
     targets = set(normalize_target_capabilities(item.get("target_capabilities")))
     return [
         capability
