@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from ...state_projection import actions_are_projection_aligned
 from ..goals.contract_health import project_contract_health_for_goal
@@ -12,6 +12,22 @@ from ..goals.goal_frontier import (
 )
 from ..todos.contract import normalize_todo_claimed_by
 from ..work_items.work_lane import work_lane_contract_is_due_monitor_attempt
+
+
+class QuotaDecisionPacket(TypedDict, total=False):
+    goal_id: str
+    decision: str
+    should_run: bool
+    effective_action: str
+    normal_delivery_allowed: bool
+    recovery_delivery_allowed: bool
+    self_repair_allowed: bool
+    capability_repair_allowed: bool
+    workspace_repair_allowed: bool
+    capability_gate: dict[str, Any]
+    interaction_contract: dict[str, Any]
+    scheduler_hint: dict[str, Any]
+    reason: str
 
 
 def compact_quota_decision(decision: dict[str, Any]) -> dict[str, Any]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypedDict
 
 from ..agents.agent_scope_frontier import (
     AgentScopeFrontierAction,
@@ -39,6 +39,15 @@ INTERACTION_CONTRACT_SCHEMA_VERSION = "loopx_interaction_contract_v0"
 INTERACTION_RESPONSE_PLAN_SCHEMA_VERSION = "interaction_response_plan_v0"
 PROTOCOL_ACTION_PACKET_SCHEMA_VERSION = "protocol_action_packet_v0"
 PROTOCOL_ACTION_PACKET_LLM_POLICY = "no_api"
+
+
+class InteractionContractPacket(TypedDict, total=False):
+    schema_version: str
+    mode: str
+    user_channel: dict[str, Any]
+    agent_channel: dict[str, Any]
+    cli_channel: dict[str, Any]
+    fallback_policy: dict[str, Any]
 
 
 def _blocked_successor_wait_observation_required(payload: dict[str, Any]) -> bool:

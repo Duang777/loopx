@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 from .contract import (
     normalize_removed_todo_continuation_policy,
@@ -93,6 +93,19 @@ TODO_SUMMARY_SOURCE_KEYS = (
     "unclaimed_monitor_blocked_resume_candidates",
     "items",
 )
+
+
+class TodoSummaryItemDict(TypedDict, total=False):
+    index: int
+    text: str
+    todo_id: str
+    status: str
+    priority: str
+    task_class: str
+    action_kind: str
+    claimed_by: str
+    required_capabilities: list[str]
+    target_key: str
 
 
 def compact_todo_summary_item(
