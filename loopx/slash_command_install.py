@@ -185,7 +185,7 @@ def _command_prompt_specs(*, cli_bin: str, include_legacy_aliases: bool) -> list
                 "Use the installed `loopx-pr-review` skill when available.",
                 f"Run `{cli_bin} --format json pr-review $ARGUMENTS` first and keep `agent_response_contract`, `review_groups`, `pull_requests[].review_template`, and `pull_requests[].evidence_commands` visible.",
                 "Do not reconstruct the PR queue manually from ad hoc GitHub calls before reading the LoopX packet.",
-                "This command is read-only; do not comment, approve, merge, rerun CI, or spend quota unless separately authorized.",
+                "Follow the installed skill's publication policy for review comments and REQUEST_CHANGES; approval, merge, CI reruns, and quota spending require their own authority.",
             ],
         },
     ]

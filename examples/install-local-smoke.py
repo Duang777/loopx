@@ -365,7 +365,12 @@ def main() -> int:
             assert phrase in compact_skill_text, phrase
         assert "JSON output still keeps the full payload" not in compact_skill_text, compact_skill_text
         pr_review_skill = codex_home / "skills" / "loopx-pr-review" / "SKILL.md"
-        pr_review_text = " ".join(pr_review_skill.read_text(encoding="utf-8").split())
+        installed_pr_review_text = pr_review_skill.read_text(encoding="utf-8")
+        canonical_pr_review_text = (
+            REPO_ROOT / "skills" / "loopx-pr-review" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        assert installed_pr_review_text == canonical_pr_review_text
+        pr_review_text = " ".join(installed_pr_review_text.split())
         for phrase in (
             "loopx --format json pr-review --state all",
             "agent_response_contract",
@@ -373,15 +378,16 @@ def main() -> int:
             "pull_requests[].review_template",
             "pull_requests[].evidence_commands",
             "Do not pipe the first packet through `jq`",
-            "Do not fill the five-block review from title, labels, changed-file counts, or metadata risk hints alone",
+            "The skill must not maintain a second checklist or repeat packet rules in host prose",
             "submit a formal `REQUEST_CHANGES` review",
-            "A plain PR comment is not an adequate substitute for `REQUEST_CHANGES`",
-            "keep the workflow read-only only when the user explicitly says `local-only`",
-            "the GitHub review state must match the written verdict",
-            "route approval, merge, self-merge, and admin-bypass actions to `loopx-pr-merge`",
+            "Do not leave actionable blockers only in chat",
+            "unless the user explicitly asks for `local-only`",
+            "The GitHub review state must match the verdict",
+            "route approval, merge, self-merge, and admin-bypass to `loopx-pr-merge`",
         ):
             assert phrase in pr_review_text, phrase
-        assert "Do not use this skill to approve" not in pr_review_text, pr_review_text
+        assert "Per-PR Evidence And Depth Gate" not in installed_pr_review_text
+        assert "Key Code Explanation Gate" not in installed_pr_review_text
         pr_program_skill = codex_home / "skills" / "loopx-pr-program" / "SKILL.md"
         pr_program_text = " ".join(pr_program_skill.read_text(encoding="utf-8").split())
         for phrase in (
@@ -398,7 +404,7 @@ def main() -> int:
         pr_review_metadata = pr_review_skill.parent / "agents" / "openai.yaml"
         pr_review_metadata_text = pr_review_metadata.read_text(encoding="utf-8")
         assert (
-            'short_description: "Review LoopX PRs with deep key-code explanations"'
+            'short_description: "Review PRs from LoopX evidence packets"'
             in pr_review_metadata_text
         ), pr_review_metadata_text
         assert "Guide agentloop" not in pr_review_metadata_text, pr_review_metadata_text

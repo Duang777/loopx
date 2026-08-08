@@ -623,7 +623,7 @@ def _review_template(item: dict[str, Any]) -> dict[str, Any]:
         _section(
             "我的整体评价",
             "150-300字",
-            "权衡价值与复杂度，列出实际检查或运行的验证，注明审阅的 head SHA，并给出精确结论；若阻塞，说明最小修复和复审所需证据。",
+            "权衡价值与复杂度，把实现规模评为 necessary、partly avoidable 或 not yet proven，并给出有证据的精简方向或说明没有安全缩减；列出实际检查或运行的验证，注明审阅的 head SHA，并给出精确结论；若阻塞，说明最小修复和复审所需证据。",
         ),
     ]
     return {
@@ -701,6 +701,12 @@ def _agent_response_contract() -> dict[str, Any]:
                 "source_form": "Use 1-3 short exact-head excerpts or equivalent pseudocode blocks, each followed by mechanism-rich explanation; do not paste large diff regions.",
                 "docs_only_alternative": "For a docs-only PR, explain the key policy or content anchors and how readers or tooling consume them.",
             },
+            "implementation_scale_review": {
+                "classifications": ["necessary", "partly avoidable", "not yet proven"],
+                "evidence": "Separate production behavior from tests, fixtures, docs, generated files, and mechanical moves; inspect active callers before judging size.",
+                "simplification": "Name the highest-value evidence-backed reduction and its preserving validation, or state that no safe reduction is supported.",
+            },
+            "related_pr_map": "When the selected set contains related PRs, add one compact relationship map after the standalone review cards; never replace a per-PR evidence pass with the map.",
             "risk_scan": [
                 "false-ready or false-success state",
                 "authority, permission, or scope bypass",

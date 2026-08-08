@@ -124,6 +124,10 @@ def main() -> int:
         assert "loopx-managed-slash-command:v1 command=/loopx surface=codex-skill-metadata" in codex_metadata_text
 
         assert not (codex_home / "prompts" / "loopx-pr-review.md").exists()
+        pr_review_facade = codex_home / "skills" / "loopx-pr-review" / "SKILL.md"
+        pr_review_facade_text = pr_review_facade.read_text(encoding="utf-8")
+        assert "Follow the installed skill's publication policy" in pr_review_facade_text
+        assert "This command is read-only; do not comment" not in pr_review_facade_text
 
         claude_skill = claude_home / "skills" / "loopx-global-summary" / "SKILL.md"
         claude_skill_text = claude_skill.read_text(encoding="utf-8")

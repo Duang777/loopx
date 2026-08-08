@@ -50,7 +50,8 @@ def assert_public_safe(payload: dict[str, object]) -> None:
 
 
 def main() -> int:
-    skill_text = " ".join(PR_REVIEW_SKILL.read_text(encoding="utf-8").split())
+    raw_skill_text = PR_REVIEW_SKILL.read_text(encoding="utf-8")
+    skill_text = " ".join(raw_skill_text.split())
     for phrase in (
         "Use when the visible request starts with `/loopx-pr-review`",
         "loopx --format json pr-review --state all",
@@ -59,39 +60,27 @@ def main() -> int:
         "pull_requests[].review_template",
         "pull_requests[].evidence_commands",
         "Do not pipe the first packet through `jq`",
-        "Do not fill the five-block review from title, labels, changed-file counts, or metadata risk hints alone",
-        "Each PR must receive its own evidence pass and standalone review card",
-        "Do not compress individual cards to cover more of the queue",
-        "Per-PR Evidence And Depth Gate",
-        "build a compact internal evidence record for that PR",
-        "Each card must stand on its own",
-        "one concrete positive walkthrough",
-        "one concrete negative or failure walkthrough",
-        "Motivation Causal Chain",
-        "who pays the cost",
-        "Implementation Execution Chain",
-        "authoritative input or state",
-        "Key Code Explanation Gate",
-        "`### 关键代码讲解` subsection inside `具体改动`",
-        "2-5 behavior-bearing symbols",
-        "exact-head `file:line` and symbol name",
-        "critical condition, branch, transition, or invariant",
-        "return value, receipt, projection, or downstream consumer",
-        "Include 1-3 short excerpts from the exact reviewed head",
-        "For a docs-only PR, use `### 关键内容讲解`",
-        "relationship map",
-        "state the minimum repair plus regression test",
-        "Code Volume And Simplification Review",
-        "Classify the volume as `necessary`, `partly avoidable`, or `not yet proven`",
-        "A code-volume conclusion without diff and call-site evidence is incomplete",
+        "Do not reuse another PR's architecture, validation, or risk prose",
+        "rather than compressing individual cards into shallow summaries",
+        "The skill must not maintain a second checklist or repeat packet rules in host prose",
+        "Read the published review back and verify its state and rendered body",
         "submit a formal `REQUEST_CHANGES` review",
-        "A plain PR comment is not an adequate substitute for `REQUEST_CHANGES`",
-        "keep the workflow read-only only when the user explicitly says `local-only`",
-        "the GitHub review state must match the written verdict",
-        "After publication, include the GitHub review/comment URL",
-        "route approval, merge, self-merge, and admin-bypass actions to `loopx-pr-merge`",
+        "Do not leave actionable blockers only in chat",
+        "unless the user explicitly asks for `local-only`",
+        "The GitHub review state must match the verdict",
+        "Include the resulting GitHub review or comment URL",
+        "route approval, merge, self-merge, and admin-bypass to `loopx-pr-merge`",
     ):
         assert phrase in skill_text, phrase
+    for duplicated_heading in (
+        "Per-PR Evidence And Depth Gate",
+        "Key Code Explanation Gate",
+        "Motivation Causal Chain",
+        "Implementation Execution Chain",
+        "Code Volume And Simplification Review",
+    ):
+        assert duplicated_heading not in raw_skill_text, duplicated_heading
+    assert len(raw_skill_text.splitlines()) < 180, len(raw_skill_text.splitlines())
 
     assert _github_search_date("2026-06-28T00:00:00+08:00") == "2026-06-27"
     assert _github_search_date("2026-06-28T00:00:00Z") == "2026-06-28"
@@ -431,6 +420,15 @@ def main() -> int:
     assert len(key_code["per_symbol_fields"]) == 7, key_code
     assert "short exact-head excerpts" in key_code["source_form"], key_code
     assert key_code["docs_only_alternative"], key_code
+    scale_review = depth["implementation_scale_review"]
+    assert scale_review["classifications"] == [
+        "necessary",
+        "partly avoidable",
+        "not yet proven",
+    ], scale_review
+    assert "active callers" in scale_review["evidence"], scale_review
+    assert scale_review["simplification"], scale_review
+    assert "relationship map" in depth["related_pr_map"], depth
     assert "authority, permission, or scope bypass" in depth["risk_scan"], depth
     assert "head SHA" in depth["freshness"], depth
     assert any("Do not stop at the queue/table summary" in item for item in response_contract["instructions"])
