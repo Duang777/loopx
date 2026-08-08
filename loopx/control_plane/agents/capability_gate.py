@@ -36,6 +36,7 @@ CAPABILITY_OWNER_GATE_HINTS = {
     "credentials",
     "production_access",
 }
+NON_GATING_CAPABILITY_HINTS = frozenset({"project_branch"})
 
 
 def runtime_capabilities_for_cli_projection(value: Any) -> list[str]:
@@ -208,7 +209,13 @@ def missing_required_capabilities(
     available_capabilities: Any,
 ) -> list[str]:
     available = set(available_capabilities_with_defaults(available_capabilities))
-    required = normalize_required_capabilities(item.get("required_capabilities"))
+    required = [
+        capability
+        for capability in normalize_required_capabilities(
+            item.get("required_capabilities")
+        )
+        if capability not in NON_GATING_CAPABILITY_HINTS
+    ]
     targets = set(normalize_target_capabilities(item.get("target_capabilities")))
     return [
         capability

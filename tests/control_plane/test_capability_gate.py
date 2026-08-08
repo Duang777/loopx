@@ -56,6 +56,7 @@ def _gate(
     ),
     [
         (["shell"], "run", "agent", None),
+        (["project_branch"], "run", "agent", None),
         (["network"], "repair_bridge", "agent", "repair_missing"),
         (["credentials"], "ask_owner", "user", "owner_missing"),
         (["gpu_runner"], "skip", "capability_gate", "unsupported_missing"),

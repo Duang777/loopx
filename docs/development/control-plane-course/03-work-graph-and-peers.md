@@ -391,6 +391,11 @@ Capability 是 preflight 条件，不是 permission：
 
 权限仍来自 goal boundary、user gate、workspace policy 和 host authority。
 
+不要把 `project_branch` 放进 `--required-capability`。它不是运行时能力，而是
+workspace guard 与仓库治理负责的写位置策略；capability gate 会把它视为非门控
+hint，分支/worktree 约束由 `--task-repository`、`--required-write-scope` 和
+workspace guard 执行。
+
 `target_capability` 则表示 todo 正在构建或修复什么能力，不是执行这个 todo 的硬前提。
 
 ## Workspace Guard：把写入位置变成状态
