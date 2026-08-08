@@ -137,6 +137,10 @@ Ask about Goals, or assign a task...
 Fast status lookups may use a deterministic local projection. Requests that
 need planning, judgment, or execution go to the selected Agent.
 
+The three fixed quick questions always use that deterministic projection and
+show truthful LoopX attribution. Free-form messages follow the Agent selected
+in the Chat dropdown, with Codex as the default route.
+
 ## Goal Chat
 
 Selecting a Goal keeps the same shell and binds the conversation to that

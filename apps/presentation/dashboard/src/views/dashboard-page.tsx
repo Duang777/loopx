@@ -5299,12 +5299,14 @@ function PersonalGoalHome({
     setManagerInput("");
     setSendingContextId(targetContextId);
 
-    if (selectedRoute.agentId === "status-only" || !targetGoal) {
+    const isProjectionQuickQuestion = managerQuickPrompts.includes(question);
+    if (isProjectionQuickQuestion || selectedRoute.agentId === "status-only" || !targetGoal) {
       const answer = answerPersonalManagerQuestion(payload, questionModel, question);
+      const usesStatusOnlyRoute = selectedRoute.agentId === "status-only";
       appendManagerAssistantMessage(targetContextId, {
-        agentLabel: "仅查状态",
+        agentLabel: usesStatusOnlyRoute ? "仅查状态" : "LoopX 管家",
         lines: answer.lines.slice(0, 3),
-        sourceLabel: "LoopX 状态投影 · 仅查状态",
+        sourceLabel: usesStatusOnlyRoute ? "LoopX 状态投影 · 仅查状态" : "LoopX 状态投影",
         text: answer.text,
       });
       setSendingContextId(null);
