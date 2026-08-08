@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source "./**/*.{ts,tsx}";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -22,6 +23,82 @@ body {
 button,
 select {
   font: inherit;
+}
+
+.chat-shell {
+  background:
+    radial-gradient(circle at 48% 0%, rgb(255 255 255 / 0.92), transparent 30rem),
+    #f7f8f6;
+}
+
+.chat-goal-map {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.chat-goal-map::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  content: "";
+  background-image: radial-gradient(rgb(148 163 184 / 0.23) 0.7px, transparent 0.7px);
+  background-size: 18px 18px;
+  mask-image: linear-gradient(to bottom, transparent, black 18%, black 84%, transparent);
+  opacity: 0.44;
+}
+
+.chat-map-goal::after {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 1px;
+  height: 3rem;
+  content: "";
+  background: rgb(203 213 225);
+}
+
+.chat-map-branches::before {
+  position: absolute;
+  top: -1.5rem;
+  right: 16.666%;
+  left: 16.666%;
+  height: 1px;
+  content: "";
+  background: rgb(203 213 225);
+}
+
+.chat-map-branches > div {
+  position: relative;
+}
+
+.chat-map-branches > div::before {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  width: 1px;
+  height: 1.5rem;
+  content: "";
+  background: rgb(203 213 225);
+}
+
+.chat-map-branches::after {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 1px;
+  height: 2.5rem;
+  content: "";
+  background: rgb(203 213 225);
+}
+
+@media (max-width: 767px) {
+  .chat-map-goal::after,
+  .chat-map-branches::before,
+  .chat-map-branches::after,
+  .chat-map-branches > div::before {
+    display: none;
+  }
 }
 
 .frontstage-workspace-shell {

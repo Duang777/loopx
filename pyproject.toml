@@ -32,6 +32,7 @@ loopx-openviking-semantic-preference = "loopx.extensions.openviking_semantic_pre
 include = ["loopx*"]
 
 [tool.setuptools.package-data]
+"loopx" = ["web/chat/*.html", "web/chat/assets/*"]
 "loopx.capabilities.auto_research" = ["worker_skill/SKILL.md"]
 "loopx.extensions.lark" = ["extension.toml"]
 "loopx.extensions.openviking_periodic_report" = ["extension.toml"]
