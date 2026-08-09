@@ -15,13 +15,15 @@ from loopx.quota import build_quota_should_run  # noqa: E402
 from loopx.control_plane.work_items.autonomous_candidates import (  # noqa: E402
     autonomous_todo_candidates as build_autonomous_todo_candidates,
 )
+from loopx.control_plane.todos.contract import TODO_TASK_CLASS_ADVANCEMENT  # noqa: E402
+from loopx.control_plane.todos.todo_summary import (  # noqa: E402
+    normalize_todo_text,
+    todo_item_is_actionable_open,
+)
 from loopx.status import (  # noqa: E402
-    TODO_TASK_CLASS_ADVANCEMENT,
     autonomous_backlog_candidates,
     goal_attention,
-    normalize_todo_text,
     open_todo_items,
-    todo_item_is_actionable_open,
 )
 
 

@@ -18,12 +18,6 @@ from loopx.session_runtime import SESSION_RUNTIME_READONLY_PROJECTION_SCHEMA_VER
 
 def assert_status_uses_direct_read_models() -> None:
     assert status_module.public_safe_compact_text is public_safety_read_model.public_safe_compact_text
-    assert status_module.public_safe_compact_list is public_safety_read_model.public_safe_compact_list
-    assert status_module._compact_numeric_map is public_safety_read_model.compact_numeric_map
-    assert (
-        status_module._compact_loopx_command_records
-        is public_safety_read_model.compact_loopx_command_records
-    )
     assert not hasattr(status_module, "compact_session_runtime_readonly_projection")
     assert (
         status_module.compact_session_runtime_projection_from_run
@@ -50,9 +44,8 @@ def assert_public_safe_list_parity() -> None:
     local_path = "/" + "tmp" + "/loopx-public-boundary-probe.json"
     values = ["first", local_path, "second", "third"]
     expected = ["first", "second"]
-    assert status_module.public_safe_compact_list(values, limit=2) == expected
     assert public_safety_read_model.public_safe_compact_list(values, limit=2) == expected
-    assert status_module.public_safe_compact_list("single", limit=4) == ["single"]
+    assert public_safety_read_model.public_safe_compact_list("single", limit=4) == ["single"]
 
 
 def assert_numeric_map_compaction() -> None:

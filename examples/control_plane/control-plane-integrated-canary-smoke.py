@@ -467,7 +467,11 @@ def assert_event_todo_completion_successor_state_machine(
     return successor_id
 
 
-def assert_refresh_and_spend_state_machine(registry_path: Path, runtime_root: Path) -> None:
+def assert_refresh_and_spend_state_machine(
+    registry_path: Path,
+    runtime_root: Path,
+    successor_id: str,
+) -> None:
     refresh_payload = run_cli(
         registry_path,
         runtime_root,
@@ -512,6 +516,8 @@ def assert_refresh_and_spend_state_machine(registry_path: Path, runtime_root: Pa
         GOAL_ID,
         "--agent-id",
         AGENT_ID,
+        "--todo-id",
+        successor_id,
         "--slots",
         "1",
         "--source",
@@ -844,8 +850,8 @@ def run_fixture_canary(root: Path) -> None:
     )
     assert_bounded_delivery_state_machine_bundle(quota_payload)
     assert_scheduler_ack_state_machine(registry_path, runtime_root, quota_payload)
-    assert_event_todo_completion_successor_state_machine(registry_path, runtime_root)
-    assert_refresh_and_spend_state_machine(registry_path, runtime_root)
+    successor_id = assert_event_todo_completion_successor_state_machine(registry_path, runtime_root)
+    assert_refresh_and_spend_state_machine(registry_path, runtime_root, successor_id)
 
     packet_payload = run_cli(
         registry_path,

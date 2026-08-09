@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .presentation.markdown import markdown_code, markdown_table_row, markdown_table_separator
-
+from .presentation.markdown import (
+    markdown_code,
+    markdown_table_row,
+    markdown_table_separator,
+)
 
 SCHEMA_VERSION = "loopx_slash_command_catalog_v0"
 
@@ -69,6 +72,8 @@ def build_slash_command_catalog(
                     "claude-code": "arm LoopX with `/loopx <task>`, then run native `/loop`",
                     "opencode": "call `loopx_goal_activate`",
                     "pi": "call `loopx_goal_activate`",
+                    "gemini-cli": "drive the loop from the agent's own turns; enter every turn through quota should-run",
+                    "cursor-agent": "drive the loop from the agent's own turns; enter every turn through quota should-run",
                     "manual": "wire an external scheduler or run quota/status manually",
                     "other-agent": "use the custom host loop driver declared by `loopx agent-onboard`",
                 },
@@ -95,9 +100,8 @@ def build_slash_command_catalog(
             scope="global",
             intent="List open user/controller gates and what each blocks.",
             mutation_policy="read_only",
-            cli_reference=f"{cli_bin} slash-commands; use {cli_bin} global-summary for the current compact global packet",
+            cli_reference=f"{cli_bin} global-gates",
             legacy_aliases=legacy_gates,
-            implementation_status="host_command_defined",
         ),
         _command(
             command="/loopx-global-todos",
@@ -120,7 +124,7 @@ def build_slash_command_catalog(
         _command(
             command="/loopx-pr-review",
             scope="repo",
-            intent="Run the pr-review CLI first, then review the generated unmerged and merged PR groups one by one with the blank five-block template.",
+            intent="Run pr-review, execute each exact-head review plan, then render verified evidence through the five-block template.",
             mutation_policy="read_only; does not comment, approve, merge, or spend quota",
             cli_reference=f"{cli_bin} pr-review [--repo owner/repo] [--state open|merged|all] [--since ISO]",
             agent_contract={
@@ -138,13 +142,16 @@ def build_slash_command_catalog(
                     "agent_response_contract.explanation_depth_contract",
                     "review_groups.unmerged",
                     "review_groups.merged",
+                    "pull_requests[].review_plan",
                     "pull_requests[].review_template",
                     "pull_requests[].evidence_commands",
                     "agent_response_contract.required_final_sections",
                 ],
                 "required_packet_fields_to_preserve": [
                     "agent_response_contract",
+                    "result_completeness",
                     "review_groups",
+                    "pull_requests[].review_plan",
                     "pull_requests[].review_template",
                     "pull_requests[].evidence_commands",
                 ],
@@ -165,8 +172,8 @@ def build_slash_command_catalog(
                         "对主干的风险",
                         "我的整体评价",
                     ],
-                    "evidence_before_filling": "Read each selected PR body/files/diff/checks before filling the sections.",
-                    "section_length_hint": "Use the per-section ranges in pull_requests[].review_template as depth signals; explain context, architecture, implementation, validation, necessity, and risk without filler.",
+                    "evidence_before_filling": "Execute each selected review_plan before filling the sections.",
+                    "section_length_hint": "Use review_template ranges to render verified evidence without a competing host checklist.",
                     "reader_profile": "A technically curious reader who may not know the PR or subsystem.",
                     "freshness_policy": "Record the remote head before review, recheck it before the verdict, and restart if it changed.",
                 },
@@ -176,8 +183,7 @@ def build_slash_command_catalog(
                 ),
                 "json_projection_policy": (
                     "Do not pipe the first JSON packet to a summary-only projection. "
-                    "The agent must keep agent_response_contract, review_groups, "
-                    "pull_requests[].review_template, and pull_requests[].evidence_commands "
+                    "Keep the response contract, review groups, plans, templates, and evidence commands "
                     "visible before planning the final answer."
                 ),
             },

@@ -43,7 +43,8 @@ from loopx.control_plane.testing.quota_fixtures import (  # noqa: E402
     quota_status_payload,
     quota_todo_item,
 )
-from loopx.quota import AgentScopeFrontierAction, build_quota_should_run  # noqa: E402
+from loopx.control_plane.agents.agent_scope_frontier import AgentScopeFrontierAction  # noqa: E402
+from loopx.quota import build_quota_should_run  # noqa: E402
 from loopx.status import AUTONOMOUS_REPLAN_PERIODIC_LOOKBACK  # noqa: E402
 
 

@@ -8,6 +8,7 @@ use_directory_urls: true
 exclude_docs: |
   /README.md
   archive/**
+  book/**
   research/long-horizon-agent-benchmarks/*.json
   showcases/**/*.html
   showcases/showcase-animation-prototype.html
@@ -82,6 +83,7 @@ nav:
       - guides/README.md
       - Quick Start: guides/getting-started.md
       - Newcomer Command Path: guides/newcomer-command-path.md
+      - Minimal Custom Runtime Example: guides/minimal-custom-runtime-example.md
       - Custom Runner Integration: guides/custom-agent-runner-integration.md
       - Auto Research Command Path: guides/auto-research-command-path.md
   - Concepts:

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools==82.0.1"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopx"
-version = "0.4.2"
+version = "0.4.4"
 description = "A lightweight Loop Engineering control plane for long-running agent goals."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -762,7 +762,7 @@ def assert_scoped_gate_rejects_capability_ineligible_only_fallback() -> None:
         scheduler_execution_context=APP_SCHEDULER_CONTEXT,
     )
     capability_gate = payload["capability_gate"]
-    assert capability_gate["action"] == "skip", capability_gate
+    assert capability_gate["action"] == "repair_bridge", capability_gate
     assert capability_gate["runnable_candidates"] == [], capability_gate
     assert capability_gate["missing"] == ["private_read"], capability_gate
     assert "scoped_user_gate_fallback" not in payload, payload

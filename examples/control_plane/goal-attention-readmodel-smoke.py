@@ -13,6 +13,11 @@ if str(ROOT) not in sys.path:
 
 from loopx import status as status_module  # noqa: E402
 from loopx.control_plane.work_items import attention_routing as routing_read_model  # noqa: E402
+from loopx.operator_gate import (  # noqa: E402
+    DEFAULT_OPERATOR_GATE,
+    default_operator_question,
+    normalize_operator_question,
+)
 from loopx.session_runtime import SESSION_RUNTIME_READONLY_PROJECTION_SCHEMA_VERSION  # noqa: E402
 
 
@@ -29,10 +34,10 @@ def direct_goal_attention(goal: dict) -> dict | None:
         public_safe_compact_text=status_module.public_safe_compact_text,
         attention_item=status_module.attention_item,
         run_has_external_evidence_watch_signal=status_module.run_has_external_evidence_watch_signal,
-        default_operator_question=status_module.default_operator_question,
-        normalize_operator_question=status_module.normalize_operator_question,
+        default_operator_question=default_operator_question,
+        normalize_operator_question=normalize_operator_question,
         monitor_signal_waiting_on=status_module.MONITOR_SIGNAL_WAITING_ON,
-        default_operator_gate=status_module.DEFAULT_OPERATOR_GATE,
+        default_operator_gate=DEFAULT_OPERATOR_GATE,
         planned_controller_opt_in_recommended_action=status_module.PLANNED_CONTROLLER_OPT_IN_RECOMMENDED_ACTION,
         connected_adapter_statuses=status_module.CONNECTED_ADAPTER_STATUSES,
         connected_delivery_adapter_statuses=status_module.CONNECTED_DELIVERY_ADAPTER_STATUSES,

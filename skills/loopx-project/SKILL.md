@@ -61,16 +61,27 @@ loopx start-goal --guided --project . --goal-text "<GOAL_TEXT>"
 Append `--capability-route issue-fix` only when the caller supplied that exact
 explicit route switch.
 
-Include `--goal-id <STABLE_GOAL_ID>` when known. Include
-`--agent-id <REGISTERED_AGENT_ID>` only when the current session already owns
-that identity or the user explicitly asks to take over that exact agent's work.
-Otherwise treat this as a new agent connection: follow the returned identity
-gate, choose a fresh public-safe id, preview then execute `register-agent`, and
+Include `--goal-id <STABLE_GOAL_ID>` when known. Codex App automatically reads
+the stable ambient `CODEX_THREAD_ID`; other hosts that expose a stable opaque
+thread id should pass it as `--thread-id <HOST_THREAD_ID>` on every `/loopx`
+invocation. If that thread is already bound, reuse the returned
+`--agent-id <REGISTERED_AGENT_ID>` on start, heartbeat, quota, refresh-state,
+and Todo commands. Include `--agent-id <REGISTERED_AGENT_ID>` only when the
+current session already owns that identity, the thread binding resolves to it,
+or the user explicitly asks to take over that exact agent's work.
+
+When a stable thread id is present but has no binding, treat it as a new host
+session and follow the returned fresh-registration default. Select an existing
+lane only when the user explicitly requests takeover of that exact agent, then
+bind it with the returned `bind-agent-thread` command. When no thread id is
+available, preserve the fail-closed identity gate and never infer takeover from
+registry order or the only registered lane; pass `--new-peer` only when the
+user explicitly requests fresh onboarding on that unboundable host. Choose a
+fresh public-safe id, preview then execute `register-agent`, and
 require the `--require-new --execute` result to report `ok=true`, `changed=true`,
 `written=true`, successful global sync, and verified registration readback
 before rerunning `start-goal` with that new id. A preview is advisory and never
-authorizes continuation. Never infer takeover from registry order or from there
-being only one registered agent. If
+allows continuation. If
 `start-goal --guided` is not available, refresh the local LoopX CLI or use the
 checked-out LoopX repository CLI for validation; do not silently downgrade
 `/loopx <goal text>` into a bare `/loopx` read-only command. Use

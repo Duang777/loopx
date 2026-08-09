@@ -476,7 +476,7 @@ def _assert_control_score_surface() -> None:
     from loopx.benchmarks.read_models.benchmark_run_pre_execution import (
         compact_benchmark_run_pre_execution_metadata,
     )
-    from loopx.status import (
+    from loopx.benchmarks.read_models.benchmark_status_compaction import (
         _compact_benchmark_interaction_counters,
     )
     planned_todo_ids = [

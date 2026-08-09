@@ -198,7 +198,7 @@ def assert_monitor_only_launched_poll_requires_observation() -> None:
     assert allows_no_spend_external_monitor_poll(guard) is True, guard
 
 
-def assert_recent_unchanged_observation_quiets_external_monitor() -> None:
+def assert_recent_unchanged_observation_defers_to_capability_repair() -> None:
     summary = agent_todos(
         [
             monitor_todo(next_due_at=FUTURE_DUE_AT),
@@ -225,18 +225,17 @@ def assert_recent_unchanged_observation_quiets_external_monitor() -> None:
         goal_id=GOAL_ID,
         agent_id=AGENT_ID,
     )
-    assert guard["decision"] == "skip", guard
-    assert guard["should_run"] is False, guard
-    assert guard["effective_action"] == "monitor_quiet_skip", guard
-    assert "external_evidence_observation" not in guard, guard
-    assert guard["external_evidence_observation_recent"]["classification"] == "quota_monitor_poll", guard
+    assert guard["decision"] == "repair_bridge", guard
+    assert guard["should_run"] is True, guard
+    assert guard["effective_action"] == "capability_bridge_repair", guard
     interaction = guard["interaction_contract"]
-    assert interaction["mode"] == "monitor_quiet_skip", interaction
-    assert interaction["agent_channel"]["must_attempt"] is False, interaction
-    assert interaction["agent_channel"]["quiet_noop_allowed"] is True, interaction
+    assert interaction["mode"] == "capability_bridge_repair", interaction
+    assert interaction["agent_channel"]["must_attempt"] is True, interaction
+    assert interaction["agent_channel"]["delivery_allowed"] is False, interaction
+    assert interaction["agent_channel"]["quiet_noop_allowed"] is False, interaction
 
 
-def assert_recent_due_monitor_no_change_quiets_external_monitor() -> None:
+def assert_recent_due_monitor_no_change_defers_to_capability_repair() -> None:
     summary = agent_todos(
         [
             monitor_todo(next_due_at=FUTURE_DUE_AT),
@@ -273,17 +272,14 @@ def assert_recent_due_monitor_no_change_quiets_external_monitor() -> None:
         goal_id=GOAL_ID,
         agent_id=AGENT_ID,
     )
-    assert guard["decision"] == "skip", guard
-    assert guard["should_run"] is False, guard
-    assert guard["effective_action"] == "monitor_quiet_skip", guard
-    assert "external_evidence_observation" not in guard, guard
-    recent = guard["external_evidence_observation_recent"]
-    assert recent["classification"] == "quota_monitor_poll", guard
-    assert recent["monitor_mode"] == "due_monitor_observed_without_material_transition", guard
-    assert recent["reason"] == "recent monitor observation was unchanged", guard
+    assert guard["decision"] == "repair_bridge", guard
+    assert guard["should_run"] is True, guard
+    assert guard["effective_action"] == "capability_bridge_repair", guard
     interaction = guard["interaction_contract"]
-    assert interaction["agent_channel"]["must_attempt"] is False, interaction
-    assert interaction["agent_channel"]["quiet_noop_allowed"] is True, interaction
+    assert interaction["mode"] == "capability_bridge_repair", interaction
+    assert interaction["agent_channel"]["must_attempt"] is True, interaction
+    assert interaction["agent_channel"]["delivery_allowed"] is False, interaction
+    assert interaction["agent_channel"]["quiet_noop_allowed"] is False, interaction
 
 
 def assert_advancement_lane_keeps_external_monitor_as_context() -> None:
@@ -336,7 +332,7 @@ def assert_future_scoped_monitor_does_not_fake_external_poll() -> None:
     assert "external_evidence_observation" not in guard, guard
 
 
-def assert_unavailable_advancement_does_not_wake_future_monitor() -> None:
+def assert_unavailable_advancement_defers_to_capability_repair() -> None:
     summary = agent_todos(
         [
             monitor_todo(
@@ -354,8 +350,11 @@ def assert_unavailable_advancement_does_not_wake_future_monitor() -> None:
 
     guard = build_quota_should_run(status_payload(summary), goal_id=GOAL_ID, agent_id=AGENT_ID)
     assert "external_evidence_observation" not in guard, guard
-    assert guard["interaction_contract"]["agent_channel"]["must_attempt"] is False, guard
-    assert guard["interaction_contract"]["agent_channel"]["quiet_noop_allowed"] is True, guard
+    interaction = guard["interaction_contract"]
+    assert interaction["mode"] == "capability_bridge_repair", interaction
+    assert interaction["agent_channel"]["must_attempt"] is True, interaction
+    assert interaction["agent_channel"]["delivery_allowed"] is False, interaction
+    assert interaction["agent_channel"]["quiet_noop_allowed"] is False, interaction
 
 
 def assert_selected_monitor_handle(
@@ -532,11 +531,11 @@ def assert_explicit_external_wait_builds_registry_obligation() -> None:
 
 def main() -> int:
     assert_monitor_only_launched_poll_requires_observation()
-    assert_recent_unchanged_observation_quiets_external_monitor()
-    assert_recent_due_monitor_no_change_quiets_external_monitor()
+    assert_recent_unchanged_observation_defers_to_capability_repair()
+    assert_recent_due_monitor_no_change_defers_to_capability_repair()
     assert_advancement_lane_keeps_external_monitor_as_context()
     assert_future_scoped_monitor_does_not_fake_external_poll()
-    assert_unavailable_advancement_does_not_wake_future_monitor()
+    assert_unavailable_advancement_defers_to_capability_repair()
     assert_monitor_handle_precedence()
     assert_pr_dependency_wait_requires_first_observation()
     assert_pr_dependency_wait_with_observation_does_not_reobserve_before_due()

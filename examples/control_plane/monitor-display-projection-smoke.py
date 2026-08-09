@@ -26,8 +26,8 @@ from loopx.status import (  # noqa: E402
     normalize_monitor_quiet_attention_display,
     open_todo_items,
     quiet_monitor_display_action,
-    todo_item_is_actionable_open,
 )
+from loopx.control_plane.todos.todo_summary import todo_item_is_actionable_open  # noqa: E402
 
 
 def todo(index: int, text: str) -> dict[str, object]:

@@ -73,7 +73,7 @@ def assert_missing_action_contract() -> None:
     assert _capability_missing_action(["benchmark_runner"]) == "repair_bridge"
     assert _capability_missing_action(["network"]) == "repair_bridge"
     assert _capability_missing_action(["credentials"]) == "ask_owner"
-    assert _capability_missing_action(["custom_capability"]) == "skip"
+    assert _capability_missing_action(["custom_capability"]) == "repair_bridge"
 
 
 def assert_candidate_compaction_contract() -> None:

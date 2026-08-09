@@ -17,10 +17,11 @@ from loopx.control_plane.todos.active_state_todo_parser import (  # noqa: E402
 )
 from loopx.control_plane.work_items.project_asset import build_project_asset_todo_summary  # noqa: E402
 from loopx.review_packet import build_review_packet  # noqa: E402
+from loopx.control_plane.todos.contract import TODO_TASK_CLASS_ADVANCEMENT  # noqa: E402
+from loopx.control_plane.todos.todo_summary import todo_item_is_actionable_open  # noqa: E402
 from loopx.status import (  # noqa: E402
     MAX_DEFERRED_TODO_VISIBILITY_ITEMS,
     MAX_PROJECT_ASSET_TODO_ITEMS,
-    TODO_TASK_CLASS_ADVANCEMENT,
     TODO_PROJECTION_DETAIL_POINTER_SCHEMA_VERSION,
     TODO_PROJECTION_VIEW_SCHEMA_VERSION,
     compact_todo_item,
@@ -28,7 +29,6 @@ from loopx.status import (  # noqa: E402
     open_todo_items,
     parse_active_state_todos,
     project_asset_todo_summary,
-    todo_item_is_actionable_open,
     todo_item_task_class,
     todo_lane_items,
 )

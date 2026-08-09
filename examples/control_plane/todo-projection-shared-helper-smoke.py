@@ -13,8 +13,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from loopx.quota import (  # noqa: E402
     _todo_projection_sort_key as quota_todo_projection_sort_key,
-    _todo_task_class as quota_todo_task_class,
     build_quota_should_run,
+)
+from loopx.control_plane.quota.should_run_prepare import (  # noqa: E402
+    _todo_task_class as quota_todo_task_class,
 )
 from loopx.control_plane.testing.quota_fixtures import (  # noqa: E402
     quota_status_payload,

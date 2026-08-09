@@ -52,7 +52,7 @@ from loopx.orchestration import (  # noqa: E402
     compact_orchestration_policy,
     orchestration_policy_summary,
 )
-from loopx.quota import _goal_boundary as _quota_goal_boundary  # noqa: E402
+from loopx.control_plane.quota.goal_boundary import goal_boundary as _quota_goal_boundary  # noqa: E402
 
 
 GOAL_ID = "explore-gate-smoke"

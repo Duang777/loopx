@@ -43,6 +43,30 @@ The core repository intentionally avoids domain logic. A data experiment goal,
 a note-maintenance goal, and a harness self-improvement goal should share the
 same runtime and contract, but use different adapters.
 
+## Control Plane As Effect Interpreter
+
+The six layers are not only storage surfaces. Together they interpret one
+effect request per loop iteration:
+
+```text
+model -> effect request -> harness interprets effect -> observation -> model
+```
+
+The read model is the current state (`A`): registry, goal state, and run
+history. The projection is the observation (`F[B]`): status, attention queue,
+and compact run summaries. The decision is the effect interpreter
+(`A => F[QuotaDecision]`): quota, interaction contract, capability gates,
+work-lane routing, and scheduler hints decide whether and how the next effect
+may run. The data-encoded handler is the `next_effect` in the quota packet:
+CLI actions, scheduler ACK/failure hints, writeback, and spend.
+
+This is the same lens as the
+[Agent Loop Effect Interpreter RFC](architecture/rfcs/agent-loop-effect-interpreter-v0.md)
+and
+[Harness Is the Effectful Program](development/control-plane-course/01-agent-loop-effectful-program.md).
+The public framing comes from 齐梦星空,
+[主线一：Agent Loop 是 effectful program(1)](https://www.xiaohongshu.com/discovery/item/6a01d501000000003700c5de?source=webshare&xhsshare=pc_web&xsec_token=ABqpNuladcxhev099wLKw8M3ilhKBua0BQXNpxnBZEGkc=&xsec_source=pc_share).
+
 ## Turn Decision Vocabulary
 
 Operator-facing docs and heartbeat prompts often summarize a turn as deliver,
@@ -118,7 +142,7 @@ to the Kernel lifecycle. Providers supply the external facts behind the lane,
 capabilities validate them and propose typed transitions, and the Kernel owns
 claim, gate, monitor, quota, writeback, recovery, and terminal closure. See the
 [concept primer](development/control-plane-course/00-concept-primer.md) and
-[state substrate lecture](development/control-plane-course/02-state-substrate.md).
+[state substrate lecture](development/control-plane-course/04-state-substrate.md).
 
 ## Current Dependency Budget
 

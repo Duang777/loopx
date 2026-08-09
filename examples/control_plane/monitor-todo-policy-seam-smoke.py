@@ -26,12 +26,12 @@ from loopx.control_plane.scheduler.monitor_target import (  # noqa: E402
     monitor_target_summary,
 )
 from loopx.status import (  # noqa: E402
-    todo_item_is_actionable_open,
     todo_item_is_due_monitor,
     todo_item_is_expired_monitor,
     todo_item_missing_monitor_schedule,
     todo_item_next_due_at,
 )
+from loopx.control_plane.todos.todo_summary import todo_item_is_actionable_open  # noqa: E402
 
 
 NOW = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
