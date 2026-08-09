@@ -40,12 +40,24 @@ export type ChatStatus = {
 
 export type ChatCapabilities = {
   ok: true;
-  schema_version: "loopx_chat_capabilities_v0";
+  schema_version: "loopx_chat_capabilities_v0" | "loopx_chat_capabilities_v1";
   agent_backend: string;
   sandbox: string;
   approval_policy: string;
   todo_write: string;
   goal_id: string | null;
+  streaming?: boolean;
+  resume?: boolean;
+  interrupt?: boolean;
+  adapters?: Array<{
+    agent_id: string;
+    display_name: string;
+    adapter_kind: string;
+    available: boolean;
+    streaming: boolean;
+    resume: boolean;
+    interrupt: boolean;
+  }>;
 };
 
 export type TodoProposal = {

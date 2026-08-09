@@ -33,9 +33,9 @@ import {
   applyTodo,
   buildGoalStudioNodes,
   chatFailureMessage,
-  closeChatSession,
   completedGoalReviews,
   createChatSession,
+  fetchChatSession,
   fetchChatCapabilities,
   fetchChatStatus,
   pendingGoalReviews,
@@ -44,10 +44,10 @@ import {
   proposalReviewState,
   sessionInvalidatedByPayload,
   selectChatGoal,
-  sendChatTurn,
+  interruptChatTurn,
+  sendChatTurnStreaming,
   serializeCompletedDecisionHistory,
   stewardPrompts,
-  turnReplaySafeByPayload,
   todoNoWriteReceiptFromPayload,
   todoNoWriteReceiptLabel,
   todoReceiptLabel,
@@ -72,7 +72,16 @@ type ChatMessage = {
   text: string;
 };
 
-type AgentPhase = "idle" | "starting" | "thinking";
+type AgentPhase = "idle" | "starting" | "resuming" | "thinking" | "streaming" | "interrupting";
+
+const agentPhaseLabel: Record<AgentPhase, string> = {
+  idle: "Codex 会话就绪",
+  starting: "正在连接 Codex",
+  resuming: "正在恢复原会话",
+  thinking: "Codex 正在分析",
+  streaming: "Codex 正在回复",
+  interrupting: "正在中断",
+};
 
 type InboxView = "pending" | "completed";
 
@@ -503,12 +512,16 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
   const [agentPhase, setAgentPhase] = useState<AgentPhase>("idle");
+  const [activeTurnId, setActiveTurnId] = useState("");
   const [inboxView, setInboxView] = useState<InboxView>("pending");
   const [statusError, setStatusError] = useState("");
+  const [sessionRecoveryNeeded, setSessionRecoveryNeeded] = useState(false);
   const [hostGate, setHostGate] = useState<HostGate | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const hydratedDecisionGoalRef = useRef("");
   const skipDecisionHistoryPersistRef = useRef(false);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const sessionConnectSequenceRef = useRef(0);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -533,12 +546,48 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
       .catch(() => setCapabilities(null));
   }, []);
 
+  const connectSession = useCallback(async (mode: "resume_latest" | "new") => {
+    if (!selectedGoalId) return;
+    const sequence = ++sessionConnectSequenceRef.current;
+    setSessionRecoveryNeeded(false);
+    setStatusError("");
+    setSessionId("");
+    setActiveTurnId("");
+    setAgentPhase("starting");
+    try {
+      const created = await createChatSession(selectedGoalId, "codex", mode);
+      if (sequence !== sessionConnectSequenceRef.current) return;
+      setSessionId(created.session_id);
+      setAgentPhase(created.resumed ? "resuming" : "idle");
+      const snapshot = await fetchChatSession(created.session_id);
+      if (sequence !== sessionConnectSequenceRef.current) return;
+      setMessages(snapshot.messages.map((item) => ({
+        id: item.message_id,
+        role: item.role === "user" ? "user" : "agent",
+        source: item.role === "error" ? "error" : item.role === "user" ? undefined : "agent",
+        text: item.text,
+      })));
+      const turnId = snapshot.session.active_turn_id ?? "";
+      setActiveTurnId(turnId);
+      setAgentPhase(turnId ? "thinking" : "idle");
+    } catch (error) {
+      if (sequence !== sessionConnectSequenceRef.current) return;
+      setAgentPhase("idle");
+      setSessionRecoveryNeeded(
+        error instanceof ChatApiError && error.payload.error_code === "resume_failed",
+      );
+      setStatusError(error instanceof Error ? error.message : "Codex 会话连接失败");
+    }
+  }, [selectedGoalId]);
+
   useEffect(() => {
-    if (!sessionId) return;
+    if (!selectedGoalId) return;
+    void connectSession("resume_latest");
     return () => {
-      void closeChatSession(sessionId).catch(() => undefined);
+      sessionConnectSequenceRef.current += 1;
+      streamAbortRef.current?.abort();
     };
-  }, [sessionId]);
+  }, [connectSession, selectedGoalId]);
 
   useEffect(() => {
     if (!selectedGoalId || hydratedDecisionGoalRef.current === selectedGoalId) return;
@@ -601,9 +650,11 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
     hydratedDecisionGoalRef.current = "";
     setSelectedGoalId(goalId);
     setSessionId("");
+    setActiveTurnId("");
     setMessages([]);
     setDecisions([]);
     setHostGate(null);
+    setSessionRecoveryNeeded(false);
     setAgentPhase("idle");
     setInboxView("pending");
   }
@@ -626,6 +677,11 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
     }
     setSending(true);
     setAgentPhase(sessionId ? "thinking" : "starting");
+    const streamedMessageId = randomId("agent-stream");
+    setMessages((current) => [
+      ...current,
+      { id: streamedMessageId, role: "agent", source: "agent", text: "" },
+    ]);
     try {
       let activeSessionId = sessionId;
       if (!activeSessionId) {
@@ -634,26 +690,29 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
         setSessionId(activeSessionId);
       }
       setAgentPhase("thinking");
-      let response;
-      try {
-        response = await sendChatTurn(activeSessionId, message);
-      } catch (error) {
-        const replaySafe =
-          error instanceof ChatApiError && turnReplaySafeByPayload(error.payload);
-        if (!replaySafe) throw error;
-        setAgentPhase("starting");
-        const replacement = await createChatSession(selectedGoal.goal_id);
-        activeSessionId = replacement.session_id;
-        setSessionId(activeSessionId);
-        setAgentPhase("thinking");
-        response = await sendChatTurn(activeSessionId, message);
-      }
-      if (response.message) {
-        setMessages((current) => [
-          ...current,
-          { id: randomId("agent"), role: "agent", source: "agent", text: response.message },
-        ]);
-      }
+      const abortController = new AbortController();
+      streamAbortRef.current = abortController;
+      let streamedText = "";
+      const streamed = await sendChatTurnStreaming(activeSessionId, message, {
+        signal: abortController.signal,
+        onDelta: (delta) => {
+          streamedText += delta;
+          setAgentPhase("streaming");
+          setMessages((current) => current.map((item) =>
+            item.id === streamedMessageId ? { ...item, text: streamedText } : item
+          ));
+        },
+        onPhase: (phase, turnId) => {
+          setActiveTurnId(turnId);
+          if (phase === "turn.started") setAgentPhase("thinking");
+        },
+      });
+      const response = streamed.response;
+      setMessages((current) => current.map((item) =>
+        item.id === streamedMessageId
+          ? { ...item, text: streamedText.trim() || response.message || "Codex 已完成分析。" }
+          : item
+      ));
       if (response.proposals.length) {
         setInboxView("pending");
         setDecisions((current) => [
@@ -682,19 +741,30 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
       if (sessionWasInvalidated) setSessionId("");
       if (gate) setHostGate(gate);
       const summary = gate?.summary || (error instanceof Error ? error.message : "Agent 会话暂时不可用。");
-      setMessages((current) => [
-        ...current,
-        {
-          id: randomId("agent-error"),
-          role: "agent",
-          source: "error",
-          text: chatFailureMessage(summary, sessionWasInvalidated),
-        },
-      ]);
+      setMessages((current) => current.map((item) =>
+        item.id === streamedMessageId
+          ? { ...item, source: "error", text: chatFailureMessage(summary, sessionWasInvalidated) }
+          : item
+      ));
     } finally {
       setSending(false);
       setAgentPhase("idle");
+      setActiveTurnId("");
+      streamAbortRef.current = null;
       composerRef.current?.focus();
+    }
+  }
+
+  async function interruptActiveTurn() {
+    if (!sessionId || !activeTurnId) return;
+    setAgentPhase("interrupting");
+    try {
+      await interruptChatTurn(sessionId, activeTurnId);
+      streamAbortRef.current?.abort();
+    } finally {
+      setSending(false);
+      setActiveTurnId("");
+      setAgentPhase("idle");
     }
   }
 
@@ -839,7 +909,15 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
             </div>
 
             {statusError ? (
-              <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-700">{statusError}</div>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-700">
+                <span>{statusError}</span>
+                {sessionRecoveryNeeded ? (
+                  <span className="flex gap-2">
+                    <button className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 font-semibold" onClick={() => void connectSession("resume_latest")}>重新恢复</button>
+                    <button className="rounded-lg bg-rose-600 px-3 py-1.5 font-semibold text-white" onClick={() => void connectSession("new")}>新建会话</button>
+                  </span>
+                ) : null}
+              </div>
             ) : null}
 
             <section className="mb-5 overflow-hidden rounded-2xl border border-violet-100 bg-[linear-gradient(135deg,rgba(255,255,255,0.98),rgba(245,243,255,0.78))] shadow-[0_12px_36px_rgba(76,29,149,0.055)]">
@@ -888,9 +966,20 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
                   </div>
                 </div>
                 {sending ? (
-                  <span className="text-[10px] font-medium text-violet-600">
-                    {agentPhase === "starting" ? "正在启动 Codex" : "Codex 推理中"}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-medium text-violet-600">
+                      {agentPhaseLabel[agentPhase]}
+                    </span>
+                    {activeTurnId ? (
+                      <button
+                        className="rounded-lg border border-rose-200 px-2 py-1 text-[10px] font-semibold text-rose-600 hover:bg-rose-50"
+                        onClick={() => void interruptActiveTurn()}
+                        type="button"
+                      >
+                        中断
+                      </button>
+                    ) : null}
+                  </div>
                 ) : sessionId ? (
                   <span className="text-[10px] font-medium text-emerald-600">Codex 会话就绪</span>
                 ) : null}
@@ -939,7 +1028,7 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
                 {sending ? (
                   <div className="flex items-center gap-2 text-[11px] text-slate-400">
                     <Loader2 className="size-3.5 animate-spin" />
-                    {agentPhase === "starting" ? "正在启动只读 Codex 会话…" : "Codex 正在分析当前 Goal…"}
+                    {agentPhaseLabel[agentPhase]}…
                   </div>
                 ) : null}
               </div>
@@ -973,6 +1062,17 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
                   <span>Enter 发送 · Shift + Enter 换行</span>
                   <span>只读分析 · 审批后写 Todo</span>
                 </div>
+                {sessionId ? (
+                  <details className="mt-2 rounded-xl border border-slate-100 bg-white px-3 py-2 text-[10px] text-slate-400">
+                    <summary className="cursor-pointer font-semibold text-slate-500">高级诊断</summary>
+                    <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                      <span>Session · {sessionId.slice(0, 12)}</span>
+                      <span>Turn · {activeTurnId ? activeTurnId.slice(0, 12) : "无运行中回合"}</span>
+                      <span>Adapter · Codex app-server</span>
+                      <span>恢复 · {capabilities?.resume ? "可恢复" : "不可用"}</span>
+                    </div>
+                  </details>
+                ) : null}
               </form>
             </section>
           </div>

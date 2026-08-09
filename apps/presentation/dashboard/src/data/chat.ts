@@ -86,12 +86,24 @@ export const chatStatusSchema = z.object({
 
 export const chatCapabilitiesSchema = z.object({
   ok: z.literal(true),
-  schema_version: z.literal("loopx_chat_capabilities_v0"),
+  schema_version: z.enum(["loopx_chat_capabilities_v0", "loopx_chat_capabilities_v1"]),
   agent_backend: z.string(),
   sandbox: z.string(),
   approval_policy: z.string(),
   todo_write: z.string(),
   goal_id: z.string().nullable(),
+  streaming: z.boolean().optional(),
+  resume: z.boolean().optional(),
+  interrupt: z.boolean().optional(),
+  adapters: z.array(z.object({
+    agent_id: z.string(),
+    display_name: z.string(),
+    adapter_kind: z.string(),
+    available: z.boolean(),
+    streaming: z.boolean(),
+    resume: z.boolean(),
+    interrupt: z.boolean(),
+  })).optional(),
 });
 
 export const todoProposalSchema = z.object({
@@ -219,11 +231,201 @@ export async function fetchChatCapabilities() {
   return chatCapabilitiesSchema.parse(await requestJson<unknown>("/api/chat/capabilities"));
 }
 
-export async function createChatSession(goalId: string) {
-  return requestJson<{ goal_id: string; ok: true; session_id: string }>("/api/chat/sessions", {
+export async function createChatSession(
+  goalId: string,
+  agentId = "codex",
+  mode: "resume_latest" | "new" = "resume_latest",
+) {
+  return requestJson<{
+    agent_id: string;
+    goal_id: string;
+    ok: true;
+    resumed: boolean;
+    session_id: string;
+  }>("/api/chat/sessions", {
     method: "POST",
-    body: JSON.stringify({ goal_id: goalId }),
+    body: JSON.stringify({ goal_id: goalId, agent_id: agentId, mode }),
   });
+}
+
+export type ChatStreamEvent = {
+  event_id: string;
+  sequence: number;
+  kind: string;
+  created_at: string;
+  payload: Record<string, unknown>;
+};
+
+export type ChatSessionSnapshot = {
+  ok: true;
+  schema_version: "loopx_chat_store_v1";
+  session: {
+    session_id: string;
+    goal_id: string;
+    agent_id: string;
+    adapter_kind: string;
+    status: string;
+    active_turn_id: string | null;
+    last_error_code: string | null;
+    created_at: string;
+    updated_at: string;
+    last_activity_at: string;
+    resumable: boolean;
+  };
+  messages: Array<{
+    message_id: string;
+    turn_id: string | null;
+    role: string;
+    text: string;
+    created_at: string;
+  }>;
+  active_turn: Record<string, unknown> | null;
+};
+
+export async function fetchChatSession(sessionId: string) {
+  return requestJson<ChatSessionSnapshot>(`/api/chat/sessions/${sessionId}`);
+}
+
+export async function acceptChatTurn(sessionId: string, message: string, clientTurnId: string) {
+  return requestJson<{
+    ok: true;
+    session_id: string;
+    turn_id: string;
+    created: boolean;
+    status: string;
+    events_url: string;
+  }>(`/api/chat/sessions/${sessionId}/turns`, {
+    method: "POST",
+    body: JSON.stringify({ message, client_turn_id: clientTurnId }),
+  });
+}
+
+function parseSseBlock(block: string): ChatStreamEvent | null {
+  const data = block
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  if (!data) return null;
+  try {
+    const parsed = JSON.parse(data) as Partial<ChatStreamEvent>;
+    if (!parsed.kind || !parsed.payload || typeof parsed.payload !== "object") return null;
+    return {
+      event_id: String(parsed.event_id ?? ""),
+      sequence: Number(parsed.sequence ?? 0),
+      kind: String(parsed.kind),
+      created_at: String(parsed.created_at ?? ""),
+      payload: parsed.payload as Record<string, unknown>,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function streamChatTurn(
+  eventsUrl: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  signal?: AbortSignal,
+) {
+  let cursor = "";
+  let attempts = 0;
+  let terminal = false;
+  while (!terminal && attempts < 4) {
+    const url = new URL(eventsUrl, window.location.origin);
+    if (cursor) url.searchParams.set("after", cursor);
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        headers: { Accept: "text/event-stream" },
+        signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new ChatApiError(`SSE HTTP ${response.status}`, { status: response.status });
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done }).replaceAll("\r\n", "\n");
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const event = parseSseBlock(block);
+          if (event) {
+            if (event.event_id) cursor = event.event_id;
+            onEvent(event);
+            terminal = ["turn.completed", "turn.interrupted", "turn.failed"].includes(event.kind);
+          }
+          boundary = buffer.indexOf("\n\n");
+        }
+        if (done || terminal) break;
+      }
+      attempts = terminal ? attempts : attempts + 1;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      attempts += 1;
+      if (attempts >= 4) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, 250 * 2 ** (attempts - 1)));
+    }
+  }
+  if (!terminal) {
+    throw new ChatApiError("Agent 事件流连接已断开。", { reconnect_attempts: attempts });
+  }
+}
+
+export async function interruptChatTurn(sessionId: string, turnId: string) {
+  return requestJson<{ ok: true; session_id: string; turn_id: string; status: string }>(
+    `/api/chat/sessions/${sessionId}/turns/${turnId}/interrupt`,
+    { method: "POST", body: "{}" },
+  );
+}
+
+export async function sendChatTurnStreaming(
+  sessionId: string,
+  message: string,
+  options: {
+    clientTurnId?: string;
+    onDelta?: (text: string) => void;
+    onPhase?: (phase: string, turnId: string) => void;
+    signal?: AbortSignal;
+  } = {},
+) {
+  const accepted = await acceptChatTurn(
+    sessionId,
+    message,
+    options.clientTurnId ?? crypto.randomUUID(),
+  );
+  let finalResponse: unknown = null;
+  const outcome: { failure: Record<string, unknown> | null } = { failure: null };
+  await streamChatTurn(
+    accepted.events_url,
+    (event) => {
+      options.onPhase?.(event.kind, accepted.turn_id);
+      if (event.kind === "assistant.delta") {
+        options.onDelta?.(String(event.payload.text ?? ""));
+      }
+      if (event.kind === "turn.completed") {
+        finalResponse = event.payload.response;
+      }
+      if (event.kind === "turn.failed") {
+        outcome.failure = event.payload;
+      }
+    },
+    options.signal,
+  );
+  if (outcome.failure) {
+    throw new ChatApiError(
+      String(outcome.failure.message || "Agent 回合失败。"),
+      outcome.failure,
+    );
+  }
+  return {
+    response: agentResponseSchema.parse(finalResponse),
+    sessionId,
+    turnId: accepted.turn_id,
+  };
 }
 
 export async function sendChatTurn(sessionId: string, message: string) {

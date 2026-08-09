@@ -27,9 +27,9 @@ import {
   Search,
   Send,
   Settings,
-  Sparkles,
   ShieldCheck,
   Sun,
+  Sparkles,
   Terminal,
   Users,
   X,
@@ -85,10 +85,11 @@ import {
 import {
   ChatApiError,
   applyTodo,
-  closeChatSession,
   createChatSession,
+  fetchChatSession,
+  interruptChatTurn,
   previewTodo,
-  sendChatTurn,
+  sendChatTurnStreaming,
   sessionInvalidatedByPayload,
   todoNoWriteReceiptFromPayload,
   todoReceiptLabel,
@@ -5172,6 +5173,9 @@ function PersonalGoalHome({
   const managerMessageId = useRef(1);
   const proposalId = useRef(1);
   const sessionIds = useRef(new Map<string, string>());
+  const newSessionRequired = useRef(new Set<string>());
+  const activeTurnIds = useRef(new Map<string, string>());
+  const streamControllers = useRef(new Map<string, AbortController>());
   const agentMenuRef = useRef<HTMLDivElement>(null);
   const agentTriggerRef = useRef<HTMLButtonElement>(null);
   const detailsCloseRef = useRef<HTMLButtonElement>(null);
@@ -5208,12 +5212,38 @@ function PersonalGoalHome({
     }
   }, [selectedAgents]);
 
-  useEffect(() => () => {
-    for (const sessionId of sessionIds.current.values()) {
-      void closeChatSession(sessionId).catch(() => undefined);
-    }
-    sessionIds.current.clear();
-  }, []);
+  useEffect(() => {
+    if (!selectedGoal || selectedAgent.label !== "Codex") return;
+    const targetContextId = contextId;
+    const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
+    let cancelled = false;
+    void createChatSession(selectedGoal.goalId)
+      .then(async (created) => {
+        if (cancelled) return;
+        sessionIds.current.set(sessionKey, created.session_id);
+        const snapshot = await fetchChatSession(created.session_id);
+        if (cancelled || (messagesByContext[targetContextId]?.length ?? 0) > 0) return;
+        setMessagesByContext((current) => ({
+          ...current,
+          [targetContextId]: snapshot.messages.map((message) => ({
+            agentLabel: message.role === "user" ? undefined : "Codex",
+            id: managerMessageId.current++,
+            lines: [],
+            role: message.role === "user" ? "user" : "assistant",
+            sourceLabel: message.role === "user" ? undefined : "恢复的 Codex 会话",
+            text: message.text,
+          })),
+        }));
+      })
+      .catch((error) => {
+        if (error instanceof ChatApiError && error.payload.error_code === "resume_failed") {
+          newSessionRequired.current.add(sessionKey);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contextId, selectedGoal?.goalId, selectedAgent.agentId, selectedAgent.label]);
 
   useEffect(() => {
     if (!agentMenuOpen) {
@@ -5264,6 +5294,20 @@ function PersonalGoalHome({
         ...(messages[targetContextId] ?? []),
         { ...message, id, role: "assistant" },
       ],
+    }));
+    return id;
+  }
+
+  function updateManagerAssistantMessage(
+    targetContextId: string,
+    messageId: number,
+    update: Partial<Omit<PersonalManagerMessage, "id" | "role">>,
+  ) {
+    setMessagesByContext((messages) => ({
+      ...messages,
+      [targetContextId]: (messages[targetContextId] ?? []).map((message) =>
+        message.id === messageId ? { ...message, ...update } : message
+      ),
     }));
   }
 
@@ -5324,20 +5368,46 @@ function PersonalGoalHome({
       return;
     }
 
-    const sessionKey = `${targetContextId}:${selectedRoute.agentId}`;
+    const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
+    let streamingMessageId: number | null = null;
     try {
       let sessionId = sessionIds.current.get(sessionKey);
       if (!sessionId) {
-        const session = await createChatSession(targetGoal.goalId);
+        const mode = newSessionRequired.current.has(sessionKey) ? "new" : "resume_latest";
+        const session = await createChatSession(targetGoal.goalId, "codex", mode);
         sessionId = session.session_id;
         sessionIds.current.set(sessionKey, sessionId);
+        newSessionRequired.current.delete(sessionKey);
       }
-      const response = await sendChatTurn(sessionId, question);
-      appendManagerAssistantMessage(targetContextId, {
+      let streamedText = "";
+      streamingMessageId = appendManagerAssistantMessage(targetContextId, {
         agentLabel: "Codex",
-        lines: response.gate ? [response.gate.summary, response.gate.next_action].filter(Boolean).slice(0, 2) : [],
+        lines: [],
         sourceLabel: `Codex 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`,
-        text: response.message || "Codex 已完成分析。",
+        text: "Codex 正在分析…",
+      });
+      const streamed = await sendChatTurnStreaming(sessionId, question, {
+        signal: (() => {
+          const controller = new AbortController();
+          streamControllers.current.set(targetContextId, controller);
+          return controller.signal;
+        })(),
+        onDelta: (delta) => {
+          streamedText += delta;
+          if (streamingMessageId !== null) {
+            updateManagerAssistantMessage(targetContextId, streamingMessageId, {
+              text: streamedText,
+            });
+          }
+        },
+        onPhase: (_phase, turnId) => {
+          activeTurnIds.current.set(targetContextId, turnId);
+        },
+      });
+      const response = streamed.response;
+      updateManagerAssistantMessage(targetContextId, streamingMessageId, {
+        lines: response.gate ? [response.gate.summary, response.gate.next_action].filter(Boolean).slice(0, 2) : [],
+        text: streamedText.trim() || response.message || "Codex 已完成分析。",
       });
       if (response.proposals.length > 0) {
         const cards = response.proposals.map((proposal) => ({
@@ -5359,17 +5429,46 @@ function PersonalGoalHome({
       if (payloadError && sessionInvalidatedByPayload(payloadError)) {
         sessionIds.current.delete(sessionKey);
       }
+      if (payloadError?.error_code === "resume_failed") {
+        sessionIds.current.delete(sessionKey);
+        newSessionRequired.current.add(sessionKey);
+      }
       const gate = payloadError?.gate;
       const gateSummary = gate && typeof gate === "object"
         ? String((gate as { summary?: unknown }).summary ?? "")
         : "";
-      appendManagerAssistantMessage(targetContextId, {
+      const failureMessage = {
         agentLabel: "Codex",
         lines: gateSummary ? [gateSummary] : [],
         sourceLabel: "LoopX Chat 本地后端",
-        text: error instanceof Error ? error.message : "Codex 会话暂时不可用。",
-      });
+        text: payloadError?.error_code === "resume_failed"
+          ? "原 Codex 会话无法恢复。请再次发送这条消息，LoopX 会为当前 Goal 新建会话。"
+          : error instanceof Error ? error.message : "Codex 会话暂时不可用。",
+      };
+      if (streamingMessageId === null) {
+        appendManagerAssistantMessage(targetContextId, failureMessage);
+      } else {
+        updateManagerAssistantMessage(targetContextId, streamingMessageId, failureMessage);
+      }
     } finally {
+      activeTurnIds.current.delete(targetContextId);
+      streamControllers.current.delete(targetContextId);
+      setSendingContextId((current) => current === targetContextId ? null : current);
+    }
+  }
+
+  async function interruptManagerTurn() {
+    const targetContextId = contextId;
+    const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
+    const sessionId = sessionIds.current.get(sessionKey);
+    const turnId = activeTurnIds.current.get(targetContextId);
+    if (!sessionId || !turnId) return;
+    try {
+      await interruptChatTurn(sessionId, turnId);
+      streamControllers.current.get(targetContextId)?.abort();
+    } finally {
+      activeTurnIds.current.delete(targetContextId);
+      streamControllers.current.delete(targetContextId);
       setSendingContextId((current) => current === targetContextId ? null : current);
     }
   }
@@ -5763,12 +5862,6 @@ function PersonalGoalHome({
                   {message.sourceLabel ? <small>{message.sourceLabel}</small> : null}
                 </article>
               ))}
-              {sendingContextId === contextId ? (
-                <article className="personal-manager-message is-assistant is-pending" data-testid="personal-agent-thinking">
-                  <span className="personal-message-author">{selectedAgent.label}</span>
-                  <p>正在读取当前 Goal 并整理回复…</p>
-                </article>
-              ) : null}
             </div>
 
             {contextProposals.length > 0 ? (
@@ -5837,9 +5930,21 @@ function PersonalGoalHome({
               type="text"
               value={managerInput}
             />
-            <button aria-label="发送问题" className="personal-send-button" data-testid="personal-manager-send" disabled={!managerInput.trim() || sendingContextId === contextId} type="submit">
-              <Send className="h-4 w-4" />
-            </button>
+            {sendingContextId === contextId ? (
+              <button
+                aria-label="中断当前 Agent 回合"
+                className="personal-send-button"
+                data-testid="personal-manager-interrupt"
+                onClick={() => void interruptManagerTurn()}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : (
+              <button aria-label="发送问题" className="personal-send-button" data-testid="personal-manager-send" disabled={!managerInput.trim()} type="submit">
+                <Send className="h-4 w-4" />
+              </button>
+            )}
           </form>
         </section>
 
