@@ -263,6 +263,12 @@ def test_html_renders_human_focused_sections() -> None:
     # progress + result statistics render
     assert 'class="bar"' in html
     assert "Runs 24h" in html
+    # per-goal todo breakdown column renders with agent/user/done counts
+    assert '<th>Todo</th>' in html
+    assert 'class="todo-count"' in html
+    assert 'class="todo-agent"' in html
+    assert 'class="todo-user"' in html
+    assert 'class="todo-done"' in html
     # jargon-heavy machinery is gone from the page
     for hidden in (
         "decision-frame",
