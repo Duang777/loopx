@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from ...boundary_authority import checkpointed_boundary_authority_summary
-from .run_context_retention import latest_runs_with_agent_context
+from .run_context_retention import (
+    compact_goal_semantic_history,
+    latest_runs_with_agent_context,
+)
 
 
 LatestRun = Callable[[dict[str, Any]], Optional[dict[str, Any]]]
@@ -79,6 +82,10 @@ def build_run_history(
                 latest_runs,
                 limit=display_limit,
             )
+        semantic_history = compact_goal_semantic_history(
+            goal.get("semantic_history"),
+            compact_run=compact_run,
+        )
         goals.append(
             {
                 "id": goal.get("id"),
@@ -104,6 +111,7 @@ def build_run_history(
                 "subagent_activity": subagent_activity,
                 "latest_status_run": compact_run(current_run) if current_run else None,
                 "latest_runs": latest_runs,
+                "semantic_history": semantic_history,
             }
         )
 

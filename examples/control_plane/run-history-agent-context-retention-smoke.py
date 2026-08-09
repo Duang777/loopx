@@ -10,10 +10,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from loopx.control_plane.goals.goal_frontier import latest_agent_vision_from_status_payload
+from loopx.control_plane.goals.goal_frontier import (
+    latest_agent_vision_from_status_payload,
+)
+from loopx.control_plane.goals.goal_frontier.outcome_continuity import (
+    acceptance_gaps_from_outcome_checkpoint,
+    latest_outcome_vision_checkpoint_from_status_payload,
+)
 from loopx.control_plane.runtime.run_history import build_run_history
 from loopx.history import collect_history
-
 
 GOAL_ID = "agent-context-retention-goal"
 COORDINATION_PEER = "codex-coordination-peer"
@@ -33,6 +38,15 @@ def project_run_history(history: dict, *, display_limit: int = 3) -> dict:
         compact_run=lambda run: dict(run),
         quota_status=lambda goal: {},
         display_limit=display_limit,
+    )
+
+
+def semantic_agent_context(goal: dict, *, agent_id: str) -> dict:
+    semantic_history = goal["semantic_history"]
+    return next(
+        context
+        for context in semantic_history["agents"]
+        if context["agent_id"] == agent_id
     )
 
 
@@ -133,7 +147,9 @@ def write_fixture(root: Path) -> tuple[Path, Path]:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="loopx-agent-context-retention-") as raw_tmp:
+    with tempfile.TemporaryDirectory(
+        prefix="loopx-agent-context-retention-"
+    ) as raw_tmp:
         registry_path, runtime = write_fixture(Path(raw_tmp))
         runs_dir = runtime / "goals" / GOAL_ID / "runs"
         with (runs_dir / "index.jsonl").open("a", encoding="utf-8") as handle:
@@ -173,33 +189,33 @@ def main() -> None:
             "latest coordination",
             "latest product",
         ], latest_runs
-        assert any(
-            run.get("agent_id") == TARGET_PEER and run.get("agent_vision")
-            for run in latest_runs
-        ), latest_runs
-        assert any(
-            run.get("agent_id") == TARGET_PEER and run.get("autonomous_replan_ack")
-            for run in latest_runs
-        ), latest_runs
-        assert len(latest_runs) == 5, latest_runs
+        assert len(latest_runs) == 3, latest_runs
+        semantic_context = semantic_agent_context(goal, agent_id=TARGET_PEER)
+        assert semantic_context["latest_agent_vision_run"]["agent_vision"]
+        assert semantic_context["latest_autonomous_replan_ack_run"][
+            "autonomous_replan_ack"
+        ]
         projected_run_history = project_run_history(history)
-        projected_runs = projected_run_history["goals"][0]["latest_runs"]
-        assert any(
-            run.get("agent_id") == TARGET_PEER and run.get("agent_vision")
-            for run in projected_runs
-        ), projected_runs
-        assert any(
-            run.get("agent_id") == TARGET_PEER and run.get("autonomous_replan_ack")
-            for run in projected_runs
-        ), projected_runs
-        assert len(projected_runs) == 5, projected_runs
+        projected_goal = projected_run_history["goals"][0]
+        projected_runs = projected_goal["latest_runs"]
+        assert len(projected_runs) == 3, projected_runs
+        projected_context = semantic_agent_context(
+            projected_goal,
+            agent_id=TARGET_PEER,
+        )
+        assert projected_context["latest_agent_vision_run"]["agent_vision"]
+        assert projected_context["latest_autonomous_replan_ack_run"][
+            "autonomous_replan_ack"
+        ]
         vision = latest_agent_vision_from_status_payload(
             {"run_history": projected_run_history},
             goal_id=GOAL_ID,
             agent_id=TARGET_PEER,
         )
         assert vision and vision["agent_id"] == TARGET_PEER, vision
-        assert "global run window" in vision["vision_patch"]["replan_trigger_summary"], vision
+        assert (
+            "global run window" in vision["vision_patch"]["replan_trigger_summary"]
+        ), vision
 
         zero_budget_history = collect_history(
             registry_path=registry_path,
@@ -212,6 +228,10 @@ def main() -> None:
         assert zero_budget_projection["goals"][0]["latest_runs"] == [], (
             zero_budget_projection
         )
+        assert semantic_agent_context(
+            zero_budget_projection["goals"][0],
+            agent_id=TARGET_PEER,
+        )["latest_agent_vision_run"]["agent_vision"]
     with tempfile.TemporaryDirectory(prefix="loopx-agent-context-retired-") as raw_tmp:
         registry_path, runtime = write_fixture(Path(raw_tmp))
         runs_dir = runtime / "goals" / GOAL_ID / "runs"
@@ -254,6 +274,13 @@ def main() -> None:
             run.get("agent_id") == TARGET_PEER and run.get("agent_vision")
             for run in latest_runs
         ), latest_runs
+        assert (
+            semantic_agent_context(
+                history["goals"][0],
+                agent_id=TARGET_PEER,
+            )["vision_retired_at"]
+            == "2026-07-06T00:07:00+00:00"
+        )
         projected_run_history = project_run_history(history)
         projected_runs = projected_run_history["goals"][0]["latest_runs"]
         assert not any(
@@ -266,6 +293,119 @@ def main() -> None:
             agent_id=TARGET_PEER,
         )
         assert vision is None, vision
+    with tempfile.TemporaryDirectory(prefix="loopx-semantic-long-thread-") as raw_tmp:
+        registry_path, runtime = write_fixture(Path(raw_tmp))
+        runs_dir = runtime / "goals" / GOAL_ID / "runs"
+        with (runs_dir / "index.jsonl").open("a", encoding="utf-8") as handle:
+            semantic_runs = [
+                {
+                    "generated_at": "2026-07-08T00:00:00+00:00",
+                    "goal_id": GOAL_ID,
+                    "classification": "state_refreshed",
+                    "agent_id": TARGET_PEER,
+                    "recommended_action": "plain refresh",
+                    "vision_checkpoint": {
+                        "schema_version": "vision_checkpoint_v0",
+                        "agent_id": TARGET_PEER,
+                        "required": False,
+                        "satisfied": True,
+                        "decision": "not_required",
+                        "triggers": [{"kind": "heartbeat_refresh"}],
+                    },
+                },
+                *[
+                    {
+                        "generated_at": f"2026-07-07T00:00:{second:02d}+00:00",
+                        "goal_id": GOAL_ID,
+                        "classification": "quota_slot_spent",
+                        "agent_id": TARGET_PEER,
+                        "recommended_action": "neutral heartbeat accounting",
+                    }
+                    for second in range(30)
+                ],
+                {
+                    "generated_at": "2026-07-06T02:00:00+00:00",
+                    "goal_id": GOAL_ID,
+                    "classification": "human_reward_recorded",
+                    "agent_id": TARGET_PEER,
+                    "human_reward": {
+                        "recorded_at": "2026-07-06T02:00:00+00:00",
+                        "decision": "correct_direction",
+                        "reward": "positive",
+                        "reason_summary": "Keep final-outcome evidence authoritative.",
+                    },
+                },
+                {
+                    "generated_at": "2026-07-06T01:00:00+00:00",
+                    "goal_id": GOAL_ID,
+                    "classification": "milestone_closeout",
+                    "agent_id": TARGET_PEER,
+                    "delivery_outcome": "outcome_progress",
+                    "vision_checkpoint": {
+                        "schema_version": "vision_checkpoint_v0",
+                        "agent_id": TARGET_PEER,
+                        "required": True,
+                        "satisfied": True,
+                        "decision": "unchanged_with_reason",
+                        "triggers": [
+                            {
+                                "kind": "material_delivery_outcome",
+                                "delivery_outcome": "outcome_progress",
+                            }
+                        ],
+                    },
+                },
+            ]
+            for semantic_run in semantic_runs:
+                handle.write(json.dumps(semantic_run, ensure_ascii=False) + "\n")
+
+        history = collect_history(
+            registry_path=registry_path,
+            runtime_root=runtime,
+            goal_id=GOAL_ID,
+            limit=30,
+        )
+        projected_run_history = project_run_history(history, display_limit=30)
+        projected_goal = projected_run_history["goals"][0]
+        assert len(projected_goal["latest_runs"]) == 30, projected_goal
+        context = semantic_agent_context(projected_goal, agent_id=TARGET_PEER)
+        assert (
+            context["latest_vision_checkpoint_run"]["vision_checkpoint"]["decision"]
+            == "not_required"
+        )
+        assert (
+            context["latest_outcome_vision_checkpoint_run"]["vision_checkpoint"][
+                "triggers"
+            ][0]["delivery_outcome"]
+            == "outcome_progress"
+        )
+        assert context["latest_material_milestone_run"]["delivery_outcome"] == (
+            "outcome_progress"
+        )
+        assert (
+            projected_goal["semantic_history"]["latest_owner_correction_run"][
+                "human_reward"
+            ]["decision"]
+            == "correct_direction"
+        )
+        assert "quota_slot_spent" not in json.dumps(
+            projected_goal["semantic_history"],
+            ensure_ascii=False,
+        )
+        status = {"run_history": projected_run_history}
+        vision = latest_agent_vision_from_status_payload(
+            status,
+            goal_id=GOAL_ID,
+            agent_id=TARGET_PEER,
+        )
+        checkpoint = latest_outcome_vision_checkpoint_from_status_payload(
+            status,
+            goal_id=GOAL_ID,
+            agent_id=TARGET_PEER,
+        )
+        gaps = acceptance_gaps_from_outcome_checkpoint(vision, checkpoint)
+        assert len(gaps) == 1, gaps
+        assert gaps[0]["kind"] == "vision_outcome_checkpoint_required", gaps
     print("run-history-agent-context-retention-smoke ok")
 
 

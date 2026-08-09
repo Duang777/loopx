@@ -34,15 +34,15 @@ def _dict_field(value: dict[str, Any], key: str) -> dict[str, Any]:
     return field if isinstance(field, dict) else {}
 
 
-def _latest_runs_for_goal(
+def _run_history_goal(
     status_payload: dict[str, Any],
     *,
     goal_id: str,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any] | None:
     run_history = _dict_field(status_payload, "run_history")
     goals_value = run_history.get("goals")
     goals: list[Any] = goals_value if isinstance(goals_value, list) else []
-    goal = next(
+    return next(
         (
             item
             for item in goals
@@ -50,12 +50,54 @@ def _latest_runs_for_goal(
         ),
         None,
     )
+
+
+def _latest_runs_for_goal(
+    status_payload: dict[str, Any],
+    *,
+    goal_id: str,
+) -> list[dict[str, Any]]:
+    goal = _run_history_goal(status_payload, goal_id=goal_id)
     latest_runs = goal.get("latest_runs") if isinstance(goal, dict) else None
     return (
         [item for item in latest_runs if isinstance(item, dict)]
         if isinstance(latest_runs, list)
         else []
     )
+
+
+def _outcome_checkpoint_runs_for_goal(
+    status_payload: dict[str, Any],
+    *,
+    goal_id: str,
+    agent_id: str | None,
+) -> list[dict[str, Any]]:
+    """Prefer the per-agent semantic slot and fall back to legacy run lists."""
+
+    goal = _run_history_goal(status_payload, goal_id=goal_id)
+    semantic_history = goal.get("semantic_history") if isinstance(goal, dict) else None
+    if agent_id and isinstance(semantic_history, dict):
+        contexts = semantic_history.get("agents")
+        context = (
+            next(
+                (
+                    item
+                    for item in contexts
+                    if isinstance(item, dict)
+                    and str(item.get("agent_id") or "").strip() == agent_id
+                ),
+                None,
+            )
+            if isinstance(contexts, list)
+            else None
+        )
+        checkpoint_run = (
+            context.get("latest_outcome_vision_checkpoint_run")
+            if isinstance(context, dict)
+            else None
+        )
+        return [checkpoint_run] if isinstance(checkpoint_run, dict) else []
+    return _latest_runs_for_goal(status_payload, goal_id=goal_id)
 
 
 def latest_outcome_vision_checkpoint_from_status_payload(
@@ -66,7 +108,11 @@ def latest_outcome_vision_checkpoint_from_status_payload(
 ) -> dict[str, Any] | None:
     """Return the newest outcome-relevant per-agent vision checkpoint."""
 
-    for run in _latest_runs_for_goal(status_payload, goal_id=goal_id):
+    for run in _outcome_checkpoint_runs_for_goal(
+        status_payload,
+        goal_id=goal_id,
+        agent_id=agent_id,
+    ):
         checkpoint = run.get("vision_checkpoint")
         if not isinstance(checkpoint, dict):
             continue
