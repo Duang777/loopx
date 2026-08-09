@@ -580,6 +580,12 @@ CLI_OUTPUT_COMMAND_CLASSIFICATIONS: tuple[CliOutputCommandClassification, ...] =
         rationale="first-screen agent and operator status read",
     ),
     CliOutputCommandClassification(
+        command_id="chat",
+        qualification="explicit_cold_path_exception",
+        surface_id=None,
+        rationale="interactive local workspace launched explicitly by the operator",
+    ),
+    CliOutputCommandClassification(
         command_id="diagnose",
         qualification="qualified_default",
         surface_id="diagnose",
