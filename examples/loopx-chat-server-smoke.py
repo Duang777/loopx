@@ -35,7 +35,7 @@ for line in sys.stdin:
         continue
     if method == "initialize":
         result = {"serverInfo": {"name": "fake-codex"}}
-    elif method == "thread/start":
+    elif method in {"thread/start", "thread/resume"}:
         result = {"thread": {"id": "thread-chat-server"}}
     elif method in {"thread/goal/set", "thread/goal/get"}:
         result = {"goal": {"threadId": "thread-chat-server", "status": "active"}}
@@ -57,6 +57,7 @@ for line in sys.stdin:
             }), flush=True)
             continue
         response = (
+            'Visible streaming answer.\n'
             '<loopx-review-json>'
             + json.dumps({
                 "schema_version": "loopx_chat_agent_response_v0",
@@ -84,6 +85,8 @@ for line in sys.stdin:
             "params": {"threadId": "thread-chat-server", "turn": {"id": turn_id}},
         }), flush=True)
         continue
+    elif method == "turn/interrupt":
+        result = {}
     else:
         result = {}
     print(json.dumps({"id": request_id, "result": result}), flush=True)
@@ -268,15 +271,11 @@ def main() -> None:
         )
         try:
             capabilities = wait_for_json(f"{base_url}/api/chat/capabilities")
-            assert capabilities == {
-                "ok": True,
-                "schema_version": "loopx_chat_capabilities_v0",
-                "agent_backend": "codex_app_server",
-                "sandbox": "read-only",
-                "approval_policy": "never",
-                "todo_write": "preview_locked",
-                "goal_id": GOAL_ID,
-            }, capabilities
+            assert capabilities["schema_version"] == "loopx_chat_capabilities_v1", capabilities
+            assert capabilities["streaming"] is True, capabilities
+            assert capabilities["resume"] is True, capabilities
+            assert capabilities["interrupt"] is True, capabilities
+            assert capabilities["adapters"][0]["agent_id"] == "codex", capabilities
 
             with urllib.request.urlopen(f"{base_url}/chat/", timeout=4) as response:
                 html = response.read().decode("utf-8")
@@ -313,10 +312,47 @@ def main() -> None:
             assert code == 200, turn
             assert turn["response"]["proposals"][0]["text"] == TODO_TEXT, turn
 
+            code, accepted = request_json(
+                f"{base_url}/api/chat/sessions/{session_id}/turns",
+                method="POST",
+                body={"message": "stream this answer", "client_turn_id": "client-stream-one"},
+            )
+            assert code == 202 and accepted["turn_id"], accepted
+            turn_id = accepted["turn_id"]
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{base_url}{accepted['events_url']}",
+                    headers={"Accept": "text/event-stream", "Origin": "http://127.0.0.1:5173"},
+                ),
+                timeout=4,
+            ) as response:
+                event_stream = response.read().decode("utf-8")
+            assert "event: assistant.delta" in event_stream, event_stream
+            assert "Visible streaming answer." in event_stream, event_stream
+            assert "<loopx-review-json>" not in event_stream, event_stream
+            assert "event: proposal.ready" in event_stream, event_stream
+            assert "event: turn.completed" in event_stream, event_stream
+            code, duplicate = request_json(
+                f"{base_url}/api/chat/sessions/{session_id}/turns",
+                method="POST",
+                body={"message": "stream this answer", "client_turn_id": "client-stream-one"},
+            )
+            assert code == 202 and duplicate["turn_id"] == turn_id, duplicate
+            assert duplicate["created"] is False, duplicate
+
+            listed = wait_for_json(
+                f"{base_url}/api/chat/sessions?goal_id={GOAL_ID}&agent_id=codex"
+            )
+            assert listed["sessions"][0]["session_id"] == session_id, listed
+            assert "upstream_thread_id" not in json.dumps(listed), listed
+            snapshot = wait_for_json(f"{base_url}/api/chat/sessions/{session_id}")
+            assert snapshot["session"]["resumable"] is True, snapshot
+            assert [item["role"] for item in snapshot["messages"]][-2:] == ["user", "agent"], snapshot
+
             code, failure_session = request_json(
                 f"{base_url}/api/chat/sessions",
                 method="POST",
-                body={"goal_id": GOAL_ID},
+                body={"goal_id": GOAL_ID, "mode": "new"},
             )
             assert code == 201 and failure_session["session_id"], failure_session
             failed_session_id = failure_session["session_id"]
@@ -326,16 +362,14 @@ def main() -> None:
                 body={"message": "force session failure"},
             )
             assert code == 424, failed_turn
-            assert failed_turn["session_invalidated"] is True, failed_turn
+            assert "session_invalidated" not in failed_turn, failed_turn
             assert "turn_replay_safe" not in failed_turn, failed_turn
-            code, missing_session = request_json(
+            code, recovered_session = request_json(
                 f"{base_url}/api/chat/sessions/{failed_session_id}/turns",
                 method="POST",
-                body={"message": "retrying a failed session must not reuse it"},
+                body={"message": "retry in the same durable session"},
             )
-            assert code == 404, missing_session
-            assert missing_session["session_invalidated"] is True, missing_session
-            assert missing_session["turn_replay_safe"] is True, missing_session
+            assert code == 200, recovered_session
 
             original = state_file.read_text(encoding="utf-8")
             code, preview = request_json(

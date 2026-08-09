@@ -23,6 +23,7 @@ from loopx.chat_agent import (  # noqa: E402
 FAKE_CODEX = r'''#!/usr/bin/env python3
 import json
 import sys
+import time
 
 turn_count = 0
 for line in sys.stdin:
@@ -33,7 +34,7 @@ for line in sys.stdin:
         continue
     if method == "initialize":
         result = {"serverInfo": {"name": "fake-codex"}}
-    elif method == "thread/start":
+    elif method in {"thread/start", "thread/resume"}:
         params = message.get("params", {})
         if params.get("sandbox") != "read-only" or params.get("approvalPolicy") != "never":
             print(json.dumps({
@@ -56,8 +57,6 @@ for line in sys.stdin:
                 "error": {"code": -32602, "message": "missing review contract"},
             }), flush=True)
             continue
-        if "force timeout" in prompt:
-            continue
         turn_id = f"turn-loopx-chat-{turn_count}"
         print(json.dumps({
             "method": "turn/started",
@@ -68,7 +67,17 @@ for line in sys.stdin:
         }), flush=True)
         result = {"turn": {"id": turn_id, "status": "running"}}
         print(json.dumps({"id": request_id, "result": result}), flush=True)
+        if "force idle timeout" in prompt:
+            continue
+        if "activity keeps alive" in prompt:
+            for index in range(3):
+                time.sleep(0.1)
+                print(json.dumps({
+                    "method": "item/started",
+                    "params": {"threadId": "thread-loopx-chat", "turnId": turn_id, "item": {"id": f"work-{index}"}},
+                }), flush=True)
         response = (
+            'Visible answer before envelope.\n'
             '<loopx-review-json>'
             + json.dumps({
                 "schema_version": "loopx_chat_agent_response_v0",
@@ -100,6 +109,8 @@ for line in sys.stdin:
             },
         }), flush=True)
         continue
+    elif method == "turn/interrupt":
+        result = {}
     else:
         result = {}
     print(json.dumps({"id": request_id, "result": result}), flush=True)
@@ -121,7 +132,11 @@ def main() -> None:
             response_timeout_sec=3.0,
         )
         try:
-            result = session.send("user message: suggest the next bounded step")
+            observed = []
+            result = session.send(
+                "user message: suggest the next bounded step",
+                on_event=lambda kind, payload: observed.append((kind, payload)),
+            )
         finally:
             session.close()
 
@@ -136,19 +151,55 @@ def main() -> None:
         ], result
         assert result["gate"] is None, result
         assert str(root) not in json.dumps(result), result
+        visible = "".join(
+            str(payload.get("text") or "")
+            for kind, payload in observed
+            if kind == "assistant.delta"
+        )
+        assert visible.strip() == "Visible answer before envelope.", observed
+        assert "<loopx-review-json>" not in visible, visible
+
+        resumed = CodexChatAgentSession.start(
+            codex_bin=str(fake_codex),
+            work_dir=root,
+            goal_id="loopx-chat-smoke",
+            objective="Keep the review loop bounded.",
+            resume_thread_id="thread-loopx-chat",
+            response_timeout_sec=3.0,
+        )
+        assert resumed.thread_id == "thread-loopx-chat"
+        resumed.close()
+
+        active_session = CodexChatAgentSession.start(
+            codex_bin=str(fake_codex),
+            work_dir=root,
+            goal_id="loopx-chat-smoke",
+            objective="Keep the review loop bounded.",
+            response_timeout_sec=3.0,
+            idle_timeout_sec=0.15,
+            hard_timeout_sec=2.0,
+        )
+        try:
+            active_result = active_session.send("activity keeps alive")
+        finally:
+            active_session.close()
+        assert active_result["proposals"], active_result
 
         timeout_session = CodexChatAgentSession.start(
             codex_bin=str(fake_codex),
             work_dir=root,
             goal_id="loopx-chat-smoke",
             objective="Keep the review loop bounded.",
-            response_timeout_sec=0.2,
+            response_timeout_sec=3.0,
+            idle_timeout_sec=0.2,
+            hard_timeout_sec=2.0,
         )
         try:
-            timeout_session.send("force timeout")
+            timeout_session.send("force idle timeout")
         except CodexChatAgentError as exc:
             assert exc.gate["kind"] == "host_tool_gate", exc.gate
-            assert "timed out" in exc.gate["summary"], exc.gate
+            assert exc.error_code == "idle_timeout", exc.error_code
+            assert "activity" in exc.gate["summary"], exc.gate
         else:
             raise AssertionError("Codex timeout must stop at a recoverable host-tool gate")
         finally:

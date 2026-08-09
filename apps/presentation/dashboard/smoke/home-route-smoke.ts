@@ -110,8 +110,10 @@ includes(dashboardSource, 'agentId: "status-only"', "deterministic status-only A
 includes(dashboardSource, 'managerQuickPrompts.includes(question)', "fixed quick questions use deterministic projection");
 includes(dashboardSource, '"LoopX 状态投影 · 仅查状态"', "status-only answer attribution");
 includes(dashboardSource, '"仅查状态"', "deterministic answer author attribution");
-includes(dashboardSource, "createChatSession(targetGoal.goalId)", "Codex Goal Chat session creation");
-includes(dashboardSource, "sendChatTurn(sessionId, question)", "Codex Goal Chat turn");
+includes(dashboardSource, 'createChatSession(targetGoal.goalId, "codex", mode)', "Codex Goal Chat session creation");
+includes(dashboardSource, "sendChatTurnStreaming(sessionId, question", "streaming Codex Goal Chat turn");
+includes(dashboardSource, "interruptChatTurn", "interruptible Codex Goal Chat turn");
+includes(dashboardSource, 'error.payload.error_code === "resume_failed"', "Codex resume failure route");
 includes(dashboardSource, "previewTodo(card.goalId, card.proposal.text)", "Todo dry-run preview");
 includes(dashboardSource, "applyTodo(card.goalId, card.proposal.text, card.previewId)", "Todo preview-locked apply");
 includes(dashboardSource, 'state: "rejected" | "cancelled"', "zero-write reject and cancel decisions");

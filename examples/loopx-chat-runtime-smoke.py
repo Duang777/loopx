@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Smoke-test durable resume, idempotency, and interruption in Chat runtime."""
+
+from __future__ import annotations
+
+import stat
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+from loopx.chat_runtime import ChatRuntimeController  # noqa: E402
+from loopx.chat_store import ChatSessionStore  # noqa: E402
+
+
+FAKE_CODEX = r'''#!/usr/bin/env python3
+import json
+import sys
+
+active_turn = None
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    request_id = request.get("id")
+    if method == "initialized":
+        continue
+    if method == "initialize":
+        result = {"serverInfo": {"name": "fake-runtime-codex"}}
+    elif method in {"thread/start", "thread/resume"}:
+        result = {"thread": {"id": "durable-thread"}}
+    elif method in {"thread/goal/set", "thread/goal/get"}:
+        result = {"goal": {"threadId": "durable-thread", "status": "active"}}
+    elif method == "turn/start":
+        active_turn = "durable-turn"
+        print(json.dumps({"method": "turn/started", "params": {"threadId": "durable-thread", "turn": {"id": active_turn}}}), flush=True)
+        print(json.dumps({"id": request_id, "result": {"turn": {"id": active_turn, "status": "running"}}}), flush=True)
+        if "wait for interrupt" in json.dumps(request.get("params") or {}):
+            continue
+        response = 'Visible runtime response.\n<loopx-review-json>' + json.dumps({
+            "schema_version": "loopx_chat_agent_response_v0",
+            "message": "Runtime response.",
+            "proposals": [],
+            "gate": None,
+        }) + '</loopx-review-json>'
+        print(json.dumps({"method": "item/agentMessage/delta", "params": {"threadId": "durable-thread", "turnId": active_turn, "delta": response}}), flush=True)
+        print(json.dumps({"method": "turn/completed", "params": {"threadId": "durable-thread", "turn": {"id": active_turn}}}), flush=True)
+        continue
+    elif method == "turn/interrupt":
+        result = {}
+        print(json.dumps({"id": request_id, "result": result}), flush=True)
+        if active_turn:
+            print(json.dumps({"method": "turn/completed", "params": {"threadId": "durable-thread", "turn": {"id": active_turn, "status": "interrupted"}}}), flush=True)
+        continue
+    else:
+        result = {}
+    print(json.dumps({"id": request_id, "result": result}), flush=True)
+'''
+
+
+def main() -> None:
+    with tempfile.TemporaryDirectory(prefix="loopx-chat-runtime-") as raw_tmp:
+        root = Path(raw_tmp)
+        fake = root / "codex"
+        fake.write_text(FAKE_CODEX, encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        store = ChatSessionStore(root / "runtime")
+        first = ChatRuntimeController(store=store, codex_bin=str(fake))
+        session, resumed = first.open_session(
+            goal_id="durable-goal",
+            agent_id="codex",
+            work_dir=root,
+            objective="Keep the thread durable.",
+            mode="resume_latest",
+        )
+        assert resumed is False
+        session_id = session["session_id"]
+        turn, created = first.submit_turn(
+            session_id=session_id,
+            client_turn_id="durable-client-turn",
+            message="complete normally",
+            work_dir=root,
+            objective="Keep the thread durable.",
+        )
+        assert created is True
+        completed = first.wait_for_turn(session_id=session_id, turn_id=turn["turn_id"], timeout_sec=3)
+        assert completed["status"] == "completed", completed
+        first.close()
+
+        second = ChatRuntimeController(store=store, codex_bin=str(fake))
+        restored, resumed = second.open_session(
+            goal_id="durable-goal",
+            agent_id="codex",
+            work_dir=root,
+            objective="Keep the thread durable.",
+            mode="resume_latest",
+        )
+        assert resumed is True and restored["session_id"] == session_id, restored
+        slow, created = second.submit_turn(
+            session_id=session_id,
+            client_turn_id="interrupt-client-turn",
+            message="wait for interrupt",
+            work_dir=root,
+            objective="Keep the thread durable.",
+        )
+        assert created is True
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            current = store.load_turn(session_id, slow["turn_id"])
+            if current and current.get("status") == "running":
+                break
+            time.sleep(0.02)
+        interrupted = second.interrupt_turn(session_id=session_id, turn_id=slow["turn_id"])
+        assert interrupted["status"] == "interrupted", interrupted
+        assert store.load_session(session_id)["status"] == "ready"
+        second.close()
+
+    print("loopx-chat-runtime-smoke: ok")
+
+
+if __name__ == "__main__":
+    main()
