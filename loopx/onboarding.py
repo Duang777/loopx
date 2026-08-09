@@ -37,6 +37,8 @@ def _git(project: Path, *args: str, timeout_seconds: float = 1.5) -> subprocess.
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired):

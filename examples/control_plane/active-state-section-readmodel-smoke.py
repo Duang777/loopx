@@ -20,8 +20,8 @@ from loopx.status import (  # noqa: E402
     SECTION_HEADING_PATTERN,
     active_state_section_entries,
     active_state_sections,
-    normalize_todo_text,
 )
+from loopx.control_plane.todos.todo_summary import normalize_todo_text  # noqa: E402
 
 
 STATE_TEXT = """# Goal

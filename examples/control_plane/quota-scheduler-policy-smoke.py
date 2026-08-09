@@ -17,7 +17,8 @@ from loopx.control_plane.scheduler.execution_context import (  # noqa: E402
     scheduler_execution_context_for_runtime_profile,
 )
 from loopx.control_plane.scheduler.scheduler_hint import build_scheduler_hint  # noqa: E402
-from loopx.quota import AgentScopeFrontierAction, _scheduler_hint  # noqa: E402
+from loopx.control_plane.agents.agent_scope_frontier import AgentScopeFrontierAction  # noqa: E402
+from loopx.control_plane.quota.should_run_packet import _scheduler_hint  # noqa: E402
 
 
 AGENT_SCOPE_ACTIONS = [action.value for action in AgentScopeFrontierAction]
