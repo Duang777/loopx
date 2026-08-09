@@ -1,0 +1,414 @@
+"""Runtime-neutral orchestration for durable LoopX Chat sessions."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import threading
+import time
+from typing import Any, Callable, Protocol
+
+from .chat_agent import CodexChatAgentError, CodexChatAgentSession, CodexChatTimeoutError
+from .chat_store import ChatSessionStore, utc_now
+
+
+EventSink = Callable[[str, dict[str, Any]], None]
+TERMINAL_TURN_STATES = {"completed", "interrupted", "timed_out", "failed"}
+
+
+class ChatRuntimeAdapter(Protocol):
+    @property
+    def upstream_thread_id(self) -> str: ...
+
+    def capabilities(self) -> dict[str, Any]: ...
+    def start_turn(self, message: str, event_sink: EventSink) -> dict[str, Any]: ...
+    def interrupt_turn(self, turn_id: str | None = None) -> None: ...
+    def close_session(self) -> None: ...
+    def healthcheck(self) -> bool: ...
+
+
+@dataclass
+class CodexAppServerAdapter:
+    session: CodexChatAgentSession
+
+    @property
+    def upstream_thread_id(self) -> str:
+        return self.session.thread_id
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        codex_bin: str,
+        work_dir: Path,
+        goal_id: str,
+        objective: str,
+        resume_thread_id: str | None = None,
+        startup_timeout_sec: float = 30.0,
+        idle_timeout_sec: float = 180.0,
+        hard_timeout_sec: float = 900.0,
+    ) -> "CodexAppServerAdapter":
+        return cls(
+            CodexChatAgentSession.start(
+                codex_bin=codex_bin,
+                work_dir=work_dir,
+                goal_id=goal_id,
+                objective=objective,
+                response_timeout_sec=startup_timeout_sec,
+                idle_timeout_sec=idle_timeout_sec,
+                hard_timeout_sec=hard_timeout_sec,
+                resume_thread_id=resume_thread_id,
+            )
+        )
+
+    def capabilities(self) -> dict[str, Any]:
+        return {
+            "adapter_kind": "codex_app_server",
+            "streaming": True,
+            "resume": True,
+            "interrupt": True,
+        }
+
+    def start_turn(self, message: str, event_sink: EventSink) -> dict[str, Any]:
+        return self.session.send(message, on_event=event_sink)
+
+    def interrupt_turn(self, turn_id: str | None = None) -> None:
+        self.session.interrupt(turn_id)
+
+    def close_session(self) -> None:
+        self.session.close()
+
+    def healthcheck(self) -> bool:
+        return self.session.process.poll() is None
+
+
+class ChatRuntimeController:
+    def __init__(
+        self,
+        *,
+        store: ChatSessionStore,
+        codex_bin: str,
+        startup_timeout_sec: float = 30.0,
+        idle_timeout_sec: float = 180.0,
+        hard_timeout_sec: float = 900.0,
+    ) -> None:
+        self.store = store
+        self.codex_bin = codex_bin
+        self.startup_timeout_sec = startup_timeout_sec
+        self.idle_timeout_sec = idle_timeout_sec
+        self.hard_timeout_sec = hard_timeout_sec
+        self.adapters: dict[str, ChatRuntimeAdapter] = {}
+        self.cancelled_turns: set[tuple[str, str]] = set()
+        self.lock = threading.RLock()
+
+    def capabilities(self) -> list[dict[str, Any]]:
+        return [{
+            "agent_id": "codex",
+            "display_name": "Codex",
+            "adapter_kind": "codex_app_server",
+            "available": True,
+            "streaming": True,
+            "resume": True,
+            "interrupt": True,
+        }]
+
+    def open_session(
+        self,
+        *,
+        goal_id: str,
+        agent_id: str,
+        work_dir: Path,
+        objective: str,
+        mode: str,
+    ) -> tuple[dict[str, Any], bool]:
+        if agent_id != "codex":
+            raise ValueError("only the codex Agent is available")
+        if mode not in {"resume_latest", "new"}:
+            raise ValueError("mode must be resume_latest or new")
+        if mode == "resume_latest":
+            latest = self.store.latest_session(goal_id=goal_id, agent_id=agent_id)
+            if latest is not None:
+                self._ensure_adapter(latest, work_dir=work_dir, objective=objective)
+                return latest, True
+        adapter = CodexAppServerAdapter.start(
+            codex_bin=self.codex_bin,
+            work_dir=work_dir,
+            goal_id=goal_id,
+            objective=objective,
+            startup_timeout_sec=self.startup_timeout_sec,
+            idle_timeout_sec=self.idle_timeout_sec,
+            hard_timeout_sec=self.hard_timeout_sec,
+        )
+        persisted = self.store.create_session(
+            goal_id=goal_id,
+            agent_id=agent_id,
+            adapter_kind="codex_app_server",
+            upstream_thread_id=adapter.upstream_thread_id,
+        )
+        with self.lock:
+            self.adapters[persisted["session_id"]] = adapter
+        return persisted, False
+
+    def _ensure_adapter(
+        self,
+        session: dict[str, Any],
+        *,
+        work_dir: Path,
+        objective: str,
+    ) -> ChatRuntimeAdapter:
+        session_id = str(session["session_id"])
+        with self.lock:
+            current = self.adapters.get(session_id)
+            if current is not None and current.healthcheck():
+                return current
+            if current is not None:
+                current.close_session()
+                self.adapters.pop(session_id, None)
+        self.store.update_session(session_id, status="resuming", last_error_code=None)
+        active_turn_id = session.get("active_turn_id")
+        if active_turn_id:
+            active = self.store.load_turn(session_id, str(active_turn_id))
+            if active and active.get("status") not in TERMINAL_TURN_STATES:
+                self.store.update_turn(
+                    session_id,
+                    str(active_turn_id),
+                    status="failed",
+                    error_code="server_restarted",
+                    error="LoopX Chat restarted before this turn completed.",
+                    completed_at=utc_now(),
+                )
+                self.store.append_event(
+                    session_id,
+                    str(active_turn_id),
+                    kind="turn.failed",
+                    payload={"error_code": "server_restarted"},
+                )
+        try:
+            adapter = CodexAppServerAdapter.start(
+                codex_bin=self.codex_bin,
+                work_dir=work_dir,
+                goal_id=str(session["goal_id"]),
+                objective=objective,
+                resume_thread_id=str(session["upstream_thread_id"]),
+                startup_timeout_sec=self.startup_timeout_sec,
+                idle_timeout_sec=self.idle_timeout_sec,
+                hard_timeout_sec=self.hard_timeout_sec,
+            )
+        except Exception as exc:
+            self.store.update_session(
+                session_id,
+                status="resume_failed",
+                active_turn_id=None,
+                last_error_code="resume_failed",
+            )
+            gate = exc.gate if isinstance(exc, CodexChatAgentError) else None
+            raise CodexChatAgentError(
+                "The previous Codex conversation could not be restored.",
+                error_code="resume_failed",
+                gate=gate,
+            ) from exc
+        with self.lock:
+            self.adapters[session_id] = adapter
+        self.store.update_session(
+            session_id,
+            status="ready",
+            active_turn_id=None,
+            last_activity_at=utc_now(),
+            last_error_code=None,
+        )
+        return adapter
+
+    def submit_turn(
+        self,
+        *,
+        session_id: str,
+        client_turn_id: str,
+        message: str,
+        work_dir: Path,
+        objective: str,
+    ) -> tuple[dict[str, Any], bool]:
+        session = self.store.load_session(session_id)
+        if session is None:
+            raise KeyError("chat session was not found")
+        adapter = self._ensure_adapter(session, work_dir=work_dir, objective=objective)
+        turn, created = self.store.create_turn(
+            session_id,
+            client_turn_id=client_turn_id,
+            message=message,
+        )
+        if not created:
+            return turn, False
+        worker = threading.Thread(
+            target=self._run_turn,
+            kwargs={
+                "session_id": session_id,
+                "turn_id": str(turn["turn_id"]),
+                "message": message,
+                "adapter": adapter,
+            },
+            daemon=True,
+        )
+        worker.start()
+        return turn, True
+
+    def _run_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        message: str,
+        adapter: ChatRuntimeAdapter,
+    ) -> None:
+        started = utc_now()
+        self.store.update_turn(session_id, turn_id, status="starting", started_at=started)
+
+        def event_sink(kind: str, payload: dict[str, Any]) -> None:
+            if (session_id, turn_id) in self.cancelled_turns:
+                return
+            now = utc_now()
+            changes: dict[str, Any] = {"last_activity_at": now}
+            current_turn = self.store.load_turn(session_id, turn_id) or {}
+            if not current_turn.get("first_event_at"):
+                changes["first_event_at"] = now
+            if kind == "assistant.delta":
+                changes["delta_count"] = int(current_turn.get("delta_count") or 0) + 1
+            if kind == "turn.started":
+                changes.update(status="running", upstream_turn_id=payload.get("upstream_turn_id"))
+            self.store.update_turn(session_id, turn_id, **changes)
+            self.store.update_session(session_id, last_activity_at=now)
+            self.store.append_event(session_id, turn_id, kind=kind, payload=payload)
+
+        try:
+            response = adapter.start_turn(message, event_sink)
+            if (session_id, turn_id) in self.cancelled_turns:
+                self.cancelled_turns.discard((session_id, turn_id))
+                return
+            if response.get("message"):
+                self.store.append_message(
+                    session_id,
+                    role="agent",
+                    text=str(response["message"]),
+                    turn_id=turn_id,
+                )
+            for proposal in response.get("proposals") or []:
+                self.store.append_event(session_id, turn_id, kind="proposal.ready", payload={"proposal": proposal})
+            if response.get("gate"):
+                self.store.append_event(session_id, turn_id, kind="gate.ready", payload={"gate": response["gate"]})
+            completed = utc_now()
+            self.store.update_turn(
+                session_id,
+                turn_id,
+                status="completed",
+                response=response,
+                completed_at=completed,
+                last_activity_at=completed,
+            )
+            self.store.append_event(session_id, turn_id, kind="turn.completed", payload={"response": response})
+            self.store.update_session(
+                session_id,
+                status="ready",
+                active_turn_id=None,
+                last_activity_at=completed,
+                last_error_code=None,
+            )
+        except CodexChatTimeoutError as exc:
+            try:
+                adapter.interrupt_turn()
+            except Exception:
+                pass
+            self._fail_turn(session_id, turn_id, exc.error_code, str(exc), status="timed_out")
+        except CodexChatAgentError as exc:
+            self._fail_turn(session_id, turn_id, exc.error_code, str(exc), status="failed", gate=exc.gate)
+            if not adapter.healthcheck():
+                with self.lock:
+                    self.adapters.pop(session_id, None)
+                self.store.update_session(session_id, status="stale", last_error_code="transport_disconnected")
+        except Exception as exc:  # noqa: BLE001 - preserve compact runtime failure.
+            self._fail_turn(session_id, turn_id, "runtime_error", str(exc), status="failed")
+
+    def _fail_turn(
+        self,
+        session_id: str,
+        turn_id: str,
+        error_code: str,
+        message: str,
+        *,
+        status: str,
+        gate: dict[str, Any] | None = None,
+    ) -> None:
+        completed = utc_now()
+        self.store.update_turn(
+            session_id,
+            turn_id,
+            status=status,
+            error_code=error_code,
+            error=message,
+            completed_at=completed,
+            last_activity_at=completed,
+        )
+        payload: dict[str, Any] = {"error_code": error_code, "message": message}
+        if gate:
+            payload["gate"] = gate
+        self.store.append_event(session_id, turn_id, kind="turn.failed", payload=payload)
+        self.store.append_message(session_id, role="error", text=message, turn_id=turn_id)
+        self.store.update_session(
+            session_id,
+            status="ready",
+            active_turn_id=None,
+            last_activity_at=completed,
+            last_error_code=error_code,
+        )
+
+    def interrupt_turn(self, *, session_id: str, turn_id: str) -> dict[str, Any]:
+        turn = self.store.load_turn(session_id, turn_id)
+        if turn is None:
+            raise KeyError("chat turn was not found")
+        if turn.get("status") in TERMINAL_TURN_STATES:
+            return turn
+        with self.lock:
+            adapter = self.adapters.get(session_id)
+        self.store.update_turn(session_id, turn_id, status="interrupting")
+        if adapter is not None:
+            adapter.interrupt_turn(str(turn.get("upstream_turn_id") or "") or None)
+        self.cancelled_turns.add((session_id, turn_id))
+        completed = utc_now()
+        updated = self.store.update_turn(
+            session_id,
+            turn_id,
+            status="interrupted",
+            completed_at=completed,
+            last_activity_at=completed,
+        )
+        self.store.append_event(session_id, turn_id, kind="turn.interrupted", payload={})
+        self.store.update_session(session_id, status="ready", active_turn_id=None, last_activity_at=completed)
+        self.cancelled_turns.discard((session_id, turn_id))
+        return updated
+
+    def wait_for_turn(self, *, session_id: str, turn_id: str, timeout_sec: float = 920.0) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            turn = self.store.load_turn(session_id, turn_id)
+            if turn is None:
+                raise KeyError("chat turn was not found")
+            if turn.get("status") in TERMINAL_TURN_STATES:
+                return turn
+            time.sleep(0.02)
+        raise TimeoutError("chat turn wait timed out")
+
+    def close_session(self, session_id: str) -> bool:
+        session = self.store.load_session(session_id)
+        if session is None:
+            return False
+        with self.lock:
+            adapter = self.adapters.pop(session_id, None)
+        if adapter is not None:
+            adapter.close_session()
+        self.store.update_session(session_id, status="closed", active_turn_id=None)
+        return True
+
+    def close(self) -> None:
+        with self.lock:
+            adapters = list(self.adapters.values())
+            self.adapters.clear()
+        for adapter in adapters:
+            adapter.close_session()

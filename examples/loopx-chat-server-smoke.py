@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""Smoke-test the loopx chat command, HTTP API, and preview-locked Todo write."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GOAL_ID = "loopx-chat-server-smoke"
+SECOND_GOAL_ID = "loopx-chat-server-second-goal"
+TODO_TEXT = "[P0] Implement the approved Goal Studio review card."
+BOUNDED_TODO_TEXT = "[P0] Keep the bounded Chat status projection responsive."
+
+FAKE_CODEX = r'''#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "initialized":
+        continue
+    if method == "initialize":
+        result = {"serverInfo": {"name": "fake-codex"}}
+    elif method in {"thread/start", "thread/resume"}:
+        result = {"thread": {"id": "thread-chat-server"}}
+    elif method in {"thread/goal/set", "thread/goal/get"}:
+        result = {"goal": {"threadId": "thread-chat-server", "status": "active"}}
+    elif method == "turn/start":
+        turn_id = "turn-chat-server"
+        force_failure = "force session failure" in json.dumps(message.get("params") or {})
+        print(json.dumps({
+            "method": "turn/started",
+            "params": {"threadId": "thread-chat-server", "turn": {"id": turn_id}},
+        }), flush=True)
+        print(json.dumps({
+            "id": request_id,
+            "result": {"turn": {"id": turn_id, "status": "running"}},
+        }), flush=True)
+        if force_failure:
+            print(json.dumps({
+                "method": "error",
+                "params": {"threadId": "thread-chat-server", "turnId": turn_id},
+            }), flush=True)
+            continue
+        response = (
+            'Visible streaming answer.\n'
+            '<loopx-review-json>'
+            + json.dumps({
+                "schema_version": "loopx_chat_agent_response_v0",
+                "message": "I found one reviewable step.",
+                "proposals": [{
+                    "kind": "todo",
+                    "text": "[P0] Implement the approved Goal Studio review card.",
+                    "priority": "P0",
+                    "rationale": "It closes the visible approval loop.",
+                }],
+                "gate": None,
+            })
+            + '</loopx-review-json>'
+        )
+        print(json.dumps({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thread-chat-server",
+                "turnId": turn_id,
+                "delta": response,
+            },
+        }), flush=True)
+        print(json.dumps({
+            "method": "turn/completed",
+            "params": {"threadId": "thread-chat-server", "turn": {"id": turn_id}},
+        }), flush=True)
+        continue
+    elif method == "turn/interrupt":
+        result = {}
+    else:
+        result = {}
+    print(json.dumps({"id": request_id, "result": result}), flush=True)
+'''
+
+
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def write_fixture(root: Path) -> tuple[Path, Path]:
+    project = root / "project"
+    runtime = root / "runtime"
+    state_file = project / ".codex" / "goals" / GOAL_ID / "ACTIVE_GOAL_STATE.md"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_text(
+        "---\n"
+        "status: active\n"
+        "updated_at: 2026-01-01T00:00:00+00:00\n"
+        "---\n\n"
+        "# LoopX Chat Server Smoke\n\n"
+        "## Objective\n\n"
+        "Keep the local review loop explicit.\n\n"
+        "## Next Action\n\n"
+        "- Ask the agent for one bounded proposal.\n\n"
+        "## User Todo / Owner Review Reading Queue\n\n"
+        "## Agent Todo\n\n"
+        f"- [ ] {BOUNDED_TODO_TEXT}\n"
+        "  <!-- loopx:todo todo_id=todo_bounded_chat_status status=open "
+        "task_class=advancement_task action_kind=repair_loopx_chat_status_projection -->\n",
+        encoding="utf-8",
+    )
+    second_state_file = project / ".codex" / "goals" / SECOND_GOAL_ID / "ACTIVE_GOAL_STATE.md"
+    second_state_file.parent.mkdir(parents=True)
+    second_state_file.write_text(
+        "---\n"
+        "status: active\n"
+        "updated_at: 2026-01-01T00:00:00+00:00\n"
+        "---\n\n"
+        "# Active Goal State\n\n"
+        "## Objective\n\n"
+        "Keep every connected Goal visible to Chat.\n",
+        encoding="utf-8",
+    )
+    registry = project / ".loopx" / "registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "common_runtime_root": str(runtime),
+                "goals": [
+                    {
+                        "id": GOAL_ID,
+                        "repo": str(project),
+                        "state_file": f".codex/goals/{GOAL_ID}/ACTIVE_GOAL_STATE.md",
+                        "domain": "product-engineering",
+                        "status": "active",
+                        "adapter": {"kind": "read_only_project_map_v0", "status": "connected"},
+                    },
+                    {
+                        "id": SECOND_GOAL_ID,
+                        "repo": str(project),
+                        "state_file": f".codex/goals/{SECOND_GOAL_ID}/ACTIVE_GOAL_STATE.md",
+                        "domain": "product-engineering",
+                        "status": "active",
+                        "adapter": {"kind": "read_only_project_map_v0", "status": "connected"},
+                    },
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return registry, state_file
+
+
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    body: dict | None = None,
+    origin: str = "http://127.0.0.1",
+) -> tuple[int, dict]:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json", "Origin": origin},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def wait_for_json(url: str) -> dict:
+    deadline = time.time() + 8
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            status, payload = request_json(url)
+            if status == 200:
+                return payload
+        except Exception as exc:  # pragma: no cover - bounded startup retry.
+            last_error = exc
+        time.sleep(0.1)
+    raise RuntimeError(f"timed out waiting for LoopX Chat: {last_error}")
+
+
+def main() -> None:
+    sys.path.insert(0, str(REPO_ROOT))
+    from loopx.chat_server import (
+        ChatHTTPServer,
+        ChatRequestHandler,
+        build_bounded_chat_status_projection,
+    )
+
+    try:
+        ChatHTTPServer(("127.0.0.1", 70_000), ChatRequestHandler)
+    except Exception as exc:
+        assert "sessions_lock" not in str(exc), exc
+    else:  # pragma: no cover - the platform must reject an invalid TCP port.
+        raise AssertionError("invalid TCP port unexpectedly created a chat server")
+
+    with tempfile.TemporaryDirectory(prefix="loopx-chat-server-") as raw_tmp:
+        root = Path(raw_tmp)
+        registry, state_file = write_fixture(root)
+        bounded_status = build_bounded_chat_status_projection(
+            registry=json.loads(registry.read_text(encoding="utf-8")),
+            selected_goal_id=GOAL_ID,
+        )
+        assert bounded_status["goal_count"] == 2, bounded_status
+        selected_goal = next(
+            goal for goal in bounded_status["goals"] if goal["goal_id"] == GOAL_ID
+        )
+        assert selected_goal["top_todo"]["text"] == BOUNDED_TODO_TEXT, bounded_status
+        second_goal = next(
+            goal for goal in bounded_status["goals"] if goal["goal_id"] == SECOND_GOAL_ID
+        )
+        assert second_goal["title"] == SECOND_GOAL_ID, bounded_status
+        assets = REPO_ROOT / "loopx" / "web" / "chat"
+        assert (assets / "index.html").is_file(), assets
+        fake_codex = root / "codex"
+        fake_codex.write_text(FAKE_CODEX, encoding="utf-8")
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+        port = free_port()
+        base_url = f"http://127.0.0.1:{port}"
+        command = [
+            sys.executable,
+            "-m",
+            "loopx.cli",
+            "--registry",
+            str(registry),
+            "chat",
+            "--goal-id",
+            GOAL_ID,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--assets-dir",
+            str(assets),
+            "--codex-bin",
+            str(fake_codex),
+            "--scan-path",
+            str(assets / "index.html"),
+            "--no-open",
+        ]
+        server = subprocess.Popen(
+            command,
+            cwd=root / "project",
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            capabilities = wait_for_json(f"{base_url}/api/chat/capabilities")
+            assert capabilities["schema_version"] == "loopx_chat_capabilities_v1", capabilities
+            assert capabilities["streaming"] is True, capabilities
+            assert capabilities["resume"] is True, capabilities
+            assert capabilities["interrupt"] is True, capabilities
+            assert capabilities["adapters"][0]["agent_id"] == "codex", capabilities
+
+            with urllib.request.urlopen(f"{base_url}/chat/", timeout=4) as response:
+                html = response.read().decode("utf-8")
+            assert "LoopX Goal Studio" in html, html
+            stylesheet_match = re.search(r'href="(/chat/assets/[^"]+\.css)"', html)
+            assert stylesheet_match, html
+            with urllib.request.urlopen(f"{base_url}{stylesheet_match.group(1)}", timeout=4) as response:
+                stylesheet = response.read().decode("utf-8")
+            assert ".chat-goal-map" in stylesheet, "packaged chat stylesheet is incomplete"
+
+            status_payload = wait_for_json(f"{base_url}/status.json")
+            assert status_payload["schema_version"] == "loopx_chat_status_v0", status_payload
+            assert status_payload["selected_goal_id"] == GOAL_ID, status_payload
+            assert status_payload["goal_count"] == 2, status_payload
+            assert {goal["goal_id"] for goal in status_payload["goals"]} == {
+                GOAL_ID,
+                SECOND_GOAL_ID,
+            }, status_payload
+            assert str(root) not in json.dumps(status_payload), status_payload
+
+            code, created = request_json(
+                f"{base_url}/api/chat/sessions",
+                method="POST",
+                body={"goal_id": GOAL_ID},
+            )
+            assert code == 201 and created["session_id"], created
+            session_id = created["session_id"]
+
+            code, turn = request_json(
+                f"{base_url}/api/chat/sessions/{session_id}/turns",
+                method="POST",
+                body={"message": "user message: propose the next step"},
+            )
+            assert code == 200, turn
+            assert turn["response"]["proposals"][0]["text"] == TODO_TEXT, turn
+
+            code, accepted = request_json(
+                f"{base_url}/api/chat/sessions/{session_id}/turns",
+                method="POST",
+                body={"message": "stream this answer", "client_turn_id": "client-stream-one"},
+            )
+            assert code == 202 and accepted["turn_id"], accepted
+            turn_id = accepted["turn_id"]
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{base_url}{accepted['events_url']}",
+                    headers={"Accept": "text/event-stream", "Origin": "http://127.0.0.1:5173"},
+                ),
+                timeout=4,
+            ) as response:
+                event_stream = response.read().decode("utf-8")
+            assert "event: assistant.delta" in event_stream, event_stream
+            assert "Visible streaming answer." in event_stream, event_stream
+            assert "<loopx-review-json>" not in event_stream, event_stream
+            assert "event: proposal.ready" in event_stream, event_stream
+            assert "event: turn.completed" in event_stream, event_stream
+            code, duplicate = request_json(
+                f"{base_url}/api/chat/sessions/{session_id}/turns",
+                method="POST",
+                body={"message": "stream this answer", "client_turn_id": "client-stream-one"},
+            )
+            assert code == 202 and duplicate["turn_id"] == turn_id, duplicate
+            assert duplicate["created"] is False, duplicate
+
+            listed = wait_for_json(
+                f"{base_url}/api/chat/sessions?goal_id={GOAL_ID}&agent_id=codex"
+            )
+            assert listed["sessions"][0]["session_id"] == session_id, listed
+            assert "upstream_thread_id" not in json.dumps(listed), listed
+            snapshot = wait_for_json(f"{base_url}/api/chat/sessions/{session_id}")
+            assert snapshot["session"]["resumable"] is True, snapshot
+            assert [item["role"] for item in snapshot["messages"]][-2:] == ["user", "agent"], snapshot
+
+            code, failure_session = request_json(
+                f"{base_url}/api/chat/sessions",
+                method="POST",
+                body={"goal_id": GOAL_ID, "mode": "new"},
+            )
+            assert code == 201 and failure_session["session_id"], failure_session
+            failed_session_id = failure_session["session_id"]
+            code, failed_turn = request_json(
+                f"{base_url}/api/chat/sessions/{failed_session_id}/turns",
+                method="POST",
+                body={"message": "force session failure"},
+            )
+            assert code == 424, failed_turn
+            assert "session_invalidated" not in failed_turn, failed_turn
+            assert "turn_replay_safe" not in failed_turn, failed_turn
+            code, recovered_session = request_json(
+                f"{base_url}/api/chat/sessions/{failed_session_id}/turns",
+                method="POST",
+                body={"message": "retry in the same durable session"},
+            )
+            assert code == 200, recovered_session
+
+            original = state_file.read_text(encoding="utf-8")
+            code, preview = request_json(
+                f"{base_url}/api/chat/todo/dry-run",
+                method="POST",
+                body={"goal_id": GOAL_ID, "text": TODO_TEXT},
+            )
+            assert code == 200 and preview["preview_id"], preview
+            assert state_file.read_text(encoding="utf-8") == original
+
+            code, blocked_origin = request_json(
+                f"{base_url}/api/chat/todo/apply",
+                method="POST",
+                body={
+                    "goal_id": GOAL_ID,
+                    "text": TODO_TEXT,
+                    "preview_id": preview["preview_id"],
+                },
+                origin="https://example.com",
+            )
+            assert code == 403 and blocked_origin["ok"] is False, blocked_origin
+            assert state_file.read_text(encoding="utf-8") == original
+
+            code, stale = request_json(
+                f"{base_url}/api/chat/todo/apply",
+                method="POST",
+                body={"goal_id": GOAL_ID, "text": TODO_TEXT, "preview_id": "stale"},
+            )
+            assert code == 409 and stale["ok"] is False, stale
+            no_write_receipt = stale["todo_receipt"]
+            assert no_write_receipt["schema_version"] == "loopx_chat_todo_no_write_receipt_v0", stale
+            assert no_write_receipt["status"] == "not_applied", stale
+            assert no_write_receipt["outcome"] == "preview_stale", stale
+            assert no_write_receipt["write_attempted"] is False, stale
+            assert no_write_receipt["goal_id"] == GOAL_ID, stale
+            assert no_write_receipt["receipt_id"], stale
+            assert str(root) not in json.dumps(no_write_receipt), stale
+            assert state_file.read_text(encoding="utf-8") == original
+
+            code, applied = request_json(
+                f"{base_url}/api/chat/todo/apply",
+                method="POST",
+                body={
+                    "goal_id": GOAL_ID,
+                    "text": TODO_TEXT,
+                    "preview_id": preview["preview_id"],
+                },
+            )
+            assert code == 200 and applied["applied"] is True, applied
+            receipt = applied["receipt"]
+            assert receipt["schema_version"] == "loopx_chat_todo_receipt_v0", receipt
+            assert receipt["preview_id"] == preview["preview_id"], receipt
+            assert receipt["todo_id"] == applied["todo"]["todo_id"], receipt
+            assert receipt["outcome"] == "todo_added", receipt
+            assert str(root) not in json.dumps(receipt), receipt
+            assert state_file.read_text(encoding="utf-8").count(TODO_TEXT) == 1
+            refreshed_status = wait_for_json(f"{base_url}/status.json")
+            refreshed_goal = next(
+                goal for goal in refreshed_status["goals"] if goal["goal_id"] == GOAL_ID
+            )
+            projected_todos = [
+                todo
+                for todo in refreshed_goal["todos"]
+                if todo["todo_id"] == receipt["todo_id"]
+            ]
+            assert len(projected_todos) == 1, refreshed_status
+            assert projected_todos[0]["text"] == TODO_TEXT, projected_todos
+
+            code, retry_preview = request_json(
+                f"{base_url}/api/chat/todo/dry-run",
+                method="POST",
+                body={"goal_id": GOAL_ID, "text": TODO_TEXT},
+            )
+            assert code == 200 and retry_preview["already_exists"] is True, retry_preview
+            code, retry_applied = request_json(
+                f"{base_url}/api/chat/todo/apply",
+                method="POST",
+                body={
+                    "goal_id": GOAL_ID,
+                    "text": TODO_TEXT,
+                    "preview_id": retry_preview["preview_id"],
+                },
+            )
+            assert code == 200 and retry_applied["applied"] is True, retry_applied
+            retry_receipt = retry_applied["receipt"]
+            assert retry_receipt["outcome"] == "todo_already_exists", retry_receipt
+            assert retry_receipt["already_exists"] is True, retry_receipt
+            assert retry_receipt["todo_id"] == receipt["todo_id"], retry_receipt
+            assert state_file.read_text(encoding="utf-8").count(TODO_TEXT) == 1
+
+            code, closed = request_json(
+                f"{base_url}/api/chat/sessions/{session_id}",
+                method="DELETE",
+            )
+            assert code == 200 and closed["closed"] is True, closed
+            code, closed_session_turn = request_json(
+                f"{base_url}/api/chat/sessions/{session_id}/turns",
+                method="POST",
+                body={"message": "a closed browser session must restart before retry"},
+            )
+            assert code == 404, closed_session_turn
+            assert closed_session_turn["session_invalidated"] is True, closed_session_turn
+            assert closed_session_turn["turn_replay_safe"] is True, closed_session_turn
+        finally:
+            server.terminate()
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive cleanup.
+                server.kill()
+                server.wait(timeout=5)
+
+    print("loopx-chat-server-smoke: ok")
+
+
+if __name__ == "__main__":
+    main()
