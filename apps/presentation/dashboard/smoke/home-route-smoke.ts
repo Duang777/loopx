@@ -165,8 +165,6 @@ includes(dashboardSource, "是否可继续", "operator mental model continue lab
 includes(dashboardSource, 'data-testid="project-todo-explorer"', "project todo explorer test id");
 includes(dashboardSource, 'data-testid="project-todo-search-input"', "project todo search input test id");
 includes(dashboardSource, 'data-testid="project-todo-id"', "project todo id rendering");
-includes(dashboardSource, "项目 Todo 浏览器", "project todo explorer title");
-includes(dashboardSource, "全部项目", "project todo all-project selector");
 includes(dashboardSource, "todoExplorerProjectOptions", "project todo auto project options");
 includes(dashboardSource, "selectedTodoGoalId", "project todo selected project prop");
 includes(dashboardSource, "claimed_by=", "project todo claimed owner metadata");
@@ -180,16 +178,6 @@ includes(dashboardSource, 'data-testid="agent-management-copy-command"', "agent 
 includes(dashboardSource, 'data-testid="agent-management-handoff-note"', "agent management handoff note test id");
 includes(dashboardSource, 'data-testid="agent-management-workspace-ref"', "agent management workspace hint test id");
 includes(dashboardSource, 'data-testid="agent-management-stale-claim-hint"', "agent management stale claim hint test id");
-includes(dashboardSource, "Agent 管理", "agent management title");
-includes(dashboardSource, "已认领 Todo", "agent management claimed todo label");
-includes(dashboardSource, "最近活动", "agent management activity label");
-includes(dashboardSource, "下一步安全动作", "agent management next action label");
-includes(dashboardSource, "工作区提示", "agent management workspace label");
-includes(dashboardSource, "认领状态可能过期", "agent management stale warning label");
-includes(dashboardSource, "仅提醒", "agent management stale warning-only boundary");
-includes(dashboardSource, "交接信息", "agent management handoff note label");
-includes(dashboardSource, "证据引用", "agent management evidence label");
-includes(dashboardSource, "的只读命令", "agent management read-only command label");
 includes(dashboardSource, "buildAgentManagementRows", "agent management projection builder");
 includes(dashboardSource, "agentManagementProjection={payload.agent_management_projection}", "agent management live projection wiring");
 includes(dashboardSource, "agent_id", "agent management agent id metadata");

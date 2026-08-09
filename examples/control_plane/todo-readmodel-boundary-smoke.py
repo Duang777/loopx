@@ -31,7 +31,15 @@ from loopx.control_plane.scheduler import time as scheduler_time_read_model  # n
 from loopx.control_plane.todos import active_state_todo_parser as active_state_todo_parser_read_model  # noqa: E402
 from loopx.control_plane.todos import monitor_metadata as monitor_metadata_read_model  # noqa: E402
 from loopx.control_plane.todos import projection as todo_projection_read_model  # noqa: E402
+from loopx.control_plane.todos.contract import (  # noqa: E402
+    TODO_TASK_CLASS_ADVANCEMENT,
+    TODO_TASK_CLASS_MONITOR,
+)
 from loopx.control_plane.todos import todo_summary as todo_read_model  # noqa: E402
+from loopx.control_plane.todos.todo_summary import (  # noqa: E402
+    normalize_todo_text,
+    todo_item_is_actionable_open,
+)
 from loopx.control_plane.work_items import task_lease as task_lease_read_model  # noqa: E402
 
 
@@ -86,7 +94,6 @@ def fixture_todos() -> dict:
 
 def assert_status_compatibility_boundary() -> None:
     assert status_module.parse_state_frontmatter is active_state_metadata_read_model.parse_state_frontmatter
-    assert status_module.same_path is path_resolution_read_model.same_path
     assert status_module.resolve_goal_local_path is path_resolution_read_model.resolve_goal_local_path
     assert status_module.parse_active_state_todos is active_state_todo_parser_read_model.parse_active_state_todos
     assert status_module.todo_item_is_expired_monitor is todo_projection_read_model.todo_item_is_expired_monitor
@@ -95,7 +102,6 @@ def assert_status_compatibility_boundary() -> None:
     assert status_module.first_open_todo_text is todo_read_model.first_open_todo_text
     assert status_module.project_asset_todo_summary is todo_read_model.project_asset_todo_summary
     assert status_module.attach_dependency_blockers is todo_read_model.attach_dependency_blockers
-    assert status_module.autonomous_replan_ack_recorded is replan_ack_read_model.autonomous_replan_ack_recorded
     assert status_module.compact_autonomous_replan_ack is replan_ack_read_model.compact_autonomous_replan_ack
     assert status_module.compact_human_reward is run_compaction_read_model.compact_human_reward
     assert status_module.compact_operator_gate is run_compaction_read_model.compact_operator_gate
@@ -225,16 +231,16 @@ def assert_autonomous_candidate_parity() -> None:
     assert status_module.autonomous_backlog_candidates(items) == autonomous_read_model.autonomous_backlog_candidates(
         items,
         open_todo_items=status_module.open_todo_items,
-        todo_item_is_actionable_open=status_module.todo_item_is_actionable_open,
-        normalize_todo_text=status_module.normalize_todo_text,
-        advancement_task_class=status_module.TODO_TASK_CLASS_ADVANCEMENT,
+        todo_item_is_actionable_open=todo_item_is_actionable_open,
+        normalize_todo_text=normalize_todo_text,
+        advancement_task_class=TODO_TASK_CLASS_ADVANCEMENT,
     )
     assert status_module.autonomous_monitor_candidates(items) == autonomous_read_model.autonomous_monitor_candidates(
         items,
         open_todo_items=status_module.open_todo_items,
-        todo_item_is_actionable_open=status_module.todo_item_is_actionable_open,
-        normalize_todo_text=status_module.normalize_todo_text,
-        monitor_task_class=status_module.TODO_TASK_CLASS_MONITOR,
+        todo_item_is_actionable_open=todo_item_is_actionable_open,
+        normalize_todo_text=normalize_todo_text,
+        monitor_task_class=TODO_TASK_CLASS_MONITOR,
         monitor_signal_waiting_on=status_module.MONITOR_SIGNAL_WAITING_ON,
     )
 

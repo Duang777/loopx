@@ -15,13 +15,15 @@ from loopx.control_plane.scheduler.execution_context import (
     SchedulerRuntimeProfile,
     scheduler_execution_context_for_runtime_profile,
 )
+from loopx.control_plane.todos.contract import (
+    TODO_TASK_CLASS_ADVANCEMENT,
+    TODO_TASK_CLASS_MONITOR,
+)
 from loopx.quota import (
     build_quota_should_run as _build_quota_should_run,
     render_quota_should_run_markdown,
 )
 from loopx.status import (
-    TODO_TASK_CLASS_ADVANCEMENT,
-    TODO_TASK_CLASS_MONITOR,
     compact_todo_group,
     compact_post_handoff_run,
     normalize_todo_task_class,

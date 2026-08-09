@@ -9,7 +9,7 @@
 建议时长：60 分钟。问题定义 8 分钟、核心闭环 12 分钟、防跑偏 10 分钟、防循环 12 分钟、
 双 Showcase 回放 10 分钟、接入边界与问答 8 分钟。
 
-本讲是一篇可以独立分享的课程专题。第一次接触 LoopX 的读者不必先读完第 0 到第 9 讲；
+本讲是一篇可以独立分享的课程专题。第一次接触 LoopX 的读者不必先读完第 1 到第 11 讲；
 需要补充概念时可回到[概念导读](00-concept-primer.md)，需要进入实现时再沿本讲末尾的阅读
 路线下钻。
 
@@ -173,7 +173,7 @@ def translate_domain_observation(kernel_snapshot, provider, pack):
 schema 和 proposal 属于 pack，最终是否执行仍由 Kernel 判断。
 
 一小时分享讲到这条边界即可。需要设计新 pack 时，再深入
-[第 2 讲：Core State、Domain State 与 Runtime Artifact](02-state-substrate.md#core-statedomain-state-与-runtime-artifact)、
+[第 4 讲：Core State、Domain State 与 Runtime Artifact](04-state-substrate.md#core-statedomain-state-与-runtime-artifact)、
 [Domain Capability Packs](../../product/domain-capability-packs.md)和
 [Issue-Fix State Kernel × Domain State 案例](../../capabilities/issue-fix/state-kernel-domain-state-case-study.zh-CN.md)。
 
@@ -1614,9 +1614,9 @@ LoopX 已经提供的通用机制包括：
 
 | 机制 | 入口 | 读代码时要确认 |
 | --- | --- | --- |
-| 本轮决策 | `loopx/quota.py::build_quota_should_run` | 多种 source facts 怎样收敛成一个 interaction decision |
+| 本轮决策 | `loopx/control_plane/quota/should_run.py::build_quota_should_run`（prepare/packet 在 `should_run_prepare.py`、`should_run_packet.py`） | 多种 source facts 怎样收敛成一个 interaction decision |
 | Agent-facing packet | `loopx/control_plane/work_items/interaction_contract.py::build_interaction_contract` | selected work、gate、replan、terminal 是否完整投影 |
-| Goal frontier replan | `loopx/control_plane/goals/goal_frontier_replan_rules.py::select_goal_frontier_replan_rule` | runnable、gate、succession gap、monitor exhaustion 的优先级 |
+| Goal frontier replan | `loopx/control_plane/goals/goal_frontier/replan_rules.py::select_goal_frontier_replan_rule` | runnable、gate、succession gap、monitor exhaustion 的优先级 |
 | Vision checkpoint | `loopx/state_refresh.py::build_vision_checkpoint` | material closeout 后如何防止局部目标替代长期方向 |
 | Todo succession | `loopx/control_plane/todos/succession_warning.py::build_open_parent_successor_advisory`、`loopx/control_plane/todos/completion_policy.py::resolve_completion_policy` | successor 为什么只记录 lineage，open parent 为什么仍需显式 complete/defer |
 | Turn transaction | `loopx/control_plane/turn_driver/executor.py::run_loopx_turn_once` | phase failure 怎样恢复，何时允许 commit |
@@ -1647,12 +1647,12 @@ happy-path smoke。
 ## 延伸阅读
 
 1. [概念导读：先把 LoopX 放进一张图](00-concept-primer.md)
-2. [第 0 讲：从三个 Showcase 理解 LoopX 架构](00-goal-control-plane-architecture.md)
-3. [第 1 讲：从 Showcase 到第一次真实 Loop](01-first-real-loop.md)
-4. [第 5 讲：Host、Heartbeat 与 Stateful Backoff](05-host-scheduler-and-heartbeat.md)
-5. [第 6 讲：证据、Refresh 与 Self-Repair](06-evidence-refresh-and-self-repair.md)
-6. [第 8 讲：Agent 自主写代码时的分层质量门禁](08-autonomous-agent-quality-gates.md)
-7. [第 9 讲：扩展层、Explore 与 Multi-Agent 产品](09-extension-layer.md)
+2. [第 2 讲：从三个 Showcase 理解 LoopX 架构](02-goal-control-plane-architecture.md)
+3. [第 3 讲：从 Showcase 到第一次真实 Loop](03-first-real-loop.md)
+4. [第 7 讲：Host、Heartbeat 与 Stateful Backoff](07-host-scheduler-and-heartbeat.md)
+5. [第 8 讲：证据、Refresh 与 Self-Repair](08-evidence-refresh-and-self-repair.md)
+6. [第 10 讲：Agent 自主写代码时的分层质量门禁](10-autonomous-agent-quality-gates.md)
+7. [第 11 讲：扩展层、Explore 与 Multi-Agent 产品](11-extension-layer.md)
 8. [Long-Horizon Agent State Protocol](../../reference/protocols/long-horizon-agent-state-protocol-v0.md)
 9. [Goal / Vision / Replan Contract](../../reference/protocols/goal-vision-replan-contract-v0.md)
 10. [Core Control-Plane State Machine](../../product/core-control-plane/state-machine.md)

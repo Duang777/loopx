@@ -20,7 +20,7 @@ from loopx.benchmark_core import (  # noqa: E402
     compact_run_permission_policy_for_quota,
     validate_run_permission_policy,
 )
-from loopx.quota import _goal_boundary  # noqa: E402
+from loopx.control_plane.quota.goal_boundary import goal_boundary as _goal_boundary  # noqa: E402
 
 
 def assert_default_policy_is_quota_readable() -> None:

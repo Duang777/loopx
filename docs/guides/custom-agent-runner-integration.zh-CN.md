@@ -6,6 +6,11 @@
 开发者。你不需要替换现有 runtime，也不需要把领域编排搬进 LoopX。保留自己的 runner，
 把 LoopX 作为跨 Turn 的持久控制面合同即可。
 
+想先看最短公共契约？从
+[最小自定义 Runtime 示例](minimal-custom-runtime-example.zh-CN.md) 开始，并运行
+`python3 examples/custom-runtime-minimal-cli-turn-smoke.py`。进阶 typed Turn 路径是另一条：
+`python3 examples/loopx-turn-fake-host-walkthrough-smoke.py`。
+
 最小心智模型只有三部分：
 
 | 部件 | 负责什么 | 不负责什么 |
@@ -44,7 +49,7 @@ transition policy 可复用时，才值得新增 Capability；外部实现放在
 先在拥有项目 workspace 的机器上安装 CLI：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/huangruiteng/loopx/main/scripts/install-from-github.sh | bash
+curl -fsSL https://huangruiteng.github.io/loopx/install.sh | bash
 export PATH="$HOME/.local/bin:$PATH"
 loopx doctor --agent-type other-agent
 ```

@@ -16,6 +16,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from loopx import status as status_module  # noqa: E402
 from loopx.control_plane.goals import global_registry_health as health_read_model  # noqa: E402
+from loopx.control_plane.goals.path_resolution import same_path  # noqa: E402
+from loopx.paths import global_registry_path  # noqa: E402
+from loopx.registry import registry_goals  # noqa: E402
 
 
 def direct_collect(
@@ -28,10 +31,10 @@ def direct_collect(
         registry_path=registry_path,
         runtime_root=runtime_root,
         current_registry=current_registry,
-        global_registry_path=status_module.global_registry_path,
+        global_registry_path=global_registry_path,
         load_registry=status_module.load_registry,
-        registry_goals=status_module.registry_goals,
-        same_path=status_module.same_path,
+        registry_goals=registry_goals,
+        same_path=same_path,
         resolve_goal_local_path=status_module.resolve_goal_local_path,
         parse_timestamp=status_module.parse_timestamp,
     )
@@ -124,7 +127,7 @@ def main() -> None:
                 },
             ]
         }
-        write_json(status_module.global_registry_path(runtime), global_registry)
+        write_json(global_registry_path(runtime), global_registry)
 
         health = assert_parity(
             registry_path=current_registry_path,

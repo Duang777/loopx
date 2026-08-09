@@ -24,12 +24,13 @@ P0/P1/P2 todos，让我能看到当前要做什么、什么被 gate 卡住、
 const zh = {
   "nav.product": "产品",
   "nav.workflow": "工作方式",
+  "nav.learn": "学习",
   "nav.showcases": "案例",
   "nav.docs": "文档",
   "nav.github": "GitHub",
-  "hero.eyebrow": "长程目标控制面",
+  "hero.eyebrow": "开放 · 有状态 · Provider-neutral",
   "hero.title": "Agent <span class=\"hero-phrase\"><span class=\"hero-wave\" data-hero-wave=\"progress\">持续推进</span>。</span><br />判断始终<span class=\"hero-phrase\"><span class=\"hero-wave\" data-hero-wave=\"judgment\">由你掌握</span>。</span>",
-  "hero.body": "面向跨会话、跨运行时、跨宿主的长程任务控制面，把权限状态、Gate、Todo、Quota、Evidence、恢复与交接组织在同一闭环中。",
+  "hero.body": "面向长程 Agent 的开放、有状态、Provider-neutral 控制面，把权限状态、Gate、Todo、Quota、Evidence、恢复与交接组织在同一闭环中。",
   "hero.copyPrompt": "复制 Agent 安装指令",
   "hero.promptCopied": "已复制，请粘贴给当前 Agent",
   "hero.copyFailed": "复制失败，请打开安装指南",
@@ -66,9 +67,9 @@ const zh = {
   "proof.sideLanesBody": "不绕过权限，独立工作仍可继续。",
   "proof.outcomes": "可审查结果",
   "proof.outcomesBody": "每次状态流转都为下一轮留下证据。",
-  "product.eyebrow": "一个持久的状态内核",
+  "product.eyebrow": "一个有状态控制面",
   "product.title": "让长程工作始终受控。",
-  "product.body": "LoopX 让目标生命周期、权限、恢复、干预、验证与结果在每次 Agent 运行之间保持一致。",
+  "product.body": "Agent runtime 负责执行；LoopX 治理跨运行延续的控制状态，让工程、研究、discovery 与运营 Loop 能持续推进。",
   "flow.goal": "长期目标",
   "flow.goalBody": "一个稳定方向",
   "flow.gate": "权限 Gate",
@@ -79,9 +80,9 @@ const zh = {
   "flow.evidenceBody": "经过验证的结果",
   "flow.next": "下一轮运行",
   "flow.nextBody": "可恢复地推进",
-  "capabilities.eyebrow": "跨会话、跨运行时、跨宿主",
-  "capabilities.title": "面向长程 Agent 的可治理连续性。",
-  "capabilities.body": "Codex App、Codex CLI、Claude Code、OpenCode 与自定义 Runner 可以共享同一套目标生命周期，同时让每个 Agent 保持明确边界。",
+  "capabilities.eyebrow": "跨 Provider、运行时与宿主",
+  "capabilities.title": "一套有状态控制面，连接不同 Agent Runtime。",
+  "capabilities.body": "Codex App、Codex CLI、Claude Code、OpenCode 与自定义 Runner 可以共享同一套有状态目标生命周期，同时让每个 Agent 保持明确边界。",
   "capabilities.state": "持久状态",
   "capabilities.stateBody": "目标、用户决策、Todo、Claim、Quota、运行历史与交接不会随会话结束而丢失。",
   "capabilities.runtime": "跨运行时",
@@ -92,7 +93,7 @@ const zh = {
   "capabilities.evidenceBody": "每轮运行都把验证、归属、审查和交接证据写入下一轮闭环。",
   "showcase.eyebrow": "来自真实闭环的证据",
   "showcase.title": "跨越 200+ 小时，依然清晰可读。",
-  "showcase.body": "两条公开安全的真实轨迹，保留了多轮 Agent 推进中的交付、决策、证据分支与恢复过程。",
+  "showcase.body": "一条公开贡献序列与一条经过脱敏的 owner-run showcase，保留了多轮 Agent 推进中的交付、决策、证据分支与恢复过程。",
   "showcase.elapsed": "200+ 小时自然时长",
   "showcase.publicSafe": "公开安全证据",
   "showcase.shellTitle": "~/loopx/evidence — 精选回放",
@@ -124,7 +125,8 @@ const zh = {
   "showcase.issue.next": "先审查聚焦改动，再继续能力沉淀线路。",
   "showcase.ml.tab": "自动化 ML",
   "showcase.ml.title": "证据分支保持可见，直到晋级或停止。",
-  "showcase.ml.session": "公开轨迹 02 · 自动化 ML 实验",
+  "showcase.ml.session": "脱敏 owner-run showcase 02 · 自动化 ML 实验",
+  "showcase.ml.boundaryLabel": "经过脱敏的 owner-run showcase",
   "showcase.ml.command": "$ loopx status --goal-id auto-ml",
   "showcase.ml.baseline": "匹配候选项与评估契约已锁定。",
   "showcase.ml.positive": "正向",
@@ -136,7 +138,7 @@ const zh = {
   "showcase.ml.gate": "运行中复现完成后，决定晋级或停止",
   "showcase.ml.next": "比较复现证据，再记录最终决策。",
   "showcase.viewFull": "查看完整证据",
-  "showcase.boundary": "这里的时长是项目自然时长，不代表连续模型执行或无人值守的生产自治。",
+  "showcase.boundary": "这里的时长是项目自然时长。Auto ML 材料是经过脱敏的 owner-run showcase，不代表生产结果、公司或雇主背书，也不是可独立复现的证据。",
   "dialog.eyebrow": "原始公开安全轨迹",
   "dialog.reset": "重置",
   "dialog.openOriginal": "在新标签页打开原图",
@@ -154,11 +156,25 @@ const zh = {
   "quickstart.inspect": "查看安装脚本 ↗",
   "footer.tagline": "让闭环持续运转，让判断始终属于人。",
   "footer.frontstage": "Frontstage",
+  "learn.eyebrow": "开发者手册",
+  "learn.title": "选择你的 LoopX 学习路径。",
+  "learn.body": "为想要理解控制面、接入真实项目或在正确 ownership 边界上贡献的开发者准备的系统性双语协议指南。",
+  "learn.openBook": "打开开发者手册 →",
+  "learn.foundations": "理解控制面",
+  "learn.foundationsBody": "从会话与目标出发，逐步建立对持久状态、权限、治理回合与恢复的完整认知。",
+  "learn.readFoundations": "从基础开始 ↗",
+  "learn.onboarding": "接入已有项目",
+  "learn.onboardingBody": "让 Agent 建立 Goal、身份、Host 与 Git 边界，然后验证结果。",
+  "learn.readOnboarding": "跟随项目接入指南 ↗",
+  "learn.contribute": "贡献 LoopX",
+  "learn.contributeBody": "从协议追踪到源码归属，选择正确的贡献面，验证后提交聚焦的 PR。",
+  "learn.readContribute": "打开贡献地图 ↗",
 };
 
 const textTargets = document.querySelectorAll("[data-i18n]");
 const htmlTargets = document.querySelectorAll("[data-i18n-html]");
 const ariaTargets = document.querySelectorAll("[data-i18n-aria]");
+const developerBookTargets = document.querySelectorAll("[data-devbook-path]");
 textTargets.forEach((target) => { target.dataset.english = target.textContent; });
 htmlTargets.forEach((target) => { target.dataset.englishHtml = target.innerHTML; });
 ariaTargets.forEach((target) => { target.dataset.englishAria = target.getAttribute("aria-label") ?? ""; });
@@ -176,6 +192,12 @@ function applyLanguage(nextLanguage, updateUrl = false) {
   ariaTargets.forEach((target) => {
     target.setAttribute("aria-label", language === "zh" ? (zh[target.dataset.i18nAria] ?? target.dataset.englishAria) : target.dataset.englishAria);
   });
+  developerBookTargets.forEach((target) => {
+    const developerBookBase = target.dataset.devbookBase;
+    const localePrefix = language === "zh" ? "" : "/en";
+    const chapterPath = target.dataset.devbookPath === "/" ? "" : target.dataset.devbookPath;
+    target.setAttribute("href", `${developerBookBase}${localePrefix}${chapterPath}/`);
+  });
   prepareHeroWaves();
   document.querySelectorAll("[data-language-toggle]").forEach((toggle) => {
     toggle.textContent = language === "zh" ? "EN" : "中文";
@@ -187,8 +209,8 @@ function applyLanguage(nextLanguage, updateUrl = false) {
   }
   document.title = language === "zh" ? "LoopX — 让长程目标持续推进" : "LoopX — Keep the loop moving";
   document.querySelector('meta[name="description"]')?.setAttribute("content", language === "zh"
-    ? "LoopX 是面向跨会话、跨运行时与跨宿主长程 Agent 工作的目标级控制面。"
-    : "LoopX is a goal-level control plane for long-horizon agent work across sessions, runtimes, and hosts.");
+    ? "LoopX 是面向长程 Agent 的开放、有状态、Provider-neutral 控制面。"
+    : "LoopX is the open, provider-neutral, stateful control plane for long-running agents across sessions, runtimes, and hosts.");
   if (updateUrl) {
     const url = new URL(window.location.href);
     if (language === "zh") url.searchParams.set("lang", "zh");

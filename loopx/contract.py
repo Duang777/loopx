@@ -103,6 +103,8 @@ def _git_probe(path: Path) -> dict[str, Any]:
         root = subprocess.run(
             ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=True,
         ).stdout.strip()
@@ -118,6 +120,8 @@ def _git_probe(path: Path) -> dict[str, Any]:
         subprocess.run(
             ["git", "-C", str(repo_root), "ls-files", "--error-unmatch", "--", rel_path],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
         ).returncode
@@ -127,6 +131,8 @@ def _git_probe(path: Path) -> dict[str, Any]:
         subprocess.run(
             ["git", "-C", str(repo_root), "check-ignore", "-q", "--", rel_path],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
         ).returncode
@@ -606,6 +612,8 @@ def _tracked_scan_files(scan_root: Path) -> list[Path]:
         root = subprocess.run(
             ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=True,
         ).stdout.strip()
@@ -623,6 +631,8 @@ def _tracked_scan_files(scan_root: Path) -> list[Path]:
     tracked = subprocess.run(
         ["git", "-C", str(repo_root), "ls-files", "-z", "--", rel_root],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )

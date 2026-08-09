@@ -7,7 +7,7 @@ import pytest
 from loopx.control_plane.goals.goal_frontier import (
     derive_goal_frontier_replan_obligation_from_summaries,
 )
-from loopx.control_plane.goals.goal_frontier_replan_rules import (
+from loopx.control_plane.goals.goal_frontier.replan_rules import (
     GOAL_FRONTIER_REPLAN_RULE_ORDER,
     GoalFrontierReplanFacts,
     GoalFrontierReplanRule,
@@ -45,6 +45,16 @@ from loopx.control_plane.goals.goal_frontier_replan_rules import (
         ),
         (
             {"acceptance_gap_count": 1},
+            GoalFrontierReplanRule.VISION_ACCEPTANCE_GAP,
+            True,
+        ),
+        (
+            {
+                "acceptance_gap_count": 1,
+                "selectable_frontier_advancement": 1,
+                "outcome_checkpoint_replan_required": True,
+                "acceptance_allows_watch_lane_continuation": True,
+            },
             GoalFrontierReplanRule.VISION_ACCEPTANCE_GAP,
             True,
         ),

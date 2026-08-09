@@ -13,16 +13,20 @@ on:
       - "apps/presentation/site/**"
       - "docs/**"
       - "mkdocs.yaml"
+      - "mkdocs.book.zh.yaml"
+      - "mkdocs.book.en.yaml"
       - "docs/showcases/**"
       - "docs/assets/long-running-loop-openviking-trajectory.png"
       - "docs/assets/long-running-loop-ml-experiment-trajectory.png"
       - "examples/export-frontstage-share-bundle.mjs"
       - "examples/frontstage-share-bundle-smoke.mjs"
       - "examples/readme-star-history-smoke.py"
+      - "examples/dev-book-publication-smoke.py"
       - "examples/goal-channel-frontstage-fixture.py"
       - "examples/showcase-catalog-smoke.py"
       - "examples/status.example.json"
       - "scripts/render-star-history.py"
+      - "scripts/install-from-github.sh"
   push:
     branches:
       - main
@@ -34,16 +38,20 @@ on:
       - "apps/presentation/site/**"
       - "docs/**"
       - "mkdocs.yaml"
+      - "mkdocs.book.zh.yaml"
+      - "mkdocs.book.en.yaml"
       - "docs/showcases/**"
       - "docs/assets/long-running-loop-openviking-trajectory.png"
       - "docs/assets/long-running-loop-ml-experiment-trajectory.png"
       - "examples/export-frontstage-share-bundle.mjs"
       - "examples/frontstage-share-bundle-smoke.mjs"
       - "examples/readme-star-history-smoke.py"
+      - "examples/dev-book-publication-smoke.py"
       - "examples/goal-channel-frontstage-fixture.py"
       - "examples/showcase-catalog-smoke.py"
       - "examples/status.example.json"
       - "scripts/render-star-history.py"
+      - "scripts/install-from-github.sh"
 
 permissions:
   actions: read
@@ -88,8 +96,11 @@ jobs:
       - name: Validate public showcase catalog
         run: python3 examples/showcase-catalog-smoke.py
 
-      - name: Validate README star history
+- name: Validate README star history
         run: python3 examples/readme-star-history-smoke.py
+
+      - name: Validate Developer Book publication
+        run: python3 examples/dev-book-publication-smoke.py
 
       - name: Validate public-safe frontstage bundle
         working-directory: apps/presentation/dashboard
@@ -102,18 +113,40 @@ jobs:
       - name: Fetch complete GitHub stargazer history
         if: github.event_name != 'pull_request'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Since July 2026, GitHub restricts this endpoint to repository
+          # collaborators. Keep this credential read-only and repo-scoped.
+          GH_TOKEN: ${{ secrets.STAR_HISTORY_READ_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error title=Missing star-history credential::Set STAR_HISTORY_READ_TOKEN to a fine-grained PAT limited to this repository with Metadata: read." >&2
+            exit 1
+          fi
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          count_query='query($owner: String!, $repo: String!) {
+            repository(owner: $owner, name: $repo) { stargazerCount }
+          }'
+          history_query='query($owner: String!, $repo: String!, $endCursor: String) {
+            repository(owner: $owner, name: $repo) {
+              stargazers(first: 100, after: $endCursor, orderBy: {field: STARRED_AT, direction: ASC}) {
+                edges { starredAt }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }'
           for attempt in 1 2 3; do
-            count_before="$(gh api "/repos/$GITHUB_REPOSITORY" --jq .stargazers_count)"
-            gh api --paginate --slurp \
-              --header "Accept: application/vnd.github.star+json" \
-              --header "X-GitHub-Api-Version: 2026-03-10" \
-              "/repos/$GITHUB_REPOSITORY/stargazers?per_page=100" \
+            count_before="$(gh api graphql -f query="$count_query" -F owner="$owner" -F repo="$repo" --jq .data.repository.stargazerCount)"
+            gh api graphql --paginate --slurp \
+              -f query="$history_query" \
+              -F owner="$owner" \
+              -F repo="$repo" \
+              > "$RUNNER_TEMP/loopx-stargazer-pages.json"
+            jq '[.[].data.repository.stargazers.edges[] | {starred_at: .starredAt}]' \
+              "$RUNNER_TEMP/loopx-stargazer-pages.json" \
               > "$RUNNER_TEMP/loopx-stargazers.json"
-            count_after="$(gh api "/repos/$GITHUB_REPOSITORY" --jq .stargazers_count)"
-            fetched_count="$(jq '[.[][]] | length' "$RUNNER_TEMP/loopx-stargazers.json")"
+            count_after="$(gh api graphql -f query="$count_query" -F owner="$owner" -F repo="$repo" --jq .data.repository.stargazerCount)"
+            fetched_count="$(jq 'length' "$RUNNER_TEMP/loopx-stargazers.json")"
             if [[ "$count_before" == "$count_after" && "$fetched_count" == "$count_after" ]]; then
               printf '%s\n' "$count_after" > "$RUNNER_TEMP/loopx-stargazers-count"
               break
@@ -136,6 +169,15 @@ jobs:
 
       - name: Build documentation site
         run: mkdocs build --strict --site-dir output/frontstage-pages/site/docs
+
+      - name: Build Chinese Developer Book
+        run: mkdocs build --strict --config-file mkdocs.book.zh.yaml --site-dir output/frontstage-pages/site/docs/book
+
+      - name: Build English Developer Book
+        run: mkdocs build --strict --config-file mkdocs.book.en.yaml --site-dir output/frontstage-pages/site/docs/book/en
+
+      - name: Validate rendered Developer Book
+        run: python3 examples/dev-book-publication-smoke.py --site-dir output/frontstage-pages/site/docs/book
 
       - name: Configure Pages
         if: github.event_name != 'pull_request'
