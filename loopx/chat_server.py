@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import threading
+import time
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .chat import (
     TodoReviewPreviewConflict,
@@ -16,7 +16,9 @@ from .chat import (
     build_todo_review_preview,
     redact_local_paths,
 )
-from .chat_agent import CodexChatAgentError, CodexChatAgentSession
+from .chat_agent import CodexChatAgentError
+from .chat_runtime import ChatRuntimeController, TERMINAL_TURN_STATES
+from .chat_store import ChatSessionStore
 from .history import load_registry
 from .paths import resolve_runtime_root
 from .registry import registry_goals, resolve_state_file
@@ -294,20 +296,15 @@ class ChatHTTPServer(ThreadingHTTPServer):
     codex_bin: str
     assets_dir: Path
     verbose: bool
-    sessions: dict[str, tuple[str, CodexChatAgentSession]]
-    sessions_lock: threading.Lock
+    chat_store: ChatSessionStore
+    runtime_controller: ChatRuntimeController
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.sessions = {}
-        self.sessions_lock = threading.Lock()
         super().__init__(*args, **kwargs)
 
     def server_close(self) -> None:
-        with self.sessions_lock:
-            sessions = [session for _, session in self.sessions.values()]
-            self.sessions.clear()
-        for session in sessions:
-            session.close()
+        if hasattr(self, "runtime_controller"):
+            self.runtime_controller.close()
         super().server_close()
 
 
@@ -330,11 +327,14 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
         *,
         status: int = 400,
         gate: dict[str, str] | None = None,
+        error_code: str | None = None,
         session_invalidated: bool = False,
         turn_replay_safe: bool = False,
         todo_receipt: dict[str, Any] | None = None,
     ) -> None:
         payload: dict[str, Any] = {"ok": False, "error": _compact_text(message)}
+        if error_code:
+            payload["error_code"] = _compact_text(error_code, limit=80)
         if gate:
             payload["gate"] = gate
         if session_invalidated:
@@ -411,12 +411,14 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
     def _create_session(self) -> None:
         try:
             body = self._read_json()
-            unknown = set(body) - {"goal_id"}
+            unknown = set(body) - {"goal_id", "agent_id", "mode"}
             if unknown:
                 raise ValueError("unknown session field")
             goal_id = _compact_text(body.get("goal_id"), limit=160) or self.server.selected_goal_id or ""
             if not goal_id:
                 raise ValueError("goal_id is required when multiple Goals are available")
+            agent_id = _compact_text(body.get("agent_id"), limit=80) or "codex"
+            mode = _compact_text(body.get("mode"), limit=40) or "resume_latest"
             registry, goal = self._registry_and_goal(goal_id)
             context = _goal_public_context(registry, goal)
             project = context["project"]
@@ -429,35 +431,36 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                         "next_action": "Reconnect the Goal from its project root, then retry.",
                     },
                 )
-            session = CodexChatAgentSession.start(
-                codex_bin=self.server.codex_bin,
-                work_dir=project,
+            session, resumed = self.server.runtime_controller.open_session(
                 goal_id=goal_id,
+                agent_id=agent_id,
+                work_dir=project,
                 objective=str(context["objective"] or context["title"]),
+                mode=mode,
             )
         except CodexChatAgentError as exc:
-            self._send_error(str(exc), status=424, gate=exc.gate)
+            self._send_error(str(exc), status=424, gate=exc.gate, error_code=exc.error_code)
             return
         except Exception as exc:  # noqa: BLE001 - compact local validation error.
             self._send_error(str(exc))
             return
-        session_id = uuid.uuid4().hex
-        with self.server.sessions_lock:
-            self.server.sessions[session_id] = (goal_id, session)
+        public = self.server.chat_store.public_session(session)
         self._send_json(
             {
                 "ok": True,
-                "schema_version": "loopx_chat_session_v0",
-                "session_id": session_id,
+                "schema_version": "loopx_chat_session_v1",
+                "session_id": public["session_id"],
                 "goal_id": goal_id,
+                "agent_id": agent_id,
+                "resumed": resumed,
+                "session": public,
             },
-            status=201,
+            status=200 if resumed else 201,
         )
 
     def _session_turn(self, session_id: str) -> None:
-        with self.server.sessions_lock:
-            entry = self.server.sessions.get(session_id)
-        if entry is None:
+        session = self.server.chat_store.load_session(session_id)
+        if session is None or session.get("status") == "closed":
             self._send_error(
                 "chat session was not found",
                 status=404,
@@ -467,20 +470,71 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json()
-            if set(body) - {"message"}:
+            if set(body) - {"message", "client_turn_id"}:
                 raise ValueError("unknown turn field")
-            response = entry[1].send(str(body.get("message") or ""))
+            message = str(body.get("message") or "").strip()
+            if not message:
+                raise ValueError("message is required")
+            client_turn_id = _compact_text(body.get("client_turn_id"), limit=160) or uuid.uuid4().hex
+            registry, goal = self._registry_and_goal(str(session["goal_id"]))
+            context = _goal_public_context(registry, goal)
+            turn, created = self.server.runtime_controller.submit_turn(
+                session_id=session_id,
+                client_turn_id=client_turn_id,
+                message=message,
+                work_dir=context["project"],
+                objective=str(context["objective"] or context["title"]),
+            )
+            if body.get("client_turn_id"):
+                turn_id = str(turn["turn_id"])
+                self._send_json(
+                    {
+                        "ok": True,
+                        "schema_version": "loopx_chat_turn_accepted_v1",
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "created": created,
+                        "status": turn["status"],
+                        "events_url": f"{CHAT_SESSIONS_PATH}/{session_id}/turns/{turn_id}/events",
+                    },
+                    status=202,
+                )
+                return
+            completed = self.server.runtime_controller.wait_for_turn(
+                session_id=session_id,
+                turn_id=str(turn["turn_id"]),
+            )
+            if completed.get("status") != "completed":
+                self._send_error(
+                    str(completed.get("error") or "Agent turn failed."),
+                    status=424,
+                    gate=(
+                        completed.get("gate")
+                        if isinstance(completed.get("gate"), dict)
+                        else None
+                    ),
+                )
+                return
+            response = completed.get("response")
         except CodexChatAgentError as exc:
-            with self.server.sessions_lock:
-                failed_entry = self.server.sessions.pop(session_id, None)
-            if failed_entry is not None:
-                failed_entry[1].close()
             self._send_error(
                 str(exc),
                 status=424,
                 gate=exc.gate,
-                session_invalidated=True,
             )
+            return
+        except RuntimeError as exc:
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "another turn is already running for this session",
+                    "active_turn_id": str(exc),
+                },
+                status=409,
+            )
+            return
+        except KeyError:
+            self._send_error("chat session was not found", status=404, session_invalidated=True)
             return
         except Exception as exc:  # noqa: BLE001 - compact local validation error.
             self._send_error(str(exc))
@@ -490,8 +544,91 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "schema_version": "loopx_chat_turn_v0",
                 "session_id": session_id,
-                "goal_id": entry[0],
+                "goal_id": session["goal_id"],
                 "response": response,
+            }
+        )
+
+    def _session_snapshot(self, session_id: str) -> None:
+        try:
+            self._send_json(self.server.chat_store.session_snapshot(session_id))
+        except KeyError:
+            self._send_error("chat session was not found", status=404)
+
+    def _list_sessions(self) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        goal_id = _compact_text((query.get("goal_id") or [""])[0], limit=160) or None
+        agent_id = _compact_text((query.get("agent_id") or [""])[0], limit=80) or None
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_session_list_v1",
+                "sessions": self.server.chat_store.list_sessions(goal_id=goal_id, agent_id=agent_id),
+            }
+        )
+
+    def _turn_events(self, session_id: str, turn_id: str) -> None:
+        if self.server.chat_store.load_turn(session_id, turn_id) is None:
+            self._send_error("chat turn was not found", status=404)
+            return
+        last_event_id = self.headers.get("Last-Event-ID")
+        query = parse_qs(urlparse(self.path).query)
+        if not last_event_id:
+            last_event_id = (query.get("after") or [None])[0]
+        if str(last_event_id or "0") != "0":
+            turn = self.server.chat_store.load_turn(session_id, turn_id) or {}
+            self.server.chat_store.update_turn(
+                session_id,
+                turn_id,
+                sse_reconnect_count=int(turn.get("sse_reconnect_count") or 0) + 1,
+            )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        cursor = str(last_event_id or "0")
+        heartbeat_at = time.monotonic()
+        try:
+            while True:
+                events = self.server.chat_store.events_after(session_id, turn_id, cursor)
+                for event in events:
+                    cursor = str(event["event_id"])
+                    data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                    self.wfile.write(
+                        f"id: {cursor}\nevent: {event['kind']}\ndata: {data}\n\n".encode("utf-8")
+                    )
+                    self.wfile.flush()
+                turn = self.server.chat_store.load_turn(session_id, turn_id)
+                if turn is None or (turn.get("status") in TERMINAL_TURN_STATES and not events):
+                    self.close_connection = True
+                    break
+                if time.monotonic() - heartbeat_at >= 15.0:
+                    heartbeat = json.dumps({"kind": "heartbeat", "created_at": time.time()})
+                    self.wfile.write(f"event: heartbeat\ndata: {heartbeat}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    heartbeat_at = time.monotonic()
+                time.sleep(0.05)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _interrupt_turn(self, session_id: str, turn_id: str) -> None:
+        try:
+            turn = self.server.runtime_controller.interrupt_turn(session_id=session_id, turn_id=turn_id)
+        except KeyError:
+            self._send_error("chat turn was not found", status=404)
+            return
+        except CodexChatAgentError as exc:
+            self._send_error(str(exc), status=424, gate=exc.gate)
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_turn_interrupt_v1",
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "status": turn["status"],
             }
         )
 
@@ -539,14 +676,33 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 {
                     "ok": True,
-                    "schema_version": "loopx_chat_capabilities_v0",
+                    "schema_version": "loopx_chat_capabilities_v1",
                     "agent_backend": "codex_app_server",
                     "sandbox": "read-only",
                     "approval_policy": "never",
                     "todo_write": "preview_locked",
                     "goal_id": self.server.selected_goal_id,
+                    "streaming": True,
+                    "resume": True,
+                    "interrupt": True,
+                    "adapters": self.server.runtime_controller.capabilities(),
                 }
             )
+            return
+        if path == CHAT_SESSIONS_PATH:
+            self._list_sessions()
+            return
+        session_parts = path.strip("/").split("/")
+        if len(session_parts) == 4 and session_parts[:3] == ["api", "chat", "sessions"]:
+            self._session_snapshot(session_parts[3])
+            return
+        if (
+            len(session_parts) == 7
+            and session_parts[:3] == ["api", "chat", "sessions"]
+            and session_parts[4] == "turns"
+            and session_parts[6] == "events"
+        ):
+            self._turn_events(session_parts[3], session_parts[5])
             return
         if path == DEFAULT_CHAT_STATUS_PATH:
             self._status()
@@ -573,6 +729,15 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             session_id = path[len(prefix) : -len("/turns")].strip("/")
             self._session_turn(session_id)
             return
+        parts = path.strip("/").split("/")
+        if (
+            len(parts) == 7
+            and parts[:3] == ["api", "chat", "sessions"]
+            and parts[4] == "turns"
+            and parts[6] == "interrupt"
+        ):
+            self._interrupt_turn(parts[3], parts[5])
+            return
         if path == CHAT_TODO_DRY_RUN_PATH:
             self._todo(apply=False)
             return
@@ -590,12 +755,9 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             self._send_error("unknown path", status=404)
             return
         session_id = path[len(prefix) :].strip("/")
-        with self.server.sessions_lock:
-            entry = self.server.sessions.pop(session_id, None)
-        if entry is None:
+        if not self.server.runtime_controller.close_session(session_id):
             self._send_error("chat session was not found", status=404)
             return
-        entry[1].close()
         self._send_json({"ok": True, "session_id": session_id, "closed": True})
 
     def log_message(self, format: str, *args: object) -> None:
@@ -613,6 +775,9 @@ def serve_chat(
     port: int,
     goal_id: str | None,
     codex_bin: str,
+    startup_timeout_sec: float,
+    idle_timeout_sec: float,
+    hard_timeout_sec: float,
     assets_dir: Path | None,
     open_browser: bool,
     verbose: bool,
@@ -631,6 +796,20 @@ def serve_chat(
     server.codex_bin = codex_bin
     server.assets_dir = resolved_assets
     server.verbose = verbose
+    registry = load_registry(registry_path)
+    runtime_root = resolve_runtime_root(
+        registry,
+        runtime_root_override,
+        registry_path=registry_path,
+    )
+    server.chat_store = ChatSessionStore(runtime_root)
+    server.runtime_controller = ChatRuntimeController(
+        store=server.chat_store,
+        codex_bin=codex_bin,
+        startup_timeout_sec=startup_timeout_sec,
+        idle_timeout_sec=idle_timeout_sec,
+        hard_timeout_sec=hard_timeout_sec,
+    )
     url = f"http://{host}:{port}{DEFAULT_CHAT_PATH}"
     print(f"Serving LoopX Chat at {url}", flush=True)
     print("Agent boundary: Codex app-server, read-only sandbox, approval policy never", flush=True)

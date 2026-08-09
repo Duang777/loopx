@@ -454,6 +454,24 @@ def register_support_control_commands(
         help="Codex CLI executable used for the read-only app-server session.",
     )
     chat_parser.add_argument(
+        "--startup-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="Maximum seconds allowed for Codex app-server startup and handshake.",
+    )
+    chat_parser.add_argument(
+        "--idle-timeout-seconds",
+        type=float,
+        default=180.0,
+        help="Maximum seconds without an upstream event before interrupting the active turn.",
+    )
+    chat_parser.add_argument(
+        "--hard-timeout-seconds",
+        type=float,
+        default=900.0,
+        help="Absolute maximum seconds for one Agent turn.",
+    )
+    chat_parser.add_argument(
         "--assets-dir",
         help="Optional LoopX Chat web bundle directory. Defaults to packaged assets.",
     )
@@ -855,6 +873,9 @@ def handle_support_control_command(
                 port=args.port,
                 goal_id=args.goal_id,
                 codex_bin=args.codex_bin,
+                startup_timeout_sec=max(0.1, float(args.startup_timeout_seconds)),
+                idle_timeout_sec=max(0.1, float(args.idle_timeout_seconds)),
+                hard_timeout_sec=max(0.1, float(args.hard_timeout_seconds)),
                 assets_dir=Path(args.assets_dir).expanduser() if args.assets_dir else None,
                 open_browser=not bool(args.no_open),
                 verbose=bool(args.verbose),

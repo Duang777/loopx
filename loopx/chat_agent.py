@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .chat import (
     CHAT_AGENT_RESPONSE_SCHEMA_VERSION,
@@ -19,9 +19,14 @@ from .chat import (
 
 
 class CodexChatAgentError(RuntimeError):
-    def __init__(self, message: str, *, gate: dict[str, str]) -> None:
+    def __init__(self, message: str, *, gate: dict[str, str], error_code: str = "host_gate") -> None:
         super().__init__(message)
         self.gate = gate
+        self.error_code = error_code
+
+
+class CodexChatTimeoutError(CodexChatAgentError):
+    pass
 
 
 def _host_tool_gate(summary: str, next_action: str) -> dict[str, str]:
@@ -116,10 +121,50 @@ def _turn_prompt(user_message: str) -> str:
         "Do not edit files, mutate LoopX state, create commits, send messages, or request elevated access. "
         "If you encounter an identity, approval, or host-tool gate, stop and describe it in gate. "
         "Reply in Chinese unless the operator asks for another language. Keep proposals bounded and reviewable. "
-        "Finish with exactly one machine-readable envelope using these tags and shape:\n"
+        "First write the concise operator-facing answer as normal text. "
+        "Finish with exactly one machine-readable envelope using these tags and shape. "
+        "Do not put any visible answer after the closing tag:\n"
         f"{CHAT_REVIEW_OPEN_TAG}{json.dumps(envelope, ensure_ascii=False)}{CHAT_REVIEW_CLOSE_TAG}\n\n"
         f"Operator user message:\n{user_message.strip()}"
     )
+
+
+class _VisibleResponseFilter:
+    """Keep the final review envelope out of operator-visible deltas."""
+
+    def __init__(self) -> None:
+        self.pending = ""
+        self.hidden = False
+
+    def feed(self, chunk: str) -> str:
+        if self.hidden:
+            return ""
+        self.pending += chunk
+        marker_at = self.pending.find(CHAT_REVIEW_OPEN_TAG)
+        if marker_at >= 0:
+            visible = self.pending[:marker_at]
+            self.pending = ""
+            self.hidden = True
+            return visible
+        suffix_length = 0
+        limit = min(len(self.pending), len(CHAT_REVIEW_OPEN_TAG) - 1)
+        for length in range(1, limit + 1):
+            if self.pending.endswith(CHAT_REVIEW_OPEN_TAG[:length]):
+                suffix_length = length
+        if suffix_length:
+            visible = self.pending[:-suffix_length]
+            self.pending = self.pending[-suffix_length:]
+            return visible
+        visible = self.pending
+        self.pending = ""
+        return visible
+
+    def finish(self) -> str:
+        if self.hidden:
+            return ""
+        visible = self.pending
+        self.pending = ""
+        return visible
 
 
 @dataclass
@@ -128,9 +173,14 @@ class CodexChatAgentSession:
     messages: "queue.Queue[dict[str, Any] | Exception]"
     thread_id: str
     work_dir: Path
-    response_timeout_sec: float = 120.0
+    response_timeout_sec: float = 30.0
+    idle_timeout_sec: float = 180.0
+    hard_timeout_sec: float = 900.0
     next_request_id: int = 5
+    current_turn_id: str = ""
     _pending_events: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _request_id_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @classmethod
     def start(
@@ -140,7 +190,10 @@ class CodexChatAgentSession:
         work_dir: Path,
         goal_id: str,
         objective: str,
-        response_timeout_sec: float = 120.0,
+        response_timeout_sec: float = 30.0,
+        idle_timeout_sec: float = 180.0,
+        hard_timeout_sec: float = 900.0,
+        resume_thread_id: str | None = None,
     ) -> "CodexChatAgentSession":
         resolved = shutil.which(codex_bin)
         if not resolved:
@@ -181,6 +234,8 @@ class CodexChatAgentSession:
             thread_id="",
             work_dir=root,
             response_timeout_sec=response_timeout_sec,
+            idle_timeout_sec=idle_timeout_sec,
+            hard_timeout_sec=hard_timeout_sec,
         )
         try:
             session._request(
@@ -197,8 +252,9 @@ class CodexChatAgentSession:
             )
             session._notify("initialized", {})
             thread_result = session._request(
-                "thread/start",
+                "thread/resume" if resume_thread_id else "thread/start",
                 {
+                    **({"threadId": resume_thread_id, "excludeTurns": True} if resume_thread_id else {}),
                     "cwd": str(root),
                     "sandbox": "read-only",
                     "approvalPolicy": "never",
@@ -208,24 +264,26 @@ class CodexChatAgentSession:
             session.thread_id = _extract_id(thread_result, "thread", "threadId")
             if not session.thread_id:
                 raise session._runtime_error("Codex app-server did not return a thread id.")
-            session._request(
-                "thread/goal/set",
-                {
-                    "threadId": session.thread_id,
-                    "objective": f"{goal_id}: {objective}",
-                    "status": "active",
-                },
-                request_id=3,
-            )
+            if not resume_thread_id:
+                session._request(
+                    "thread/goal/set",
+                    {
+                        "threadId": session.thread_id,
+                        "objective": f"{goal_id}: {objective}",
+                        "status": "active",
+                    },
+                    request_id=3,
+                )
             goal_result = session._request(
                 "thread/goal/get",
                 {"threadId": session.thread_id},
-                request_id=4,
+                request_id=3 if resume_thread_id else 4,
             )
             goal = goal_result.get("goal")
             status = str(goal.get("status") or "") if isinstance(goal, dict) else ""
             if status != "active":
                 raise session._runtime_error("Codex did not confirm an active Goal session.")
+            session.next_request_id = 4 if resume_thread_id else 5
             return session
         except Exception:
             session.close()
@@ -244,8 +302,9 @@ class CodexChatAgentSession:
         if self.process.stdin is None:
             raise self._runtime_error("Codex app-server input stream is closed.")
         try:
-            self.process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            self.process.stdin.flush()
+            with self._write_lock:
+                self.process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                self.process.stdin.flush()
         except (BrokenPipeError, OSError) as exc:
             raise self._runtime_error("Codex app-server input stream closed unexpectedly.") from exc
 
@@ -295,11 +354,33 @@ class CodexChatAgentSession:
             self._check_server_gate(message)
             self._pending_events.append(message)
 
-    def send(self, user_message: str) -> dict[str, Any]:
+    def interrupt(self, turn_id: str | None = None) -> None:
+        selected_turn_id = str(turn_id or self.current_turn_id or "")
+        if not selected_turn_id:
+            return
+        with self._request_id_lock:
+            request_id = self.next_request_id
+            self.next_request_id += 1
+        self._write(
+            {
+                "id": request_id,
+                "method": "turn/interrupt",
+                "params": {"threadId": self.thread_id, "turnId": selected_turn_id},
+            }
+        )
+
+    def send(
+        self,
+        user_message: str,
+        *,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         text = " ".join(str(user_message or "").split())
         if not text:
             raise ValueError("user message is required")
-        request_id = self.next_request_id
+        with self._request_id_lock:
+            request_id = self.next_request_id
+            self.next_request_id += 1
         turn_result = self._request(
             "turn/start",
             {
@@ -310,14 +391,39 @@ class CodexChatAgentSession:
             },
             request_id=request_id,
         )
-        self.next_request_id = request_id + 1
         turn_id = _extract_id(turn_result, "turn", "turnId")
+        self.current_turn_id = turn_id
+        if on_event:
+            on_event("turn.started", {"upstream_turn_id": turn_id})
         parts: list[str] = []
+        display_filter = _VisibleResponseFilter()
         pending = self._pending_events
         self._pending_events = []
-        deadline = time.monotonic() + self.response_timeout_sec
+        started_at = time.monotonic()
+        last_activity_at = started_at
         while True:
-            message = pending.pop(0) if pending else self._next_message(deadline=deadline)
+            now = time.monotonic()
+            if now - started_at >= self.hard_timeout_sec:
+                raise self._timeout_error("hard_timeout", "Codex Chat turn reached its hard time limit.")
+            if now - last_activity_at >= self.idle_timeout_sec:
+                raise self._timeout_error("idle_timeout", "Codex Chat turn stopped producing activity.")
+            deadline = min(started_at + self.hard_timeout_sec, last_activity_at + self.idle_timeout_sec)
+            try:
+                message = pending.pop(0) if pending else self._next_message(deadline=deadline)
+            except CodexChatAgentError:
+                now = time.monotonic()
+                if now - started_at >= self.hard_timeout_sec:
+                    raise self._timeout_error(
+                        "hard_timeout",
+                        "Codex Chat turn reached its hard time limit.",
+                    )
+                if now - last_activity_at >= self.idle_timeout_sec:
+                    raise self._timeout_error(
+                        "idle_timeout",
+                        "Codex Chat turn stopped producing activity.",
+                    )
+                raise
+            last_activity_at = time.monotonic()
             self._check_server_gate(message)
             event_thread_id = _event_thread_id(message)
             event_turn_id = _event_turn_id(message)
@@ -325,14 +431,20 @@ class CodexChatAgentSession:
                 continue
             if message.get("method") == "turn/started" and event_turn_id:
                 turn_id = event_turn_id
+                self.current_turn_id = turn_id
             if event_turn_id and turn_id and event_turn_id != turn_id:
                 continue
             method = str(message.get("method") or "")
             params = message.get("params")
+            if on_event:
+                on_event("turn.activity", {"method": method})
             if method == "item/agentMessage/delta" and isinstance(params, dict):
                 delta = params.get("delta")
                 if isinstance(delta, str):
                     parts.append(delta)
+                    visible = display_filter.feed(delta)
+                    if visible and on_event:
+                        on_event("assistant.delta", {"text": visible})
             elif method == "item/completed":
                 item_text = _agent_item_text(message)
                 if item_text and not parts:
@@ -341,7 +453,24 @@ class CodexChatAgentSession:
                 break
             elif method == "error":
                 raise self._runtime_error("Codex app-server reported a turn error.")
-        return parse_agent_response("".join(parts), protected_paths=[self.work_dir])
+        trailing = display_filter.finish()
+        if trailing and on_event:
+            on_event("assistant.delta", {"text": trailing})
+        raw_response = "".join(parts)
+        response = parse_agent_response(raw_response, protected_paths=[self.work_dir])
+        if on_event:
+            if CHAT_REVIEW_OPEN_TAG not in raw_response or CHAT_REVIEW_CLOSE_TAG not in raw_response:
+                on_event("protocol.warning", {"error_code": "missing_review_envelope"})
+            on_event("assistant.final", {"response": response})
+        self.current_turn_id = ""
+        return response
+
+    def _timeout_error(self, error_code: str, summary: str) -> CodexChatTimeoutError:
+        return CodexChatTimeoutError(
+            summary,
+            error_code=error_code,
+            gate=_host_tool_gate(summary, "Interrupt the turn or retry in the same session."),
+        )
 
     def close(self) -> None:
         if self.process.poll() is not None:
