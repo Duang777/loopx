@@ -222,6 +222,34 @@ obligation. If evidence, successor state, blocker state, or a superseding
 vision packet still shows the vision is unmet, the acceptance gap remains
 authoritative and quota must continue to project replan work.
 
+### Semantic History Continuity
+
+`run_history.goals[].latest_runs` is a strictly bounded recency drill-down. It
+must not grow beyond its requested display limit to preserve older control
+records. Long-lived goal semantics instead use `goal_semantic_history_v0`, a
+per-agent read model whose size grows with participating agents rather than
+heartbeat count.
+
+Each agent lane independently selects the latest active vision (or explicit
+retirement), latest checkpoint, latest outcome-relevant checkpoint, latest
+autonomous-replan ACK, and latest material milestone. The goal also retains the
+latest compact human reward as the owner-correction slot. Repeated quota spend,
+monitor polling, promotion readiness, and ordinary refresh rows do not consume
+these semantic slots.
+
+The outcome-checkpoint slot retains its same-run qualification vision. A newer
+plain refresh may become the latest general checkpoint, but it cannot hide the
+older material checkpoint or borrow a later path delta. Likewise, another
+agent's qualified checkpoint cannot satisfy the selected lane. Goal-frontier
+readers prefer this semantic context and fall back to `latest_runs` only for
+older status payloads that do not carry the new read model.
+
+Agent-scoped status keeps only the selected agent's semantic lane plus the
+compact owner-correction slot on the hot path. Whole-goal, all-agent history
+remains available through unscoped status/history diagnostics. This keeps
+final-outcome continuity authoritative without turning a long heartbeat thread
+into an ever-growing CLI payload.
+
 ## Vision Continuation Audit
 
 Every selected todo is a bounded step toward the active per-agent vision, not a

@@ -1,13 +1,218 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-
-PER_AGENT_CONTEXT_RUN_FIELDS = (
-    "agent_vision",
-    "vision_checkpoint",
-    "autonomous_replan_ack",
+GOAL_SEMANTIC_HISTORY_SCHEMA_VERSION = "goal_semantic_history_v0"
+SEMANTIC_CONTEXT_RUN_FIELDS = (
+    "latest_agent_vision_run",
+    "latest_vision_checkpoint_run",
+    "latest_outcome_vision_checkpoint_run",
+    "latest_autonomous_replan_ack_run",
+    "latest_material_milestone_run",
 )
+SEMANTIC_CONTEXT_RUN_PAYLOAD_FIELDS = {
+    "latest_agent_vision_run": (
+        "generated_at",
+        "agent_id",
+        "agent_vision",
+    ),
+    "latest_vision_checkpoint_run": (
+        "generated_at",
+        "agent_id",
+        "vision_checkpoint",
+    ),
+    "latest_outcome_vision_checkpoint_run": (
+        "generated_at",
+        "agent_id",
+        "agent_vision",
+        "vision_checkpoint",
+    ),
+    "latest_autonomous_replan_ack_run": (
+        "generated_at",
+        "agent_id",
+        "autonomous_replan_ack",
+    ),
+    "latest_material_milestone_run": (
+        "generated_at",
+        "agent_id",
+        "classification",
+        "delivery_outcome",
+    ),
+}
+OWNER_CORRECTION_RUN_PAYLOAD_FIELDS = (
+    "generated_at",
+    "agent_id",
+    "classification",
+    "human_reward",
+)
+MATERIAL_DELIVERY_OUTCOMES = {
+    "outcome_gap",
+    "outcome_progress",
+    "primary_goal_outcome",
+}
+OUTCOME_VISION_CHECKPOINT_TRIGGER_KINDS = {
+    "autonomous_replan_recorded",
+    "material_delivery_outcome",
+}
+
+
+RunCompactor = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def _agent_id_for_run(run: dict[str, Any]) -> str:
+    checkpoint = (
+        run.get("vision_checkpoint")
+        if isinstance(run.get("vision_checkpoint"), dict)
+        else {}
+    )
+    vision = (
+        run.get("agent_vision") if isinstance(run.get("agent_vision"), dict) else {}
+    )
+    return str(
+        run.get("agent_id")
+        or checkpoint.get("agent_id")
+        or vision.get("agent_id")
+        or ""
+    ).strip()
+
+
+def _run_retires_agent_vision(run: dict[str, Any]) -> bool:
+    checkpoint = run.get("vision_checkpoint")
+    return bool(
+        isinstance(checkpoint, dict)
+        and checkpoint.get("satisfied") is True
+        and str(checkpoint.get("decision") or "").strip() == "retired_or_superseded"
+    )
+
+
+def _run_has_outcome_vision_checkpoint(run: dict[str, Any]) -> bool:
+    checkpoint = run.get("vision_checkpoint")
+    if not isinstance(checkpoint, dict):
+        return False
+    return any(
+        isinstance(trigger, dict)
+        and str(trigger.get("kind") or "").strip()
+        in OUTCOME_VISION_CHECKPOINT_TRIGGER_KINDS
+        for trigger in (checkpoint.get("triggers") or [])
+    )
+
+
+def goal_semantic_history_from_runs(
+    runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Select time-bounded control semantics from newest-first run history.
+
+    The result grows with participating agents, not heartbeat count. Recent
+    drill-down rows remain a separate strictly bounded list.
+    """
+
+    contexts: dict[str, dict[str, Any]] = {}
+    resolved_agent_vision: set[str] = set()
+    latest_owner_correction_run: dict[str, Any] | None = None
+
+    for run in runs:
+        if latest_owner_correction_run is None and isinstance(
+            run.get("human_reward"), dict
+        ):
+            latest_owner_correction_run = run
+
+        agent_id = _agent_id_for_run(run)
+        if not agent_id:
+            continue
+        context = contexts.setdefault(agent_id, {"agent_id": agent_id})
+
+        checkpoint = run.get("vision_checkpoint")
+        if "latest_vision_checkpoint_run" not in context and isinstance(
+            checkpoint, dict
+        ):
+            context["latest_vision_checkpoint_run"] = run
+
+        if agent_id not in resolved_agent_vision:
+            if _run_retires_agent_vision(run):
+                context["vision_retired_at"] = run.get("generated_at")
+                resolved_agent_vision.add(agent_id)
+            elif isinstance(run.get("agent_vision"), dict):
+                context["latest_agent_vision_run"] = run
+                resolved_agent_vision.add(agent_id)
+
+        if (
+            "latest_outcome_vision_checkpoint_run" not in context
+            and _run_has_outcome_vision_checkpoint(run)
+        ):
+            context["latest_outcome_vision_checkpoint_run"] = run
+
+        if "latest_autonomous_replan_ack_run" not in context and isinstance(
+            run.get("autonomous_replan_ack"), dict
+        ):
+            context["latest_autonomous_replan_ack_run"] = run
+
+        if (
+            "latest_material_milestone_run" not in context
+            and str(run.get("delivery_outcome") or "").strip()
+            in MATERIAL_DELIVERY_OUTCOMES
+        ):
+            context["latest_material_milestone_run"] = run
+
+    semantic_history: dict[str, Any] = {
+        "schema_version": GOAL_SEMANTIC_HISTORY_SCHEMA_VERSION,
+        "agents": [
+            context
+            for context in contexts.values()
+            if any(field in context for field in SEMANTIC_CONTEXT_RUN_FIELDS)
+            or "vision_retired_at" in context
+        ],
+    }
+    if latest_owner_correction_run is not None:
+        semantic_history["latest_owner_correction_run"] = latest_owner_correction_run
+    return semantic_history
+
+
+def compact_goal_semantic_history(
+    value: Any,
+    *,
+    compact_run: RunCompactor,
+) -> dict[str, Any] | None:
+    """Compact selected semantic runs through the canonical run compactor."""
+
+    if not isinstance(value, dict):
+        return None
+    agents: list[dict[str, Any]] = []
+    for raw_context in value.get("agents") or []:
+        if not isinstance(raw_context, dict):
+            continue
+        agent_id = str(raw_context.get("agent_id") or "").strip()
+        if not agent_id:
+            continue
+        context: dict[str, Any] = {"agent_id": agent_id}
+        retired_at = str(raw_context.get("vision_retired_at") or "").strip()
+        if retired_at:
+            context["vision_retired_at"] = retired_at
+        for field in SEMANTIC_CONTEXT_RUN_FIELDS:
+            run = raw_context.get(field)
+            if isinstance(run, dict):
+                compacted_run = compact_run(run)
+                context[field] = {
+                    key: compacted_run[key]
+                    for key in SEMANTIC_CONTEXT_RUN_PAYLOAD_FIELDS[field]
+                    if key in compacted_run
+                }
+        if len(context) > 1:
+            agents.append(context)
+
+    compact: dict[str, Any] = {
+        "schema_version": GOAL_SEMANTIC_HISTORY_SCHEMA_VERSION,
+        "agents": agents,
+    }
+    owner_correction_run = value.get("latest_owner_correction_run")
+    if isinstance(owner_correction_run, dict):
+        compacted_run = compact_run(owner_correction_run)
+        compact["latest_owner_correction_run"] = {
+            key: compacted_run[key]
+            for key in OWNER_CORRECTION_RUN_PAYLOAD_FIELDS
+            if key in compacted_run
+        }
+    return compact if agents or "latest_owner_correction_run" in compact else None
 
 
 def latest_runs_with_agent_context(
@@ -15,46 +220,11 @@ def latest_runs_with_agent_context(
     *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Keep recent runs plus each agent's newest durable context per field."""
+    """Return a strict recent-run drill-down window.
+
+    Durable control semantics live in ``goal_semantic_history_v0`` instead of
+    expanding this display list beyond its advertised limit.
+    """
 
     bounded = max(0, limit)
-    if bounded == 0:
-        return []
-    selected = list(runs[:bounded])
-    selected_ids = {id(run) for run in selected}
-    retained_context_fields: set[tuple[str, str]] = set()
-    retired_agent_visions: set[str] = set()
-
-    for run in runs:
-        agent_id = str(run.get("agent_id") or "").strip()
-        if not agent_id:
-            continue
-        fields_to_retain: list[str] = []
-        checkpoint = (
-            run.get("vision_checkpoint")
-            if isinstance(run.get("vision_checkpoint"), dict)
-            else {}
-        )
-        if (
-            checkpoint.get("satisfied") is True
-            and str(checkpoint.get("decision") or "").strip()
-            == "retired_or_superseded"
-        ):
-            retired_agent_visions.add(agent_id)
-            retained_context_fields.add((agent_id, "agent_vision"))
-
-        for field in PER_AGENT_CONTEXT_RUN_FIELDS:
-            context_key = (agent_id, field)
-            if context_key in retained_context_fields:
-                continue
-            if not isinstance(run.get(field), dict):
-                continue
-            if field == "agent_vision" and agent_id in retired_agent_visions:
-                continue
-            retained_context_fields.add(context_key)
-            fields_to_retain.append(field)
-
-        if fields_to_retain and id(run) not in selected_ids:
-            selected.append(run)
-            selected_ids.add(id(run))
-    return selected
+    return list(runs[:bounded])

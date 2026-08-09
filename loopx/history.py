@@ -6,9 +6,7 @@ from typing import Any, Callable
 
 from .authority import goal_authority_registry_summary
 from .control_plane import compact_control_plane_policy
-from .control_plane.runtime.run_context_retention import (
-    latest_runs_with_agent_context,
-)
+from .control_plane.runtime.run_context_retention import goal_semantic_history_from_runs, latest_runs_with_agent_context
 from .control_plane.runtime.run_index_duplicates import (
     classify_index_duplicate_records,
     duplicate_repair_decision,
@@ -763,6 +761,7 @@ def collect_history(
             "unique_runs": len(runs),
             "latest_status_run": latest_status_run(runs),
             "latest_runs": latest_runs_with_agent_context(runs, limit=limit),
+            "semantic_history": goal_semantic_history_from_runs(runs),
         }
         if registry_member:
             for field in REGISTRY_ATTENTION_FIELDS:

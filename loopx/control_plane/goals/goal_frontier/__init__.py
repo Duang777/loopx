@@ -13,7 +13,6 @@ from ...agents.runtime_model import peer_work_key, select_peer_for_work
 from ...work_items.autonomous_replan_ack import (
     autonomous_replan_ack_matches_agent,
     autonomous_replan_ack_matches_frontier,
-    latest_autonomous_replan_ack_for_projection,
 )
 from ...work_items.autonomous_replan_obligation import (
     AUTONOMOUS_REPLAN_STALL_THRESHOLD,
@@ -31,6 +30,14 @@ from .replan_rules import (
     GoalFrontierReplanFacts,
     GoalFrontierReplanRule,
     select_goal_frontier_replan_rule,
+)
+from .semantic_history import (
+    latest_agent_vision_from_runs as latest_agent_vision_from_runs,
+)
+from .semantic_history import (
+    latest_agent_vision_from_status_payload,
+    latest_autonomous_replan_ack_from_status_payload,
+    latest_missing_vision_checkpoint_from_status_payload,
 )
 from .terminal import (
     GOAL_TERMINAL_SOURCE_COMPLETENESS_SCHEMA_VERSION,  # noqa: F401
@@ -62,11 +69,6 @@ TODO_TASK_CLASS_ADVANCEMENT = "advancement_task"
 TODO_TASK_CLASS_MONITOR = "continuous_monitor"
 LONG_TODO_CHAIN_ADVANCEMENT_THRESHOLD = 15
 LONG_TODO_CHAIN_OPEN_THRESHOLD = 20
-VISION_CHECKPOINT_SATISFIED_DECISIONS = {
-    "patched",
-    "retired_or_superseded",
-    "unchanged_with_reason",
-}
 
 
 def safe_non_negative_int(value: Any) -> int:
@@ -414,187 +416,6 @@ def _compact_projection_text(value: Any, *, limit: int = 360) -> str | None:
     if not text:
         return None
     return text[:limit]
-
-
-def _latest_runs_for_goal(
-    status_payload: dict[str, Any],
-    *,
-    goal_id: str,
-) -> list[dict[str, Any]]:
-    run_history = (
-        status_payload.get("run_history")
-        if isinstance(status_payload.get("run_history"), dict)
-        else {}
-    )
-    goals = run_history.get("goals") if isinstance(run_history.get("goals"), list) else []
-    goal = next(
-        (
-            item
-            for item in goals
-            if isinstance(item, dict) and str(item.get("id") or "") == goal_id
-        ),
-        None,
-    )
-    latest_runs = goal.get("latest_runs") if isinstance(goal, dict) else None
-    return [item for item in latest_runs if isinstance(item, dict)] if isinstance(latest_runs, list) else []
-
-
-def _run_agent_id_matches(run: dict[str, Any], *, agent_id: str | None) -> bool:
-    if not agent_id:
-        return True
-    run_agent_id = str(run.get("agent_id") or "").strip()
-    return not run_agent_id or run_agent_id == agent_id
-
-
-def _run_retires_prior_agent_vision(
-    run: dict[str, Any],
-    *,
-    agent_id: str | None,
-) -> bool:
-    if not _run_agent_id_matches(run, agent_id=agent_id):
-        return False
-    checkpoint = (
-        run.get("vision_checkpoint")
-        if isinstance(run.get("vision_checkpoint"), dict)
-        else {}
-    )
-    if isinstance(checkpoint, dict) and checkpoint:
-        checkpoint_agent_id = str(
-            checkpoint.get("agent_id") or run.get("agent_id") or ""
-        ).strip()
-        if agent_id and checkpoint_agent_id and checkpoint_agent_id != agent_id:
-            return False
-        if (
-            checkpoint.get("satisfied") is True
-            and str(checkpoint.get("decision") or "").strip() == "retired_or_superseded"
-        ):
-            return True
-    return False
-
-
-def latest_agent_vision_from_status_payload(
-    status_payload: dict[str, Any],
-    *,
-    goal_id: str,
-    agent_id: str | None,
-) -> dict[str, Any] | None:
-    """Return the newest compact agent vision packet visible in run history."""
-
-    return latest_agent_vision_from_runs(
-        _latest_runs_for_goal(status_payload, goal_id=goal_id),
-        goal_id=goal_id,
-        agent_id=agent_id,
-    )
-
-
-def latest_agent_vision_from_runs(
-    runs: list[dict[str, Any]],
-    *,
-    goal_id: str,
-    agent_id: str | None,
-) -> dict[str, Any] | None:
-    """Return the newest active vision from newest-first compact run records."""
-
-    for run in runs:
-        vision = run.get("agent_vision")
-        if not isinstance(vision, dict):
-            if _run_retires_prior_agent_vision(run, agent_id=agent_id):
-                return None
-            continue
-        vision_agent_id = str(vision.get("agent_id") or run.get("agent_id") or "").strip()
-        if agent_id and vision_agent_id and vision_agent_id != agent_id:
-            continue
-        patch = vision.get("vision_patch") if isinstance(vision.get("vision_patch"), dict) else {}
-        if not patch:
-            continue
-        result = {
-            "schema_version": vision.get("schema_version"),
-            "goal_id": goal_id,
-            "agent_id": vision_agent_id or agent_id,
-            "state": vision.get("state"),
-            "vision_patch": patch,
-            "todo_delta": vision.get("todo_delta")
-            if isinstance(vision.get("todo_delta"), list)
-            else [],
-            "vision_budget": vision.get("vision_budget")
-            if isinstance(vision.get("vision_budget"), dict)
-            else None,
-            "generated_at": run.get("generated_at"),
-        }
-        if isinstance(vision.get("path_delta"), dict):
-            result["path_delta"] = vision["path_delta"]
-        return result
-    return None
-
-
-def latest_missing_vision_checkpoint_from_status_payload(
-    status_payload: dict[str, Any],
-    *,
-    goal_id: str,
-    agent_id: str | None,
-) -> dict[str, Any] | None:
-    """Return the newest unsatisfied per-agent vision checkpoint in run history."""
-
-    for run in _latest_runs_for_goal(status_payload, goal_id=goal_id):
-        checkpoint = run.get("vision_checkpoint")
-        if not isinstance(checkpoint, dict):
-            continue
-        checkpoint_agent_id = str(
-            checkpoint.get("agent_id") or run.get("agent_id") or ""
-        ).strip()
-        if agent_id and checkpoint_agent_id != agent_id:
-            continue
-        if not agent_id and checkpoint_agent_id:
-            continue
-        decision = str(checkpoint.get("decision") or "").strip()
-        if (
-            checkpoint.get("satisfied") is True
-            and decision in VISION_CHECKPOINT_SATISFIED_DECISIONS
-        ):
-            return None
-        if checkpoint.get("required") is not True:
-            continue
-        if checkpoint.get("satisfied") is not False:
-            continue
-        if decision != "missing_required":
-            continue
-        return {
-            "schema_version": checkpoint.get("schema_version"),
-            "goal_id": goal_id,
-            "agent_id": checkpoint_agent_id or agent_id,
-            "decision": checkpoint.get("decision"),
-            "triggers": checkpoint.get("triggers")
-            if isinstance(checkpoint.get("triggers"), list)
-            else [],
-            "required_resolution": checkpoint.get("required_resolution")
-            if isinstance(checkpoint.get("required_resolution"), list)
-            else [],
-            "missing_baseline": checkpoint.get("missing_baseline") is True,
-            "generated_at": run.get("generated_at"),
-        }
-    return None
-
-
-def latest_autonomous_replan_ack_from_status_payload(
-    status_payload: dict[str, Any],
-    *,
-    goal_id: str,
-    agent_id: str | None,
-    neutral_classifications: set[str],
-) -> dict[str, Any] | None:
-    """Return the newest agent-scoped durable replan ACK visible in run history."""
-
-    if not agent_id:
-        return None
-    latest_runs = [
-        run
-        for run in _latest_runs_for_goal(status_payload, goal_id=goal_id)
-        if _run_agent_id_matches(run, agent_id=agent_id)
-    ]
-    return latest_autonomous_replan_ack_for_projection(
-        latest_runs,
-        neutral_classifications=neutral_classifications,
-    )
 
 
 def projected_autonomous_replan_ack_for_agent(

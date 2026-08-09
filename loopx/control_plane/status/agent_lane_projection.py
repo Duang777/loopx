@@ -69,6 +69,44 @@ def _compact_run(value: Any) -> dict[str, Any] | None:
     return compact or None
 
 
+def _agent_semantic_goal(value: Any, *, agent_id: str) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    semantic_history = value.get("semantic_history")
+    if not isinstance(semantic_history, dict):
+        return None
+    contexts = semantic_history.get("agents")
+    current_context = (
+        next(
+            (
+                context
+                for context in contexts
+                if isinstance(context, dict)
+                and str(context.get("agent_id") or "").strip() == agent_id
+            ),
+            None,
+        )
+        if isinstance(contexts, list)
+        else None
+    )
+    owner_correction = semantic_history.get("latest_owner_correction_run")
+    if not isinstance(current_context, dict) and not isinstance(
+        owner_correction,
+        dict,
+    ):
+        return None
+    compact_history: dict[str, Any] = {
+        "schema_version": semantic_history.get("schema_version"),
+        "agents": [current_context] if isinstance(current_context, dict) else [],
+    }
+    if isinstance(owner_correction, dict):
+        compact_history["latest_owner_correction_run"] = owner_correction
+    return {
+        "id": value.get("id"),
+        "semantic_history": compact_history,
+    }
+
+
 def _compact_run_history(payload: dict[str, object], *, agent_id: str) -> bool:
     history = payload.get("run_history")
     if not isinstance(history, dict):
@@ -80,6 +118,15 @@ def _compact_run_history(payload: dict[str, object], *, agent_id: str) -> bool:
         for run in visible_runs
         if isinstance(run, dict) and str(run.get("agent_id") or "").strip() == agent_id
     ]
+    goals = history.get("goals")
+    semantic_goals = [
+        compact_goal
+        for compact_goal in (
+            _agent_semantic_goal(goal, agent_id=agent_id)
+            for goal in (goals if isinstance(goals, list) else [])
+        )
+        if compact_goal
+    ]
     compact = {
         key: history[key]
         for key in ("available", "run_count", "goal_count")
@@ -88,6 +135,8 @@ def _compact_run_history(payload: dict[str, object], *, agent_id: str) -> bool:
     latest_agent_run = _compact_run(agent_runs[0]) if agent_runs else None
     if latest_agent_run:
         compact["latest_agent_run"] = latest_agent_run
+    if semantic_goals:
+        compact["goals"] = semantic_goals
     compact["payload_compaction"] = {
         "schema_version": AGENT_LANE_STATUS_HISTORY_COMPACTION_SCHEMA_VERSION,
         "agent_id": agent_id,
@@ -96,6 +145,7 @@ def _compact_run_history(payload: dict[str, object], *, agent_id: str) -> bool:
             0,
             len(visible_runs) - int(latest_agent_run is not None),
         ),
+        "visible_semantic_goal_count": len(semantic_goals),
         "full_detail_cold_path": "status without --agent-id or history",
     }
     payload["run_history"] = compact
