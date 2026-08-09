@@ -93,6 +93,19 @@ def _progress_bar(entry: Mapping[str, Any]) -> str:
     )
 
 
+def _todo_breakdown(entry: Mapping[str, Any]) -> str:
+    open_agent = int(entry.get("open_agent_todos") or 0)
+    open_user = int(entry.get("open_user_todos") or 0)
+    done = int(entry.get("done_todos") or 0)
+    if open_agent + open_user + done == 0:
+        return '<span class="muted">—</span>'
+    return (
+        f'<span class="todo-count"><span class="todo-agent">{open_agent}</span> agent · '
+        f'<span class="todo-user">{open_user}</span> user · '
+        f'<span class="todo-done">{done}</span> done</span>'
+    )
+
+
 def _goal_rows(goals: list[dict[str, Any]]) -> str:
     rows: list[str] = []
     for entry in goals:
@@ -121,13 +134,14 @@ def _goal_rows(goals: list[dict[str, Any]]) -> str:
             f"{sub_html}</td>"
             f'<td>{_status_badge(entry)}</td>'
             f"<td>{_progress_bar(entry)}</td>"
+            f"<td>{_todo_breakdown(entry)}</td>"
             f'<td><span class="waiting">{_text(waiting)}</span></td>'
             f"<td><span class=\"muted\">{latest}</span></td>"
             f'<td class="action">{action}</td>'
             f"</tr>"
         )
     if not rows:
-        return '<tr><td colspan="6" class="empty">No goals projected.</td></tr>'
+        return '<tr><td colspan="7" class="empty">No goals projected.</td></tr>'
     return "".join(rows)
 
 
@@ -158,7 +172,7 @@ def _session_card(session: Mapping[str, Any]) -> str:
         f"</div></header>"
         f'<div class="table-wrap"><table class="goals">'
         f"<thead><tr><th>Goal</th><th>Status</th><th>Progress</th>"
-        f"<th>Waiting on</th><th>Last run</th><th>Next action</th></tr></thead>"
+        f"<th>Todo</th><th>Waiting on</th><th>Last run</th><th>Next action</th></tr></thead>"
         f"<tbody>{_goal_rows(goals)}</tbody></table></div>"
         f"</article>"
     )
@@ -271,6 +285,11 @@ def render_session_dash_html(
     .bar-fill { height: 100%; background: #22c55e; border-radius: 999px; }
     .bar-caption { margin-top: 4px; font-size: 11px; color: #64748b; }
 
+    .todo-count { white-space: nowrap; font-size: 12px; color: #64748b; }
+    .todo-count .todo-agent { font-weight: 700; color: #2563eb; }
+    .todo-count .todo-user { font-weight: 700; color: #d97706; }
+    .todo-count .todo-done { font-weight: 700; color: #16a34a; }
+
     section.section-title { margin: 26px 0 12px; display: flex; align-items: baseline; gap: 10px; }
     section.section-title h2 { margin: 0; }
     section.section-title .count { color: #94a3b8; font-size: 13px; }
@@ -359,7 +378,7 @@ def _render_main(projection: Mapping[str, Any]) -> str:
             f'<span class="count">{len(unassigned)}</span></section>'
             f'<section class="session-card" data-panel="unassigned"><div class="table-wrap">'
             f'<table class="goals"><thead><tr><th>Goal</th><th>Status</th><th>Progress</th>'
-            f"<th>Waiting on</th><th>Last run</th><th>Next action</th></tr></thead>"
+            f"<th>Todo</th><th>Waiting on</th><th>Last run</th><th>Next action</th></tr></thead>"
             f'<tbody>{_goal_rows(unassigned)}</tbody></table></div></section>'
         )
 
