@@ -745,6 +745,139 @@ async function assertResearchTruthFirstScreen(page, label) {
   }
 }
 
+async function installChatApiFixture(page, { activeTurn = false } = {}) {
+  const activeSession = {
+    session_id: "fixture-manager-recovery",
+    goal_id: "showcase-user-gate-safe-side-path",
+    agent_id: "codex",
+    adapter_kind: "codex_app_server",
+    channel_id: "manager",
+    status: "busy",
+    active_turn_id: "fixture-active-turn",
+    last_error_code: null,
+    created_at: "2026-08-10T01:00:00Z",
+    updated_at: "2026-08-10T02:00:00Z",
+    last_activity_at: "2026-08-10T02:00:00Z",
+    resumable: true,
+  };
+  await page.route("**/api/chat/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/chat/capabilities") {
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          ok: true,
+          schema_version: "loopx_chat_capabilities_v1",
+          agent_backend: "multi_adapter",
+          sandbox: "read-only",
+          approval_policy: "never",
+          todo_write: "preview_locked",
+          goal_id: null,
+          streaming: true,
+          resume: true,
+          interrupt: true,
+          adapters: [{
+            agent_id: "codex",
+            display_name: "Codex",
+            adapter_kind: "codex_app_server",
+            available: true,
+            streaming: true,
+            resume: true,
+            interrupt: true,
+          }],
+        },
+        status: 200,
+      });
+      return;
+    }
+    if (url.pathname === "/api/chat/sessions" && request.method() === "GET") {
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          ok: true,
+          schema_version: "loopx_chat_session_list_v1",
+          sessions: activeTurn ? [activeSession] : [],
+        },
+        status: 200,
+      });
+      return;
+    }
+    if (activeTurn && url.pathname === `/api/chat/sessions/${activeSession.session_id}`) {
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          ok: true,
+          schema_version: "loopx_chat_store_v1",
+          session: activeSession,
+          messages: [{
+            message_id: "fixture-recovery-question",
+            turn_id: activeSession.active_turn_id,
+            role: "user",
+            text: "请继续处理恢复中的回合",
+            created_at: "2026-08-10T02:00:00Z",
+          }],
+          active_turn: {
+            turn_id: activeSession.active_turn_id,
+            status: "running",
+          },
+        },
+        status: 200,
+      });
+      return;
+    }
+    if (url.pathname === "/api/chat/sessions" && request.method() === "POST") {
+      const body = request.postDataJSON();
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          agent_id: body.agent_id,
+          goal_id: body.goal_id,
+          ok: true,
+          resumed: activeTurn,
+          session_id: activeTurn
+            ? activeSession.session_id
+            : `fixture-${body.context_kind}-${body.goal_id}`,
+        },
+        status: 201,
+      });
+      return;
+    }
+    if (
+      activeTurn
+      && url.pathname === `/api/chat/sessions/${activeSession.session_id}/turns/${activeSession.active_turn_id}/events`
+    ) {
+      const sseEvent = (id, kind, payload) =>
+        `id: ${id}\nevent: ${kind}\ndata: ${JSON.stringify({
+          event_id: id,
+          sequence: Number(id),
+          kind,
+          created_at: "2026-08-10T02:00:01Z",
+          payload,
+        })}\n\n`;
+      await route.fulfill({
+        body: sseEvent("1", "answer.delta", { text: "恢复中的回答。" })
+          + sseEvent("2", "turn.completed", {
+            response: {
+              schema_version: "loopx_chat_agent_response_v0",
+              message: "恢复中的回答。",
+              proposals: [],
+              gate: null,
+            },
+          }),
+        contentType: "text/event-stream",
+        status: 200,
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      json: { error: "unsupported browser smoke Chat request", ok: false },
+      status: 404,
+    });
+  });
+}
+
 async function captureHomeVisualAcceptance(page, url, label) {
   await page.goto(url, { waitUntil: "networkidle" });
   await page.waitForSelector('[data-testid="personal-goal-home"]', { timeout: 10_000 });
@@ -867,7 +1000,7 @@ async function captureHomeVisualAcceptance(page, url, label) {
   const agentMenu = page.locator('[data-testid="personal-agent-menu"]');
   await agentMenu.waitFor({ state: "visible", timeout: 10_000 });
   const agentMenuText = await agentMenu.innerText();
-  for (const text of ["Codex", "仅查状态", "来自 LoopX Agent 状态投影"]) {
+  for (const text of ["Codex", "仅查状态", "来自本地 Agent Endpoint", "密钥仅由后端环境读取"]) {
     if (!agentMenuText.includes(text)) {
       throw new Error(`${label} Agent selector missing: ${text}`);
     }
@@ -958,6 +1091,7 @@ async function main() {
     await waitForDashboard(baseUrl);
     browser = await launchBrowser(chromium);
     const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } });
+    await installChatApiFixture(page);
     const pageErrors = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await page.goto(`${baseUrl}/?statusUrl=/${fixtureName}`, { waitUntil: "networkidle" });
@@ -1009,11 +1143,31 @@ async function main() {
       isMobile: true,
       viewport: { width: 390, height: 900 },
     });
+    await installChatApiFixture(mobilePage);
     mobilePage.on("pageerror", (error) => pageErrors.push(`mobile: ${error.message}`));
     try {
       await captureHomeVisualAcceptance(mobilePage, `${baseUrl}/?statusUrl=/${fixtureName}`, "mobile");
     } finally {
       await mobilePage.close();
+    }
+
+    const recoveryPage = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+    await installChatApiFixture(recoveryPage, { activeTurn: true });
+    try {
+      await recoveryPage.goto(`${baseUrl}/?statusUrl=/${fixtureName}`, { waitUntil: "networkidle" });
+      const recoveredAnswer = recoveryPage.locator(".personal-manager-message.is-assistant").last();
+      await recoveredAnswer.waitFor({ state: "visible", timeout: 10_000 });
+      const recoveredText = await recoveredAnswer.innerText();
+      for (const text of ["恢复中的回答。", "恢复的 Codex 会话"]) {
+        if (!recoveredText.includes(text)) {
+          throw new Error(`Active Turn recovery did not render ${text}: ${recoveredText}`);
+        }
+      }
+      if (recoveredText.includes("Agent 正在处理")) {
+        throw new Error(`Recovered active Turn remained pending after terminal SSE: ${recoveredText}`);
+      }
+    } finally {
+      await recoveryPage.close();
     }
 
     await page.goto(`${baseUrl}/?view=ops&goalId=loopx-meta&statusUrl=/${fixtureName}`, { waitUntil: "networkidle" });

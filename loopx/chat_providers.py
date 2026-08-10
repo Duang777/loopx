@@ -13,7 +13,7 @@ from typing import Any, Callable
 from urllib import request
 import uuid
 
-from .chat import parse_agent_response
+from .chat import VisibleResponseStreamFilter, parse_agent_response
 from .chat_agent import CodexChatAgentError, _host_tool_gate, _turn_prompt
 
 
@@ -112,6 +112,8 @@ class ClaudeCodeAdapter:
             self.current_process = process
         parts: list[str] = []
         result_text = ""
+        display_filter = VisibleResponseStreamFilter(protected_paths=[self.work_dir])
+        visible_delta_count = 0
         try:
             assert process.stdout is not None
             for raw_line in process.stdout:
@@ -135,7 +137,12 @@ class ClaudeCodeAdapter:
                     if event.get("type") == "content_block_delta":
                         delta = event.get("delta")
                         if isinstance(delta, dict) and delta.get("type") == "text_delta":
-                            parts.append(str(delta.get("text") or ""))
+                            chunk = str(delta.get("text") or "")
+                            parts.append(chunk)
+                            visible = display_filter.feed(chunk)
+                            if visible:
+                                visible_delta_count += 1
+                                event_sink("answer.delta", {"text": visible})
                 elif payload.get("type") == "result":
                     result_text = str(payload.get("result") or "")
             return_code = process.wait()
@@ -145,10 +152,20 @@ class ClaudeCodeAdapter:
             with self.lock:
                 self.current_process = None
         raw_response = "".join(parts) or result_text
+        if not parts and result_text:
+            visible = display_filter.feed(result_text)
+            if visible:
+                visible_delta_count += 1
+                event_sink("answer.delta", {"text": visible})
+        visible_tail = display_filter.finish()
+        if visible_tail:
+            visible_delta_count += 1
+            event_sink("answer.delta", {"text": visible_tail})
         response = parse_agent_response(raw_response, protected_paths=[self.work_dir])
         self.resumed = True
         event_sink("agent.phase", {"label": "正在整理回答"})
-        event_sink("answer.delta", {"text": str(response.get("message") or "")})
+        if visible_delta_count == 0:
+            event_sink("answer.delta", {"text": str(response.get("message") or "")})
         event_sink("answer.final", {"response": response})
         return response
 

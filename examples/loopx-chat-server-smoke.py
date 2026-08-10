@@ -367,10 +367,14 @@ def main() -> None:
             ) as response:
                 event_stream = response.read().decode("utf-8")
             assert "event: answer.delta" in event_stream, event_stream
+            assert "Visible streaming answer." in event_stream, event_stream
             assert "I found one reviewable step." in event_stream, event_stream
             assert "<loopx-review-json>" not in event_stream, event_stream
             assert "event: proposal.ready" in event_stream, event_stream
             assert "event: turn.completed" in event_stream, event_stream
+            assert event_stream.index("Visible streaming answer.") < event_stream.index(
+                "event: turn.completed"
+            ), event_stream
             code, duplicate = request_json(
                 f"{base_url}/api/chat/sessions/{session_id}/turns",
                 method="POST",

@@ -42,6 +42,7 @@ import {
   parseCompletedDecisionHistory,
   previewTodo,
   proposalReviewState,
+  resumeChatTurnStreaming,
   sessionInvalidatedByPayload,
   selectChatGoal,
   interruptChatTurn,
@@ -67,6 +68,7 @@ import { cn } from "../lib/utils";
 
 type ChatMessage = {
   id: string;
+  reconnect?: boolean;
   role: "agent" | "user";
   source?: "agent" | "error" | "local";
   text: string;
@@ -570,6 +572,81 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
       const turnId = snapshot.session.active_turn_id ?? "";
       setActiveTurnId(turnId);
       setAgentPhase(turnId ? "thinking" : "idle");
+      if (!turnId) return;
+      setSending(true);
+      const streamedMessageId = randomId("agent-resume");
+      setMessages((current) => [
+        ...current,
+        { id: streamedMessageId, role: "agent", source: "agent", text: "" },
+      ]);
+      const abortController = new AbortController();
+      streamAbortRef.current = abortController;
+      let streamedText = "";
+      try {
+        const streamed = await resumeChatTurnStreaming(created.session_id, turnId, {
+          signal: abortController.signal,
+          onDelta: (delta) => {
+            streamedText += delta;
+            setAgentPhase("streaming");
+            setMessages((current) => current.map((item) =>
+              item.id === streamedMessageId ? { ...item, text: streamedText } : item
+            ));
+          },
+          onPhase: (phase, activeId) => {
+            setActiveTurnId(activeId);
+            if (phase === "turn.started") setAgentPhase("thinking");
+          },
+        });
+        if (sequence !== sessionConnectSequenceRef.current) return;
+        setMessages((current) => current.map((item) =>
+          item.id === streamedMessageId
+            ? {
+                ...item,
+                text: streamed.response.message || streamedText.trim() || "Codex 已完成分析。",
+              }
+            : item
+        ));
+        if (streamed.response.proposals.length) {
+          setInboxView("pending");
+          setDecisions((current) => [
+            ...streamed.response.proposals.map((proposal) => ({
+              id: randomId("decision"),
+              noWriteReceipt: null,
+              proposal,
+              preview: null,
+              projectionVerified: null,
+              receipt: null,
+              outcome: "pending" as const,
+              busy: false,
+              error: "",
+            })),
+            ...current,
+          ]);
+        }
+        if (streamed.response.gate) {
+          setInboxView("pending");
+          setHostGate(streamed.response.gate);
+        }
+      } catch (error) {
+        if (sequence !== sessionConnectSequenceRef.current) return;
+        setMessages((current) => current.map((item) =>
+          item.id === streamedMessageId
+            ? {
+                ...item,
+                source: "error",
+                reconnect: error instanceof ChatApiError && error.payload.reconnectable === true,
+                text: error instanceof Error ? error.message : "无法恢复进行中的 Agent 回合。",
+              }
+            : item
+        ));
+      } finally {
+        if (sequence === sessionConnectSequenceRef.current) {
+          setSending(false);
+          setActiveTurnId("");
+          setAgentPhase("idle");
+          streamAbortRef.current = null;
+        }
+      }
     } catch (error) {
       if (sequence !== sessionConnectSequenceRef.current) return;
       setAgentPhase("idle");
@@ -710,7 +787,7 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
       const response = streamed.response;
       setMessages((current) => current.map((item) =>
         item.id === streamedMessageId
-          ? { ...item, text: streamedText.trim() || response.message || "Codex 已完成分析。" }
+          ? { ...item, text: response.message || streamedText.trim() || "Codex 已完成分析。" }
           : item
       ));
       if (response.proposals.length) {
@@ -743,7 +820,12 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
       const summary = gate?.summary || (error instanceof Error ? error.message : "Agent 会话暂时不可用。");
       setMessages((current) => current.map((item) =>
         item.id === streamedMessageId
-          ? { ...item, source: "error", text: chatFailureMessage(summary, sessionWasInvalidated) }
+          ? {
+              ...item,
+              reconnect: error instanceof ChatApiError && error.payload.reconnectable === true,
+              source: "error",
+              text: chatFailureMessage(summary, sessionWasInvalidated),
+            }
           : item
       ));
     } finally {
@@ -1017,6 +1099,15 @@ export function ChatPage({ initialGoalId = "" }: { initialGoalId?: string }) {
                         </span>
                       ) : null}
                       {message.text}
+                      {message.reconnect ? (
+                        <button
+                          className="mt-2 block rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                          onClick={() => window.location.reload()}
+                          type="button"
+                        >
+                          继续连接
+                        </button>
+                      ) : null}
                     </div>
                     {message.role === "user" ? (
                       <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500">

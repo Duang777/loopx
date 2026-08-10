@@ -14,6 +14,7 @@ from .chat import (
     CHAT_AGENT_RESPONSE_SCHEMA_VERSION,
     CHAT_REVIEW_CLOSE_TAG,
     CHAT_REVIEW_OPEN_TAG,
+    VisibleResponseStreamFilter,
     parse_agent_response,
 )
 
@@ -122,50 +123,13 @@ def _turn_prompt(user_message: str) -> str:
         "If you encounter an identity, approval, or host-tool gate, stop and describe it in gate. "
         "Reply in Chinese unless the operator asks for another language. Keep proposals bounded and reviewable. "
         "Do not expose chain-of-thought, tool narration, intended steps, or scratch work. "
-        "Put the complete operator-facing answer in the envelope message field. Start with the conclusion, "
-        "then include at most five short actionable items when useful. "
-        "Return exactly one machine-readable envelope using these tags and shape, with no text before or after it:\n"
+        "First write the complete operator-facing answer as ordinary text. Start with the conclusion, "
+        "use short sentences or lines so the answer can stream, and include at most five actionable items. "
+        "Then append exactly one machine-readable envelope whose message field repeats that complete answer. "
+        "Do not write anything after the closing tag. Use these tags and shape:\n"
         f"{CHAT_REVIEW_OPEN_TAG}{json.dumps(envelope, ensure_ascii=False)}{CHAT_REVIEW_CLOSE_TAG}\n\n"
         f"Operator user message:\n{user_message.strip()}"
     )
-
-
-class _VisibleResponseFilter:
-    """Keep the final review envelope out of operator-visible deltas."""
-
-    def __init__(self) -> None:
-        self.pending = ""
-        self.hidden = False
-
-    def feed(self, chunk: str) -> str:
-        if self.hidden:
-            return ""
-        self.pending += chunk
-        marker_at = self.pending.find(CHAT_REVIEW_OPEN_TAG)
-        if marker_at >= 0:
-            visible = self.pending[:marker_at]
-            self.pending = ""
-            self.hidden = True
-            return visible
-        suffix_length = 0
-        limit = min(len(self.pending), len(CHAT_REVIEW_OPEN_TAG) - 1)
-        for length in range(1, limit + 1):
-            if self.pending.endswith(CHAT_REVIEW_OPEN_TAG[:length]):
-                suffix_length = length
-        if suffix_length:
-            visible = self.pending[:-suffix_length]
-            self.pending = self.pending[-suffix_length:]
-            return visible
-        visible = self.pending
-        self.pending = ""
-        return visible
-
-    def finish(self) -> str:
-        if self.hidden:
-            return ""
-        visible = self.pending
-        self.pending = ""
-        return visible
 
 
 @dataclass
@@ -398,7 +362,8 @@ class CodexChatAgentSession:
         if on_event:
             on_event("turn.started", {"upstream_turn_id": turn_id})
         parts: list[str] = []
-        display_filter = _VisibleResponseFilter()
+        display_filter = VisibleResponseStreamFilter(protected_paths=[self.work_dir])
+        visible_delta_count = 0
         pending = self._pending_events
         self._pending_events = []
         started_at = time.monotonic()
@@ -451,22 +416,33 @@ class CodexChatAgentSession:
                 delta = params.get("delta")
                 if isinstance(delta, str):
                     parts.append(delta)
-                    display_filter.feed(delta)
+                    visible = display_filter.feed(delta)
+                    if visible and on_event:
+                        visible_delta_count += 1
+                        on_event("answer.delta", {"text": visible})
             elif method == "item/completed":
                 item_text = _agent_item_text(message)
                 if item_text and not parts:
                     parts.append(item_text)
+                    visible = display_filter.feed(item_text)
+                    if visible and on_event:
+                        visible_delta_count += 1
+                        on_event("answer.delta", {"text": visible})
             elif method == "turn/completed":
                 break
             elif method == "error":
                 raise self._runtime_error("Codex app-server reported a turn error.")
-        display_filter.finish()
+        visible_tail = display_filter.finish()
+        if visible_tail and on_event:
+            visible_delta_count += 1
+            on_event("answer.delta", {"text": visible_tail})
         raw_response = "".join(parts)
         response = parse_agent_response(raw_response, protected_paths=[self.work_dir])
         if on_event:
             if CHAT_REVIEW_OPEN_TAG not in raw_response or CHAT_REVIEW_CLOSE_TAG not in raw_response:
                 on_event("protocol.warning", {"error_code": "missing_review_envelope"})
-            on_event("answer.delta", {"text": str(response.get("message") or "")})
+            if visible_delta_count == 0:
+                on_event("answer.delta", {"text": str(response.get("message") or "")})
             on_event("answer.final", {"response": response})
         self.current_turn_id = ""
         return response

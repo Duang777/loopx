@@ -15,6 +15,7 @@ from typing import Any, Callable
 from .chat import (
     CHAT_REVIEW_CLOSE_TAG,
     CHAT_REVIEW_OPEN_TAG,
+    VisibleResponseStreamFilter,
     parse_agent_response,
     redact_local_paths,
 )
@@ -318,11 +319,15 @@ class ACPStdioAdapter:
         event_sink("turn.started", {"upstream_turn_id": self.session_id})
         event_sink("agent.phase", {"label": "正在连接 ACP Agent"})
         parts: list[str] = []
+        display_filter = VisibleResponseStreamFilter(
+            protected_paths=[self.work_dir, self.agent_work_dir],
+        )
+        visible_delta_count = 0
         started_at = time.monotonic()
         last_activity_at = started_at
 
         def on_notification(payload: dict[str, Any]) -> None:
-            nonlocal last_activity_at
+            nonlocal last_activity_at, visible_delta_count
             last_activity_at = time.monotonic()
             if payload.get("method") != "session/update":
                 return
@@ -338,6 +343,10 @@ class ACPStdioAdapter:
                 if isinstance(content, dict) and content.get("type") == "text":
                     chunk = str(content.get("text") or "")
                     parts.append(chunk)
+                    visible = display_filter.feed(chunk)
+                    if visible:
+                        visible_delta_count += 1
+                        event_sink("answer.delta", {"text": visible})
             elif kind == "agent_thought_chunk":
                 event_sink("agent.phase", {"label": "ACP Agent 正在分析"})
             elif kind in {"tool_call", "tool_call_update"}:
@@ -387,13 +396,18 @@ class ACPStdioAdapter:
                 gate=_host_tool_gate(summary, "Interrupt the turn or retry in the same session."),
             ) from exc
         raw_response = "".join(parts)
+        visible_tail = display_filter.finish()
+        if visible_tail:
+            visible_delta_count += 1
+            event_sink("answer.delta", {"text": visible_tail})
         response = parse_agent_response(
             raw_response,
             protected_paths=[self.work_dir, self.agent_work_dir],
         )
         if CHAT_REVIEW_OPEN_TAG not in raw_response or CHAT_REVIEW_CLOSE_TAG not in raw_response:
             event_sink("protocol.warning", {"error_code": "missing_review_envelope"})
-        event_sink("answer.delta", {"text": str(response.get("message") or "")})
+        if visible_delta_count == 0:
+            event_sink("answer.delta", {"text": str(response.get("message") or "")})
         event_sink("answer.final", {"response": response})
         return response
 

@@ -92,6 +92,7 @@ import {
   fetchChatHistory,
   interruptChatTurn,
   previewTodo,
+  resumeChatTurnStreaming,
   sendChatTurnStreaming,
   selectAvailableChatAgent,
   sessionInvalidatedByPayload,
@@ -4579,6 +4580,7 @@ type PersonalManagerMessage = {
   id: number;
   lines: string[];
   pending?: boolean;
+  reconnect?: boolean;
   role: "assistant" | "user";
   sourceLabel?: string;
   text: string;
@@ -5179,6 +5181,7 @@ function PersonalGoalHome({
   const newSessionRequired = useRef(new Set<string>());
   const activeTurnIds = useRef(new Map<string, string>());
   const streamControllers = useRef(new Map<string, AbortController>());
+  const recoveringTurnKeys = useRef(new Set<string>());
   const agentMenuRef = useRef<HTMLDivElement>(null);
   const agentTriggerRef = useRef<HTMLButtonElement>(null);
   const detailsCloseRef = useRef<HTMLButtonElement>(null);
@@ -5237,6 +5240,7 @@ function PersonalGoalHome({
     const channelId = selectedGoal ? `goal.${selectedGoal.goalId}` : "manager";
     const anchorGoalId = selectedGoal?.goalId ?? model.goals[0]?.goalId ?? "";
     let cancelled = false;
+    let recoveryController: AbortController | null = null;
     void (async () => {
       try {
         const history = await fetchChatHistory({
@@ -5279,6 +5283,99 @@ function PersonalGoalHome({
         if (cancelled) return;
         sessionIds.current.set(sessionKey, created.session_id);
         newSessionRequired.current.delete(sessionKey);
+        const activeSnapshot = history.snapshots.find(
+          (snapshot) => snapshot.session.session_id === created.session_id,
+        );
+        const activeTurnId = activeSnapshot?.session.active_turn_id ?? "";
+        if (!activeTurnId) return;
+        const recoveryKey = `${created.session_id}:${activeTurnId}`;
+        if (recoveringTurnKeys.current.has(recoveryKey)) return;
+        recoveringTurnKeys.current.add(recoveryKey);
+        activeTurnIds.current.set(targetContextId, activeTurnId);
+        setSendingContextId(targetContextId);
+        recoveryController = new AbortController();
+        streamControllers.current.set(targetContextId, recoveryController);
+        let streamedText = "";
+        const streamingMessageId = appendManagerAssistantMessage(targetContextId, {
+          activity: ["正在恢复进行中的 Agent 回合"],
+          agentLabel: selectedAgent.label,
+          lines: [],
+          pending: true,
+          sourceLabel: `恢复的 ${selectedAgent.label} 会话`,
+          text: "",
+        });
+        try {
+          const streamed = await resumeChatTurnStreaming(created.session_id, activeTurnId, {
+            signal: recoveryController.signal,
+            onDelta: (delta) => {
+              streamedText += delta;
+              updateManagerAssistantMessage(targetContextId, streamingMessageId, {
+                text: streamedText,
+              });
+            },
+            onActivity: (label) => {
+              setMessagesByContext((messages) => ({
+                ...messages,
+                [targetContextId]: (messages[targetContextId] ?? []).map((message) =>
+                  message.id !== streamingMessageId
+                    ? message
+                    : {
+                        ...message,
+                        activity: [...new Set([...(message.activity ?? []), label])].slice(-6),
+                      }
+                ),
+              }));
+            },
+          });
+          if (cancelled) return;
+          updateManagerAssistantMessage(targetContextId, streamingMessageId, {
+            lines: streamed.response.gate
+              ? [streamed.response.gate.summary, streamed.response.gate.next_action].filter(Boolean).slice(0, 2)
+              : [],
+            pending: false,
+            text: streamed.response.message || streamedText.trim() || `${selectedAgent.label} 已完成分析。`,
+          });
+          const recoveryGoal = model.goals.find((goal) => goal.goalId === activeSnapshot?.session.goal_id)
+            ?? selectedGoal
+            ?? model.goals[0]
+            ?? null;
+          if (recoveryGoal && streamed.response.proposals.length > 0) {
+            const cards = streamed.response.proposals.map((proposal) => ({
+              goalId: recoveryGoal.goalId,
+              id: proposalId.current++,
+              previewId: null,
+              proposal,
+              receiptLabel: null,
+              state: "candidate" as const,
+              statusMessage: null,
+            }));
+            setProposalsByContext((current) => ({
+              ...current,
+              [targetContextId]: [...(current[targetContextId] ?? []), ...cards],
+            }));
+          }
+        } catch (error) {
+          if (cancelled) return;
+          updateManagerAssistantMessage(targetContextId, streamingMessageId, {
+            activity: [],
+            lines: [],
+            pending: false,
+            reconnect: error instanceof ChatApiError && error.payload.reconnectable === true,
+            sourceLabel: "LoopX Chat 本地后端",
+            text: error instanceof Error ? error.message : "无法恢复进行中的 Agent 回合。",
+          });
+        } finally {
+          recoveringTurnKeys.current.delete(recoveryKey);
+          if (activeTurnIds.current.get(targetContextId) === activeTurnId) {
+            activeTurnIds.current.delete(targetContextId);
+          }
+          if (streamControllers.current.get(targetContextId) === recoveryController) {
+            streamControllers.current.delete(targetContextId);
+          }
+          if (!cancelled) {
+            setSendingContextId((current) => current === targetContextId ? null : current);
+          }
+        }
       } catch (error) {
         if (cancelled) return;
         if (error instanceof ChatApiError && error.payload.error_code === "resume_failed") {
@@ -5288,6 +5385,7 @@ function PersonalGoalHome({
     })();
     return () => {
       cancelled = true;
+      recoveryController?.abort();
     };
   }, [contextId, model.goals[0]?.goalId, selectedGoal?.goalId, selectedAgent.agentId, selectedAgent.available, selectedAgent.label]);
 
@@ -5466,7 +5564,7 @@ function PersonalGoalHome({
       updateManagerAssistantMessage(targetContextId, streamingMessageId, {
         lines: response.gate ? [response.gate.summary, response.gate.next_action].filter(Boolean).slice(0, 2) : [],
         pending: false,
-        text: streamedText.trim() || response.message || `${selectedRoute.label} 已完成分析。`,
+        text: response.message || streamedText.trim() || `${selectedRoute.label} 已完成分析。`,
       });
       if (response.proposals.length > 0) {
         const cards = response.proposals.map((proposal) => ({
@@ -5500,6 +5598,7 @@ function PersonalGoalHome({
         agentLabel: selectedRoute.label,
         lines: gateSummary ? [gateSummary] : [],
         pending: false,
+        reconnect: payloadError?.reconnectable === true,
         sourceLabel: "LoopX Chat 本地后端",
         text: payloadError?.error_code === "resume_failed"
           ? `原 ${selectedRoute.label} 会话无法恢复。请再次发送这条消息，LoopX 会为当前 Goal 新建会话。`
@@ -5925,6 +6024,11 @@ function PersonalGoalHome({
                       <summary>{message.pending ? "执行过程" : `查看执行过程（${message.activity?.length ?? 0} 步）`}</summary>
                       <ol>{message.activity?.map((item) => <li key={item}>{item}</li>)}</ol>
                     </details>
+                  ) : null}
+                  {message.reconnect ? (
+                    <button className="personal-message-reconnect" onClick={() => window.location.reload()} type="button">
+                      继续连接
+                    </button>
                   ) : null}
                   {message.sourceLabel ? <small>{message.sourceLabel}</small> : null}
                 </article>

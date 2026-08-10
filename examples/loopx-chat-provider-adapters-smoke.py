@@ -24,16 +24,17 @@ tools_at = sys.argv.index("--tools")
 assert sys.argv[tools_at + 1] == "Read,Glob,Grep", sys.argv
 assert "Bash" not in sys.argv and "Edit" not in sys.argv and "Write" not in sys.argv, sys.argv
 
+answer = "已确认。请完成两项操作。\n1. 更新 MR 描述\n2. 指定 reviewer"
 envelope = '<loopx-review-json>' + json.dumps({
     "schema_version": "loopx_chat_agent_response_v0",
-    "message": "已确认。请完成两项操作。\n1. 更新 MR 描述\n2. 指定 reviewer",
+    "message": answer,
     "proposals": [],
     "gate": None,
 }) + '</loopx-review-json>'
 print(json.dumps({"type": "system", "session_id": "11111111-1111-4111-8111-111111111111"}), flush=True)
 print(json.dumps({"type": "stream_event", "event": {
     "type": "content_block_delta",
-    "delta": {"type": "text_delta", "text": envelope},
+    "delta": {"type": "text_delta", "text": answer + "\n" + envelope},
 }}), flush=True)
 print(json.dumps({"type": "result", "result": envelope}), flush=True)
 '''
@@ -63,6 +64,13 @@ def main() -> None:
         response = claude.start_turn("告诉我下一步", lambda kind, payload: observed.append((kind, payload)))
         assert response["message"].startswith("已确认"), response
         assert any(kind == "answer.delta" for kind, _ in observed), observed
+        visible = "".join(
+            str(payload.get("text") or "")
+            for kind, payload in observed
+            if kind == "answer.delta"
+        )
+        assert visible.strip() == response["message"], observed
+        assert "<loopx-review-json>" not in visible, visible
         assert not any(kind == "assistant.delta" for kind, _ in observed), observed
         assert claude.upstream_thread_id == "11111111-1111-4111-8111-111111111111"
 

@@ -105,8 +105,9 @@ for line in sys.stdin:
             "proposals": [],
             "gate": None,
         }, ensure_ascii=False) + '</loopx-review-json>'
-        midpoint = len(envelope) // 2
-        for chunk in (envelope[:midpoint], envelope[midpoint:]):
+        response = "ACP 回答。\n" + envelope
+        marker_split = response.index("<loopx-review-json>") + 5
+        for chunk in (response[:marker_split], response[marker_split:]):
             print(json.dumps({
                 "jsonrpc": "2.0",
                 "method": "session/update",
@@ -142,6 +143,13 @@ def main() -> None:
         events: list[tuple[str, dict[str, object]]] = []
         response = adapter.start_turn("检查状态", lambda kind, payload: events.append((kind, payload)))
         assert response["message"] == "ACP 回答。", response
+        visible = "".join(
+            str(payload.get("text") or "")
+            for kind, payload in events
+            if kind == "answer.delta"
+        )
+        assert visible.strip() == "ACP 回答。", events
+        assert "<loopx-review-json>" not in visible, visible
         assert any(kind == "agent.phase" and "读取 [project]" in str(payload.get("label")) for kind, payload in events)
         assert str(root) not in str(events), events
         assert not any("private thought" in str(payload) for _, payload in events), events

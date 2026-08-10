@@ -78,12 +78,12 @@ for line in sys.stdin:
                     "method": "item/started",
                     "params": {"threadId": "thread-loopx-chat", "turnId": turn_id, "item": {"id": f"work-{index}"}},
                 }), flush=True)
+        visible_answer = "Reviewed " + params.get("cwd", "") + ".\n"
         response = (
-            'Visible answer before envelope.\n'
-            '<loopx-review-json>'
+            visible_answer + '<loopx-review-json>'
             + json.dumps({
                 "schema_version": "loopx_chat_agent_response_v0",
-                "message": "Reviewed " + params.get("cwd", "") + ".",
+                "message": visible_answer.strip(),
                 "proposals": [{
                     "kind": "todo",
                     "text": "[P1] Add the selected review flow.",
@@ -94,15 +94,17 @@ for line in sys.stdin:
             })
             + '</loopx-review-json>'
         )
-        print(json.dumps({
-            "method": "item/agentMessage/delta",
-            "params": {
-                "threadId": "thread-loopx-chat",
-                "turnId": turn_id,
-                "itemId": f"item-{turn_count}",
-                "delta": response,
-            },
-        }), flush=True)
+        marker_split = response.index("<loopx-review-json>") + 7
+        for chunk in (response[:marker_split], response[marker_split:]):
+            print(json.dumps({
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": "thread-loopx-chat",
+                    "turnId": turn_id,
+                    "itemId": f"item-{turn_count}",
+                    "delta": chunk,
+                },
+            }), flush=True)
         print(json.dumps({
             "method": "turn/completed",
             "params": {
@@ -161,6 +163,13 @@ def main() -> None:
         assert visible.strip() == "Reviewed [project].", observed
         assert "<loopx-review-json>" not in visible, visible
         assert not any(kind == "assistant.delta" for kind, _ in observed), observed
+        delta_index = next(index for index, item in enumerate(observed) if item[0] == "answer.delta")
+        completed_phase_index = next(
+            index
+            for index, item in enumerate(observed)
+            if item[0] == "agent.phase" and item[1].get("method") == "turn/completed"
+        )
+        assert delta_index < completed_phase_index, observed
 
         resumed = CodexChatAgentSession.start(
             codex_bin=str(fake_codex),

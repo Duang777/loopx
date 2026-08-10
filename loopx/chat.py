@@ -56,6 +56,63 @@ def redact_local_paths(text: str, *, protected_paths: Iterable[Path | str] = ())
     return redacted
 
 
+class VisibleResponseStreamFilter:
+    """Stream safe operator text while withholding the structured review envelope."""
+
+    _FLUSH_BOUNDARIES = {"\n", "。", "！", "？"}
+
+    def __init__(self, *, protected_paths: Iterable[Path | str] = ()) -> None:
+        self.protected_paths = tuple(protected_paths)
+        self.marker_pending = ""
+        self.visible_pending = ""
+        self.envelope_started = False
+
+    def _accept_visible(self, text: str, *, final: bool) -> str:
+        self.visible_pending += text
+        if final:
+            ready = self.visible_pending
+            self.visible_pending = ""
+            return redact_local_paths(ready, protected_paths=self.protected_paths)
+        boundary = -1
+        for index, character in enumerate(self.visible_pending):
+            if character in self._FLUSH_BOUNDARIES:
+                boundary = index + 1
+        if boundary < 0:
+            return ""
+        ready = self.visible_pending[:boundary]
+        self.visible_pending = self.visible_pending[boundary:]
+        return redact_local_paths(ready, protected_paths=self.protected_paths)
+
+    def feed(self, chunk: str) -> str:
+        if self.envelope_started:
+            return ""
+        self.marker_pending += str(chunk or "")
+        marker_at = self.marker_pending.find(CHAT_REVIEW_OPEN_TAG)
+        if marker_at >= 0:
+            visible = self.marker_pending[:marker_at]
+            self.marker_pending = ""
+            self.envelope_started = True
+            return self._accept_visible(visible, final=True)
+        suffix_length = 0
+        limit = min(len(self.marker_pending), len(CHAT_REVIEW_OPEN_TAG) - 1)
+        for length in range(1, limit + 1):
+            if self.marker_pending.endswith(CHAT_REVIEW_OPEN_TAG[:length]):
+                suffix_length = length
+        if suffix_length:
+            visible = self.marker_pending[:-suffix_length]
+            self.marker_pending = self.marker_pending[-suffix_length:]
+        else:
+            visible = self.marker_pending
+            self.marker_pending = ""
+        return self._accept_visible(visible, final=False)
+
+    def finish(self) -> str:
+        if not self.envelope_started:
+            self.visible_pending += self.marker_pending
+        self.marker_pending = ""
+        return self._accept_visible("", final=True)
+
+
 def _compact_line(value: Any, *, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text[:limit].strip()
