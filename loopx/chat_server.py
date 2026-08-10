@@ -700,7 +700,7 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "schema_version": "loopx_chat_capabilities_v1",
-                    "agent_backend": "codex_app_server",
+                    "agent_backend": "multi_adapter",
                     "sandbox": "read-only",
                     "approval_policy": "never",
                     "todo_write": "preview_locked",
@@ -835,7 +835,7 @@ def serve_chat(
     )
     url = f"http://{host}:{port}{DEFAULT_CHAT_PATH}"
     print(f"Serving LoopX Chat at {url}", flush=True)
-    print("Agent boundary: Codex app-server, read-only sandbox, approval policy never", flush=True)
+    print("Agent boundary: local adapters, read-only sandbox, approval policy never", flush=True)
     print("Todo writes: preview-locked on loopback", flush=True)
     if open_browser:
         webbrowser.open(url)

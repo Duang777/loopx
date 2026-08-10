@@ -118,6 +118,12 @@ def main() -> None:
         assert fallback["message"] == "The host stopped at [local-path].", fallback
         assert fallback["proposals"] == [], fallback
 
+        malformed = parse_agent_response(
+            'tool narration that must stay hidden\n<loopx-review-json>{"message":"Clean answer.",}</loopx-review-json>',
+        )
+        assert malformed["message"] == "Clean answer.", malformed
+        assert "tool narration" not in malformed["message"], malformed
+
         original = state_file.read_text(encoding="utf-8")
         preview = build_todo_review_preview(
             registry_path=registry_path,

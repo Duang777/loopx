@@ -346,7 +346,12 @@ class ChatSessionStore:
             rows = _read_jsonl(event_path)
             retained = [
                 row for row in rows
-                if row.get("kind") not in {"assistant.delta", "turn.activity"}
+                if row.get("kind") not in {
+                    "answer.delta",
+                    "assistant.delta",
+                    "agent.phase",
+                    "turn.activity",
+                }
             ]
             if len(retained) == len(rows):
                 continue

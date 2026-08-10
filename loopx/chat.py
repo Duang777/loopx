@@ -94,11 +94,17 @@ def _normalize_gate(value: Any, *, protected_paths: Iterable[Path | str]) -> dic
         return None
     kind = _compact_line(value.get("kind"), limit=80)
     summary = _compact_line(
-        redact_local_paths(str(value.get("summary") or ""), protected_paths=protected_paths),
+        redact_local_paths(
+            str(value.get("summary") or value.get("message") or ""),
+            protected_paths=protected_paths,
+        ),
         limit=500,
     )
     next_action = _compact_line(
-        redact_local_paths(str(value.get("next_action") or ""), protected_paths=protected_paths),
+        redact_local_paths(
+            str(value.get("next_action") or value.get("required_action") or ""),
+            protected_paths=protected_paths,
+        ),
         limit=500,
     )
     if not kind and not summary:
@@ -132,6 +138,20 @@ def parse_agent_response(
                 "proposals": _normalize_proposals(payload.get("proposals"), protected_paths=protected),
                 "gate": _normalize_gate(payload.get("gate"), protected_paths=protected),
             }
+        key = re.search(r'"message"\s*:\s*', body)
+        if key:
+            try:
+                salvaged, _ = json.JSONDecoder().raw_decode(body[key.end() :])
+            except json.JSONDecodeError:
+                salvaged = None
+            if isinstance(salvaged, str) and salvaged.strip():
+                return {
+                    "schema_version": CHAT_AGENT_RESPONSE_SCHEMA_VERSION,
+                    "message": redact_local_paths(salvaged, protected_paths=protected).strip(),
+                    "proposals": [],
+                    "gate": None,
+                }
+        raw_text = raw_text[:start]
     return {
         "schema_version": CHAT_AGENT_RESPONSE_SCHEMA_VERSION,
         "message": redact_local_paths(raw_text, protected_paths=protected).strip(),

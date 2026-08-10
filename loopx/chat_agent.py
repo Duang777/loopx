@@ -121,9 +121,10 @@ def _turn_prompt(user_message: str) -> str:
         "Do not edit files, mutate LoopX state, create commits, send messages, or request elevated access. "
         "If you encounter an identity, approval, or host-tool gate, stop and describe it in gate. "
         "Reply in Chinese unless the operator asks for another language. Keep proposals bounded and reviewable. "
-        "First write the concise operator-facing answer as normal text. "
-        "Finish with exactly one machine-readable envelope using these tags and shape. "
-        "Do not put any visible answer after the closing tag:\n"
+        "Do not expose chain-of-thought, tool narration, intended steps, or scratch work. "
+        "Put the complete operator-facing answer in the envelope message field. Start with the conclusion, "
+        "then include at most five short actionable items when useful. "
+        "Return exactly one machine-readable envelope using these tags and shape, with no text before or after it:\n"
         f"{CHAT_REVIEW_OPEN_TAG}{json.dumps(envelope, ensure_ascii=False)}{CHAT_REVIEW_CLOSE_TAG}\n\n"
         f"Operator user message:\n{user_message.strip()}"
     )
@@ -438,14 +439,19 @@ class CodexChatAgentSession:
             method = str(message.get("method") or "")
             params = message.get("params")
             if on_event:
-                on_event("turn.activity", {"method": method})
+                phase = {
+                    "turn/started": "正在连接 Agent",
+                    "item/started": "正在读取 Goal 上下文",
+                    "item/completed": "已完成一项检查",
+                    "turn/completed": "正在整理回答",
+                }.get(method)
+                if phase:
+                    on_event("agent.phase", {"label": phase, "method": method})
             if method == "item/agentMessage/delta" and isinstance(params, dict):
                 delta = params.get("delta")
                 if isinstance(delta, str):
                     parts.append(delta)
-                    visible = display_filter.feed(delta)
-                    if visible and on_event:
-                        on_event("assistant.delta", {"text": visible})
+                    display_filter.feed(delta)
             elif method == "item/completed":
                 item_text = _agent_item_text(message)
                 if item_text and not parts:
@@ -454,15 +460,14 @@ class CodexChatAgentSession:
                 break
             elif method == "error":
                 raise self._runtime_error("Codex app-server reported a turn error.")
-        trailing = display_filter.finish()
-        if trailing and on_event:
-            on_event("assistant.delta", {"text": trailing})
+        display_filter.finish()
         raw_response = "".join(parts)
         response = parse_agent_response(raw_response, protected_paths=[self.work_dir])
         if on_event:
             if CHAT_REVIEW_OPEN_TAG not in raw_response or CHAT_REVIEW_CLOSE_TAG not in raw_response:
                 on_event("protocol.warning", {"error_code": "missing_review_envelope"})
-            on_event("assistant.final", {"response": response})
+            on_event("answer.delta", {"text": str(response.get("message") or "")})
+            on_event("answer.final", {"response": response})
         self.current_turn_id = ""
         return response
 

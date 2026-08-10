@@ -156,10 +156,11 @@ def main() -> None:
         visible = "".join(
             str(payload.get("text") or "")
             for kind, payload in observed
-            if kind == "assistant.delta"
+            if kind == "answer.delta"
         )
-        assert visible.strip() == "Visible answer before envelope.", observed
+        assert visible.strip() == "Reviewed [project].", observed
         assert "<loopx-review-json>" not in visible, visible
+        assert not any(kind == "assistant.delta" for kind, _ in observed), observed
 
         resumed = CodexChatAgentSession.start(
             codex_bin=str(fake_codex),
