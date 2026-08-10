@@ -282,10 +282,53 @@ The selected Chat route and the durable Todo owner remain separate fields:
 - the projection author always uses durable Todo ownership;
 - the Chat header and composer use the currently selected route.
 
-The MVP connects Codex through the local LoopX Chat server with a read-only
-sandbox and `never` approval policy. `Status only` stays local and makes no
-model call. A discovered Agent without a compatible Chat adapter remains
-visible with a clear unavailable explanation and a Codex fallback.
+The first runtime set connects Codex app-server, Claude Code, direct model
+providers, and owner-configured ACP v1 Agents through the local LoopX Chat
+server. Codex and Claude Code retain a read-only boundary; Claude Code may use
+only `Read`, `Glob`, and `Grep`. Direct model providers do not receive host
+tools. `Status only` stays local and makes no model call.
+
+Custom ACP Agents use the stable
+[ACP v1 newline-delimited stdio transport](https://agentclientprotocol.com/protocol/v1/transports).
+A remote Agent can be connected through an owner-controlled stdio bridge such
+as SSH.
+LoopX advertises no client filesystem or terminal capabilities and rejects
+Agent-to-client permission requests. Agent-owned tool activity appears as a
+compact phase label; thought chunks and raw tool output never enter the visible
+conversation.
+
+### Owner-local Endpoint binding
+
+Custom launch commands, remote connection details, workspace mappings, and
+credential references remain in the owner-only Chat runtime directory. The
+browser can list redacted availability and capability summaries, but it cannot
+add, modify, or delete launch commands. Endpoint changes require an explicit
+local CLI action:
+
+```text
+loopx chat-endpoint add --config ./private-agent-endpoint.json
+loopx chat-endpoint list
+loopx chat-endpoint remove --agent-id my-acp-agent
+```
+
+The private definition uses an argv list and never invokes a shell:
+
+```json
+{
+  "agent_id": "my-acp-agent",
+  "display_name": "My ACP Agent",
+  "adapter_kind": "acp",
+  "transport": "stdio",
+  "location": "local",
+  "trust_scope": "read_only",
+  "command": ["my-agent", "--acp"],
+  "workspace_mapping": []
+}
+```
+
+For a remote host, the command may launch an owner-configured SSH bridge and a
+workspace mapping translates the local Goal root to the Agent-side absolute
+path. The public Endpoint response omits both fields.
 
 When the selected Agent suggests new work, Chat adds a compact candidate card
 to the timeline:
