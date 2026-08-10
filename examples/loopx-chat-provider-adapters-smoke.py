@@ -18,6 +18,11 @@ from loopx.chat_providers import ClaudeCodeAdapter, DirectModelAdapter  # noqa: 
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json
+import sys
+
+tools_at = sys.argv.index("--tools")
+assert sys.argv[tools_at + 1] == "Read,Glob,Grep", sys.argv
+assert "Bash" not in sys.argv and "Edit" not in sys.argv and "Write" not in sys.argv, sys.argv
 
 envelope = '<loopx-review-json>' + json.dumps({
     "schema_version": "loopx_chat_agent_response_v0",
@@ -54,6 +59,7 @@ def main() -> None:
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
         observed: list[tuple[str, dict[str, object]]] = []
         claude = ClaudeCodeAdapter.start(claude_bin=str(fake), work_dir=root)
+        assert claude.capabilities()["tool_scope"] == "read_only"
         response = claude.start_turn("告诉我下一步", lambda kind, payload: observed.append((kind, payload)))
         assert response["message"].startswith("已确认"), response
         assert any(kind == "answer.delta" for kind, _ in observed), observed

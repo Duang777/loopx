@@ -24,6 +24,7 @@ from ..chat_server import (
     DEFAULT_CHAT_PORT,
     serve_chat,
 )
+from ..chat_endpoints import AgentEndpointRegistry
 from ..control_plane.scheduler.execution_context import SchedulerRuntimeProfile
 from ..history import load_registry
 from ..paths import resolve_runtime_root
@@ -81,6 +82,7 @@ AddFormat = Callable[[argparse.ArgumentParser], None]
 SUPPORT_CONTROL_COMMANDS = {
     "backup-state",
     "chat",
+    "chat-endpoint",
     "heartbeat-prequota",
     "heartbeat-prompt",
     "promotion-gate",
@@ -499,6 +501,21 @@ def register_support_control_commands(
     )
     chat_parser.add_argument("--verbose", action="store_true", help="Print HTTP request logs.")
 
+    chat_endpoint_parser = subparsers.add_parser(
+        "chat-endpoint",
+        help="Manage owner-local ACP Agent bindings used by LoopX Chat.",
+    )
+    add_subcommand_format(chat_endpoint_parser)
+    chat_endpoint_parser.add_argument("action", choices=("list", "add", "remove"))
+    chat_endpoint_parser.add_argument(
+        "--config",
+        help="Private JSON endpoint definition used by the add action.",
+    )
+    chat_endpoint_parser.add_argument(
+        "--agent-id",
+        help="Custom Agent id used by the remove action.",
+    )
+
 
 def handle_support_control_command(
     args: argparse.Namespace,
@@ -510,6 +527,54 @@ def handle_support_control_command(
 ) -> int | None:
     if args.command not in SUPPORT_CONTROL_COMMANDS:
         return None
+
+    if args.command == "chat-endpoint":
+        try:
+            registry = load_registry(registry_path) if registry_path.exists() else {}
+            runtime_root = resolve_runtime_root(
+                registry,
+                args.runtime_root,
+                registry_path=registry_path,
+            )
+            endpoints = AgentEndpointRegistry(runtime_root / "chat")
+            if args.action == "add":
+                if not args.config:
+                    raise ValueError("--config is required for chat-endpoint add")
+                config_path = Path(args.config).expanduser().resolve()
+                definition = json.loads(config_path.read_text(encoding="utf-8"))
+                if not isinstance(definition, dict):
+                    raise ValueError("Agent endpoint config must be a JSON object")
+                endpoint = endpoints.upsert(definition)
+                payload: dict[str, object] = {
+                    "ok": True,
+                    "schema_version": "loopx_chat_endpoint_binding_v1",
+                    "action": "added",
+                    "endpoint": endpoint.public_summary(),
+                }
+            elif args.action == "remove":
+                if not args.agent_id:
+                    raise ValueError("--agent-id is required for chat-endpoint remove")
+                deleted = endpoints.delete(args.agent_id)
+                payload = {
+                    "ok": deleted,
+                    "schema_version": "loopx_chat_endpoint_binding_v1",
+                    "action": "removed" if deleted else "not_found",
+                    "agent_id": args.agent_id,
+                }
+            else:
+                payload = {
+                    "ok": True,
+                    "schema_version": "loopx_chat_endpoint_list_v1",
+                    "endpoints": [endpoint.public_summary() for endpoint in endpoints.list()],
+                }
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "schema_version": "loopx_chat_endpoint_binding_v1",
+                "error": str(exc),
+            }
+        print_payload(payload, args.format, lambda item: json.dumps(item, ensure_ascii=False, indent=2))
+        return 0 if payload.get("ok") else 1
 
     if args.command == "backup-state":
         try:

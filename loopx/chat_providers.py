@@ -33,6 +33,7 @@ class ClaudeCodeAdapter:
     claude_bin: str
     work_dir: Path
     session_id: str
+    tool_scope: str = "read_only"
     resumed: bool = False
     current_process: subprocess.Popen[str] | None = field(default=None, repr=False)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -48,6 +49,7 @@ class ClaudeCodeAdapter:
         claude_bin: str,
         work_dir: Path,
         resume_thread_id: str | None = None,
+        tool_scope: str = "read_only",
     ) -> "ClaudeCodeAdapter":
         resolved = shutil.which(claude_bin)
         if not resolved:
@@ -55,10 +57,13 @@ class ClaudeCodeAdapter:
                 "Claude Code",
                 "Install Claude Code or select another healthy Agent endpoint.",
             )
+        if tool_scope not in {"read_only", "disabled"}:
+            raise ValueError("Claude Code tool_scope must be read_only or disabled")
         return cls(
             claude_bin=resolved,
             work_dir=work_dir.resolve(),
             session_id=resume_thread_id or str(uuid.uuid4()),
+            tool_scope=tool_scope,
             resumed=bool(resume_thread_id),
         )
 
@@ -68,6 +73,8 @@ class ClaudeCodeAdapter:
             "streaming": True,
             "resume": True,
             "interrupt": True,
+            "tool_calls": self.tool_scope != "disabled",
+            "tool_scope": self.tool_scope,
         }
 
     def start_turn(self, message: str, event_sink: EventSink) -> dict[str, Any]:
@@ -80,7 +87,7 @@ class ClaudeCodeAdapter:
             "--permission-mode",
             "plan",
             "--tools",
-            "",
+            "Read,Glob,Grep" if self.tool_scope == "read_only" else "",
             "--disable-slash-commands",
         ]
         if self.resumed:

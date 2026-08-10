@@ -31,6 +31,7 @@ DEFAULT_CHAT_PORT = 8767
 DEFAULT_CHAT_PATH = "/chat/"
 DEFAULT_CHAT_STATUS_PATH = "/status.json"
 CHAT_CAPABILITIES_PATH = "/api/chat/capabilities"
+CHAT_ENDPOINTS_PATH = "/api/chat/endpoints"
 CHAT_SESSIONS_PATH = "/api/chat/sessions"
 MANAGER_AGENT_GOAL_ID = "loopx-manager"
 MANAGER_AGENT_OBJECTIVE = (
@@ -714,6 +715,15 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                     "resume": True,
                     "interrupt": True,
                     "adapters": self.server.runtime_controller.capabilities(),
+                }
+            )
+            return
+        if path == CHAT_ENDPOINTS_PATH:
+            self._send_json(
+                {
+                    "ok": True,
+                    "schema_version": "loopx_chat_endpoint_list_v1",
+                    "endpoints": self.server.runtime_controller.capabilities(),
                 }
             )
             return

@@ -10,7 +10,9 @@ import threading
 import time
 from typing import Any, Callable, Protocol
 
+from .chat_acp import ACPStdioAdapter
 from .chat_agent import CodexChatAgentError, CodexChatAgentSession, CodexChatTimeoutError
+from .chat_endpoints import AgentEndpointRegistry
 from .chat_store import ChatSessionStore, utc_now
 from .chat_providers import ClaudeCodeAdapter, direct_model_from_environment
 
@@ -95,6 +97,7 @@ class ChatRuntimeController:
         startup_timeout_sec: float = 30.0,
         idle_timeout_sec: float = 180.0,
         hard_timeout_sec: float = 900.0,
+        endpoint_registry: AgentEndpointRegistry | None = None,
     ) -> None:
         self.store = store
         self.codex_bin = codex_bin
@@ -102,13 +105,14 @@ class ChatRuntimeController:
         self.startup_timeout_sec = startup_timeout_sec
         self.idle_timeout_sec = idle_timeout_sec
         self.hard_timeout_sec = hard_timeout_sec
+        self.endpoint_registry = endpoint_registry or AgentEndpointRegistry(store.root)
         self.adapters: dict[str, ChatRuntimeAdapter] = {}
         self.cancelled_turns: set[tuple[str, str]] = set()
         self.lock = threading.RLock()
         self.session_open_locks: dict[tuple[str, str, str], threading.Lock] = {}
 
     def capabilities(self) -> list[dict[str, Any]]:
-        return [
+        builtins = [
             {
                 "agent_id": "codex",
                 "display_name": "Codex",
@@ -117,6 +121,9 @@ class ChatRuntimeController:
                 "streaming": True,
                 "resume": True,
                 "interrupt": True,
+                "tool_calls": True,
+                "trust_scope": "read_only",
+                "source": "builtin",
             },
             {
                 "agent_id": "claude-code",
@@ -126,6 +133,9 @@ class ChatRuntimeController:
                 "streaming": True,
                 "resume": True,
                 "interrupt": True,
+                "tool_calls": True,
+                "trust_scope": "read_only",
+                "source": "builtin",
             },
             {
                 "agent_id": "anthropic-api",
@@ -135,6 +145,9 @@ class ChatRuntimeController:
                 "streaming": False,
                 "resume": True,
                 "interrupt": False,
+                "tool_calls": False,
+                "trust_scope": "model_only",
+                "source": "builtin",
             },
             {
                 "agent_id": "openai-api",
@@ -144,8 +157,12 @@ class ChatRuntimeController:
                 "streaming": False,
                 "resume": True,
                 "interrupt": False,
+                "tool_calls": False,
+                "trust_scope": "model_only",
+                "source": "builtin",
             },
         ]
+        return [*builtins, *(endpoint.public_summary() for endpoint in self.endpoint_registry.list())]
 
     def _start_adapter(
         self,
@@ -173,6 +190,7 @@ class ChatRuntimeController:
                 claude_bin=self.claude_bin,
                 work_dir=work_dir,
                 resume_thread_id=resume_thread_id,
+                tool_scope="read_only",
             )
         if agent_id in {"anthropic-api", "openai-api"}:
             return direct_model_from_environment(
@@ -180,6 +198,17 @@ class ChatRuntimeController:
                 work_dir=work_dir,
                 session_id=resume_thread_id,
                 history=history,
+            )
+        endpoint = self.endpoint_registry.get(agent_id)
+        if endpoint is not None:
+            return ACPStdioAdapter.start(
+                command=endpoint.command,
+                work_dir=work_dir,
+                agent_work_dir=endpoint.mapped_work_dir(work_dir),
+                resume_thread_id=resume_thread_id,
+                startup_timeout_sec=self.startup_timeout_sec,
+                idle_timeout_sec=self.idle_timeout_sec,
+                hard_timeout_sec=self.hard_timeout_sec,
             )
         raise ValueError(f"unknown Agent endpoint: {agent_id}")
 
@@ -356,9 +385,18 @@ class ChatRuntimeController:
         started = utc_now()
         self.store.update_turn(session_id, turn_id, status="starting", started_at=started)
 
+        def consume_interrupted() -> bool:
+            key = (session_id, turn_id)
+            with self.lock:
+                if key not in self.cancelled_turns:
+                    return False
+                self.cancelled_turns.discard(key)
+                return True
+
         def event_sink(kind: str, payload: dict[str, Any]) -> None:
-            if (session_id, turn_id) in self.cancelled_turns:
-                return
+            with self.lock:
+                if (session_id, turn_id) in self.cancelled_turns:
+                    return
             now = utc_now()
             changes: dict[str, Any] = {"last_activity_at": now}
             current_turn = self.store.load_turn(session_id, turn_id) or {}
@@ -374,8 +412,7 @@ class ChatRuntimeController:
 
         try:
             response = adapter.start_turn(message, event_sink)
-            if (session_id, turn_id) in self.cancelled_turns:
-                self.cancelled_turns.discard((session_id, turn_id))
+            if consume_interrupted():
                 return
             if response.get("message"):
                 self.store.append_message(
@@ -408,18 +445,24 @@ class ChatRuntimeController:
                 last_error_code=None,
             )
         except CodexChatTimeoutError as exc:
+            if consume_interrupted():
+                return
             try:
                 adapter.interrupt_turn()
             except Exception:
                 pass
             self._fail_turn(session_id, turn_id, exc.error_code, str(exc), status="timed_out")
         except CodexChatAgentError as exc:
+            if consume_interrupted():
+                return
             self._fail_turn(session_id, turn_id, exc.error_code, str(exc), status="failed", gate=exc.gate)
             if not adapter.healthcheck():
                 with self.lock:
                     self.adapters.pop(session_id, None)
                 self.store.update_session(session_id, status="stale", last_error_code="transport_disconnected")
         except Exception as exc:  # noqa: BLE001 - preserve compact runtime failure.
+            if consume_interrupted():
+                return
             self._fail_turn(session_id, turn_id, "runtime_error", str(exc), status="failed")
 
     def _fail_turn(
@@ -464,9 +507,13 @@ class ChatRuntimeController:
         with self.lock:
             adapter = self.adapters.get(session_id)
         self.store.update_turn(session_id, turn_id, status="interrupting")
+        with self.lock:
+            self.cancelled_turns.add((session_id, turn_id))
         if adapter is not None:
-            adapter.interrupt_turn(str(turn.get("upstream_turn_id") or "") or None)
-        self.cancelled_turns.add((session_id, turn_id))
+            try:
+                adapter.interrupt_turn(str(turn.get("upstream_turn_id") or "") or None)
+            except Exception:
+                pass
         completed = utc_now()
         updated = self.store.update_turn(
             session_id,
@@ -477,7 +524,6 @@ class ChatRuntimeController:
         )
         self.store.append_event(session_id, turn_id, kind="turn.interrupted", payload={})
         self.store.update_session(session_id, status="ready", active_turn_id=None, last_activity_at=completed)
-        self.cancelled_turns.discard((session_id, turn_id))
         return updated
 
     def wait_for_turn(self, *, session_id: str, turn_id: str, timeout_sec: float = 920.0) -> dict[str, Any]:

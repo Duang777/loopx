@@ -147,6 +147,8 @@ def main() -> None:
             time.sleep(0.02)
         interrupted = second.interrupt_turn(session_id=session_id, turn_id=slow["turn_id"])
         assert interrupted["status"] == "interrupted", interrupted
+        time.sleep(0.1)
+        assert store.load_turn(session_id, slow["turn_id"])["status"] == "interrupted"
         assert store.load_session(session_id)["status"] == "ready"
         second.close()
 
