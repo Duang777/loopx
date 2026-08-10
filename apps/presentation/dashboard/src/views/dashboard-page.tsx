@@ -5181,6 +5181,7 @@ function PersonalGoalHome({
   const newSessionRequired = useRef(new Set<string>());
   const activeTurnIds = useRef(new Map<string, string>());
   const streamControllers = useRef(new Map<string, AbortController>());
+  const interruptedContexts = useRef(new Set<string>());
   const recoveringTurnKeys = useRef(new Set<string>());
   const agentMenuRef = useRef<HTMLDivElement>(null);
   const agentTriggerRef = useRef<HTMLButtonElement>(null);
@@ -5582,6 +5583,22 @@ function PersonalGoalHome({
         }));
       }
     } catch (error) {
+      const userInterrupted = interruptedContexts.current.delete(targetContextId);
+      if (userInterrupted) {
+        const interruptedMessage = {
+          agentLabel: selectedRoute.label,
+          lines: [],
+          pending: false,
+          sourceLabel: `${selectedRoute.label} 会话`,
+          text: "已中断。你可以在当前会话继续发送消息。",
+        };
+        if (streamingMessageId === null) {
+          appendManagerAssistantMessage(targetContextId, interruptedMessage);
+        } else {
+          updateManagerAssistantMessage(targetContextId, streamingMessageId, interruptedMessage);
+        }
+        return;
+      }
       const payloadError = error instanceof ChatApiError ? error.payload : null;
       if (payloadError && sessionInvalidatedByPayload(payloadError)) {
         sessionIds.current.delete(sessionKey);
@@ -5623,8 +5640,12 @@ function PersonalGoalHome({
     const turnId = activeTurnIds.current.get(targetContextId);
     if (!sessionId || !turnId) return;
     try {
+      interruptedContexts.current.add(targetContextId);
       await interruptChatTurn(sessionId, turnId);
       streamControllers.current.get(targetContextId)?.abort();
+    } catch (error) {
+      interruptedContexts.current.delete(targetContextId);
+      throw error;
     } finally {
       activeTurnIds.current.delete(targetContextId);
       streamControllers.current.delete(targetContextId);
