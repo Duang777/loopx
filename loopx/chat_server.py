@@ -582,11 +582,16 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
         query = parse_qs(urlparse(self.path).query)
         goal_id = _compact_text((query.get("goal_id") or [""])[0], limit=160) or None
         agent_id = _compact_text((query.get("agent_id") or [""])[0], limit=80) or None
+        channel_id = _compact_text((query.get("channel_id") or [""])[0], limit=160) or None
         self._send_json(
             {
                 "ok": True,
                 "schema_version": "loopx_chat_session_list_v1",
-                "sessions": self.server.chat_store.list_sessions(goal_id=goal_id, agent_id=agent_id),
+                "sessions": self.server.chat_store.list_sessions(
+                    goal_id=goal_id,
+                    agent_id=agent_id,
+                    channel_id=channel_id,
+                ),
             }
         )
 

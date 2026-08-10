@@ -89,7 +89,7 @@ import {
   applyTodo,
   createChatSession,
   fetchChatCapabilities,
-  fetchChatSession,
+  fetchChatHistory,
   interruptChatTurn,
   previewTodo,
   sendChatTurnStreaming,
@@ -5231,37 +5231,66 @@ function PersonalGoalHome({
   }, [selectedAgents]);
 
   useEffect(() => {
-    if (!selectedGoal || selectedAgent.agentId === "status-only" || !selectedAgent.available) return;
+    if (selectedAgent.agentId === "status-only" || !selectedAgent.available) return;
     const targetContextId = contextId;
     const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
+    const contextKind = selectedGoal ? "goal" : "manager";
+    const channelId = selectedGoal ? `goal.${selectedGoal.goalId}` : "manager";
+    const anchorGoalId = selectedGoal?.goalId ?? model.goals[0]?.goalId ?? "";
     let cancelled = false;
-    void createChatSession(selectedGoal.goalId, selectedAgent.agentId)
-      .then(async (created) => {
+    void (async () => {
+      try {
+        const history = await fetchChatHistory({
+          agentId: selectedAgent.agentId,
+          channelId,
+          goalId: selectedGoal?.goalId,
+        });
+        if (cancelled) return;
+        setMessagesByContext((current) => {
+          if ((current[targetContextId]?.length ?? 0) > 0) return current;
+          return {
+            ...current,
+            [targetContextId]: history.messages.map((message) => ({
+              agentLabel: message.role === "user" ? undefined : selectedAgent.label,
+              id: managerMessageId.current++,
+              lines: [],
+              role: message.role === "user" ? "user" : "assistant",
+              sourceLabel: message.role === "user"
+                ? undefined
+                : message.role === "error"
+                  ? "本地会话记录"
+                  : `恢复的 ${selectedAgent.label} 会话`,
+              text: message.text,
+            })),
+          };
+        });
+        const latest = history.sessions[0];
+        if (latest && !latest.resumable) {
+          newSessionRequired.current.add(sessionKey);
+          return;
+        }
+        const sessionGoalId = latest?.goal_id ?? anchorGoalId;
+        if (!sessionGoalId) return;
+        const created = await createChatSession(
+          sessionGoalId,
+          selectedAgent.agentId,
+          "resume_latest",
+          contextKind,
+        );
         if (cancelled) return;
         sessionIds.current.set(sessionKey, created.session_id);
-        const snapshot = await fetchChatSession(created.session_id);
-        if (cancelled || (messagesByContext[targetContextId]?.length ?? 0) > 0) return;
-        setMessagesByContext((current) => ({
-          ...current,
-          [targetContextId]: snapshot.messages.map((message) => ({
-            agentLabel: message.role === "user" ? undefined : selectedAgent.label,
-            id: managerMessageId.current++,
-            lines: [],
-            role: message.role === "user" ? "user" : "assistant",
-            sourceLabel: message.role === "user" ? undefined : `恢复的 ${selectedAgent.label} 会话`,
-            text: message.text,
-          })),
-        }));
-      })
-      .catch((error) => {
+        newSessionRequired.current.delete(sessionKey);
+      } catch (error) {
+        if (cancelled) return;
         if (error instanceof ChatApiError && error.payload.error_code === "resume_failed") {
           newSessionRequired.current.add(sessionKey);
         }
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [contextId, selectedGoal?.goalId, selectedAgent.agentId, selectedAgent.label]);
+  }, [contextId, model.goals[0]?.goalId, selectedGoal?.goalId, selectedAgent.agentId, selectedAgent.available, selectedAgent.label]);
 
   useEffect(() => {
     if (!agentMenuOpen) {

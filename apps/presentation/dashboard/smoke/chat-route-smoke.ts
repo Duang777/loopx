@@ -1,7 +1,10 @@
 import {
   closeChatSession,
+  fetchChatHistory,
+  mergeChatSessionMessages,
   parseCompletedDecisionHistory,
   serializeCompletedDecisionHistory,
+  type ChatSessionSnapshot,
   type StoredDecisionHistoryItem,
 } from "../src/data/chat.js";
 import {
@@ -444,7 +447,89 @@ async function checkSessionCloseContract() {
   }
 }
 
+function historySnapshot(
+  sessionId: string,
+  status: string,
+  messages: ChatSessionSnapshot["messages"],
+): ChatSessionSnapshot {
+  return {
+    ok: true,
+    schema_version: "loopx_chat_store_v1",
+    session: {
+      session_id: sessionId,
+      goal_id: "goal-studio",
+      agent_id: "codex",
+      adapter_kind: "codex_app_server",
+      channel_id: "manager",
+      status,
+      active_turn_id: null,
+      last_error_code: status === "resume_failed" ? "resume_failed" : null,
+      created_at: "2026-08-10T01:00:00Z",
+      updated_at: "2026-08-10T02:00:00Z",
+      last_activity_at: "2026-08-10T02:00:00Z",
+      resumable: status === "ready",
+    },
+    messages,
+    active_turn: null,
+  };
+}
+
+async function checkSessionHistoryRecoveryContract() {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  const failed = historySnapshot("session-failed", "resume_failed", [{
+    message_id: "message-old",
+    turn_id: "turn-old",
+    role: "user",
+    text: "重启前的问题",
+    created_at: "2026-08-10T01:00:00Z",
+  }]);
+  const ready = historySnapshot("session-ready", "ready", [{
+    message_id: "message-new",
+    turn_id: "turn-new",
+    role: "agent",
+    text: "重启前的回答",
+    created_at: "2026-08-10T01:01:00Z",
+  }]);
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    requests.push(url);
+    const body = url.includes("?")
+      ? {
+          ok: true,
+          schema_version: "loopx_chat_session_list_v1",
+          sessions: [failed.session, ready.session],
+        }
+      : url.endsWith("session-failed")
+        ? failed
+        : ready;
+    return new Response(JSON.stringify(body), {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    });
+  }) as typeof fetch;
+  try {
+    const history = await fetchChatHistory({ agentId: "codex", channelId: "manager" });
+    check(
+      requests[0] === "/api/chat/sessions?agent_id=codex&channel_id=manager",
+      "manager history should be loaded without requiring a selected Goal",
+    );
+    check(
+      history.messages.map((message) => message.text).join("|") === "重启前的问题|重启前的回答",
+      "local visible messages should survive an upstream resume failure",
+    );
+    check(
+      mergeChatSessionMessages([ready, failed]).map((message) => message.message_id).join(",")
+        === "message-old,message-new",
+      "messages from multiple local sessions should retain chronological order",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 void checkSessionCloseContract()
+  .then(checkSessionHistoryRecoveryContract)
   .then(() => console.log("chat-route-smoke: ok"))
   .catch((error) => {
     console.error(error);

@@ -58,6 +58,13 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _session_channel(payload: dict[str, Any]) -> str:
+    channel_id = str(payload.get("channel_id") or "").strip()
+    if channel_id:
+        return channel_id
+    return f"goal.{payload.get('goal_id')}"
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any], *, preserve_mode: bool = False) -> None:
     previous_mode = path.stat().st_mode & 0o777 if preserve_mode and path.exists() else 0o600
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -188,15 +195,18 @@ class ChatSessionStore:
                 and (goal_id is None or payload.get("goal_id") == goal_id)
                 and payload.get("agent_id") == agent_id
                 and payload.get("status") in RESUMABLE_SESSION_STATES
-                and payload.get(
-                    "channel_id",
-                    f"goal.{payload.get('goal_id')}",
-                ) == selected_channel
+                and _session_channel(payload) == selected_channel
             ):
                 candidates.append(payload)
         return max(candidates, key=lambda item: str(item.get("updated_at") or ""), default=None)
 
-    def list_sessions(self, *, goal_id: str | None = None, agent_id: str | None = None) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        *,
+        goal_id: str | None = None,
+        agent_id: str | None = None,
+        channel_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for path in self.sessions_root.glob("*/session.json"):
             payload = _read_json(path)
@@ -205,6 +215,8 @@ class ChatSessionStore:
             if goal_id and payload.get("goal_id") != goal_id:
                 continue
             if agent_id and payload.get("agent_id") != agent_id:
+                continue
+            if channel_id and _session_channel(payload) != channel_id:
                 continue
             rows.append(self.public_session(payload))
         return sorted(rows, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
@@ -365,9 +377,10 @@ class ChatSessionStore:
             key: payload.get(key)
             for key in (
                 "session_id", "goal_id", "agent_id", "adapter_kind", "status",
-                "channel_id", "active_turn_id", "last_error_code", "created_at", "updated_at", "last_activity_at",
+                "active_turn_id", "last_error_code", "created_at", "updated_at", "last_activity_at",
             )
         } | {
+            "channel_id": _session_channel(payload),
             "resumable": bool(payload.get("upstream_thread_id"))
             and payload.get("status") in RESUMABLE_SESSION_STATES,
         }

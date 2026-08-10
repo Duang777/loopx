@@ -320,6 +320,12 @@ def main() -> None:
             assert code == 200 and manager_resumed["resumed"] is True, manager_resumed
             assert manager_resumed["session_id"] == manager_created["session_id"], manager_resumed
             assert manager_resumed["goal_id"] == GOAL_ID, manager_resumed
+            listed_manager = wait_for_json(
+                f"{base_url}/api/chat/sessions?agent_id=codex&channel_id=manager"
+            )
+            assert [item["session_id"] for item in listed_manager["sessions"]] == [
+                manager_created["session_id"]
+            ], listed_manager
 
             code, turn = request_json(
                 f"{base_url}/api/chat/sessions/{session_id}/turns",

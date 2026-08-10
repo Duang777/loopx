@@ -128,6 +128,12 @@ includes(dashboardSource, 'managerQuickPrompts.includes(question)', "fixed quick
 includes(dashboardSource, '"LoopX 状态投影 · 仅查状态"', "status-only answer attribution");
 includes(dashboardSource, '"仅查状态"', "deterministic answer author attribution");
 includes(dashboardSource, 'selectedGoal ? "goal" : "manager"', "manager and Goal Chat session isolation");
+includes(dashboardSource, "fetchChatHistory({", "durable local Chat history hydration");
+includes(dashboardSource, 'const channelId = selectedGoal ? `goal.${selectedGoal.goalId}` : "manager";', "manager history channel selection");
+includes(dashboardSource, 'const anchorGoalId = selectedGoal?.goalId ?? model.goals[0]?.goalId ?? "";', "manager session project anchor");
+includes(dashboardSource, "const sessionGoalId = latest?.goal_id ?? anchorGoalId;", "restored manager session project binding");
+includes(dashboardSource, "if (latest && !latest.resumable)", "local history survives upstream resume failure");
+excludes(dashboardSource, 'if (!selectedGoal || selectedAgent.agentId === "status-only"', "selected Goal guard hiding manager history");
 includes(dashboardSource, '`${selectedRoute.label} 管家 · 跨 Goal 只读`', "global manager source label");
 includes(dashboardSource, 'createChatSession(', "Agent Goal Chat session creation");
 includes(dashboardSource, "sendChatTurnStreaming(sessionId, question", "streaming Agent Goal Chat turn");

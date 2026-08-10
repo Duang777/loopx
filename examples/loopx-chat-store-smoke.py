@@ -33,6 +33,13 @@ def main() -> None:
         store.update_session(session_id, status="resume_failed", last_error_code="resume_failed")
         assert store.latest_session(goal_id="goal-one", agent_id="codex") is None
         assert store.public_session(store.load_session(session_id))["resumable"] is False
+        failed_history = store.list_sessions(
+            goal_id="goal-one",
+            agent_id="codex",
+            channel_id="goal.goal-one",
+        )
+        assert failed_history[0]["session_id"] == session_id, failed_history
+        assert failed_history[0]["status"] == "resume_failed", failed_history
         store.update_session(session_id, status="ready", last_error_code=None)
 
         manager_session = store.create_session(
@@ -63,6 +70,11 @@ def main() -> None:
             agent_id="codex",
             channel_id="goal.goal-one",
         )["session_id"] == session_id
+        assert store.list_sessions(
+            goal_id=None,
+            agent_id="codex",
+            channel_id="manager",
+        )[0]["session_id"] == manager_session["session_id"]
 
         turn, created = store.create_turn(
             session_id,
@@ -104,13 +116,40 @@ def main() -> None:
         snapshot = store.session_snapshot(session_id)
         assert [item["role"] for item in snapshot["messages"]] == ["user", "agent"], snapshot
         assert "thread-private" not in json.dumps(snapshot), snapshot
+        store.append_message(
+            manager_session["session_id"],
+            role="user",
+            text="visible manager message",
+        )
         assert store.compact_completed_events(older_than_hours=24) == 1
+
+        restarted_store = ChatSessionStore(root)
+        restarted_manager = restarted_store.list_sessions(
+            goal_id=None,
+            agent_id="codex",
+            channel_id="manager",
+        )[0]
+        restarted_snapshot = restarted_store.session_snapshot(restarted_manager["session_id"])
+        assert [item["text"] for item in restarted_snapshot["messages"]] == [
+            "visible manager message"
+        ], restarted_snapshot
+
+        session_path = root / "chat" / "sessions" / session_id / "session.json"
+        legacy_session = json.loads(session_path.read_text(encoding="utf-8"))
+        legacy_session.pop("channel_id", None)
+        session_path.write_text(json.dumps(legacy_session) + "\n", encoding="utf-8")
+        legacy_store = ChatSessionStore(root)
+        legacy_history = legacy_store.list_sessions(
+            goal_id="goal-one",
+            agent_id="codex",
+            channel_id="goal.goal-one",
+        )
+        assert legacy_history[0]["channel_id"] == "goal.goal-one", legacy_history
         assert not any(
             event["kind"] == "assistant.delta"
             for event in store.events_after(session_id, turn["turn_id"], None)
         )
 
-        session_path = root / "chat" / "sessions" / session_id / "session.json"
         assert session_path.stat().st_mode & 0o777 == 0o600
         assert session_path.parent.stat().st_mode & 0o777 == 0o700
 
