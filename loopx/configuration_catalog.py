@@ -56,6 +56,11 @@ def build_goal_configuration_catalog(
         if isinstance(feature_summary.get("reward_memory"), Mapping)
         else {}
     )
+    public_git_history_window = (
+        feature_summary.get("public_git_history_window")
+        if isinstance(feature_summary.get("public_git_history_window"), Mapping)
+        else {}
+    )
     change_quality = (
         feature_summary.get("change_quality_qualification")
         if isinstance(
@@ -333,6 +338,89 @@ def build_goal_configuration_catalog(
                     "url": (
                         "https://github.com/huangruiteng/loopx/blob/main/"
                         "docs/capabilities/change-quality/README.md"
+                    ),
+                },
+            },
+            {
+                "feature_id": "public_git_history_window",
+                "display_name": "Public Git history window",
+                "availability": "supported_opt_in",
+                "default": {"enabled": False},
+                "current": {
+                    "enabled": public_git_history_window.get("enabled") is True,
+                    "config_pointer_registered": public_git_history_window.get(
+                        "config_pointer_registered"
+                    )
+                    is True,
+                },
+                "required_inputs": {
+                    "ignored-history-window-config": (
+                        "Replace the placeholder with a repo-relative ignored JSON "
+                        "config under .loopx/config/."
+                    )
+                },
+                "consider_when": (
+                    "A goal must defer public repository history writes during "
+                    "configured local-time windows."
+                ),
+                "effect": (
+                    "Evaluates commit, push, merge, tag, and release effects before "
+                    "execution and returns an allow, defer, or reject receipt."
+                ),
+                "does_not": [
+                    "block PR comments, reviews, labels, reviewers, or metadata",
+                    "rewrite author or committer timestamps",
+                    "make an implicit push while creating a PR",
+                    "enforce policy on raw git callers that bypass the evaluator",
+                ],
+                "commands": {
+                    "preview_enable": _configure_command(
+                        goal_id,
+                        "--public-git-history-window-config",
+                        "<ignored-history-window-config>",
+                    ),
+                    "apply_enable": _configure_command(
+                        goal_id,
+                        "--public-git-history-window-config",
+                        "<ignored-history-window-config>",
+                        execute=True,
+                    ),
+                    "preview_disable": _configure_command(
+                        goal_id, "--clear-public-git-history-window-config"
+                    ),
+                    "apply_disable": _configure_command(
+                        goal_id,
+                        "--clear-public-git-history-window-config",
+                        execute=True,
+                    ),
+                    "verify": [
+                        inspect_command,
+                        shlex.join(
+                            [
+                                "loopx",
+                                "--format",
+                                "json",
+                                "public-git-history-window",
+                                "evaluate",
+                                "--goal-id",
+                                goal_id,
+                                "--effect-id",
+                                "<stable-effect-id>",
+                                "--action",
+                                "push",
+                                "--repository-visibility",
+                                "public",
+                                "--repository-identity",
+                                "<provider/repository>",
+                            ]
+                        ),
+                    ],
+                },
+                "documentation": {
+                    "path": "docs/capabilities/public-git-history-window/README.md",
+                    "url": (
+                        "https://github.com/huangruiteng/loopx/blob/main/"
+                        "docs/capabilities/public-git-history-window/README.md"
                     ),
                 },
             },

@@ -642,6 +642,12 @@ def handle_registry_admin_command(
                 clear_reward_memory_config=bool(
                     args.clear_reward_memory_config
                 ),
+                public_git_history_window_config=(
+                    args.public_git_history_window_config
+                ),
+                clear_public_git_history_window_config=bool(
+                    args.clear_public_git_history_window_config
+                ),
                 execute=bool(args.execute),
             )
             if payload.get("ok"):

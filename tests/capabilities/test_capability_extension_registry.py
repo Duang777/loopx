@@ -23,6 +23,7 @@ from loopx.extensions.runtime import (
 )
 
 BUILTIN_IDS = [
+    "public_git_history_window",
     "integration-branch-reconcile",
     "change-quality-qualification",
     "pull-request-review",

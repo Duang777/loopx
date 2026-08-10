@@ -45,6 +45,8 @@ python_version = "3.11"
 strict = true
 files = [
   "loopx/claude_goal_baseline.py",
+  "loopx/capabilities/public_git_history_window/effect_program.py",
+  "loopx/capabilities/public_git_history_window/policy.py",
   "loopx/benchmarks/read_models/benchmark_run_execution_contract.py",
   "loopx/benchmarks/read_models/benchmark_run_failure.py",
   "loopx/control_plane/__init__.py",

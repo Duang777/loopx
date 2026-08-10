@@ -317,6 +317,18 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
         help="Disable the Reward Memory experiment and clear its agent allowlist.",
     )
     configure_goal_parser.add_argument(
+        "--public-git-history-window-config",
+        help=(
+            "Register a repo-relative ignored public Git history window config "
+            "under .loopx/config/."
+        ),
+    )
+    configure_goal_parser.add_argument(
+        "--clear-public-git-history-window-config",
+        action="store_true",
+        help="Disable the public Git history window and clear its config pointer.",
+    )
+    configure_goal_parser.add_argument(
         "--execute",
         action="store_true",
         help="Write the registry. Without this flag, configure-goal is a dry-run preview.",

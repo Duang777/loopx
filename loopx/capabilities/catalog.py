@@ -6,13 +6,13 @@ from typing import Any
 
 from ..extensions.runtime import extension_catalog_entries
 from .issue_fix.workflow_plan import build_issue_fix_pr_lifecycle_command
+from .public_git_history_window.catalog import PUBLIC_GIT_HISTORY_WINDOW_CAPABILITY
 from .registry import CapabilityRegistry
 
 CAPABILITY_CATALOG_SCHEMA_VERSION = "loopx_capability_catalog_v0"
 CAPABILITY_DETAIL_SCHEMA_VERSION = "loopx_capability_detail_v0"
-
-
 BUILTIN_CAPABILITIES: tuple[dict[str, Any], ...] = (
+    PUBLIC_GIT_HISTORY_WINDOW_CAPABILITY,
     {
         "id": "integration-branch-reconcile",
         "origin": "builtin",

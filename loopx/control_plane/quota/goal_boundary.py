@@ -6,14 +6,13 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from ..reward_memory import reward_memory_goal_policy
-
 from ...benchmark_core import compact_run_permission_policy_for_quota
 from ...boundary_authority import checkpointed_boundary_authority_summary
 from ...execution_profile import execution_profile_outcome_floor
 from ...explore_graph import compact_explore_graph_policy
 from ...orchestration import compact_orchestration_policy
 from ...repository_identity import resolve_project_identity
+from ..reward_memory import reward_memory_goal_policy
 from ..todos.contract import (
     normalize_required_capabilities,
     normalize_required_write_scopes,
@@ -277,6 +276,51 @@ def goal_boundary(
             registry_path=registry_path,
         )
     )
+    public_history_window = (
+        control_plane.get("public_git_history_window")
+        if isinstance(control_plane.get("public_git_history_window"), Mapping)
+        else {}
+    )
+    if public_history_window.get("enabled") is True:
+        evaluate_parts = ["loopx"]
+        if registry_path is not None:
+            evaluate_parts.extend(["--registry", str(registry_path.expanduser())])
+        evaluate_parts.extend(
+            [
+                "public-git-history-window",
+                "evaluate",
+                "--goal-id",
+                str(goal.get("id") or ""),
+                "--effect-id",
+                "<stable-effect-id>",
+                "--action",
+                "<history-action>",
+                "--repository-visibility",
+                "<public|private|unknown>",
+                "--repository-identity",
+                "<provider/repository>",
+            ]
+        )
+        boundary.setdefault("capabilities", {})[
+            "public_git_history_window"
+        ] = {
+            "enabled": True,
+            "config_pointer_registered": bool(
+                public_history_window.get("config_path")
+            ),
+            "collaboration_writes_excluded": [
+                "pr_comment",
+                "pr_review",
+                "pr_metadata",
+                "request_reviewer",
+                "label",
+            ],
+            "evaluate_command": shlex.join(evaluate_parts),
+            "policy": (
+                "evaluate before public commit, push, merge, tag, or release; "
+                "PR collaboration remains outside this capability"
+            ),
+        }
     reward_memory = reward_memory_goal_policy(goal)
     if reward_memory["enabled"] and (
         agent_id is None or agent_id in reward_memory["enabled_agents"]

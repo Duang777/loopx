@@ -443,6 +443,17 @@ adapter status, allowed write scope, parent-approval scopes, guards, and stop
 condition. Treat it as the project-specific boundary contract so automation
 prompts can stay short instead of repeating long per-project protected-scope
 lists.
+If `goal_boundary.capabilities.public_git_history_window.enabled=true`, evaluate
+the projected command immediately before every public commit, amend, rebase,
+cherry-pick, revert, merge, push, tag, or release effect and obey `defer` or
+`reject`. PR comments, reviews, labels, reviewer requests, and metadata are not
+history effects. PR creation remains available only when its head is already
+remote and creation performs no implicit push. Never satisfy the policy by
+rewriting author or committer timestamps.
+For push, merge, tag, and release evaluation, enumerate every newly outgoing
+commit and pass its author and committer timestamps through
+`--outgoing-commits-json`; an empty list is valid only after a real comparison
+against the target remote ref proves that no commit will be newly published.
 When reading status or quota routing, use `attention_queue.items` and
 `project_asset` as current authority only when the item is project-asset-backed.
 If `project_asset` is absent or the source is legacy/raw fallback, do not infer

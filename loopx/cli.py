@@ -22,6 +22,10 @@ from .capabilities.integration_branch.cli import (
     handle_integration_branch_command,
     register_integration_branch_commands,
 )
+from .capabilities.public_git_history_window.cli import (
+    handle_public_git_history_window_command,
+    register_public_git_history_window_commands,
+)
 from .capabilities.decision_context.cli import (
     handle_decision_context_command,
     register_decision_context_commands,
@@ -232,6 +236,8 @@ def build_parser() -> LoopXArgumentParser:
 
     register_integration_branch_commands(sub, add_subcommand_format)
 
+    register_public_git_history_window_commands(sub, add_subcommand_format)
+
     register_content_ops_commands(sub, add_subcommand_format)
 
     register_decision_context_commands(sub, add_subcommand_format)
@@ -439,6 +445,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     if integration_branch_result is not None:
         return integration_branch_result
+
+    public_git_history_window_result = handle_public_git_history_window_command(
+        args,
+        registry_path=registry_path,
+        output_format=output_format,
+        print_payload=print_payload,
+    )
+    if public_git_history_window_result is not None:
+        return public_git_history_window_result
 
     if args.command == "ml-experiment":
         return handle_ml_experiment_command(args, output_format=output_format, print_payload=print_payload)

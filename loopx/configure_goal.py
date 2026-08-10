@@ -18,6 +18,9 @@ from .capabilities.change_quality.policy import (
     CHANGE_QUALITY_POLICY_SCHEMA_VERSION,
     change_quality_goal_policy_summary,
 )
+from .capabilities.public_git_history_window.policy import (
+    public_git_history_window_goal_policy_summary,
+)
 from .control_plane import compact_control_plane_policy, control_plane_policy_summary
 from .configuration_catalog import build_goal_configuration_catalog
 from .explore_graph import compact_explore_graph_policy
@@ -230,6 +233,9 @@ def _settings_summary(goal: dict[str, Any]) -> dict[str, Any]:
         "lark_event_inbox": _lark_event_inbox_config_summary(goal),
         "lark_kanban_heartbeat_sync": _lark_kanban_heartbeat_config_summary(goal),
         "reward_memory": reward_memory_goal_policy_summary(goal),
+        "public_git_history_window": public_git_history_window_goal_policy_summary(
+            goal
+        ),
         "change_quality_qualification": change_quality_goal_policy_summary(goal),
         "explore_graph": compact_explore_graph_policy(goal.get("explore_graph")),
         "orchestration": orchestration,
@@ -444,6 +450,8 @@ def configure_goal(
     reward_memory_config: str | None = None,
     reward_memory_agents: list[str] | None = None,
     clear_reward_memory_config: bool = False,
+    public_git_history_window_config: str | None = None,
+    clear_public_git_history_window_config: bool = False,
     execute: bool = False,
 ) -> dict[str, Any]:
     if not registry_path.exists():
@@ -518,6 +526,14 @@ def configure_goal(
             "--clear-reward-memory-config cannot be combined with "
             "--reward-memory-config or --reward-memory-agent"
         )
+    if (
+        clear_public_git_history_window_config
+        and public_git_history_window_config
+    ):
+        raise ValueError(
+            "--clear-public-git-history-window-config cannot be combined with "
+            "--public-git-history-window-config"
+        )
     if waiting_on and waiting_on not in WAITING_ON_CHOICES:
         raise ValueError("--waiting-on must be one of: " + ", ".join(WAITING_ON_CHOICES))
     if multi_subagent_feature is not None and multi_subagent_feature not in MULTI_SUBAGENT_FEATURE_CHOICES:
@@ -564,6 +580,10 @@ def configure_goal(
     reward_memory_config = _local_private_config_path(
         reward_memory_config,
         label="reward memory experiment config",
+    )
+    public_git_history_window_config = _local_private_config_path(
+        public_git_history_window_config,
+        label="public Git history window config",
     )
 
     payload = read_json(registry_path)
@@ -811,6 +831,19 @@ def configure_goal(
                     reward_memory_config or current_reward_memory["config_path"]
                 ),
                 "enabled_agents": list(effective_reward_memory_agents),
+            }
+
+    if (
+        public_git_history_window_config is not None
+        or clear_public_git_history_window_config
+    ):
+        control_plane = _mutable_control_plane(goal)
+        if clear_public_git_history_window_config:
+            control_plane.pop("public_git_history_window", None)
+        else:
+            control_plane["public_git_history_window"] = {
+                "enabled": True,
+                "config_path": public_git_history_window_config,
             }
 
     if explore_graph_enabled is not None:
@@ -1096,6 +1129,9 @@ def configure_goal(
         "lark_event_inbox": _lark_event_inbox_config_summary(goal),
         "lark_kanban_heartbeat_sync": _lark_kanban_heartbeat_config_summary(goal),
         "reward_memory": reward_memory_goal_policy_summary(goal),
+        "public_git_history_window": public_git_history_window_goal_policy_summary(
+            goal
+        ),
         "change_quality_qualification": change_quality_goal_policy_summary(goal),
         "default": "off",
         "configuration_entry": "multi_subagent_feature",
