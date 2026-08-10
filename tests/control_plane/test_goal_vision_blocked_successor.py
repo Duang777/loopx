@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -25,12 +25,12 @@ from loopx.control_plane.testing.quota_fixtures import (
 )
 from loopx.control_plane.work_items.autonomous_replan_ack import (
     latest_blocked_successor_frontier_identity,
+    latest_monitor_replan_frontier_identity,
 )
 from loopx.presentation.renderers.status_markdown import render_status_markdown
 from loopx.quota import build_quota_should_run, render_quota_should_run_markdown
 from loopx.state_refresh import build_state_refresh_record, refresh_state_run
 from loopx.status import autonomous_replan_obligation_from_runs, compact_run
-
 
 GOAL_ID = "vision-blocked-successor-fixture"
 AGENT_ID = "codex-side-agent"
@@ -49,6 +49,7 @@ def _vision_run(
     state: str = "vision_drift_detected",
     missing_checkpoint: bool = False,
     advancement_policy: str = "repeat_until_closed",
+    vision_todo_ids: list[str] | None = None,
 ) -> dict:
     run = {
         "classification": "vision_blocked_successor_fixture",
@@ -59,6 +60,14 @@ def _vision_run(
             "schema_version": "goal_vision_replan_contract_v0",
             "agent_id": AGENT_ID,
             "state": state,
+            "todo_delta": [
+                f"activate:{todo_id}"
+                for todo_id in (
+                    vision_todo_ids
+                    if vision_todo_ids is not None
+                    else [BLOCKER_ID]
+                )
+            ],
             "vision_patch": {
                 "acceptance_summary": "Deliver the exact successor after its prerequisite clears.",
                 "replan_trigger_summary": "The successor acceptance remains open.",
@@ -230,7 +239,11 @@ def _current_agent_blocker_status_payload(
             "agent_model": "peer_v1",
             "registered_agents": [PRIMARY_AGENT, AGENT_ID],
         },
-        latest_runs=latest_runs if latest_runs is not None else [_vision_run()],
+        latest_runs=(
+            latest_runs
+            if latest_runs is not None
+            else [_vision_run(vision_todo_ids=[PROJECTED_BLOCKER_ID])]
+        ),
     )
 
 
@@ -246,6 +259,122 @@ def _blocked_wait_polls() -> list[dict]:
             generated_at="2026-07-16T00:01:00+00:00",
         ),
     ]
+
+
+def _generic_quiet_polls(*, target_id: str = "generic-watch-target") -> list[dict]:
+    return [
+        {
+            "classification": "quota_monitor_poll",
+            "generated_at": generated_at,
+            "turn_instance_id": f"heartbeat-{generated_at}",
+            "agent_id": AGENT_ID,
+            "monitor_target": {
+                "schema_version": "quota_monitor_target_v0",
+                "target_id": target_id,
+                "monitor_mode": "monitor_quiet_until_material_transition",
+                "effective_action": "monitor_quiet_skip",
+                "action_summary": "Wait for the bounded watch frontier.",
+                "agent_id": AGENT_ID,
+            },
+        }
+        for generated_at in (
+            "2026-07-16T00:02:00+00:00",
+            "2026-07-16T00:01:00+00:00",
+        )
+    ]
+
+
+def _generic_watch_ack(*, frontier_identity: str) -> dict:
+    return {
+        "classification": "autonomous_replan_recorded",
+        "generated_at": "2026-07-16T00:00:30+00:00",
+        "agent_id": AGENT_ID,
+        "autonomous_replan_ack": {
+            "schema_version": "autonomous_replan_ack_v0",
+            "recorded": True,
+            "source": "fixture",
+            "frontier_identity": frontier_identity,
+            "delta_contract": {
+                "schema_version": "repair_delta_contract_v0",
+                "delta_present": True,
+                "delta_kinds": ["watch_lane_continuation"],
+                "auto_evidence": [
+                    {
+                        "kind": "watch_lane_continuation",
+                        "todo_ids": [MONITOR_ID],
+                    }
+                ],
+            },
+        },
+    }
+
+
+def _append_bounded_watch_todo(state_path, *, claimed_by: str) -> None:
+    state_path.write_text(
+        state_path.read_text(encoding="utf-8")
+        + "\n## Agent Todo\n\n"
+        + "- [ ] [P2] Keep the exact bounded watch active.\n"
+        + "  <!-- loopx:todo "
+        + f"todo_id={MONITOR_ID} status=open task_class=continuous_monitor "
+        + f"claimed_by={claimed_by} target_key=bounded-watch cadence=7d "
+        + "next_due_at=2099-01-01T00%3A00%3A00Z "
+        + "expires_at=2099-02-01T00%3A00%3A00Z -->\n",
+        encoding="utf-8",
+    )
+
+
+def _generic_watch_quota(
+    *,
+    ack: dict | None,
+    advancement_policy: str = "as_needed",
+    expires_at: str = "2099-02-01T00:00:00+00:00",
+    target_id: str = "generic-watch-target",
+    extra_agent_items: list[dict] | None = None,
+) -> dict:
+    monitor = quota_todo_item(
+        todo_id=MONITOR_ID,
+        index=1,
+        text="[P1] Wait for material evidence on the bounded watch.",
+        task_class="continuous_monitor",
+        claimed_by=AGENT_ID,
+        target_key="bounded-watch",
+        cadence="7d",
+        next_due_at="2099-01-01T00:00:00+00:00",
+        expires_at=expires_at,
+    )
+    runs = [
+        *_generic_quiet_polls(target_id=target_id),
+        *([ack] if ack is not None else []),
+        _vision_run(
+            state="conditional_monitoring",
+            advancement_policy=advancement_policy,
+            vision_todo_ids=[MONITOR_ID],
+        ),
+    ]
+    agent_todos = quota_todo_summary(
+        [monitor, *(extra_agent_items or [])],
+        role="agent",
+    )
+    payload = quota_status_payload(
+        goal_id=GOAL_ID,
+        status="active",
+        recommended_action="Wait for the bounded watch frontier.",
+        agent_todos=agent_todos,
+        coordination={
+            "agent_model": "peer_v1",
+            "registered_agents": [PRIMARY_AGENT, AGENT_ID],
+        },
+        latest_runs=runs,
+    )
+    item = payload["attention_queue"]["items"][0]
+    obligation = autonomous_replan_obligation_from_runs(
+        runs,
+        agent_todos=item["agent_todos"],
+    )
+    assert obligation is not None
+    item["autonomous_replan_obligation"] = obligation
+    item["project_asset"]["autonomous_replan_obligation"] = obligation
+    return _quota(payload)
 
 
 def test_current_agent_blocker_defers_open_vision_gap_without_hiding_reason() -> None:
@@ -293,7 +422,16 @@ def test_current_agent_blocker_outranks_exact_blocked_successor() -> None:
         reason="Candidate promotion requires controller assignment.",
     )
 
-    guard = _quota(_status_payload(extra_agent_items=[blocker]))
+    guard = _quota(
+        _status_payload(
+            extra_agent_items=[blocker],
+            latest_runs=[
+                _vision_run(
+                    vision_todo_ids=[PROJECTED_BLOCKER_ID, BLOCKER_ID]
+                )
+            ],
+        )
+    )
 
     wait = guard["goal_frontier_projection"]["vision_wait_state"]
     assert wait["reason_code"] == "current_agent_blocker"
@@ -351,7 +489,10 @@ def test_blocker_delta_ack_clears_existing_vision_replan_obligation() -> None:
         },
     }
     payload = _current_agent_blocker_status_payload(
-        latest_runs=[ack, _vision_run()]
+        latest_runs=[
+            ack,
+            _vision_run(vision_todo_ids=[PROJECTED_BLOCKER_ID]),
+        ]
     )
     item = payload["attention_queue"]["items"][0]
     item["autonomous_replan_obligation"] = obligation
@@ -502,24 +643,48 @@ def test_exact_blocked_successor_defers_only_open_vision_gap(
     ) in markdown
 
 
-def test_agent_claimed_wait_outranks_unclaimed_cross_domain_wait() -> None:
+def test_unrelated_deferred_waits_do_not_hide_open_vision_gap() -> None:
     guard = _quota(_cross_domain_wait_status_payload())
 
-    assert guard["decision"] == "agent_scope_wait"
-    wait = guard["goal_frontier_projection"]["vision_wait_state"]
-    assert wait["selected_todo_id"] == CLAIMED_WAITING_ID
-    assert wait["selected_todo_claimed_by"] == AGENT_ID
-    assert wait["waiting_todo_ids"] == [
-        CLAIMED_WAITING_ID,
-        CROSS_DOMAIN_WAITING_ID,
-    ]
+    assert guard["decision"] == "autonomous_replan_required"
+    assert "vision_wait_state" not in guard["goal_frontier_projection"]
+    assert guard["goal_frontier_projection"]["acceptance_gaps"][0]["kind"] == (
+        "vision_acceptance_gap"
+    )
 
     status_payload = _cross_domain_wait_status_payload()
     attach_agent_lane_next_actions(status_payload, agent_id=AGENT_ID)
     item = status_payload["attention_queue"]["items"][0]
-    status_wait = item["goal_frontier_projection"]["vision_wait_state"]
-    assert status_wait["selected_todo_id"] == CLAIMED_WAITING_ID
-    assert status_wait["waiting_todo_ids"] == wait["waiting_todo_ids"]
+    assert "vision_wait_state" not in item["goal_frontier_projection"]
+    assert item["goal_frontier_projection"]["replan_required"] is True
+
+
+def test_exact_successor_lineage_excludes_unrelated_deferred_waits() -> None:
+    unrelated = quota_todo_item(
+        todo_id=CLAIMED_WAITING_ID,
+        index=3,
+        text="[P0] Wait for an unrelated release capability.",
+        status="deferred",
+        claimed_by=AGENT_ID,
+        required_capabilities=["benchmark_runner"],
+        resume_when="capacity_available:benchmark_runner",
+    )
+
+    guard = _quota(_status_payload(extra_agent_items=[unrelated]))
+
+    wait = guard["goal_frontier_projection"]["vision_wait_state"]
+    assert wait["selected_todo_id"] == WAITING_ID
+    assert wait["waiting_todo_ids"] == [WAITING_ID]
+
+
+def test_exact_wait_without_explicit_vision_lineage_requires_replan() -> None:
+    guard = _quota(
+        _status_payload(latest_runs=[_vision_run(vision_todo_ids=[])])
+    )
+
+    assert guard["decision"] == "autonomous_replan_required"
+    assert "vision_wait_state" not in guard["goal_frontier_projection"]
+    assert guard["goal_frontier_projection"]["replan_required"] is True
 
 
 def test_two_identical_blocked_successor_waits_trigger_bounded_replan() -> None:
@@ -822,6 +987,84 @@ def test_compacted_monitor_quiet_vision_waits_trigger_bounded_replan() -> None:
     assert trigger["frontier_identity"] == compact_target["frontier_identity"]
 
 
+def test_bounded_watch_ack_covers_newer_same_target_dead_monitor_repeat() -> None:
+    guard = _generic_watch_quota(
+        ack=_generic_watch_ack(frontier_identity="generic-watch-target")
+    )
+
+    assert guard["effective_action"] == "monitor_quiet_skip"
+    assert guard.get("autonomous_replan_obligation") is None
+    assert guard["goal_frontier_projection"]["replan_required"] is False
+
+
+@pytest.mark.parametrize(
+    ("ack", "advancement_policy", "expires_at"),
+    [
+        (None, "as_needed", "2099-02-01T00:00:00+00:00"),
+        (
+            _generic_watch_ack(frontier_identity="different-watch-target"),
+            "as_needed",
+            "2099-02-01T00:00:00+00:00",
+        ),
+        (
+            _generic_watch_ack(frontier_identity="generic-watch-target"),
+            "repeat_until_closed",
+            "2099-02-01T00:00:00+00:00",
+        ),
+        (
+            _generic_watch_ack(frontier_identity="generic-watch-target"),
+            "as_needed",
+            "2026-07-15T00:00:00+00:00",
+        ),
+    ],
+    ids=["missing-ack", "target-drift", "repeat-vision", "expired-watch"],
+)
+def test_dead_monitor_repeat_rejects_noncausal_watch_ack(
+    ack: dict | None,
+    advancement_policy: str,
+    expires_at: str,
+) -> None:
+    guard = _generic_watch_quota(
+        ack=ack,
+        advancement_policy=advancement_policy,
+        expires_at=expires_at,
+    )
+
+    assert guard["decision"] == "autonomous_replan_required"
+    obligation = guard["autonomous_replan_obligation"]
+    assert obligation["frontier_identity"] == "generic-watch-target"
+    assert obligation["triggers"][0]["kind"] == "dead_monitor_repeat"
+
+
+def test_dead_monitor_repeat_rejects_unrelated_bounded_watch_evidence() -> None:
+    unrelated_monitor_id = "todo_unrelated_bounded_monitor"
+    unrelated_monitor = quota_todo_item(
+        todo_id=unrelated_monitor_id,
+        index=2,
+        text="[P2] Monitor a different bounded frontier.",
+        task_class="continuous_monitor",
+        claimed_by=AGENT_ID,
+        target_key="unrelated-bounded-watch",
+        cadence="7d",
+        next_due_at="2099-01-01T00:00:00+00:00",
+        expires_at="2099-02-01T00:00:00+00:00",
+    )
+    ack = _generic_watch_ack(frontier_identity="generic-watch-target")
+    ack["autonomous_replan_ack"]["delta_contract"]["auto_evidence"][0][
+        "todo_ids"
+    ] = [unrelated_monitor_id]
+
+    guard = _generic_watch_quota(
+        ack=ack,
+        extra_agent_items=[unrelated_monitor],
+    )
+
+    assert guard["decision"] == "autonomous_replan_required"
+    assert guard["autonomous_replan_obligation"]["frontier_identity"] == (
+        "generic-watch-target"
+    )
+
+
 def test_wait_only_ack_does_not_clear_repeat_vision_blocked_successor() -> None:
     polls = _blocked_wait_polls()
     frontier_identity = polls[0]["monitor_target"]["frontier_identity"]
@@ -981,11 +1224,76 @@ def test_refresh_ack_preserves_the_observed_blocked_successor_identity(
     )
 
 
+def test_refresh_ack_recovers_generic_dead_monitor_target_identity() -> None:
+    polls = _generic_quiet_polls(target_id="bounded-generic-target")
+
+    assert latest_monitor_replan_frontier_identity(
+        polls,
+        agent_id=AGENT_ID,
+    ) == "bounded-generic-target"
+
+    intermediary = {
+        "classification": "todo_completion",
+        "generated_at": "2026-07-16T00:02:30+00:00",
+        "agent_id": AGENT_ID,
+    }
+    assert (
+        latest_monitor_replan_frontier_identity(
+            [intermediary, *polls],
+            agent_id=AGENT_ID,
+        )
+        is None
+    )
+    assert latest_monitor_replan_frontier_identity(
+        [intermediary, *polls],
+        agent_id=AGENT_ID,
+        watch_todo_ids=[MONITOR_ID],
+    ) == "bounded-generic-target"
+    assert (
+        latest_monitor_replan_frontier_identity(
+            [intermediary, *polls],
+            agent_id=AGENT_ID,
+            watch_todo_ids=[MONITOR_ID, "todo_second_watch"],
+        )
+        is None
+    )
+    blocked_poll = deepcopy(polls[0])
+    blocked_poll["monitor_target"] = {
+        **blocked_poll["monitor_target"],
+        "monitor_mode": "blocked_successor_wait_without_material_transition",
+        "frontier_identity": "blocked-successor-frontier",
+    }
+    assert (
+        latest_monitor_replan_frontier_identity(
+            [intermediary, blocked_poll],
+            agent_id=AGENT_ID,
+            watch_todo_ids=[MONITOR_ID],
+        )
+        is None
+    )
+
+    conflicting = _generic_quiet_polls(target_id="conflicting-generic-target")
+    conflicting[0]["monitor_target"]["agent_id"] = PRIMARY_AGENT
+    assert latest_monitor_replan_frontier_identity(
+        conflicting,
+        agent_id=AGENT_ID,
+    ) is None
+
+    polls[0]["agent_id"] = PRIMARY_AGENT
+    polls[0]["monitor_target"]["agent_id"] = PRIMARY_AGENT
+    assert latest_monitor_replan_frontier_identity(
+        polls,
+        agent_id=AGENT_ID,
+    ) == "bounded-generic-target"
+
+
 def test_refresh_ack_recovers_only_the_current_agent_frontier(tmp_path) -> None:
-    registry_path, runtime_root, _ = write_cli_fixture(
+    registry_path, runtime_root, project = write_cli_fixture(
         tmp_path / "fixture",
         scoped_agents=True,
     )
+    state_path = project / ".codex" / "goals" / "half-speed" / "ACTIVE_GOAL_STATE.md"
+    _append_bounded_watch_todo(state_path, claimed_by=SCOPED_AGENT_ID)
     peer_agent_id = "codex-main-control"
     current_frontier = "current-agent-frontier"
     peer_frontier = "newer-peer-frontier"
@@ -1074,6 +1382,59 @@ def test_refresh_ack_recovers_only_the_current_agent_frontier(tmp_path) -> None:
     )
 
     assert payload["autonomous_replan_ack"]["frontier_identity"] == current_frontier
+
+
+def test_refresh_watch_ack_crosses_material_run_with_exact_todo_evidence(
+    tmp_path,
+) -> None:
+    registry_path, runtime_root, project = write_cli_fixture(
+        tmp_path / "fixture",
+        scoped_agents=True,
+    )
+    state_path = project / ".codex" / "goals" / "half-speed" / "ACTIVE_GOAL_STATE.md"
+    _append_bounded_watch_todo(state_path, claimed_by=SCOPED_AGENT_ID)
+    target_id = "postdelivery-watch-target"
+    poll = {
+        "goal_id": "half-speed",
+        "classification": "quota_monitor_poll",
+        "generated_at": "2099-01-01T00:02:00+00:00",
+        "agent_id": SCOPED_AGENT_ID,
+        "monitor_target": {
+            "monitor_mode": "monitor_quiet_until_material_transition",
+            "agent_id": SCOPED_AGENT_ID,
+            "target_id": target_id,
+        },
+    }
+    material_run = {
+        "goal_id": "half-speed",
+        "classification": "todo_completion",
+        "generated_at": "2099-01-01T00:03:00+00:00",
+        "agent_id": SCOPED_AGENT_ID,
+    }
+    index_path = runtime_root / "goals" / "half-speed" / "runs" / "index.jsonl"
+    with index_path.open("a", encoding="utf-8") as index_file:
+        for run in (poll, material_run):
+            index_file.write(json.dumps(run, ensure_ascii=False) + "\n")
+
+    payload = refresh_state_run(
+        registry_path=registry_path,
+        runtime_root_override=None,
+        goal_id="half-speed",
+        project=None,
+        state_file=None,
+        classification="postdelivery_watch_replan",
+        recommended_action="Keep the exact bounded watch active.",
+        agent_id=SCOPED_AGENT_ID,
+        autonomous_replan_recorded=True,
+        repair_delta_kinds=["watch_lane_continuation"],
+        dry_run=True,
+        sync_global=False,
+    )
+
+    ack = payload["autonomous_replan_ack"]
+    assert ack["recorded"] is True
+    assert ack["frontier_identity"] == target_id
+    assert ack["delta_contract"]["auto_evidence"][0]["todo_ids"] == [MONITOR_ID]
 
 
 def test_watch_only_replan_downgrades_accountable_delivery_outcome(tmp_path) -> None:

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 from typing import Any, Mapping, Sequence
@@ -14,6 +15,7 @@ SKILL_INSTALL_READBACK_SCHEMA_VERSION = "loopx_skill_install_readback_v0"
 SKILL_INSTALL_READBACK_FILENAME = ".loopx-skill-install.json"
 SKILL_INSTALL_OWNER = "loopx_install_script"
 SKILL_INSTALL_INTEGRATION_MODE = "fixed_install_script"
+LOOPX_MANAGED_SLASH_COMMAND_MARKER = "<!-- loopx-managed-slash-command:v1"
 PACKAGED_HOST_SKILL_IDS = [
     "loopx-project",
     "loopx-pr-program",
@@ -25,6 +27,143 @@ ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS = [
     "loopx",
     *PACKAGED_HOST_SKILL_IDS,
 ]
+
+
+def _user_home() -> Path:
+    return Path.home().expanduser()
+
+
+def alternate_loopx_skills_root(skills_dir: Path) -> Path | None:
+    """Return the alternate LoopX root that can shadow the target root.
+
+    The fixed installer historically wrote the same managed skill set into both
+    ``~/.codex/skills`` and ``~/.agents/skills``. ARK-managed agent sessions and
+    Codex sessions can both discover those roots, which duplicates LoopX skills
+    in the loaded skill catalog. Callers may explicitly pass an alternate root;
+    otherwise this returns the other well-known root when the target is one of
+    them.
+    """
+
+    codex_root = _user_home() / ".codex" / "skills"
+    agents_root = _user_home() / ".agents" / "skills"
+    try:
+        target = skills_dir.expanduser().resolve()
+    except OSError:
+        return None
+    if target == codex_root.expanduser().resolve():
+        return agents_root
+    if target == agents_root.expanduser().resolve():
+        return codex_root
+    return None
+
+
+def _managed_command_facade(path: Path) -> bool:
+    try:
+        existing = (path / "SKILL.md").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return LOOPX_MANAGED_SLASH_COMMAND_MARKER in existing
+
+
+def retire_duplicate_managed_skills(
+    skills_dir: Path,
+    *,
+    alternate_root: Path | None = None,
+    execute: bool,
+) -> dict[str, Any]:
+    """Retire LoopX-managed skill copies from the alternate well-known root.
+
+    The fixed installer overwrites within the target root, but it historically
+    left an older managed copy in the other well-known root. That makes hosts
+    that discover both roots load duplicate LoopX skills. This helper retires
+    only copies that the alternate root's own readback records as LoopX-managed
+    (or command facades carrying the managed marker), so user-modified files
+    are never deleted.
+    """
+
+    target = Path(skills_dir).expanduser().resolve()
+    alternate = (
+        Path(alternate_root).expanduser().resolve()
+        if alternate_root
+        else alternate_loopx_skills_root(target)
+    )
+    retired: list[str] = []
+    would_retire: list[str] = []
+    skipped: list[str] = []
+    if alternate is None or not alternate.is_dir():
+        return {
+            "ok": True,
+            "schema_version": SKILL_INSTALL_READBACK_SCHEMA_VERSION,
+            "target_root": str(target),
+            "alternate_root": str(alternate) if alternate else None,
+            "retired": retired,
+            "would_retire": would_retire,
+            "skipped": skipped,
+            "reason": "no alternate LoopX skills root configured",
+        }
+
+    manifest_path = alternate / SKILL_INSTALL_READBACK_FILENAME
+    managed_ids: set[str] = set()
+    recorded_hashes: dict[str, str] = {}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = None
+    if isinstance(manifest, dict):
+        raw_ids = manifest.get("materialized_skill_ids")
+        if isinstance(raw_ids, list):
+            managed_ids.update(
+                str(item).strip() for item in raw_ids if str(item or "").strip()
+            )
+        items = manifest.get("skills")
+        if isinstance(items, dict) and isinstance(items.get("items"), dict):
+            for skill_id, item in items["items"].items():
+                if isinstance(item, dict) and isinstance(item.get("sha256"), str):
+                    recorded_hashes[str(skill_id)] = item["sha256"]
+
+    candidate_dirs: list[Path] = []
+    if managed_ids:
+        candidate_dirs.extend(alternate / skill_id for skill_id in managed_ids)
+    if alternate.is_dir():
+        candidate_dirs.extend(
+            path
+            for path in sorted(
+                [*alternate.glob("loopx-*"), *alternate.glob("loop-global-*")]
+            )
+            if path.is_dir() and path not in candidate_dirs
+        )
+
+    for candidate in candidate_dirs:
+        if not candidate.is_dir() or not (candidate / "SKILL.md").is_file():
+            continue
+        skill_id = candidate.name
+        managed = skill_id in managed_ids
+        marker_managed = _managed_command_facade(candidate)
+        if not managed and not marker_managed:
+            skipped.append(skill_id)
+            continue
+        recorded_hash = recorded_hashes.get(skill_id)
+        if managed and recorded_hash and not marker_managed:
+            tree = hash_skill_tree(candidate)
+            if not tree.get("available") or tree.get("sha256") != recorded_hash:
+                skipped.append(skill_id)
+                continue
+        if execute:
+            shutil.rmtree(candidate)
+            retired.append(skill_id)
+        else:
+            would_retire.append(skill_id)
+
+    return {
+        "ok": True,
+        "schema_version": SKILL_INSTALL_READBACK_SCHEMA_VERSION,
+        "target_root": str(target),
+        "alternate_root": str(alternate),
+        "retired": retired,
+        "would_retire": would_retire,
+        "skipped": skipped,
+        "reason": "retired alternate LoopX-managed copies" if execute else "dry-run",
+    }
 
 
 def _sha256_file(path: Path) -> str:

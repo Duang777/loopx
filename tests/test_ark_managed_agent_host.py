@@ -23,6 +23,7 @@ from loopx.skill_install_readback import (
     PACKAGED_HOST_SKILL_IDS,
     SKILL_INSTALL_READBACK_FILENAME,
     inspect_skill_install_readback,
+    retire_duplicate_managed_skills,
     write_skill_install_readback,
 )
 from loopx.slash_command_install import materialize_loopx_entry_skill
@@ -322,6 +323,47 @@ def test_skill_readback_records_the_resolved_archive_revision(
     assert readback["ready"] is True
     assert readback["source_revision"] == resolved_commit
     assert readback["source_revision_matches"] is True
+
+
+def test_retire_duplicate_managed_skills_removes_only_loopx_managed_copies(
+    tmp_path: Path,
+) -> None:
+    codex_skills = tmp_path / ".codex" / "skills"
+    agents_skills = tmp_path / ".agents" / "skills"
+    _materialize_workflow_skills(codex_skills)
+    _materialize_workflow_skills(agents_skills)
+    facade = agents_skills / "loopx-global-gates" / "SKILL.md"
+    facade.parent.mkdir(parents=True)
+    facade.write_text(
+        "<!-- loopx-managed-slash-command:v1 command=/loopx-global-gates -->\n",
+        encoding="utf-8",
+    )
+    user_file = agents_skills / "loopx-project" / "SKILL.md"
+    user_file.write_text(
+        user_file.read_text(encoding="utf-8") + "\nuser-edit\n",
+        encoding="utf-8",
+    )
+
+    dry = retire_duplicate_managed_skills(
+        codex_skills,
+        alternate_root=agents_skills,
+        execute=False,
+    )
+    assert dry["ok"] is True
+    assert "loopx-global-gates" in dry["would_retire"]
+    assert "loopx-project" in dry["skipped"]
+    assert agents_skills.is_dir()
+
+    applied = retire_duplicate_managed_skills(
+        codex_skills,
+        alternate_root=agents_skills,
+        execute=True,
+    )
+    assert applied["ok"] is True
+    assert "loopx-global-gates" in applied["retired"]
+    assert not (agents_skills / "loopx-global-gates").exists()
+    assert (agents_skills / "loopx-project").exists()
+    assert (codex_skills / "loopx-project").exists()
 
 
 def _write_continuity_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:

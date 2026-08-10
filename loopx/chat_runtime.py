@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import shutil
 import threading
 import time
 from typing import Any, Callable, Protocol
 
 from .chat_agent import CodexChatAgentError, CodexChatAgentSession, CodexChatTimeoutError
 from .chat_store import ChatSessionStore, utc_now
+from .chat_providers import ClaudeCodeAdapter, direct_model_from_environment
 
 
 EventSink = Callable[[str, dict[str, Any]], None]
@@ -88,29 +91,97 @@ class ChatRuntimeController:
         *,
         store: ChatSessionStore,
         codex_bin: str,
+        claude_bin: str = "claude",
         startup_timeout_sec: float = 30.0,
         idle_timeout_sec: float = 180.0,
         hard_timeout_sec: float = 900.0,
     ) -> None:
         self.store = store
         self.codex_bin = codex_bin
+        self.claude_bin = claude_bin
         self.startup_timeout_sec = startup_timeout_sec
         self.idle_timeout_sec = idle_timeout_sec
         self.hard_timeout_sec = hard_timeout_sec
         self.adapters: dict[str, ChatRuntimeAdapter] = {}
         self.cancelled_turns: set[tuple[str, str]] = set()
         self.lock = threading.RLock()
+        self.session_open_locks: dict[tuple[str, str, str], threading.Lock] = {}
 
     def capabilities(self) -> list[dict[str, Any]]:
-        return [{
-            "agent_id": "codex",
-            "display_name": "Codex",
-            "adapter_kind": "codex_app_server",
-            "available": True,
-            "streaming": True,
-            "resume": True,
-            "interrupt": True,
-        }]
+        return [
+            {
+                "agent_id": "codex",
+                "display_name": "Codex",
+                "adapter_kind": "codex_app_server",
+                "available": bool(shutil.which(self.codex_bin)),
+                "streaming": True,
+                "resume": True,
+                "interrupt": True,
+            },
+            {
+                "agent_id": "claude-code",
+                "display_name": "Claude Code",
+                "adapter_kind": "claude_code_cli",
+                "available": bool(shutil.which(self.claude_bin)),
+                "streaming": True,
+                "resume": True,
+                "interrupt": True,
+            },
+            {
+                "agent_id": "anthropic-api",
+                "display_name": "Claude API",
+                "adapter_kind": "anthropic_messages_api",
+                "available": bool(os.environ.get("ANTHROPIC_API_KEY", "").strip()),
+                "streaming": False,
+                "resume": True,
+                "interrupt": False,
+            },
+            {
+                "agent_id": "openai-api",
+                "display_name": "OpenAI API",
+                "adapter_kind": "openai_messages_api",
+                "available": bool(os.environ.get("OPENAI_API_KEY", "").strip()),
+                "streaming": False,
+                "resume": True,
+                "interrupt": False,
+            },
+        ]
+
+    def _start_adapter(
+        self,
+        *,
+        agent_id: str,
+        work_dir: Path,
+        goal_id: str,
+        objective: str,
+        resume_thread_id: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> ChatRuntimeAdapter:
+        if agent_id == "codex":
+            return CodexAppServerAdapter.start(
+                codex_bin=self.codex_bin,
+                work_dir=work_dir,
+                goal_id=goal_id,
+                objective=objective,
+                resume_thread_id=resume_thread_id,
+                startup_timeout_sec=self.startup_timeout_sec,
+                idle_timeout_sec=self.idle_timeout_sec,
+                hard_timeout_sec=self.hard_timeout_sec,
+            )
+        if agent_id == "claude-code":
+            return ClaudeCodeAdapter.start(
+                claude_bin=self.claude_bin,
+                work_dir=work_dir,
+                resume_thread_id=resume_thread_id,
+            )
+        if agent_id in {"anthropic-api", "openai-api"}:
+            return direct_model_from_environment(
+                provider="anthropic" if agent_id == "anthropic-api" else "openai",
+                work_dir=work_dir,
+                session_id=resume_thread_id,
+                history=history,
+            )
+        raise ValueError(f"unknown Agent endpoint: {agent_id}")
 
     def open_session(
         self,
@@ -120,34 +191,47 @@ class ChatRuntimeController:
         work_dir: Path,
         objective: str,
         mode: str,
+        channel_id: str | None = None,
+        agent_goal_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        if agent_id != "codex":
-            raise ValueError("only the codex Agent is available")
+        capability = next((item for item in self.capabilities() if item["agent_id"] == agent_id), None)
+        if capability is None:
+            raise ValueError(f"unknown Agent endpoint: {agent_id}")
+        if not capability["available"]:
+            raise ValueError(f"Agent endpoint is unavailable: {agent_id}")
         if mode not in {"resume_latest", "new"}:
             raise ValueError("mode must be resume_latest or new")
-        if mode == "resume_latest":
-            latest = self.store.latest_session(goal_id=goal_id, agent_id=agent_id)
-            if latest is not None:
-                self._ensure_adapter(latest, work_dir=work_dir, objective=objective)
-                return latest, True
-        adapter = CodexAppServerAdapter.start(
-            codex_bin=self.codex_bin,
-            work_dir=work_dir,
-            goal_id=goal_id,
-            objective=objective,
-            startup_timeout_sec=self.startup_timeout_sec,
-            idle_timeout_sec=self.idle_timeout_sec,
-            hard_timeout_sec=self.hard_timeout_sec,
-        )
-        persisted = self.store.create_session(
-            goal_id=goal_id,
-            agent_id=agent_id,
-            adapter_kind="codex_app_server",
-            upstream_thread_id=adapter.upstream_thread_id,
-        )
+        selected_channel = channel_id or f"goal.{goal_id}"
+        route_goal_id = "*" if selected_channel == "manager" else goal_id
+        route_key = (route_goal_id, agent_id, selected_channel)
         with self.lock:
-            self.adapters[persisted["session_id"]] = adapter
-        return persisted, False
+            route_lock = self.session_open_locks.setdefault(route_key, threading.Lock())
+        with route_lock:
+            if mode == "resume_latest":
+                latest = self.store.latest_session(
+                    goal_id=None if selected_channel == "manager" else goal_id,
+                    agent_id=agent_id,
+                    channel_id=selected_channel,
+                )
+                if latest is not None:
+                    self._ensure_adapter(latest, work_dir=work_dir, objective=objective)
+                    return latest, True
+            adapter = self._start_adapter(
+                agent_id=agent_id,
+                work_dir=work_dir,
+                goal_id=agent_goal_id or goal_id,
+                objective=objective,
+            )
+            persisted = self.store.create_session(
+                goal_id=goal_id,
+                agent_id=agent_id,
+                adapter_kind=str(capability["adapter_kind"]),
+                upstream_thread_id=adapter.upstream_thread_id,
+                channel_id=selected_channel,
+            )
+            with self.lock:
+                self.adapters[persisted["session_id"]] = adapter
+            return persisted, False
 
     def _ensure_adapter(
         self,
@@ -184,15 +268,25 @@ class ChatRuntimeController:
                     payload={"error_code": "server_restarted"},
                 )
         try:
-            adapter = CodexAppServerAdapter.start(
-                codex_bin=self.codex_bin,
+            history = [
+                {
+                    "role": "assistant" if item.get("role") == "agent" else "user",
+                    "content": str(item.get("text") or ""),
+                }
+                for item in self.store.messages(session_id)
+                if item.get("role") in {"user", "agent"}
+            ]
+            adapter = self._start_adapter(
+                agent_id=str(session["agent_id"]),
                 work_dir=work_dir,
-                goal_id=str(session["goal_id"]),
+                goal_id=(
+                    "loopx-manager"
+                    if session.get("channel_id") == "manager"
+                    else str(session["goal_id"])
+                ),
                 objective=objective,
                 resume_thread_id=str(session["upstream_thread_id"]),
-                startup_timeout_sec=self.startup_timeout_sec,
-                idle_timeout_sec=self.idle_timeout_sec,
-                hard_timeout_sec=self.hard_timeout_sec,
+                history=history,
             )
         except Exception as exc:
             self.store.update_session(
@@ -203,7 +297,7 @@ class ChatRuntimeController:
             )
             gate = exc.gate if isinstance(exc, CodexChatAgentError) else None
             raise CodexChatAgentError(
-                "The previous Codex conversation could not be restored.",
+                "The previous Agent conversation could not be restored.",
                 error_code="resume_failed",
                 gate=gate,
             ) from exc
@@ -270,7 +364,7 @@ class ChatRuntimeController:
             current_turn = self.store.load_turn(session_id, turn_id) or {}
             if not current_turn.get("first_event_at"):
                 changes["first_event_at"] = now
-            if kind == "assistant.delta":
+            if kind in {"answer.delta", "assistant.delta"}:
                 changes["delta_count"] = int(current_turn.get("delta_count") or 0) + 1
             if kind == "turn.started":
                 changes.update(status="running", upstream_turn_id=payload.get("upstream_turn_id"))
@@ -290,6 +384,8 @@ class ChatRuntimeController:
                     text=str(response["message"]),
                     turn_id=turn_id,
                 )
+            if adapter.upstream_thread_id != str((self.store.load_session(session_id) or {}).get("upstream_thread_id") or ""):
+                self.store.update_session(session_id, upstream_thread_id=adapter.upstream_thread_id)
             for proposal in response.get("proposals") or []:
                 self.store.append_event(session_id, turn_id, kind="proposal.ready", payload={"proposal": proposal})
             if response.get("gate"):

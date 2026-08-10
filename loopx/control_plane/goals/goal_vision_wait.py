@@ -12,7 +12,6 @@ from ..todos.contract import (
 )
 from ..todos.deferred_resume import todo_summary_blocked_successor_items
 
-
 GOAL_VISION_WAIT_STATE_SCHEMA_VERSION = "goal_vision_wait_state_v0"
 VISION_ACCEPTANCE_GAP_KIND = "vision_acceptance_gap"
 
@@ -91,6 +90,89 @@ def _compact_resume_condition(value: Any) -> dict[str, Any]:
     return compact
 
 
+def _acceptance_gap_causal_todo_ids(
+    gaps: list[dict[str, Any]],
+) -> set[str]:
+    todo_ids: set[str] = set()
+    for gap in gaps:
+        for key in (
+            "todo_id",
+            "current_todo_id",
+            "blocked_todo_id",
+            "completed_todo_id",
+            "successor_todo_id",
+        ):
+            todo_id = normalize_todo_id(gap.get(key))
+            if todo_id:
+                todo_ids.add(todo_id)
+        for key in (
+            "vision_todo_ids",
+            "lineage_todo_ids",
+            "successor_todo_ids",
+            "completed_todo_ids",
+        ):
+            values = gap.get(key) if isinstance(gap.get(key), list) else []
+            todo_ids.update(
+                todo_id
+                for value in values
+                if (todo_id := normalize_todo_id(value))
+            )
+    return todo_ids
+
+
+def _causal_blocked_successor_items(
+    candidates: list[dict[str, Any]],
+    *,
+    causal_todo_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Keep only waits in the active vision's explicit Todo lineage."""
+
+    if not causal_todo_ids:
+        return []
+    lineage_ids = set(causal_todo_ids)
+    changed = True
+    while changed:
+        changed = False
+        for item in candidates:
+            todo_id = normalize_todo_id(item.get("todo_id"))
+            condition = (
+                item.get("resume_condition")
+                if isinstance(item.get("resume_condition"), dict)
+                else {}
+            )
+            target_todo_id = normalize_todo_id(
+                condition.get("target_todo_id") or condition.get("target")
+            )
+            successor_todo_ids = {
+                successor_todo_id
+                for value in (
+                    item.get("successor_todo_ids")
+                    if isinstance(item.get("successor_todo_ids"), list)
+                    else []
+                )
+                if (successor_todo_id := normalize_todo_id(value))
+            }
+            if not (
+                (todo_id and todo_id in lineage_ids)
+                or (target_todo_id and target_todo_id in lineage_ids)
+                or successor_todo_ids.intersection(lineage_ids)
+            ):
+                continue
+            expanded = {
+                value
+                for value in (todo_id, target_todo_id, *successor_todo_ids)
+                if value
+            }
+            if not expanded.issubset(lineage_ids):
+                lineage_ids.update(expanded)
+                changed = True
+    return [
+        item
+        for item in candidates
+        if normalize_todo_id(item.get("todo_id")) in lineage_ids
+    ]
+
+
 def build_goal_vision_wait_state(
     *,
     agent_todo_summary: dict[str, Any] | None,
@@ -111,6 +193,8 @@ def build_goal_vision_wait_state(
     if selectable_advancement_count > 0:
         return None
 
+    causal_todo_ids = _acceptance_gap_causal_todo_ids(gaps)
+
     blocker_items = (
         agent_todo_summary.get("current_agent_blocker_items")
         if isinstance(agent_todo_summary, dict)
@@ -128,15 +212,17 @@ def build_goal_vision_wait_state(
         and str(item.get("reason") or "").strip()
         and normalize_todo_claimed_by(item.get("claimed_by"))
         == safe_agent_id
+        and normalize_todo_id(item.get("todo_id")) in causal_todo_ids
     ]
-    candidates = (
-        todo_summary_blocked_successor_items(
-            agent_todo_summary or {},
-            agent_id=agent_id,
+    candidates = []
+    if not blocker_items:
+        candidates = _causal_blocked_successor_items(
+            todo_summary_blocked_successor_items(
+                agent_todo_summary or {},
+                agent_id=agent_id,
+            ),
+            causal_todo_ids=causal_todo_ids,
         )
-        if not blocker_items
-        else []
-    )
     if candidates:
         selected = candidates[0]
         waiting_todo_ids = [

@@ -304,6 +304,29 @@ def main() -> None:
             assert code == 201 and created["session_id"], created
             session_id = created["session_id"]
 
+            code, manager_created = request_json(
+                f"{base_url}/api/chat/sessions",
+                method="POST",
+                body={"goal_id": GOAL_ID, "context_kind": "manager"},
+            )
+            assert code == 201, manager_created
+            assert manager_created["session"]["channel_id"] == "manager", manager_created
+            assert manager_created["session_id"] != session_id, manager_created
+            code, manager_resumed = request_json(
+                f"{base_url}/api/chat/sessions",
+                method="POST",
+                body={"goal_id": SECOND_GOAL_ID, "context_kind": "manager"},
+            )
+            assert code == 200 and manager_resumed["resumed"] is True, manager_resumed
+            assert manager_resumed["session_id"] == manager_created["session_id"], manager_resumed
+            assert manager_resumed["goal_id"] == GOAL_ID, manager_resumed
+            listed_manager = wait_for_json(
+                f"{base_url}/api/chat/sessions?agent_id=codex&channel_id=manager"
+            )
+            assert [item["session_id"] for item in listed_manager["sessions"]] == [
+                manager_created["session_id"]
+            ], listed_manager
+
             code, turn = request_json(
                 f"{base_url}/api/chat/sessions/{session_id}/turns",
                 method="POST",
@@ -327,8 +350,8 @@ def main() -> None:
                 timeout=4,
             ) as response:
                 event_stream = response.read().decode("utf-8")
-            assert "event: assistant.delta" in event_stream, event_stream
-            assert "Visible streaming answer." in event_stream, event_stream
+            assert "event: answer.delta" in event_stream, event_stream
+            assert "I found one reviewable step." in event_stream, event_stream
             assert "<loopx-review-json>" not in event_stream, event_stream
             assert "event: proposal.ready" in event_stream, event_stream
             assert "event: turn.completed" in event_stream, event_stream

@@ -7,6 +7,7 @@ import stat
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -22,6 +23,7 @@ import json
 import sys
 
 active_turn = None
+goal_status = "inactive"
 for line in sys.stdin:
     request = json.loads(line)
     method = request.get("method")
@@ -32,8 +34,11 @@ for line in sys.stdin:
         result = {"serverInfo": {"name": "fake-runtime-codex"}}
     elif method in {"thread/start", "thread/resume"}:
         result = {"thread": {"id": "durable-thread"}}
-    elif method in {"thread/goal/set", "thread/goal/get"}:
-        result = {"goal": {"threadId": "durable-thread", "status": "active"}}
+    elif method == "thread/goal/set":
+        goal_status = "active"
+        result = {"goal": {"threadId": "durable-thread", "status": goal_status}}
+    elif method == "thread/goal/get":
+        result = {"goal": {"threadId": "durable-thread", "status": goal_status}}
     elif method == "turn/start":
         active_turn = "durable-turn"
         print(json.dumps({"method": "turn/started", "params": {"threadId": "durable-thread", "turn": {"id": active_turn}}}), flush=True)
@@ -69,15 +74,42 @@ def main() -> None:
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
         store = ChatSessionStore(root / "runtime")
         first = ChatRuntimeController(store=store, codex_bin=str(fake))
-        session, resumed = first.open_session(
+        def open_goal_session() -> tuple[dict[str, object], bool]:
+            return first.open_session(
+                goal_id="durable-goal",
+                agent_id="codex",
+                work_dir=root,
+                objective="Keep the thread durable.",
+                mode="resume_latest",
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            opened = list(executor.map(lambda _: open_goal_session(), range(2)))
+        assert sorted(resumed for _, resumed in opened) == [False, True], opened
+        assert len({str(item[0]["session_id"]) for item in opened}) == 1, opened
+        session, resumed = opened[0]
+        session_id = session["session_id"]
+        manager_one, manager_resumed = first.open_session(
             goal_id="durable-goal",
             agent_id="codex",
             work_dir=root,
-            objective="Keep the thread durable.",
+            objective="Manage all Goals read-only.",
             mode="resume_latest",
+            channel_id="manager",
+            agent_goal_id="loopx-manager",
         )
-        assert resumed is False
-        session_id = session["session_id"]
+        assert manager_resumed is False, manager_one
+        manager_two, manager_resumed = first.open_session(
+            goal_id="another-goal",
+            agent_id="codex",
+            work_dir=root,
+            objective="Manage all Goals read-only.",
+            mode="resume_latest",
+            channel_id="manager",
+            agent_goal_id="loopx-manager",
+        )
+        assert manager_resumed is True, manager_two
+        assert manager_two["session_id"] == manager_one["session_id"], manager_two
         turn, created = first.submit_turn(
             session_id=session_id,
             client_turn_id="durable-client-turn",

@@ -111,9 +111,10 @@ def build_run_history(
                 "subagent_activity": subagent_activity,
                 "latest_status_run": compact_run(current_run) if current_run else None,
                 "latest_runs": latest_runs,
-                "semantic_history": semantic_history,
             }
         )
+        if semantic_history is not None:
+            goals[-1]["semantic_history"] = semantic_history
 
     recent_runs = [
         compact_run(run)

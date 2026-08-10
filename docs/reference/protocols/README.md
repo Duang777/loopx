@@ -23,6 +23,7 @@ scanning a chronological list.
 - [`todo_detail_cold_path_v0`](todo-detail-cold-path-v0.md): Todo detail cold path v0
 - [`todo_suggestion_prompt_v0`](todo-suggestion-prompt-v0.md): Todo suggestion prompt v0
 - [`turn_envelope_v0`](turn-envelope-v0.md): Turn envelope v0
+- [`loop_turn_loop_disposition_v0`](turn-loop-controller-v0.md): Loop Turn Loop Disposition v0
 
 ## Agent And Multi-Agent Coordination
 
@@ -74,6 +75,7 @@ scanning a chronological list.
 - [`value_connector_plan_v0`](value-connector-plan-v0.md): Value connector plan v0
 - [`x_public_channel_ops_v0`](x-public-channel-ops-v0.md): X public channel operations v0
 - [`content_ops_item_v0`](content-ops-item-lifecycle-v0.md): provider-neutral content item lifecycle v0
+- [`content_ops_queue_projection_v0`](content-ops-queue-v0.md): read-only managed content queue projection v0
 
 ## Quality, Review, And Release
 

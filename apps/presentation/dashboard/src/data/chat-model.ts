@@ -236,6 +236,9 @@ export const stewardPrompts: StewardPrompt[] = [
 ];
 
 export function agentBackendLabel(agentBackend: string | null | undefined) {
+  if (agentBackend === "multi_adapter") {
+    return "Local Agent endpoints";
+  }
   if (agentBackend === "codex_app_server") {
     return "Codex app-server";
   }
