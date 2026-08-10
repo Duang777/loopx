@@ -28,12 +28,81 @@ import {
   type TodoProposal,
   type TodoWriteReceipt,
 } from "../src/data/chat-model.js";
+import * as chatModel from "../src/data/chat-model.js";
 
 function check(condition: boolean, message: string) {
   if (!condition) {
     throw new Error(message);
   }
 }
+
+type ChatRouteCandidate = {
+  agentId: string;
+  available: boolean;
+  label: string;
+};
+
+const capabilityAwareRoute = chatModel as unknown as {
+  chatAgentAdapterAvailable?: (
+    capabilities: {
+      adapters?: Array<{
+        agent_id: string;
+        available: boolean;
+        display_name: string;
+      }>;
+    } | null,
+    agentId: string,
+    label: string,
+  ) => boolean;
+  selectAvailableChatAgent?: (
+    options: ChatRouteCandidate[],
+    preferredAgentId: string | undefined,
+    defaultAgentId: string,
+  ) => ChatRouteCandidate;
+};
+
+check(
+  typeof capabilityAwareRoute.chatAgentAdapterAvailable === "function",
+  "Chat routing should expose adapter capability matching",
+);
+check(
+  typeof capabilityAwareRoute.selectAvailableChatAgent === "function",
+  "Chat routing should expose stale-selection fallback",
+);
+
+const adapterCapabilities = {
+  adapters: [{ agent_id: "codex", available: true, display_name: "Codex" }],
+};
+check(
+  capabilityAwareRoute.chatAgentAdapterAvailable!(adapterCapabilities, "codex-worker", "Codex") === true,
+  "a discovered Codex lane should use the available Codex Chat adapter",
+);
+check(
+  capabilityAwareRoute.chatAgentAdapterAvailable!(adapterCapabilities, "registered-fixer", "Registered fixer") === false,
+  "a discovered Agent without a Chat adapter should remain unavailable",
+);
+
+const routeOptions: ChatRouteCandidate[] = [
+  { agentId: "codex-worker", available: true, label: "Codex" },
+  { agentId: "registered-fixer", available: false, label: "Registered fixer" },
+  { agentId: "status-only", available: true, label: "仅查状态" },
+];
+check(
+  capabilityAwareRoute.selectAvailableChatAgent!(
+    routeOptions,
+    "registered-fixer",
+    "codex-worker",
+  ).agentId === "codex-worker",
+  "a persisted unavailable Agent should fall back to Codex",
+);
+check(
+  capabilityAwareRoute.selectAvailableChatAgent!(
+    routeOptions.map((option) => option.agentId === "codex-worker" ? { ...option, available: false } : option),
+    "registered-fixer",
+    "status-only",
+  ).agentId === "status-only",
+  "Chat should fall back to status-only when no model adapter is available",
+);
 
 const fixture: ChatStatus = {
   ok: true,

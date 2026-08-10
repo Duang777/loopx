@@ -110,7 +110,7 @@ includes(dashboardSource, 'agentId: "status-only"', "deterministic status-only A
 includes(dashboardSource, 'managerQuickPrompts.includes(question)', "fixed quick questions use deterministic projection");
 includes(dashboardSource, '"LoopX 状态投影 · 仅查状态"', "status-only answer attribution");
 includes(dashboardSource, '"仅查状态"', "deterministic answer author attribution");
-includes(dashboardSource, 'createChatSession(targetGoal.goalId, "codex", mode)', "Codex Goal Chat session creation");
+includes(dashboardSource, "createChatSession(targetGoal.goalId, selectedRoute.adapterAgentId, mode)", "capability-selected Goal Chat session creation");
 includes(dashboardSource, "sendChatTurnStreaming(sessionId, question", "streaming Codex Goal Chat turn");
 includes(dashboardSource, "interruptChatTurn", "interruptible Codex Goal Chat turn");
 includes(dashboardSource, 'error.payload.error_code === "resume_failed"', "Codex resume failure route");
@@ -125,6 +125,11 @@ includes(dashboardSource, "`${selectedAgent.label} · ${selectedGoal.state}", "G
 includes(dashboardSource, 'agent.label === "Codex" && agent.available', "Codex available default");
 includes(dashboardSource, "selectedAgents[contextId] ?? defaultAgentId", "Codex-first per-Chat Agent default");
 excludes(dashboardSource, "selectedAgents[contextId] ?? goalAgentId", "Goal owner overriding the Chat default Agent");
+includes(dashboardSource, "fetchChatCapabilities", "Chat capability discovery");
+includes(dashboardSource, "chatAgentAdapterId(chatCapabilities", "discovered Agent adapter matching");
+includes(dashboardSource, "selectAvailableChatAgent(", "stale Agent selection fallback");
+includes(dashboardSource, "selectedRoute.adapterAgentId", "selected adapter session routing");
+excludes(dashboardSource, "当前本地 Chat 后端已接通 Codex", "unverified Chat backend claim");
 includes(dashboardSource, "buildAgentManagementRows(rows, payload.todo_index, payload.agent_management_projection)", "discovered Agent projection wiring");
 includes(dashboardSource, "!/unassigned|unknown/i.test(agent.agentId)", "unassigned Agent lane filtering");
 includes(dashboardSource, "new Map<string, PersonalAgentOption>()", "Agent label deduplication");

@@ -87,14 +87,18 @@ import {
 import {
   ChatApiError,
   applyTodo,
+  chatAgentAdapterId,
   createChatSession,
+  fetchChatCapabilities,
   fetchChatSession,
   interruptChatTurn,
   previewTodo,
   sendChatTurnStreaming,
+  selectAvailableChatAgent,
   sessionInvalidatedByPayload,
   todoNoWriteReceiptFromPayload,
   todoReceiptLabel,
+  type ChatCapabilities,
   type TodoProposal,
 } from "../data/chat";
 import {
@@ -4602,6 +4606,7 @@ type PersonalProposalCard = {
 };
 
 type PersonalAgentOption = {
+  adapterAgentId: string | null;
   agentId: string;
   available: boolean;
   capability: string;
@@ -5099,18 +5104,33 @@ function PersonalGoalHome({
     : model.openUserTodoCount > 0
       ? `你有 ${model.openUserTodoCount} 项需要处理，其中 ${model.blockingTodoCount} 项正在阻塞 Agent。`
       : "暂时没有需要你处理的事项，Agent 会按当前计划继续推进。";
+  const [chatCapabilities, setChatCapabilities] = useState<ChatCapabilities | null>(null);
+  const [chatCapabilityState, setChatCapabilityState] = useState<"loading" | "ready" | "unavailable">("loading");
   const agentRows = buildAgentManagementRows(rows, payload.todo_index, payload.agent_management_projection);
   const discoveredAgentByLabel = new Map<string, PersonalAgentOption>();
   for (const agent of agentRows) {
     if (/unassigned|unknown/i.test(agent.agentId)) {
       continue;
     }
+    const projectionAvailable = agent.status.variant !== "danger";
+    const adapterAgentId = projectionAvailable
+      ? chatAgentAdapterId(chatCapabilities, agent.agentId, personalAgentLabel(agent.agentId))
+      : null;
     const option: PersonalAgentOption = {
+      adapterAgentId,
       agentId: agent.agentId,
-      available: agent.status.variant !== "danger",
+      available: adapterAgentId !== null,
       capability: personalAgentCapability(agent.agentId),
       label: personalAgentLabel(agent.agentId),
-      statusLabel: agent.status.label,
+      statusLabel: !projectionAvailable
+        ? agent.status.label
+        : chatCapabilityState === "loading"
+          ? "正在检测 Chat adapter"
+          : chatCapabilityState === "unavailable"
+            ? "Chat 后端不可用"
+            : adapterAgentId === null
+              ? "Chat adapter 不可用"
+              : agent.status.label,
     };
     const current = discoveredAgentByLabel.get(option.label);
     if (!current || (!current.available && option.available)) {
@@ -5121,6 +5141,7 @@ function PersonalGoalHome({
   const agentOptions = [
     ...discoveredAgents,
     {
+      adapterAgentId: null,
       agentId: "status-only",
       available: true,
       capability: "不调用模型",
@@ -5133,9 +5154,7 @@ function PersonalGoalHome({
     ?? "status-only";
   const [selectedAgents, setSelectedAgents] = useState<Record<string, string>>(readPersonalAgentSelections);
   const selectedAgentId = selectedAgents[contextId] ?? defaultAgentId;
-  const selectedAgent = agentOptions.find((agent) => agent.agentId === selectedAgentId)
-    ?? agentOptions.find((agent) => agent.agentId === defaultAgentId)
-    ?? agentOptions[agentOptions.length - 1];
+  const selectedAgent = selectAvailableChatAgent(agentOptions, selectedAgentId, defaultAgentId);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"chat" | "goals">("chat");
@@ -5178,6 +5197,24 @@ function PersonalGoalHome({
     : model;
 
   useEffect(() => {
+    let cancelled = false;
+    void fetchChatCapabilities()
+      .then((capabilities) => {
+        if (cancelled) return;
+        setChatCapabilities(capabilities);
+        setChatCapabilityState("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setChatCapabilities(null);
+        setChatCapabilityState("unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(personalAgentSelectionStorageKey, JSON.stringify(selectedAgents));
     } catch {
@@ -5186,11 +5223,27 @@ function PersonalGoalHome({
   }, [selectedAgents]);
 
   useEffect(() => {
-    if (!selectedGoal || selectedAgent.label !== "Codex") return;
+    const persistedAgentId = selectedAgents[contextId];
+    if (
+      chatCapabilityState === "loading"
+      || !persistedAgentId
+      || persistedAgentId === selectedAgent.agentId
+    ) {
+      return;
+    }
+    setSelectedAgents((current) =>
+      current[contextId] === persistedAgentId
+        ? { ...current, [contextId]: selectedAgent.agentId }
+        : current
+    );
+  }, [chatCapabilityState, contextId, selectedAgent.agentId, selectedAgents]);
+
+  useEffect(() => {
+    if (!selectedGoal || !selectedAgent.adapterAgentId) return;
     const targetContextId = contextId;
     const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
     let cancelled = false;
-    void createChatSession(selectedGoal.goalId)
+    void createChatSession(selectedGoal.goalId, selectedAgent.adapterAgentId)
       .then(async (created) => {
         if (cancelled) return;
         sessionIds.current.set(sessionKey, created.session_id);
@@ -5199,11 +5252,11 @@ function PersonalGoalHome({
         setMessagesByContext((current) => ({
           ...current,
           [targetContextId]: snapshot.messages.map((message) => ({
-            agentLabel: message.role === "user" ? undefined : "Codex",
+            agentLabel: message.role === "user" ? undefined : selectedAgent.label,
             id: managerMessageId.current++,
             lines: [],
             role: message.role === "user" ? "user" : "assistant",
-            sourceLabel: message.role === "user" ? undefined : "恢复的 Codex 会话",
+            sourceLabel: message.role === "user" ? undefined : `恢复的 ${selectedAgent.label} 会话`,
             text: message.text,
           })),
         }));
@@ -5216,7 +5269,7 @@ function PersonalGoalHome({
     return () => {
       cancelled = true;
     };
-  }, [contextId, selectedGoal?.goalId, selectedAgent.agentId, selectedAgent.label]);
+  }, [contextId, selectedGoal?.goalId, selectedAgent.adapterAgentId, selectedAgent.agentId, selectedAgent.label]);
 
   useEffect(() => {
     if (!agentMenuOpen) {
@@ -5330,10 +5383,10 @@ function PersonalGoalHome({
       return;
     }
 
-    if (selectedRoute.label !== "Codex") {
+    if (!selectedRoute.adapterAgentId) {
       appendManagerAssistantMessage(targetContextId, {
         agentLabel: selectedRoute.label,
-        lines: ["当前本地 Chat 后端已接通 Codex。你可以切回 Codex，或使用仅查状态。"],
+        lines: ["请选择带有可用 Chat adapter 的 Agent，或使用仅查状态。"],
         sourceLabel: "LoopX Agent 路由",
         text: `${selectedRoute.label} 已被发现，但这个 Chat 适配器当前不可用。`,
       });
@@ -5341,23 +5394,23 @@ function PersonalGoalHome({
       return;
     }
 
-    const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
+    const sessionKey = `${targetContextId}:${selectedRoute.agentId}`;
     let streamingMessageId: number | null = null;
     try {
       let sessionId = sessionIds.current.get(sessionKey);
       if (!sessionId) {
         const mode = newSessionRequired.current.has(sessionKey) ? "new" : "resume_latest";
-        const session = await createChatSession(targetGoal.goalId, "codex", mode);
+        const session = await createChatSession(targetGoal.goalId, selectedRoute.adapterAgentId, mode);
         sessionId = session.session_id;
         sessionIds.current.set(sessionKey, sessionId);
         newSessionRequired.current.delete(sessionKey);
       }
       let streamedText = "";
       streamingMessageId = appendManagerAssistantMessage(targetContextId, {
-        agentLabel: "Codex",
+        agentLabel: selectedRoute.label,
         lines: [],
-        sourceLabel: `Codex 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`,
-        text: "Codex 正在分析…",
+        sourceLabel: `${selectedRoute.label} 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`,
+        text: `${selectedRoute.label} 正在分析…`,
       });
       const streamed = await sendChatTurnStreaming(sessionId, question, {
         signal: (() => {
@@ -5380,7 +5433,7 @@ function PersonalGoalHome({
       const response = streamed.response;
       updateManagerAssistantMessage(targetContextId, streamingMessageId, {
         lines: response.gate ? [response.gate.summary, response.gate.next_action].filter(Boolean).slice(0, 2) : [],
-        text: streamedText.trim() || response.message || "Codex 已完成分析。",
+        text: streamedText.trim() || response.message || `${selectedRoute.label} 已完成分析。`,
       });
       if (response.proposals.length > 0) {
         const cards = response.proposals.map((proposal) => ({
@@ -5411,12 +5464,12 @@ function PersonalGoalHome({
         ? String((gate as { summary?: unknown }).summary ?? "")
         : "";
       const failureMessage = {
-        agentLabel: "Codex",
+        agentLabel: selectedRoute.label,
         lines: gateSummary ? [gateSummary] : [],
         sourceLabel: "LoopX Chat 本地后端",
         text: payloadError?.error_code === "resume_failed"
-          ? "原 Codex 会话无法恢复。请再次发送这条消息，LoopX 会为当前 Goal 新建会话。"
-          : error instanceof Error ? error.message : "Codex 会话暂时不可用。",
+          ? `原 ${selectedRoute.label} 会话无法恢复。请再次发送这条消息，LoopX 会为当前 Goal 新建会话。`
+          : error instanceof Error ? error.message : `${selectedRoute.label} 会话暂时不可用。`,
       };
       if (streamingMessageId === null) {
         appendManagerAssistantMessage(targetContextId, failureMessage);

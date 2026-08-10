@@ -11,12 +11,15 @@ export {
   agentBackendLabel,
   answerLocalStatusQuestion,
   buildGoalStudioNodes,
+  chatAgentAdapterAvailable,
+  chatAgentAdapterId,
   chatFailureMessage,
   completedGoalReviews,
   pendingGoalReviews,
   proposalReviewState,
   sessionInvalidatedByPayload,
   selectChatGoal,
+  selectAvailableChatAgent,
   stewardPrompts,
   turnReplaySafeByPayload,
   todoNoWriteReceiptFromPayload,
@@ -29,6 +32,7 @@ export {
 } from "./chat-model";
 export type {
   AgentResponse,
+  ChatAdapterCapability,
   ChatCapabilities,
   ChatGoal,
   ChatStatus,
