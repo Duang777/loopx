@@ -126,6 +126,7 @@ check(
   "问问管家 shortcuts should expand into concrete questions",
 );
 check(agentBackendLabel("codex_app_server") === "Codex app-server", "known Agent backend should be human-readable");
+check(agentBackendLabel("multi_adapter") === "Local Agent endpoints", "multi-adapter backend should be human-readable");
 check(agentBackendLabel(null) === "Local Agent", "missing capabilities should retain a safe local fallback");
 check(
   pendingGoalReviews(selected!).map((todo) => todo.todo_id).join(",") === "gate-1",

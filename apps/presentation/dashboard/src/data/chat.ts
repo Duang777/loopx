@@ -390,6 +390,7 @@ export async function sendChatTurnStreaming(
   options: {
     clientTurnId?: string;
     onDelta?: (text: string) => void;
+    onActivity?: (label: string) => void;
     onPhase?: (phase: string, turnId: string) => void;
     signal?: AbortSignal;
   } = {},
@@ -405,8 +406,11 @@ export async function sendChatTurnStreaming(
     accepted.events_url,
     (event) => {
       options.onPhase?.(event.kind, accepted.turn_id);
-      if (event.kind === "assistant.delta") {
+      if (event.kind === "answer.delta" || event.kind === "assistant.delta") {
         options.onDelta?.(String(event.payload.text ?? ""));
+      }
+      if (event.kind === "agent.phase") {
+        options.onActivity?.(String(event.payload.label ?? "Agent 正在处理"));
       }
       if (event.kind === "turn.completed") {
         finalResponse = event.payload.response;

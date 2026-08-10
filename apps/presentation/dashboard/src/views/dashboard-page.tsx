@@ -88,6 +88,7 @@ import {
   ChatApiError,
   applyTodo,
   createChatSession,
+  fetchChatCapabilities,
   fetchChatSession,
   interruptChatTurn,
   previewTodo,
@@ -4572,9 +4573,11 @@ type PersonalHomeModel = {
 };
 
 type PersonalManagerMessage = {
+  activity?: string[];
   agentLabel?: string;
   id: number;
   lines: string[];
+  pending?: boolean;
   role: "assistant" | "user";
   sourceLabel?: string;
   text: string;
@@ -4707,6 +4710,9 @@ function personalAgentCapability(agentId: string) {
   if (normalized.includes("claude")) {
     return "复杂分析与长任务";
   }
+  if (normalized.includes("openai") || normalized.includes("anthropic")) {
+    return "管家问答 · 无工具";
+  }
   if (normalized.includes("trae")) {
     return "前端与交互实现";
   }
@@ -4714,6 +4720,30 @@ function personalAgentCapability(agentId: string) {
     return "通用任务";
   }
   return "已发现的项目 Agent";
+}
+
+function personalVisibleAgentMessage(value: string) {
+  const openTag = "<loopx-review-json>";
+  const closeTag = "</loopx-review-json>";
+  const start = value.lastIndexOf(openTag);
+  const end = value.lastIndexOf(closeTag);
+  if (start < 0 || end <= start) return value.trim();
+  const envelope = value.slice(start + openTag.length, end).trim();
+  try {
+    const parsed = JSON.parse(envelope) as { message?: unknown };
+    if (typeof parsed.message === "string" && parsed.message.trim()) return parsed.message.trim();
+  } catch {
+    const match = envelope.match(/"message"\s*:\s*("(?:\\.|[^"\\])*")/s);
+    if (match) {
+      try {
+        const message = JSON.parse(match[1]);
+        if (typeof message === "string" && message.trim()) return message.trim();
+      } catch {
+        // Fall through to the bounded visible answer before the malformed envelope.
+      }
+    }
+  }
+  return value.slice(0, start).trim();
 }
 
 function personalTodosForQueueItem(item: QueueItem, role: "user" | "agent") {
@@ -5088,6 +5118,11 @@ function PersonalGoalHome({
   theme: "light" | "dark";
   toggleTheme: () => void;
 }) {
+  const [runtimeAgents, setRuntimeAgents] = useState<Array<{
+    agent_id: string;
+    display_name: string;
+    available: boolean;
+  }>>([]);
   const model = buildPersonalHomeModel(payload, rows);
   const selectedGoal = model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
   const contextId = selectedGoal?.goalId ?? "manager";
@@ -5099,25 +5134,21 @@ function PersonalGoalHome({
     : model.openUserTodoCount > 0
       ? `你有 ${model.openUserTodoCount} 项需要处理，其中 ${model.blockingTodoCount} 项正在阻塞 Agent。`
       : "暂时没有需要你处理的事项，Agent 会按当前计划继续推进。";
-  const agentRows = buildAgentManagementRows(rows, payload.todo_index, payload.agent_management_projection);
-  const discoveredAgentByLabel = new Map<string, PersonalAgentOption>();
-  for (const agent of agentRows) {
-    if (/unassigned|unknown/i.test(agent.agentId)) {
-      continue;
-    }
-    const option: PersonalAgentOption = {
-      agentId: agent.agentId,
-      available: agent.status.variant !== "danger",
-      capability: personalAgentCapability(agent.agentId),
-      label: personalAgentLabel(agent.agentId),
-      statusLabel: agent.status.label,
-    };
-    const current = discoveredAgentByLabel.get(option.label);
-    if (!current || (!current.available && option.available)) {
-      discoveredAgentByLabel.set(option.label, option);
-    }
-  }
-  const discoveredAgents = Array.from(discoveredAgentByLabel.values());
+  const discoveredAgents: PersonalAgentOption[] = runtimeAgents.length > 0
+    ? runtimeAgents.map((agent) => ({
+        agentId: agent.agent_id,
+        available: agent.available,
+        capability: personalAgentCapability(agent.agent_id),
+        label: agent.display_name,
+        statusLabel: agent.available ? "可用" : "需要配置",
+      }))
+    : [{
+        agentId: "codex",
+        available: true,
+        capability: personalAgentCapability("codex"),
+        label: "Codex",
+        statusLabel: "正在检测",
+      }];
   const agentOptions = [
     ...discoveredAgents,
     {
@@ -5178,6 +5209,20 @@ function PersonalGoalHome({
     : model;
 
   useEffect(() => {
+    let cancelled = false;
+    void fetchChatCapabilities()
+      .then((capabilities) => {
+        if (!cancelled) setRuntimeAgents(capabilities.adapters ?? []);
+      })
+      .catch(() => {
+        // The Codex fallback stays visible while the local control plane reconnects.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem(personalAgentSelectionStorageKey, JSON.stringify(selectedAgents));
     } catch {
@@ -5186,11 +5231,11 @@ function PersonalGoalHome({
   }, [selectedAgents]);
 
   useEffect(() => {
-    if (!selectedGoal || selectedAgent.label !== "Codex") return;
+    if (!selectedGoal || selectedAgent.agentId === "status-only" || !selectedAgent.available) return;
     const targetContextId = contextId;
     const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
     let cancelled = false;
-    void createChatSession(selectedGoal.goalId)
+    void createChatSession(selectedGoal.goalId, selectedAgent.agentId)
       .then(async (created) => {
         if (cancelled) return;
         sessionIds.current.set(sessionKey, created.session_id);
@@ -5199,11 +5244,11 @@ function PersonalGoalHome({
         setMessagesByContext((current) => ({
           ...current,
           [targetContextId]: snapshot.messages.map((message) => ({
-            agentLabel: message.role === "user" ? undefined : "Codex",
+            agentLabel: message.role === "user" ? undefined : selectedAgent.label,
             id: managerMessageId.current++,
             lines: [],
             role: message.role === "user" ? "user" : "assistant",
-            sourceLabel: message.role === "user" ? undefined : "恢复的 Codex 会话",
+            sourceLabel: message.role === "user" ? undefined : `恢复的 ${selectedAgent.label} 会话`,
             text: message.text,
           })),
         }));
@@ -5330,17 +5375,6 @@ function PersonalGoalHome({
       return;
     }
 
-    if (selectedRoute.label !== "Codex") {
-      appendManagerAssistantMessage(targetContextId, {
-        agentLabel: selectedRoute.label,
-        lines: ["当前本地 Chat 后端已接通 Codex。你可以切回 Codex，或使用仅查状态。"],
-        sourceLabel: "LoopX Agent 路由",
-        text: `${selectedRoute.label} 已被发现，但这个 Chat 适配器当前不可用。`,
-      });
-      setSendingContextId(null);
-      return;
-    }
-
     const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
     let streamingMessageId: number | null = null;
     try {
@@ -5349,7 +5383,7 @@ function PersonalGoalHome({
         const mode = newSessionRequired.current.has(sessionKey) ? "new" : "resume_latest";
         const session = await createChatSession(
           targetGoal.goalId,
-          "codex",
+          selectedRoute.agentId,
           mode,
           selectedGoal ? "goal" : "manager",
         );
@@ -5359,12 +5393,14 @@ function PersonalGoalHome({
       }
       let streamedText = "";
       streamingMessageId = appendManagerAssistantMessage(targetContextId, {
-        agentLabel: "Codex",
+        activity: ["正在连接 Agent"],
+        agentLabel: selectedRoute.label,
         lines: [],
+        pending: true,
         sourceLabel: selectedGoal
-          ? `Codex 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`
-          : "Codex 管家 · 跨 Goal 只读",
-        text: "Codex 正在分析…",
+          ? `${selectedRoute.label} 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`
+          : `${selectedRoute.label} 管家 · 跨 Goal 只读`,
+        text: "",
       });
       const streamed = await sendChatTurnStreaming(sessionId, question, {
         signal: (() => {
@@ -5380,6 +5416,20 @@ function PersonalGoalHome({
             });
           }
         },
+        onActivity: (label) => {
+          if (streamingMessageId === null) return;
+          setMessagesByContext((messages) => ({
+            ...messages,
+            [targetContextId]: (messages[targetContextId] ?? []).map((message) =>
+              message.id !== streamingMessageId
+                ? message
+                : {
+                    ...message,
+                    activity: [...new Set([...(message.activity ?? []), label])].slice(-6),
+                  }
+            ),
+          }));
+        },
         onPhase: (_phase, turnId) => {
           activeTurnIds.current.set(targetContextId, turnId);
         },
@@ -5387,7 +5437,8 @@ function PersonalGoalHome({
       const response = streamed.response;
       updateManagerAssistantMessage(targetContextId, streamingMessageId, {
         lines: response.gate ? [response.gate.summary, response.gate.next_action].filter(Boolean).slice(0, 2) : [],
-        text: streamedText.trim() || response.message || "Codex 已完成分析。",
+        pending: false,
+        text: streamedText.trim() || response.message || `${selectedRoute.label} 已完成分析。`,
       });
       if (response.proposals.length > 0) {
         const cards = response.proposals.map((proposal) => ({
@@ -5418,12 +5469,13 @@ function PersonalGoalHome({
         ? String((gate as { summary?: unknown }).summary ?? "")
         : "";
       const failureMessage = {
-        agentLabel: "Codex",
+        agentLabel: selectedRoute.label,
         lines: gateSummary ? [gateSummary] : [],
+        pending: false,
         sourceLabel: "LoopX Chat 本地后端",
         text: payloadError?.error_code === "resume_failed"
-          ? "原 Codex 会话无法恢复。请再次发送这条消息，LoopX 会为当前 Goal 新建会话。"
-          : error instanceof Error ? error.message : "Codex 会话暂时不可用。",
+          ? `原 ${selectedRoute.label} 会话无法恢复。请再次发送这条消息，LoopX 会为当前 Goal 新建会话。`
+          : error instanceof Error ? error.message : `${selectedRoute.label} 会话暂时不可用。`,
       };
       if (streamingMessageId === null) {
         appendManagerAssistantMessage(targetContextId, failureMessage);
@@ -5698,7 +5750,7 @@ function PersonalGoalHome({
                           {agent.agentId === selectedAgent.agentId ? <CheckCircle2 className="h-4 w-4" /> : null}
                         </button>
                       ))}
-                      <div className="personal-agent-menu-footer">来自 LoopX Agent 状态投影；不可用 Agent 暂不能选择</div>
+                      <div className="personal-agent-menu-footer">来自本地 Agent Endpoint；密钥仅由后端环境读取</div>
                     </div>
                   </>
                 ) : null}
@@ -5837,8 +5889,15 @@ function PersonalGoalHome({
               {contextMessages.map((message) => (
                 <article className={cn("personal-manager-message", `is-${message.role}`)} key={message.id}>
                   {message.role === "assistant" ? <span className="personal-message-author">{message.agentLabel ?? selectedAgent.label}</span> : null}
-                  <p>{message.text}</p>
+                  {message.text ? <div className="personal-message-answer">{personalVisibleAgentMessage(message.text)}</div> : null}
+                  {message.pending && !message.text ? <p className="personal-message-pending">Agent 正在处理…</p> : null}
                   {message.lines.length > 0 ? <ul>{message.lines.map((line) => <li key={line}>{line}</li>)}</ul> : null}
+                  {message.role === "assistant" && (message.activity?.length ?? 0) > 0 ? (
+                    <details className="personal-message-activity" open={message.pending}>
+                      <summary>{message.pending ? "执行过程" : `查看执行过程（${message.activity?.length ?? 0} 步）`}</summary>
+                      <ol>{message.activity?.map((item) => <li key={item}>{item}</li>)}</ol>
+                    </details>
+                  ) : null}
                   {message.sourceLabel ? <small>{message.sourceLabel}</small> : null}
                 </article>
               ))}
