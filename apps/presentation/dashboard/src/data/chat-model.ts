@@ -60,6 +60,27 @@ export type ChatCapabilities = {
   }>;
 };
 
+export type ChatRouteCandidate = {
+  agentId: string;
+  available: boolean;
+};
+
+export function selectAvailableChatAgent<T extends ChatRouteCandidate>(
+  options: T[],
+  preferredAgentId: string | undefined,
+  defaultAgentId: string,
+) {
+  const selected = options.find((option) =>
+    option.agentId === preferredAgentId && option.available
+  ) ?? options.find((option) =>
+    option.agentId === defaultAgentId && option.available
+  ) ?? options.find((option) => option.available);
+  if (!selected) {
+    throw new Error("Chat requires at least one available route");
+  }
+  return selected;
+}
+
 export type TodoProposal = {
   kind: "todo";
   text: string;

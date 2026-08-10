@@ -93,6 +93,7 @@ import {
   interruptChatTurn,
   previewTodo,
   sendChatTurnStreaming,
+  selectAvailableChatAgent,
   sessionInvalidatedByPayload,
   todoNoWriteReceiptFromPayload,
   todoReceiptLabel,
@@ -5164,9 +5165,7 @@ function PersonalGoalHome({
     ?? "status-only";
   const [selectedAgents, setSelectedAgents] = useState<Record<string, string>>(readPersonalAgentSelections);
   const selectedAgentId = selectedAgents[contextId] ?? defaultAgentId;
-  const selectedAgent = agentOptions.find((agent) => agent.agentId === selectedAgentId)
-    ?? agentOptions.find((agent) => agent.agentId === defaultAgentId)
-    ?? agentOptions[agentOptions.length - 1];
+  const selectedAgent = selectAvailableChatAgent(agentOptions, selectedAgentId, defaultAgentId);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"chat" | "goals">("chat");

@@ -31,12 +31,49 @@ import {
   type TodoProposal,
   type TodoWriteReceipt,
 } from "../src/data/chat-model.js";
+import * as chatModel from "../src/data/chat-model.js";
 
 function check(condition: boolean, message: string) {
   if (!condition) {
     throw new Error(message);
   }
 }
+
+type ChatRouteCandidate = {
+  agentId: string;
+  available: boolean;
+};
+
+const capabilityAwareRoute = chatModel as unknown as {
+  selectAvailableChatAgent?: (
+    options: ChatRouteCandidate[],
+    preferredAgentId: string | undefined,
+    defaultAgentId: string,
+  ) => ChatRouteCandidate;
+};
+
+check(
+  typeof capabilityAwareRoute.selectAvailableChatAgent === "function",
+  "Chat routing should expose stale-selection fallback",
+);
+
+const routeOptions: ChatRouteCandidate[] = [
+  { agentId: "codex", available: true },
+  { agentId: "registered-fixer", available: false },
+  { agentId: "status-only", available: true },
+];
+check(
+  capabilityAwareRoute.selectAvailableChatAgent!(routeOptions, "registered-fixer", "codex").agentId === "codex",
+  "a persisted unavailable Agent should fall back to Codex",
+);
+check(
+  capabilityAwareRoute.selectAvailableChatAgent!(
+    routeOptions.map((option) => option.agentId === "codex" ? { ...option, available: false } : option),
+    "registered-fixer",
+    "status-only",
+  ).agentId === "status-only",
+  "Chat should fall back to status-only when no model adapter is available",
+);
 
 const fixture: ChatStatus = {
   ok: true,

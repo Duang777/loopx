@@ -154,6 +154,7 @@ excludes(dashboardSource, "selectedAgents[contextId] ?? goalAgentId", "Goal owne
 includes(dashboardSource, "fetchChatCapabilities()", "runtime Agent endpoint discovery");
 includes(dashboardSource, "capabilities.adapters ?? []", "runtime Adapter capability wiring");
 includes(dashboardSource, 'statusLabel: agent.available ? "可用" : "需要配置"', "unavailable endpoint guidance");
+includes(dashboardSource, "selectAvailableChatAgent(", "stale Agent selection fallback");
 includes(dashboardSource, "/codex/i.test(agent.agentId) && agent.status.variant !== \"danger\"", "Goal Codex preference");
 includes(dashboardSource, 'personalAgentSelectionStorageKey = "loopx.personal-agent-selection.v1"', "per-Chat Agent persistence key");
 includes(dashboardSource, 'useState<Record<string, string>>(readPersonalAgentSelections)', "persisted Agent selection initialization");
