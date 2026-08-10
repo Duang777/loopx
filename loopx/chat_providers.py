@@ -34,6 +34,7 @@ class ClaudeCodeAdapter:
     work_dir: Path
     session_id: str
     tool_scope: str = "read_only"
+    context_summary: str = ""
     resumed: bool = False
     current_process: subprocess.Popen[str] | None = field(default=None, repr=False)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -50,6 +51,7 @@ class ClaudeCodeAdapter:
         work_dir: Path,
         resume_thread_id: str | None = None,
         tool_scope: str = "read_only",
+        context_summary: str = "",
     ) -> "ClaudeCodeAdapter":
         resolved = shutil.which(claude_bin)
         if not resolved:
@@ -64,6 +66,7 @@ class ClaudeCodeAdapter:
             work_dir=work_dir.resolve(),
             session_id=resume_thread_id or str(uuid.uuid4()),
             tool_scope=tool_scope,
+            context_summary=context_summary,
             resumed=bool(resume_thread_id),
         )
 
@@ -83,6 +86,7 @@ class ClaudeCodeAdapter:
             "--print",
             "--output-format",
             "stream-json",
+            "--verbose",
             "--include-partial-messages",
             "--permission-mode",
             "plan",
@@ -94,7 +98,7 @@ class ClaudeCodeAdapter:
             command.extend(["--resume", self.session_id])
         else:
             command.extend(["--session-id", self.session_id])
-        command.append(_turn_prompt(message))
+        command.append(_turn_prompt(message, context_summary=self.context_summary))
         event_sink("turn.started", {"upstream_turn_id": self.session_id})
         event_sink("agent.phase", {"label": "正在连接 Claude Code"})
         try:

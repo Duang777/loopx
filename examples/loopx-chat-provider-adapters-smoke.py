@@ -23,6 +23,7 @@ import sys
 tools_at = sys.argv.index("--tools")
 assert sys.argv[tools_at + 1] == "Read,Glob,Grep", sys.argv
 assert "Bash" not in sys.argv and "Edit" not in sys.argv and "Write" not in sys.argv, sys.argv
+assert "--verbose" in sys.argv, sys.argv
 
 answer = "已确认。请完成两项操作。\n1. 更新 MR 描述\n2. 指定 reviewer"
 envelope = '<loopx-review-json>' + json.dumps({

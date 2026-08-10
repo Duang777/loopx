@@ -138,6 +138,7 @@ class ChatSessionStore:
         agent_id: str,
         adapter_kind: str,
         upstream_thread_id: str,
+        upstream_mode: str = "default",
         channel_id: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
@@ -153,6 +154,7 @@ class ChatSessionStore:
             "agent_id": _opaque_id(agent_id, field="agent_id"),
             "adapter_kind": _opaque_id(adapter_kind, field="adapter_kind"),
             "upstream_thread_id": _upstream_id(upstream_thread_id),
+            "upstream_mode": _opaque_id(upstream_mode, field="upstream_mode"),
             "channel_id": _opaque_id(channel_id or f"goal.{goal_id}", field="channel_id"),
             "status": "ready",
             "active_turn_id": None,
@@ -175,12 +177,21 @@ class ChatSessionStore:
             payload = self.load_session(session_id)
             if payload is None:
                 raise KeyError("chat session was not found")
-            allowed = {"status", "active_turn_id", "last_activity_at", "last_error_code", "upstream_thread_id"}
+            allowed = {
+                "status",
+                "active_turn_id",
+                "last_activity_at",
+                "last_error_code",
+                "upstream_thread_id",
+                "upstream_mode",
+            }
             unknown = set(changes) - allowed
             if unknown:
                 raise ValueError(f"unsupported chat session fields: {sorted(unknown)}")
             if "upstream_thread_id" in changes:
                 changes["upstream_thread_id"] = _upstream_id(changes["upstream_thread_id"])
+            if "upstream_mode" in changes:
+                changes["upstream_mode"] = _opaque_id(changes["upstream_mode"], field="upstream_mode")
             payload.update(changes)
             payload["updated_at"] = utc_now()
             _atomic_write_json(path, payload, preserve_mode=True)

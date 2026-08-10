@@ -175,11 +175,20 @@ class ChatRuntimeController:
         history: list[dict[str, str]] | None = None,
     ) -> ChatRuntimeAdapter:
         if agent_id == "codex":
+            history_context = ""
+            if history:
+                history_lines = [
+                    f"{item.get('role', 'user')}: {str(item.get('content') or '').strip()}"
+                    for item in history[-12:]
+                    if str(item.get("content") or "").strip()
+                ]
+                if history_lines:
+                    history_context = "\nPrevious visible Chat messages:\n" + "\n".join(history_lines)
             return CodexAppServerAdapter.start(
                 codex_bin=self.codex_bin,
                 work_dir=work_dir,
                 goal_id=goal_id,
-                objective=objective,
+                objective=f"{objective}{history_context}",
                 resume_thread_id=resume_thread_id,
                 startup_timeout_sec=self.startup_timeout_sec,
                 idle_timeout_sec=self.idle_timeout_sec,
@@ -191,6 +200,7 @@ class ChatRuntimeController:
                 work_dir=work_dir,
                 resume_thread_id=resume_thread_id,
                 tool_scope="read_only",
+                context_summary=f"{goal_id}: {objective}".strip(),
             )
         if agent_id in {"anthropic-api", "openai-api"}:
             return direct_model_from_environment(
@@ -256,6 +266,7 @@ class ChatRuntimeController:
                 agent_id=agent_id,
                 adapter_kind=str(capability["adapter_kind"]),
                 upstream_thread_id=adapter.upstream_thread_id,
+                upstream_mode="chat" if agent_id == "codex" else "default",
                 channel_id=selected_channel,
             )
             with self.lock:
@@ -297,14 +308,26 @@ class ChatRuntimeController:
                     payload={"error_code": "server_restarted"},
                 )
         try:
+            stored_messages = self.store.messages(session_id)
             history = [
                 {
                     "role": "assistant" if item.get("role") == "agent" else "user",
                     "content": str(item.get("text") or ""),
                 }
-                for item in self.store.messages(session_id)
+                for item in stored_messages
                 if item.get("role") in {"user", "agent"}
             ]
+            legacy_codex_goal_thread = (
+                session.get("agent_id") == "codex"
+                and session.get("upstream_mode") != "chat"
+            )
+            retry_failed_claude_session = (
+                session.get("agent_id") == "claude-code"
+                and (
+                    session.get("last_error_code") == "provider_unavailable"
+                    or bool(stored_messages and stored_messages[-1].get("role") == "error")
+                )
+            )
             adapter = self._start_adapter(
                 agent_id=str(session["agent_id"]),
                 work_dir=work_dir,
@@ -314,8 +337,17 @@ class ChatRuntimeController:
                     else str(session["goal_id"])
                 ),
                 objective=objective,
-                resume_thread_id=str(session["upstream_thread_id"]),
-                history=history,
+                resume_thread_id=(
+                    None
+                    if legacy_codex_goal_thread or retry_failed_claude_session
+                    else str(session["upstream_thread_id"])
+                ),
+                history=(
+                    history
+                    if legacy_codex_goal_thread or retry_failed_claude_session
+                    or session.get("agent_id") in {"anthropic-api", "openai-api"}
+                    else None
+                ),
             )
         except Exception as exc:
             self.store.update_session(
@@ -336,6 +368,12 @@ class ChatRuntimeController:
             session_id,
             status="ready",
             active_turn_id=None,
+            upstream_thread_id=adapter.upstream_thread_id,
+            upstream_mode=(
+                "chat"
+                if session.get("agent_id") == "codex"
+                else str(session.get("upstream_mode") or "default")
+            ),
             last_activity_at=utc_now(),
             last_error_code=None,
         )
@@ -523,6 +561,12 @@ class ChatRuntimeController:
             last_activity_at=completed,
         )
         self.store.append_event(session_id, turn_id, kind="turn.interrupted", payload={})
+        self.store.append_message(
+            session_id,
+            role="agent",
+            text="已中断。你可以在当前会话继续发送消息。",
+            turn_id=turn_id,
+        )
         self.store.update_session(session_id, status="ready", active_turn_id=None, last_activity_at=completed)
         return updated
 

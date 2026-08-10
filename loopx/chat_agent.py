@@ -102,7 +102,7 @@ def _agent_item_text(message: dict[str, Any]) -> str:
     return str(item.get("text") or "")
 
 
-def _turn_prompt(user_message: str) -> str:
+def _turn_prompt(user_message: str, *, context_summary: str = "") -> str:
     envelope = {
         "schema_version": CHAT_AGENT_RESPONSE_SCHEMA_VERSION,
         "message": "Short answer for the operator.",
@@ -118,7 +118,11 @@ def _turn_prompt(user_message: str) -> str:
     }
     return (
         "You are the read-only planning agent inside LoopX Chat. Work only from the project root. "
-        "Inspect the repository and LoopX public-safe status with read-only commands when useful. "
+        "The operator message below is the current task. Answer it directly and do not replace it "
+        "with an autonomous project task. Use read-only repository commands only when the operator "
+        "explicitly asks for repository facts or when evidence is required to answer accurately. "
+        "Do not use tools for ordinary conversation, exact-wording requests, or status questions "
+        "that can be answered from the supplied LoopX context. "
         "Do not edit files, mutate LoopX state, create commits, send messages, or request elevated access. "
         "If you encounter an identity, approval, or host-tool gate, stop and describe it in gate. "
         "Reply in Chinese unless the operator asks for another language. Keep proposals bounded and reviewable. "
@@ -128,7 +132,8 @@ def _turn_prompt(user_message: str) -> str:
         "Then append exactly one machine-readable envelope whose message field repeats that complete answer. "
         "Do not write anything after the closing tag. Use these tags and shape:\n"
         f"{CHAT_REVIEW_OPEN_TAG}{json.dumps(envelope, ensure_ascii=False)}{CHAT_REVIEW_CLOSE_TAG}\n\n"
-        f"Operator user message:\n{user_message.strip()}"
+        + (f"LoopX context (supporting context only):\n{context_summary.strip()}\n\n" if context_summary.strip() else "")
+        + f"Operator user message:\n{user_message.strip()}"
     )
 
 
@@ -138,6 +143,7 @@ class CodexChatAgentSession:
     messages: "queue.Queue[dict[str, Any] | Exception]"
     thread_id: str
     work_dir: Path
+    context_summary: str = ""
     response_timeout_sec: float = 30.0
     idle_timeout_sec: float = 180.0
     hard_timeout_sec: float = 900.0
@@ -172,7 +178,7 @@ class CodexChatAgentSession:
         root = work_dir.resolve()
         try:
             process = subprocess.Popen(
-                [resolved, "app-server", "--listen", "stdio://", "--enable", "goals"],
+                [resolved, "app-server", "--listen", "stdio://"],
                 cwd=str(root),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -198,6 +204,7 @@ class CodexChatAgentSession:
             messages=messages,
             thread_id="",
             work_dir=root,
+            context_summary=f"{goal_id}: {objective}".strip(),
             response_timeout_sec=response_timeout_sec,
             idle_timeout_sec=idle_timeout_sec,
             hard_timeout_sec=hard_timeout_sec,
@@ -231,25 +238,11 @@ class CodexChatAgentSession:
                 raise session._runtime_error("Codex app-server did not return a thread id.")
             if resume_thread_id and session.thread_id != resume_thread_id:
                 raise session._runtime_error("Codex app-server resumed an unexpected thread.")
-            session._request(
-                "thread/goal/set",
-                {
-                    "threadId": session.thread_id,
-                    "objective": f"{goal_id}: {objective}",
-                    "status": "active",
-                },
-                request_id=3,
-            )
-            goal_result = session._request(
-                "thread/goal/get",
-                {"threadId": session.thread_id},
-                request_id=4,
-            )
-            goal = goal_result.get("goal")
-            status = str(goal.get("status") or "") if isinstance(goal, dict) else ""
-            if status != "active":
-                raise session._runtime_error("Codex did not confirm an active Goal session.")
-            session.next_request_id = 5
+            # Chat keeps its Goal binding in LoopX's local Session state and supplies
+            # that public-safe context in each Turn prompt. Codex Goal mode is reserved
+            # for autonomous execution; enabling it here causes conversational messages
+            # to be treated as continuation ticks instead of the current user task.
+            session.next_request_id = 3
             return session
         except Exception:
             session.close()
@@ -351,7 +344,12 @@ class CodexChatAgentSession:
             "turn/start",
             {
                 "threadId": self.thread_id,
-                "input": [{"type": "text", "text": _turn_prompt(text)}],
+                "input": [
+                    {
+                        "type": "text",
+                        "text": _turn_prompt(text, context_summary=self.context_summary),
+                    }
+                ],
                 "cwd": str(self.work_dir),
                 "approvalPolicy": "never",
             },

@@ -26,7 +26,7 @@ import sys
 import time
 
 turn_count = 0
-goal_status = "inactive"
+assert "goals" not in sys.argv, sys.argv
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
@@ -44,16 +44,21 @@ for line in sys.stdin:
             }), flush=True)
             continue
         result = {"thread": {"id": "thread-loopx-chat"}}
-    elif method == "thread/goal/set":
-        goal_status = "active"
-        result = {"goal": {"threadId": "thread-loopx-chat", "status": "active"}}
-    elif method == "thread/goal/get":
-        result = {"goal": {"threadId": "thread-loopx-chat", "status": goal_status}}
+    elif method in {"thread/goal/set", "thread/goal/get"}:
+        print(json.dumps({
+            "id": request_id,
+            "error": {"code": -32601, "message": "Goal mode must not be used for Chat"},
+        }), flush=True)
+        continue
     elif method == "turn/start":
         turn_count += 1
         params = message.get("params", {})
         prompt = params.get("input", [{}])[0].get("text", "")
-        if "<loopx-review-json>" not in prompt or "user message" not in prompt:
+        if (
+            "<loopx-review-json>" not in prompt
+            or "user message" not in prompt
+            or "loopx-chat-smoke: Keep the review loop bounded." not in prompt
+        ):
             print(json.dumps({
                 "id": request_id,
                 "error": {"code": -32602, "message": "missing review contract"},

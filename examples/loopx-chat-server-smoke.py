@@ -38,7 +38,11 @@ for line in sys.stdin:
     elif method in {"thread/start", "thread/resume"}:
         result = {"thread": {"id": "thread-chat-server"}}
     elif method in {"thread/goal/set", "thread/goal/get"}:
-        result = {"goal": {"threadId": "thread-chat-server", "status": "active"}}
+        print(json.dumps({
+            "id": request_id,
+            "error": {"code": -32601, "message": "Goal mode must not be used for Chat"},
+        }), flush=True)
+        continue
     elif method == "turn/start":
         turn_id = "turn-chat-server"
         force_failure = "force session failure" in json.dumps(message.get("params") or {})

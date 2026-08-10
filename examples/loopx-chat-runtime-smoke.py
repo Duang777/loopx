@@ -23,7 +23,7 @@ import json
 import sys
 
 active_turn = None
-goal_status = "inactive"
+assert "goals" not in sys.argv, sys.argv
 for line in sys.stdin:
     request = json.loads(line)
     method = request.get("method")
@@ -34,11 +34,12 @@ for line in sys.stdin:
         result = {"serverInfo": {"name": "fake-runtime-codex"}}
     elif method in {"thread/start", "thread/resume"}:
         result = {"thread": {"id": "durable-thread"}}
-    elif method == "thread/goal/set":
-        goal_status = "active"
-        result = {"goal": {"threadId": "durable-thread", "status": goal_status}}
-    elif method == "thread/goal/get":
-        result = {"goal": {"threadId": "durable-thread", "status": goal_status}}
+    elif method in {"thread/goal/set", "thread/goal/get"}:
+        print(json.dumps({
+            "id": request_id,
+            "error": {"code": -32601, "message": "Goal mode must not be used for Chat"},
+        }), flush=True)
+        continue
     elif method == "turn/start":
         active_turn = "durable-turn"
         print(json.dumps({"method": "turn/started", "params": {"threadId": "durable-thread", "turn": {"id": active_turn}}}), flush=True)
@@ -150,6 +151,7 @@ def main() -> None:
         time.sleep(0.1)
         assert store.load_turn(session_id, slow["turn_id"])["status"] == "interrupted"
         assert store.load_session(session_id)["status"] == "ready"
+        assert store.messages(session_id)[-1]["text"] == "已中断。你可以在当前会话继续发送消息。"
         second.close()
 
     print("loopx-chat-runtime-smoke: ok")
