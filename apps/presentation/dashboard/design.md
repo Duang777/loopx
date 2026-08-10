@@ -297,6 +297,34 @@ Agent-to-client permission requests. Agent-owned tool activity appears as a
 compact phase label; thought chunks and raw tool output never enter the visible
 conversation.
 
+### Session continuity and visible streaming
+
+Each Chat route owns a LoopX `session_id`. The local server binds that public
+identifier to the upstream Agent session and persists visible messages, the
+active Turn, and ordered public-safe events. The browser never receives the
+upstream thread identifier.
+
+While an Agent is running, the visible response streams by complete line or
+sentence. The response envelope used for Todo and gate proposals remains in
+the backend parser and never enters the conversation. Local absolute paths,
+thought chunks, raw tool output, and credentials are excluded from streamed
+events and durable visible messages.
+
+Refresh and reconnect follow this contract:
+
+1. Load the latest Session for the selected `(Goal, Agent, channel)` route.
+2. Restore visible messages from the local Session snapshot.
+3. When `active_turn_id` exists, reconnect to that Turn's event stream.
+4. Resume after the latest received event id, without restarting the Turn.
+5. Retry a broken SSE connection with bounded backoff.
+6. After automatic retries are exhausted, keep the Session and show
+   `Continue connecting`; the user can reattach without resending the message.
+
+An SSE disconnect never interrupts the upstream Turn. Sending the same
+`client_turn_id` returns the existing Turn, so browser retries cannot dispatch
+duplicate work. A failed upstream resume still leaves local visible history
+available and offers an explicit new-Session path.
+
 ### Owner-local Endpoint binding
 
 Custom launch commands, remote connection details, workspace mappings, and
