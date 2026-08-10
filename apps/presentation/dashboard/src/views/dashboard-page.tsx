@@ -203,7 +203,7 @@ type DataSource =
   | { kind: "file"; label: string };
 
 const defaultLiveStatusUrl = "http://127.0.0.1:8765/status.json";
-const defaultGlobalStatusUrl = "http://127.0.0.1:8766/status.json";
+const defaultGlobalStatusUrl = import.meta.env.DEV ? "/status.json" : "http://127.0.0.1:8766/status.json";
 const expectedStatusContractSchemaVersion = 2;
 const fallbackStatusContractReloadHint = "scripts/macos-dashboard-launchagent.sh restart";
 const rewardOptions = ["positive", "mixed", "neutral", "negative"] as const;
@@ -5347,7 +5347,12 @@ function PersonalGoalHome({
       let sessionId = sessionIds.current.get(sessionKey);
       if (!sessionId) {
         const mode = newSessionRequired.current.has(sessionKey) ? "new" : "resume_latest";
-        const session = await createChatSession(targetGoal.goalId, "codex", mode);
+        const session = await createChatSession(
+          targetGoal.goalId,
+          "codex",
+          mode,
+          selectedGoal ? "goal" : "manager",
+        );
         sessionId = session.session_id;
         sessionIds.current.set(sessionKey, sessionId);
         newSessionRequired.current.delete(sessionKey);
@@ -5356,7 +5361,9 @@ function PersonalGoalHome({
       streamingMessageId = appendManagerAssistantMessage(targetContextId, {
         agentLabel: "Codex",
         lines: [],
-        sourceLabel: `Codex 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`,
+        sourceLabel: selectedGoal
+          ? `Codex 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`
+          : "Codex 管家 · 跨 Goal 只读",
         text: "Codex 正在分析…",
       });
       const streamed = await sendChatTurnStreaming(sessionId, question, {
@@ -8107,6 +8114,11 @@ function StatusRequestView({
   theme: "light" | "dark";
   toggleTheme: () => void;
 }) {
+  const statusServiceUnavailable = Boolean(
+    error
+    && /failed to fetch|networkerror|load failed/i.test(error)
+    && requestedUrl.includes("status.json"),
+  );
   return (
     <div className={theme === "dark" ? "dark" : ""}>
       <main className="min-h-screen bg-[#f6f7f9] text-slate-950 dark:bg-[#09090b] dark:text-zinc-50">
@@ -8133,7 +8145,16 @@ function StatusRequestView({
                 </p>
                 {error ? (
                   <>
-                    <p className="mt-2 break-words text-sm leading-6 text-slate-500 dark:text-zinc-400">{error}</p>
+                    <p className="mt-2 break-words text-sm leading-6 text-slate-500 dark:text-zinc-400">
+                      {statusServiceUnavailable
+                        ? "LoopX 状态服务未连接。请从 dashboard 目录运行 npm run dev；它会同时启动 5173、8766 和 8767。"
+                        : error}
+                    </p>
+                    {statusServiceUnavailable ? (
+                      <p className="mt-2 text-xs leading-5 text-slate-400 dark:text-zinc-500">
+                        远程 SSH 开发只需转发 5173；状态请求会通过 Vite 转发到远程 8766。
+                      </p>
+                    ) : null}
                     <div className="mt-4 flex flex-wrap justify-center gap-2">
                       <Button disabled={isLoading} onClick={onRetry}>
                         <RefreshCw className="h-4 w-4" />

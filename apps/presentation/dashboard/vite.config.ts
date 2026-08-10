@@ -8,6 +8,10 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     proxy: {
+      "/status.json": {
+        target: "http://127.0.0.1:8766",
+        changeOrigin: false,
+      },
       "/api/chat": {
         target: "http://127.0.0.1:8767",
         changeOrigin: false,

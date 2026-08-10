@@ -235,6 +235,7 @@ export async function createChatSession(
   goalId: string,
   agentId = "codex",
   mode: "resume_latest" | "new" = "resume_latest",
+  contextKind: "goal" | "manager" = "goal",
 ) {
   return requestJson<{
     agent_id: string;
@@ -244,7 +245,7 @@ export async function createChatSession(
     session_id: string;
   }>("/api/chat/sessions", {
     method: "POST",
-    body: JSON.stringify({ goal_id: goalId, agent_id: agentId, mode }),
+    body: JSON.stringify({ goal_id: goalId, agent_id: agentId, mode, context_kind: contextKind }),
   });
 }
 
@@ -264,6 +265,7 @@ export type ChatSessionSnapshot = {
     goal_id: string;
     agent_id: string;
     adapter_kind: string;
+    channel_id?: string;
     status: string;
     active_turn_id: string | null;
     last_error_code: string | null;

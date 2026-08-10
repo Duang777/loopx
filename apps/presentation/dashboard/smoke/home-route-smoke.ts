@@ -29,6 +29,8 @@ const stylesSource = readFileSync("src/styles.css", "utf8");
 const readmeSource = readFileSync("README.md", "utf8");
 const contractSource = readFileSync("../../../docs/status-data-contract.md", "utf8");
 const packageSource = readFileSync("package.json", "utf8");
+const viteSource = readFileSync("vite.config.ts", "utf8");
+const dashboardDevSource = readFileSync("../../../scripts/dashboard-dev.sh", "utf8");
 const exampleSource = readFileSync("../../../examples/status.example.json", "utf8");
 const designSource = readFileSync("design.md", "utf8");
 
@@ -39,7 +41,22 @@ includes(routerSource, 'todoRole: z.enum(["all", "user", "agent"]).optional().de
 includes(routerSource, 'todoStatus: z.enum(["all", "open", "done", "blocked", "deferred"]).optional().default("all")', "todo status search param");
 excludes(routerSource, 'view: z.enum(["ops", "share"]).optional().default("share")', "share default route mode");
 
-includes(dashboardSource, 'const defaultGlobalStatusUrl = "http://127.0.0.1:8766/status.json";', "global default status URL");
+includes(
+  dashboardSource,
+  'const defaultGlobalStatusUrl = import.meta.env.DEV ? "/status.json" : "http://127.0.0.1:8766/status.json";',
+  "environment-aware default status URL",
+);
+includes(viteSource, '"/status.json"', "status service Vite proxy");
+includes(packageSource, '"dev": "bash ../../../scripts/dashboard-dev.sh"', "complete dashboard dev launcher");
+includes(dashboardDevSource, "serve-status", "dashboard launcher status service");
+includes(dashboardDevSource, "loopx.cli chat", "dashboard launcher Chat service");
+includes(dashboardDevSource, "sys.version_info < (3, 11)", "dashboard launcher Python version guard");
+includes(dashboardDevSource, "wait_for_service", "dashboard launcher readiness gate");
+assert(
+  dashboardDevSource.indexOf('wait_for_service "status"')
+    < dashboardDevSource.lastIndexOf("npm run dev:web"),
+  "dashboard launcher should wait for status before Vite",
+);
 includes(dashboardSource, 'return view === "ops" ? "ops" : undefined;', "canonical URL omits non-ops view");
 includes(dashboardSource, 'if (search.view !== "ops" && source.kind === "example") {', "non-ops loads global status source once");
 includes(
@@ -110,10 +127,13 @@ includes(dashboardSource, 'agentId: "status-only"', "deterministic status-only A
 includes(dashboardSource, 'managerQuickPrompts.includes(question)', "fixed quick questions use deterministic projection");
 includes(dashboardSource, '"LoopX 状态投影 · 仅查状态"', "status-only answer attribution");
 includes(dashboardSource, '"仅查状态"', "deterministic answer author attribution");
-includes(dashboardSource, 'createChatSession(targetGoal.goalId, "codex", mode)', "Codex Goal Chat session creation");
+includes(dashboardSource, 'selectedGoal ? "goal" : "manager"', "manager and Goal Chat session isolation");
+includes(dashboardSource, '"Codex 管家 · 跨 Goal 只读"', "global manager source label");
+includes(dashboardSource, 'createChatSession(', "Codex Goal Chat session creation");
 includes(dashboardSource, "sendChatTurnStreaming(sessionId, question", "streaming Codex Goal Chat turn");
 includes(dashboardSource, "interruptChatTurn", "interruptible Codex Goal Chat turn");
 includes(dashboardSource, 'error.payload.error_code === "resume_failed"', "Codex resume failure route");
+includes(dashboardSource, "LoopX 状态服务未连接", "missing status service guidance");
 includes(dashboardSource, "previewTodo(card.goalId, card.proposal.text)", "Todo dry-run preview");
 includes(dashboardSource, "applyTodo(card.goalId, card.proposal.text, card.previewId)", "Todo preview-locked apply");
 includes(dashboardSource, 'state: "rejected" | "cancelled"', "zero-write reject and cancel decisions");
