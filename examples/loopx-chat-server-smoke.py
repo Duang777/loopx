@@ -304,6 +304,23 @@ def main() -> None:
             assert code == 201 and created["session_id"], created
             session_id = created["session_id"]
 
+            code, manager_created = request_json(
+                f"{base_url}/api/chat/sessions",
+                method="POST",
+                body={"goal_id": GOAL_ID, "context_kind": "manager"},
+            )
+            assert code == 201, manager_created
+            assert manager_created["session"]["channel_id"] == "manager", manager_created
+            assert manager_created["session_id"] != session_id, manager_created
+            code, manager_resumed = request_json(
+                f"{base_url}/api/chat/sessions",
+                method="POST",
+                body={"goal_id": SECOND_GOAL_ID, "context_kind": "manager"},
+            )
+            assert code == 200 and manager_resumed["resumed"] is True, manager_resumed
+            assert manager_resumed["session_id"] == manager_created["session_id"], manager_resumed
+            assert manager_resumed["goal_id"] == GOAL_ID, manager_resumed
+
             code, turn = request_json(
                 f"{base_url}/api/chat/sessions/{session_id}/turns",
                 method="POST",

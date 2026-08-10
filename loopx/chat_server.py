@@ -32,6 +32,13 @@ DEFAULT_CHAT_PATH = "/chat/"
 DEFAULT_CHAT_STATUS_PATH = "/status.json"
 CHAT_CAPABILITIES_PATH = "/api/chat/capabilities"
 CHAT_SESSIONS_PATH = "/api/chat/sessions"
+MANAGER_AGENT_GOAL_ID = "loopx-manager"
+MANAGER_AGENT_OBJECTIVE = (
+    "Serve as the user's read-only LoopX Goal manager. Answer only the current user message "
+    "in concise Chinese. Summarize and clarify Goal state; do not continue a project objective, "
+    "inspect repositories, modify files, run commands, or create Todo items. When an action or "
+    "Todo write is needed, ask the user to open the relevant Goal first."
+)
 CHAT_TODO_DRY_RUN_PATH = "/api/chat/todo/dry-run"
 CHAT_TODO_APPLY_PATH = "/api/chat/todo/apply"
 
@@ -411,7 +418,7 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
     def _create_session(self) -> None:
         try:
             body = self._read_json()
-            unknown = set(body) - {"goal_id", "agent_id", "mode"}
+            unknown = set(body) - {"goal_id", "agent_id", "mode", "context_kind"}
             if unknown:
                 raise ValueError("unknown session field")
             goal_id = _compact_text(body.get("goal_id"), limit=160) or self.server.selected_goal_id or ""
@@ -419,8 +426,16 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                 raise ValueError("goal_id is required when multiple Goals are available")
             agent_id = _compact_text(body.get("agent_id"), limit=80) or "codex"
             mode = _compact_text(body.get("mode"), limit=40) or "resume_latest"
+            context_kind = _compact_text(body.get("context_kind"), limit=40) or "goal"
+            if context_kind not in {"goal", "manager"}:
+                raise ValueError("context_kind must be goal or manager")
             registry, goal = self._registry_and_goal(goal_id)
             context = _goal_public_context(registry, goal)
+            runtime_objective = (
+                MANAGER_AGENT_OBJECTIVE
+                if context_kind == "manager"
+                else str(context["objective"] or context["title"])
+            )
             project = context["project"]
             if not project.is_dir():
                 raise CodexChatAgentError(
@@ -435,8 +450,10 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                 goal_id=goal_id,
                 agent_id=agent_id,
                 work_dir=project,
-                objective=str(context["objective"] or context["title"]),
+                objective=runtime_objective,
                 mode=mode,
+                channel_id="manager" if context_kind == "manager" else f"goal.{goal_id}",
+                agent_goal_id=MANAGER_AGENT_GOAL_ID if context_kind == "manager" else goal_id,
             )
         except CodexChatAgentError as exc:
             self._send_error(str(exc), status=424, gate=exc.gate, error_code=exc.error_code)
@@ -450,8 +467,9 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "schema_version": "loopx_chat_session_v1",
                 "session_id": public["session_id"],
-                "goal_id": goal_id,
+                "goal_id": public["goal_id"],
                 "agent_id": agent_id,
+                "context_kind": context_kind,
                 "resumed": resumed,
                 "session": public,
             },
@@ -478,12 +496,17 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             client_turn_id = _compact_text(body.get("client_turn_id"), limit=160) or uuid.uuid4().hex
             registry, goal = self._registry_and_goal(str(session["goal_id"]))
             context = _goal_public_context(registry, goal)
+            runtime_objective = (
+                MANAGER_AGENT_OBJECTIVE
+                if session.get("channel_id") == "manager"
+                else str(context["objective"] or context["title"])
+            )
             turn, created = self.server.runtime_controller.submit_turn(
                 session_id=session_id,
                 client_turn_id=client_turn_id,
                 message=message,
                 work_dir=context["project"],
-                objective=str(context["objective"] or context["title"]),
+                objective=runtime_objective,
             )
             if body.get("client_turn_id"):
                 turn_id = str(turn["turn_id"])

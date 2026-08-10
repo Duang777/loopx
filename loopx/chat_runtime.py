@@ -100,6 +100,7 @@ class ChatRuntimeController:
         self.adapters: dict[str, ChatRuntimeAdapter] = {}
         self.cancelled_turns: set[tuple[str, str]] = set()
         self.lock = threading.RLock()
+        self.session_open_locks: dict[tuple[str, str, str], threading.Lock] = {}
 
     def capabilities(self) -> list[dict[str, Any]]:
         return [{
@@ -120,34 +121,47 @@ class ChatRuntimeController:
         work_dir: Path,
         objective: str,
         mode: str,
+        channel_id: str | None = None,
+        agent_goal_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         if agent_id != "codex":
             raise ValueError("only the codex Agent is available")
         if mode not in {"resume_latest", "new"}:
             raise ValueError("mode must be resume_latest or new")
-        if mode == "resume_latest":
-            latest = self.store.latest_session(goal_id=goal_id, agent_id=agent_id)
-            if latest is not None:
-                self._ensure_adapter(latest, work_dir=work_dir, objective=objective)
-                return latest, True
-        adapter = CodexAppServerAdapter.start(
-            codex_bin=self.codex_bin,
-            work_dir=work_dir,
-            goal_id=goal_id,
-            objective=objective,
-            startup_timeout_sec=self.startup_timeout_sec,
-            idle_timeout_sec=self.idle_timeout_sec,
-            hard_timeout_sec=self.hard_timeout_sec,
-        )
-        persisted = self.store.create_session(
-            goal_id=goal_id,
-            agent_id=agent_id,
-            adapter_kind="codex_app_server",
-            upstream_thread_id=adapter.upstream_thread_id,
-        )
+        selected_channel = channel_id or f"goal.{goal_id}"
+        route_goal_id = "*" if selected_channel == "manager" else goal_id
+        route_key = (route_goal_id, agent_id, selected_channel)
         with self.lock:
-            self.adapters[persisted["session_id"]] = adapter
-        return persisted, False
+            route_lock = self.session_open_locks.setdefault(route_key, threading.Lock())
+        with route_lock:
+            if mode == "resume_latest":
+                latest = self.store.latest_session(
+                    goal_id=None if selected_channel == "manager" else goal_id,
+                    agent_id=agent_id,
+                    channel_id=selected_channel,
+                )
+                if latest is not None:
+                    self._ensure_adapter(latest, work_dir=work_dir, objective=objective)
+                    return latest, True
+            adapter = CodexAppServerAdapter.start(
+                codex_bin=self.codex_bin,
+                work_dir=work_dir,
+                goal_id=agent_goal_id or goal_id,
+                objective=objective,
+                startup_timeout_sec=self.startup_timeout_sec,
+                idle_timeout_sec=self.idle_timeout_sec,
+                hard_timeout_sec=self.hard_timeout_sec,
+            )
+            persisted = self.store.create_session(
+                goal_id=goal_id,
+                agent_id=agent_id,
+                adapter_kind="codex_app_server",
+                upstream_thread_id=adapter.upstream_thread_id,
+                channel_id=selected_channel,
+            )
+            with self.lock:
+                self.adapters[persisted["session_id"]] = adapter
+            return persisted, False
 
     def _ensure_adapter(
         self,
@@ -187,7 +201,11 @@ class ChatRuntimeController:
             adapter = CodexAppServerAdapter.start(
                 codex_bin=self.codex_bin,
                 work_dir=work_dir,
-                goal_id=str(session["goal_id"]),
+                goal_id=(
+                    "loopx-manager"
+                    if session.get("channel_id") == "manager"
+                    else str(session["goal_id"])
+                ),
                 objective=objective,
                 resume_thread_id=str(session["upstream_thread_id"]),
                 startup_timeout_sec=self.startup_timeout_sec,

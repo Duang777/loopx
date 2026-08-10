@@ -18,6 +18,7 @@ CHAT_SESSION_SCHEMA_VERSION = "loopx_chat_session_state_v1"
 CHAT_TURN_SCHEMA_VERSION = "loopx_chat_turn_state_v1"
 CHAT_EVENT_SCHEMA_VERSION = "loopx_chat_event_v1"
 CHAT_MESSAGE_SCHEMA_VERSION = "loopx_chat_message_v1"
+RESUMABLE_SESSION_STATES = {"ready", "busy", "stale", "resuming"}
 
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 
@@ -123,6 +124,7 @@ class ChatSessionStore:
         agent_id: str,
         adapter_kind: str,
         upstream_thread_id: str,
+        channel_id: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
@@ -137,6 +139,7 @@ class ChatSessionStore:
             "agent_id": _opaque_id(agent_id, field="agent_id"),
             "adapter_kind": _opaque_id(adapter_kind, field="adapter_kind"),
             "upstream_thread_id": _opaque_id(upstream_thread_id, field="upstream_thread_id"),
+            "channel_id": _opaque_id(channel_id or f"goal.{goal_id}", field="channel_id"),
             "status": "ready",
             "active_turn_id": None,
             "last_error_code": None,
@@ -167,15 +170,28 @@ class ChatSessionStore:
             _atomic_write_json(path, payload, preserve_mode=True)
             return payload
 
-    def latest_session(self, *, goal_id: str, agent_id: str) -> dict[str, Any] | None:
+    def latest_session(
+        self,
+        *,
+        goal_id: str | None,
+        agent_id: str,
+        channel_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if goal_id is None and channel_id is None:
+            raise ValueError("channel_id is required when goal_id is omitted")
+        selected_channel = channel_id or f"goal.{goal_id}"
         candidates: list[dict[str, Any]] = []
         for path in self.sessions_root.glob("*/session.json"):
             payload = _read_json(path)
             if (
                 payload.get("schema_version") == CHAT_SESSION_SCHEMA_VERSION
-                and payload.get("goal_id") == goal_id
+                and (goal_id is None or payload.get("goal_id") == goal_id)
                 and payload.get("agent_id") == agent_id
-                and payload.get("status") != "closed"
+                and payload.get("status") in RESUMABLE_SESSION_STATES
+                and payload.get(
+                    "channel_id",
+                    f"goal.{payload.get('goal_id')}",
+                ) == selected_channel
             ):
                 candidates.append(payload)
         return max(candidates, key=lambda item: str(item.get("updated_at") or ""), default=None)
@@ -344,9 +360,12 @@ class ChatSessionStore:
             key: payload.get(key)
             for key in (
                 "session_id", "goal_id", "agent_id", "adapter_kind", "status",
-                "active_turn_id", "last_error_code", "created_at", "updated_at", "last_activity_at",
+                "channel_id", "active_turn_id", "last_error_code", "created_at", "updated_at", "last_activity_at",
             )
-        } | {"resumable": bool(payload.get("upstream_thread_id"))}
+        } | {
+            "resumable": bool(payload.get("upstream_thread_id"))
+            and payload.get("status") in RESUMABLE_SESSION_STATES,
+        }
 
     def session_snapshot(self, session_id: str) -> dict[str, Any]:
         payload = self.load_session(session_id)

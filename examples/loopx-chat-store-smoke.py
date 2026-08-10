@@ -31,8 +31,38 @@ def main() -> None:
         assert "upstream_thread_id" not in public, public
         assert store.latest_session(goal_id="goal-one", agent_id="codex") == session
         store.update_session(session_id, status="resume_failed", last_error_code="resume_failed")
-        assert store.latest_session(goal_id="goal-one", agent_id="codex")["session_id"] == session_id
+        assert store.latest_session(goal_id="goal-one", agent_id="codex") is None
+        assert store.public_session(store.load_session(session_id))["resumable"] is False
         store.update_session(session_id, status="ready", last_error_code=None)
+
+        manager_session = store.create_session(
+            goal_id="goal-one",
+            agent_id="codex",
+            adapter_kind="codex_app_server",
+            upstream_thread_id="thread-manager-private",
+            channel_id="manager",
+        )
+        assert store.latest_session(
+            goal_id="goal-one",
+            agent_id="codex",
+            channel_id="manager",
+        ) == manager_session
+        assert store.latest_session(
+            goal_id=None,
+            agent_id="codex",
+            channel_id="manager",
+        ) == manager_session
+        try:
+            store.latest_session(goal_id=None, agent_id="codex")
+        except ValueError as exc:
+            assert "channel_id" in str(exc), exc
+        else:
+            raise AssertionError("goal-less latest session lookup accepted no channel")
+        assert store.latest_session(
+            goal_id="goal-one",
+            agent_id="codex",
+            channel_id="goal.goal-one",
+        )["session_id"] == session_id
 
         turn, created = store.create_turn(
             session_id,

@@ -26,6 +26,7 @@ import sys
 import time
 
 turn_count = 0
+goal_status = "inactive"
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
@@ -44,9 +45,10 @@ for line in sys.stdin:
             continue
         result = {"thread": {"id": "thread-loopx-chat"}}
     elif method == "thread/goal/set":
+        goal_status = "active"
         result = {"goal": {"threadId": "thread-loopx-chat", "status": "active"}}
     elif method == "thread/goal/get":
-        result = {"goal": {"threadId": "thread-loopx-chat", "status": "active"}}
+        result = {"goal": {"threadId": "thread-loopx-chat", "status": goal_status}}
     elif method == "turn/start":
         turn_count += 1
         params = message.get("params", {})

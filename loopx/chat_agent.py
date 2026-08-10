@@ -264,26 +264,27 @@ class CodexChatAgentSession:
             session.thread_id = _extract_id(thread_result, "thread", "threadId")
             if not session.thread_id:
                 raise session._runtime_error("Codex app-server did not return a thread id.")
-            if not resume_thread_id:
-                session._request(
-                    "thread/goal/set",
-                    {
-                        "threadId": session.thread_id,
-                        "objective": f"{goal_id}: {objective}",
-                        "status": "active",
-                    },
-                    request_id=3,
-                )
+            if resume_thread_id and session.thread_id != resume_thread_id:
+                raise session._runtime_error("Codex app-server resumed an unexpected thread.")
+            session._request(
+                "thread/goal/set",
+                {
+                    "threadId": session.thread_id,
+                    "objective": f"{goal_id}: {objective}",
+                    "status": "active",
+                },
+                request_id=3,
+            )
             goal_result = session._request(
                 "thread/goal/get",
                 {"threadId": session.thread_id},
-                request_id=3 if resume_thread_id else 4,
+                request_id=4,
             )
             goal = goal_result.get("goal")
             status = str(goal.get("status") or "") if isinstance(goal, dict) else ""
             if status != "active":
                 raise session._runtime_error("Codex did not confirm an active Goal session.")
-            session.next_request_id = 4 if resume_thread_id else 5
+            session.next_request_id = 5
             return session
         except Exception:
             session.close()
