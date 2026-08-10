@@ -17,6 +17,7 @@ from loopx.control_plane.turn_driver.executor import (
     BuiltInHostError,
     _task_validation_stage,
 )
+from loopx.control_plane.turn_driver.settlement import execute_turn_driver_settlement
 from loopx.control_plane.turn_driver.transaction import TRANSACTION_PHASES
 
 
@@ -48,6 +49,23 @@ def _plan() -> dict[str, object]:
             },
             "compaction": {"within_budget": True},
         },
+        host="generic-cli",
+        execution_mode="isolated-headless",
+    )
+
+
+def _adaptive_plan() -> dict[str, object]:
+    plan = _plan()
+    envelope = plan["turn_envelope"]
+    assert isinstance(envelope, dict)
+    envelope["action"]["selected_todo"] = {"todo_id": "todo-stale"}
+    envelope["task_orchestration_contract"] = {
+        "schema_version": "task_orchestration_contract_v2",
+        "mode": "adaptive",
+        "primary_todo_id": "todo_fixture0001",
+    }
+    return build_loopx_turn_plan(
+        envelope,
         host="generic-cli",
         execution_mode="isolated-headless",
     )
@@ -115,6 +133,66 @@ def test_task_validation_stage_reads_result_kind_through_effect_turn(
     assert journal["status"] == "stopped"
     assert payload is not None
     assert payload["status"] == "stopped"
+
+
+def test_typed_settlement_fails_closed_when_journal_receipt_payload_is_missing() -> None:
+    transaction = _plan()["transaction"]
+    assert isinstance(transaction, dict)
+    calls = {"writeback": 0, "spend": 0, "checkpoint": 0}
+
+    result = execute_turn_driver_settlement(
+        transaction,
+        transaction_phases=TRANSACTION_PHASES,
+        completed_phases=TRANSACTION_PHASES[:4],
+        writeback_payload=None,
+        quota_spend_payload=None,
+        writeback=lambda: calls.__setitem__("writeback", calls["writeback"] + 1)
+        or {"ok": True, "appended": True},
+        spend=lambda: calls.__setitem__("spend", calls["spend"] + 1)
+        or {"ok": True, "appended": True},
+        checkpoint=lambda _kind, _payload, _phases: calls.__setitem__(
+            "checkpoint", calls["checkpoint"] + 1
+        ),
+    )
+
+    assert result.failure is not None
+    assert result.failure.kind.value == "receipt_missing"
+    assert result.failure.step_kind.value == "durable_writeback"
+    assert [receipt.step_kind.value for receipt in result.receipts] == ["validation"]
+    assert calls == {"writeback": 0, "spend": 0, "checkpoint": 0}
+
+
+def test_typed_settlement_fails_closed_when_plan_has_no_settlement_plan() -> None:
+    transaction = _plan()["transaction"]
+    assert isinstance(transaction, dict)
+    legacy = {
+        key: value
+        for key, value in transaction.items()
+        if key != "settlement_plan"
+    }
+    calls = {"writeback": 0, "spend": 0, "checkpoint": 0}
+
+    result = execute_turn_driver_settlement(
+        legacy,
+        transaction_phases=TRANSACTION_PHASES,
+        completed_phases=TRANSACTION_PHASES[:3],
+        writeback_payload=None,
+        quota_spend_payload=None,
+        writeback=lambda: calls.__setitem__("writeback", calls["writeback"] + 1)
+        or {"ok": True, "appended": True},
+        spend=lambda: calls.__setitem__("spend", calls["spend"] + 1)
+        or {"ok": True, "appended": True},
+        checkpoint=lambda _kind, _payload, _phases: calls.__setitem__(
+            "checkpoint", calls["checkpoint"] + 1
+        ),
+    )
+
+    assert result.failure is not None
+    assert result.failure.kind.value == "receipt_missing"
+    assert result.failure.step_kind.value == "validation"
+    assert "typed settlement plan" in result.failure.reason
+    assert result.receipts == ()
+    assert calls == {"writeback": 0, "spend": 0, "checkpoint": 0}
 
 
 def _host_argv(result_path: Path, count_path: Path) -> list[str]:
@@ -289,6 +367,10 @@ def test_run_once_commits_once_and_replays_without_duplicate_effects(tmp_path: P
     assert first["ok"] is True
     assert first["status"] == "committed"
     assert first["receipt"]["status"] == "committed"
+    assert [
+        receipt["step_kind"]
+        for receipt in first["settlement_result"]["receipts"]
+    ] == ["validation", "durable_writeback", "quota_spend"]
     assert first["effects"]["host_invoked"] is True
     assert first["effects"]["state_written"] is True
     assert first["effects"]["quota_spent"] is True
@@ -296,6 +378,94 @@ def test_run_once_commits_once_and_replays_without_duplicate_effects(tmp_path: P
     assert not any(replay["effects"].values())
     assert count_path.read_text(encoding="utf-8") == "1"
     assert calls == {"writeback": 1, "spend": 1, "scheduler": 1}
+
+
+def test_run_once_legacy_plan_without_settlement_plan_is_upgraded(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    transaction = plan["transaction"]
+    assert isinstance(transaction, dict)
+    transaction.pop("settlement_plan", None)
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps(_host_result(plan)), encoding="utf-8")
+    count_path = tmp_path / "host-count"
+    calls = {"writeback": 0, "spend": 0, "scheduler": 0}
+    writeback, spend, scheduler = _callbacks(calls)
+
+    committed = run_loopx_turn_once(
+        plan,
+        host_argv=_host_argv(result_path, count_path),
+        project=tmp_path,
+        runtime_root=tmp_path / "runtime",
+        goal_id="fixture-goal",
+        timeout_seconds=5,
+        execute=True,
+        task_validator=_passing_validator,
+        writeback=writeback,
+        spend=spend,
+        scheduler=scheduler,
+    )
+
+    assert committed["ok"] is True
+    assert committed["status"] == "committed"
+    assert committed["receipt"]["status"] == "committed"
+    assert committed["settlement_result"]["ok"] is True
+    assert (
+        [
+            receipt["step_kind"]
+            for receipt in committed["settlement_result"]["receipts"]
+        ]
+        == ["validation", "durable_writeback", "quota_spend"]
+    )
+    assert calls == {"writeback": 1, "spend": 1, "scheduler": 1}
+
+
+def test_adaptive_completion_upgrades_legacy_plan_with_primary_todo_identity(
+    tmp_path: Path,
+) -> None:
+    plan = _adaptive_plan()
+    transaction = plan["transaction"]
+    assert isinstance(transaction, dict)
+    transaction.pop("settlement_plan", None)
+    calls = {"completion": 0, "spend": 0, "scheduler": 0}
+
+    def completion_writeback(_result: dict[str, object]) -> dict[str, object]:
+        calls["completion"] += 1
+        return {
+            "ok": True,
+            "appended": True,
+            "completion": {
+                "todo_id": "todo_fixture0001",
+                "continuation": "active_goal",
+            },
+        }
+
+    committed = run_loopx_turn_once(
+        plan,
+        host_runner=lambda _request: _host_result(
+            plan,
+            kind="validated_completion",
+        ),
+        project=tmp_path,
+        runtime_root=tmp_path / "runtime",
+        goal_id="fixture-goal",
+        timeout_seconds=5,
+        execute=True,
+        task_validator=_passing_validator,
+        writeback=lambda _result: {"ok": True, "appended": True},
+        completion_writeback=completion_writeback,
+        spend=lambda: calls.__setitem__("spend", calls["spend"] + 1)
+        or {"ok": True, "appended": True},
+        scheduler=lambda _spend: calls.__setitem__(
+            "scheduler", calls["scheduler"] + 1
+        )
+        or {"completed": True, "acknowledged": True},
+    )
+
+    assert committed["status"] == "committed"
+    assert committed["receipt"]["lineage"]["todo_id"] == "todo_fixture0001"
+    assert calls == {"completion": 1, "spend": 1, "scheduler": 1}
 
 
 def test_validated_completion_requires_explicit_lifecycle_writeback(
@@ -425,8 +595,10 @@ def test_invalid_completion_outcome_fails_closed_without_spending(
         or {"completed": True, "acknowledged": True},
     )
 
+    assert payload["result_kind"] == "writeback_failed"
     assert payload["receipt"]["result_kind"] == "writeback_failed"
     assert payload["receipt"]["failed_phase"] == "durable_writeback"
+    assert payload["settlement_result"]["failure"]["kind"] == "writeback_rejected"
     assert calls == {"completion": 1, "spend": 0, "scheduler": 0}
 
 
@@ -575,6 +747,259 @@ def test_run_once_resumes_after_writeback_without_duplicate_effects(tmp_path: Pa
     assert recovered["status"] == "committed"
     assert count_path.read_text(encoding="utf-8") == "1"
     assert calls == {"writeback": 1, "spend": 1, "scheduler": 1}
+
+
+def test_cancellation_before_writeback_preserves_prefix_and_resumes(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    calls = {"host": 0, "writeback": 0, "spend": 0}
+
+    def host(_request: dict[str, object]) -> dict[str, object]:
+        calls["host"] += 1
+        return _host_result(plan)
+
+    def cancelled_writeback(_result: dict[str, object]) -> dict[str, object]:
+        calls["writeback"] += 1
+        raise KeyboardInterrupt
+
+    common = {
+        "host_runner": host,
+        "project": tmp_path,
+        "runtime_root": tmp_path / "runtime",
+        "goal_id": "fixture-goal",
+        "timeout_seconds": 5,
+        "execute": True,
+        "task_validator": _passing_validator,
+        "spend": lambda: calls.__setitem__("spend", calls["spend"] + 1)
+        or {"ok": True, "appended": True},
+        "scheduler": lambda _spend: {"completed": True, "acknowledged": True},
+    }
+    with pytest.raises(KeyboardInterrupt):
+        run_loopx_turn_once(plan, writeback=cancelled_writeback, **common)
+
+    assert _journal(tmp_path / "runtime")["completed_phases"] == [
+        "host_execute",
+        "typed_result",
+        "validation",
+    ]
+    recovered = run_loopx_turn_once(
+        plan,
+        writeback=lambda _result: calls.__setitem__(
+            "writeback", calls["writeback"] + 1
+        )
+        or {"ok": True, "appended": True},
+        **common,
+    )
+
+    assert recovered["status"] == "committed"
+    assert calls == {"host": 1, "writeback": 2, "spend": 1}
+
+
+def test_cancellation_during_scheduler_preserves_settlement_and_resumes(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    calls = {"host": 0, "writeback": 0, "spend": 0, "scheduler": 0}
+
+    def host(_request: dict[str, object]) -> dict[str, object]:
+        calls["host"] += 1
+        return _host_result(plan)
+
+    def writeback(_result: dict[str, object]) -> dict[str, object]:
+        calls["writeback"] += 1
+        return {"ok": True, "appended": True}
+
+    def spend() -> dict[str, object]:
+        calls["spend"] += 1
+        return {"ok": True, "appended": True}
+
+    def cancelled_scheduler(_spend: dict[str, object]) -> dict[str, object]:
+        calls["scheduler"] += 1
+        raise KeyboardInterrupt
+
+    common = {
+        "host_runner": host,
+        "project": tmp_path,
+        "runtime_root": tmp_path / "runtime",
+        "goal_id": "fixture-goal",
+        "timeout_seconds": 5,
+        "execute": True,
+        "task_validator": _passing_validator,
+        "writeback": writeback,
+        "spend": spend,
+    }
+    with pytest.raises(KeyboardInterrupt):
+        run_loopx_turn_once(plan, scheduler=cancelled_scheduler, **common)
+
+    interrupted_journal = _journal(tmp_path / "runtime")
+    assert interrupted_journal["completed_phases"] == [
+        "host_execute",
+        "typed_result",
+        "validation",
+        "durable_writeback",
+        "quota_spend",
+    ]
+    assert [
+        receipt["step_kind"]
+        for receipt in interrupted_journal["settlement_result"]["receipts"]
+    ] == ["validation", "durable_writeback", "quota_spend"]
+
+    def healthy_scheduler(_spend: dict[str, object]) -> dict[str, object]:
+        calls["scheduler"] += 1
+        return {"completed": True, "acknowledged": True}
+
+    recovered = run_loopx_turn_once(plan, scheduler=healthy_scheduler, **common)
+
+    assert recovered["status"] == "committed"
+    assert calls == {"host": 1, "writeback": 1, "spend": 1, "scheduler": 2}
+
+
+def test_permission_denial_from_host_is_typed_and_explicitly_retried(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    calls = {"host": 0, "writeback": 0, "spend": 0}
+
+    def host(_request: dict[str, object]) -> dict[str, object]:
+        calls["host"] += 1
+        if calls["host"] == 1:
+            raise PermissionError("host denied")
+        return _host_result(plan)
+
+    common = {
+        "host_runner": host,
+        "project": tmp_path,
+        "runtime_root": tmp_path / "runtime",
+        "goal_id": "fixture-goal",
+        "timeout_seconds": 5,
+        "execute": True,
+        "task_validator": _passing_validator,
+        "writeback": lambda _result: calls.__setitem__(
+            "writeback", calls["writeback"] + 1
+        )
+        or {"ok": True, "appended": True},
+        "spend": lambda: calls.__setitem__("spend", calls["spend"] + 1)
+        or {"ok": True, "appended": True},
+        "scheduler": lambda _spend: {"completed": True, "acknowledged": True},
+    }
+    failed = run_loopx_turn_once(plan, **common)
+    replayed = run_loopx_turn_once(plan, **common)
+    recovered = run_loopx_turn_once(plan, retry_failed=True, **common)
+
+    assert failed["result_kind"] == "host_failure"
+    assert failed["receipt"]["failed_phase"] == "host_execute"
+    assert failed["reason"] == "PermissionError"
+    assert replayed["replayed"] is True
+    assert recovered["status"] == "committed"
+    assert calls == {"host": 2, "writeback": 1, "spend": 1}
+
+
+def test_permission_denial_during_spend_preserves_writeback_and_resumes(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    calls = {"host": 0, "writeback": 0, "spend": 0}
+
+    def host(_request: dict[str, object]) -> dict[str, object]:
+        calls["host"] += 1
+        return _host_result(plan)
+
+    def writeback(_result: dict[str, object]) -> dict[str, object]:
+        calls["writeback"] += 1
+        return {"ok": True, "appended": True}
+
+    def denied_spend() -> dict[str, object]:
+        calls["spend"] += 1
+        raise PermissionError("quota ledger denied")
+
+    common = {
+        "host_runner": host,
+        "project": tmp_path,
+        "runtime_root": tmp_path / "runtime",
+        "goal_id": "fixture-goal",
+        "timeout_seconds": 5,
+        "execute": True,
+        "task_validator": _passing_validator,
+        "writeback": writeback,
+        "scheduler": lambda _spend: {"completed": True, "acknowledged": True},
+    }
+    with pytest.raises(PermissionError):
+        run_loopx_turn_once(plan, spend=denied_spend, **common)
+
+    assert _journal(tmp_path / "runtime")["completed_phases"] == [
+        "host_execute",
+        "typed_result",
+        "validation",
+        "durable_writeback",
+    ]
+    recovered = run_loopx_turn_once(
+        plan,
+        spend=lambda: calls.__setitem__("spend", calls["spend"] + 1)
+        or {"ok": True, "appended": True},
+        **common,
+    )
+
+    assert recovered["status"] == "committed"
+    assert calls == {"host": 1, "writeback": 1, "spend": 2}
+
+
+def test_budget_rejection_is_typed_and_retry_does_not_repeat_writeback(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    calls = {"host": 0, "writeback": 0, "spend": 0}
+
+    def host(_request: dict[str, object]) -> dict[str, object]:
+        calls["host"] += 1
+        return _host_result(plan)
+
+    def writeback(_result: dict[str, object]) -> dict[str, object]:
+        calls["writeback"] += 1
+        return {"ok": True, "appended": True}
+
+    def reject_budget() -> dict[str, object]:
+        calls["spend"] += 1
+        return {
+            "ok": False,
+            "appended": False,
+            "reason": "quota budget rejected",
+        }
+
+    common = {
+        "host_runner": host,
+        "project": tmp_path,
+        "runtime_root": tmp_path / "runtime",
+        "goal_id": "fixture-goal",
+        "timeout_seconds": 5,
+        "execute": True,
+        "task_validator": _passing_validator,
+        "writeback": writeback,
+        "scheduler": lambda _spend: {"completed": True, "acknowledged": True},
+    }
+    failed = run_loopx_turn_once(plan, spend=reject_budget, **common)
+
+    assert failed["result_kind"] == "quota_spend_failed"
+    assert failed["receipt"]["result_kind"] == "quota_spend_failed"
+    assert failed["receipt"]["failed_phase"] == "quota_spend"
+    assert failed["settlement_result"]["failure"]["kind"] == "budget_rejected"
+    assert [
+        receipt["step_kind"]
+        for receipt in failed["settlement_result"]["receipts"]
+    ] == ["validation", "durable_writeback"]
+    assert failed["effects"]["state_written"] is True
+    assert failed["effects"]["quota_spent"] is False
+
+    recovered = run_loopx_turn_once(
+        plan,
+        spend=lambda: calls.__setitem__("spend", calls["spend"] + 1)
+        or {"ok": True, "appended": True},
+        retry_failed=True,
+        **common,
+    )
+
+    assert recovered["status"] == "committed"
+    assert calls == {"host": 1, "writeback": 1, "spend": 2}
 
 
 def test_run_once_fails_closed_without_independent_task_validator(

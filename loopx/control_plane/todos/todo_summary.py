@@ -1325,11 +1325,10 @@ def compact_todo_group(
             for item in lanes.projected_deferred_items
             if item.get("resume_ready") is True
         ][:MAX_DEFERRED_TODO_VISIBILITY_ITEMS],
-        "recent_completed_advancement_items": (
-            recent_completed_advancement_items
-        ),
         "items": lanes.budgeted_items if item_limit is None else lanes.budgeted_items[:item_limit],
     }
+    if recent_completed_advancement_items:
+        summary["recent_completed_advancement_items"] = recent_completed_advancement_items
     if include_task_orchestration_authority:
         summary["task_orchestration_authority"] = _task_orchestration_authority(
             lanes,

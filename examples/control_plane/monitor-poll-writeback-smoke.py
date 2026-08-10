@@ -435,7 +435,7 @@ def assert_interleaved_monitor_stalls_replan_blocked_benchmark() -> None:
         obligation = quota["autonomous_replan_obligation"]
         assert obligation["triggers"][0]["kind"] == "monitor_no_change_streak", obligation
         assert obligation["triggers"][0]["run_count"] == 28, obligation
-        assert obligation["dead_monitor_detector"]["threshold"] == 2, obligation
+        assert obligation["dead_monitor_detector"]["threshold"] == 5, obligation
 
 
 def assert_stalled_monitor_does_not_preempt_runnable_advancement() -> None:

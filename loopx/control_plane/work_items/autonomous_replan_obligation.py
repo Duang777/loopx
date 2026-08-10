@@ -24,6 +24,11 @@ SectionEntries = Callable[[list[str]], list[str]]
 
 MAX_AUTONOMOUS_REPLAN_TRIGGERS = 3
 AUTONOMOUS_REPLAN_STALL_THRESHOLD = 2
+# Unchanged-poll streak before a monitor-only lane is forced to replan. Kept
+# deliberately above the 2-turn run-history stall threshold: quiet monitors
+# legitimately wait several cadence cycles for external evidence, and forcing
+# replan after two unchanged polls creates churn for slow external sources.
+MONITOR_NO_CHANGE_STREAK_THRESHOLD = 5
 AUTONOMOUS_REPLAN_TRIGGER_PATTERNS = (
     (
         "periodic_review",
@@ -458,7 +463,7 @@ def build_autonomous_replan_obligation(
     if not evidence:
         monitor_evidence = _monitor_no_change_evidence(
             agent_todos,
-            threshold=autonomous_replan_stall_threshold,
+            threshold=MONITOR_NO_CHANGE_STREAK_THRESHOLD,
             schema_version=dead_monitor_repeat_schema_version,
         )
         if monitor_evidence:
@@ -598,6 +603,10 @@ def build_autonomous_replan_obligation(
     ):
         extra_fields["frontier_identity"] = blocked_successor_evidence.get(
             "frontier_identity"
+        )
+    elif dead_monitor_evidence and dead_monitor_evidence.get("monitor_target_id"):
+        extra_fields["frontier_identity"] = dead_monitor_evidence.get(
+            "monitor_target_id"
         )
 
     result = build_autonomous_replan_obligation_payload(

@@ -17,7 +17,6 @@ from loopx.control_plane.todos.quota_summary import (
 )
 from loopx.control_plane.todos.todo_summary import compact_todo_group
 
-
 AGENT_ID = "fixture-agent"
 
 
@@ -94,7 +93,10 @@ def test_successor_vision_replan_precedes_existing_work(
             "unclaimed_open_count": 0,
             "executable_backlog_items": [todo],
         },
-        work_lane_contract={"lane": "advancement_task", "must_attempt_work": True},
+        work_lane_contract={
+            "lane": "advancement_task",
+            "must_attempt_work": True,
+        },
         agent_id=AGENT_ID,
         existing_replan_obligation=None,
         acceptance_gaps=gaps,
@@ -153,6 +155,26 @@ def test_other_agent_work_does_not_satisfy_scoped_repeat_vision() -> None:
     assert obligation["agent_id"] == AGENT_ID
     assert obligation["triggers"][0]["kind"] == "vision_acceptance_gap"
     assert obligation["todo_actions"][0]["action"] == "add"
+
+
+def test_open_vision_projects_only_active_todo_delta_lineage() -> None:
+    active_vision = vision("vision_active")
+    active_vision["todo_delta"] = [
+        "complete:todo_previous",
+        "activate:todo_current",
+        "create:todo_successor",
+        "supersede:todo_obsolete",
+    ]
+
+    gaps = acceptance_gaps_from_agent_vision(
+        active_vision,
+        goal_status="active",
+    )
+
+    assert gaps[0]["vision_todo_ids"] == [
+        "todo_current",
+        "todo_successor",
+    ]
 
 
 def _outcome_vision(
@@ -262,7 +284,7 @@ def test_fresh_replan_checkpoint_requires_frontier_delta(
         ("2026-07-12T00:03:00Z", False),
     ],
 )
-def test_completed_todo_requires_a_later_outcome_checkpoint(
+def test_completed_todo_chain_requires_a_later_outcome_checkpoint(
     checkpoint_generated_at: str,
     expects_gap: bool,
 ) -> None:
@@ -274,10 +296,69 @@ def test_completed_todo_requires_a_later_outcome_checkpoint(
     summary = {
         "recent_completed_advancement_items": [
             {
-                "todo_id": "todo_completed_milestone",
+                "todo_id": f"todo_completed_milestone_{index}",
                 "claimed_by": AGENT_ID,
-                "completed_at": "2026-07-12T00:02:00Z",
+                "completed_at": f"2026-07-12T00:02:0{index}Z",
             }
+            for index in range(5)
+        ]
+    }
+
+    gaps = acceptance_gaps_from_todo_completion_checkpoint(
+        active_vision,
+        checkpoint,
+        agent_todo_summary=summary,
+        agent_id=AGENT_ID,
+    )
+
+    assert bool(gaps) is expects_gap
+    if expects_gap:
+        assert gaps[0]["completed_todo_count"] == 5
+        assert gaps[0]["completed_todo_threshold"] == 5
+
+
+@pytest.mark.parametrize(
+    ("advancement_policy", "repair_delta_kinds", "expects_gap"),
+    [
+        ("as_needed", ["goal_vision_patch", "watch_lane_continuation"], False),
+        ("as_needed", ["goal_vision_patch"], True),
+        (
+            "repeat_until_closed",
+            ["goal_vision_patch", "watch_lane_continuation"],
+            True,
+        ),
+    ],
+)
+def test_completed_chain_accepts_only_bounded_as_needed_watch_replan(
+    advancement_policy: str,
+    repair_delta_kinds: list[str],
+    expects_gap: bool,
+) -> None:
+    active_vision = _outcome_vision(
+        generated_at="2026-07-12T00:03:00Z",
+        outcome="replan",
+        evidence_refs=["todo:bounded-watch"],
+    )
+    active_vision["vision_patch"]["advancement_policy"] = advancement_policy
+    checkpoint = {
+        "schema_version": "vision_checkpoint_v0",
+        "agent_id": AGENT_ID,
+        "required": True,
+        "satisfied": True,
+        "decision": "patched",
+        "triggers": [{"kind": "autonomous_replan_recorded"}],
+        "repair_delta_kinds": repair_delta_kinds,
+        "generated_at": "2026-07-12T00:03:00Z",
+        "qualification_agent_vision": active_vision,
+    }
+    summary = {
+        "recent_completed_advancement_items": [
+            {
+                "todo_id": f"todo_completed_milestone_{index}",
+                "claimed_by": AGENT_ID,
+                "completed_at": f"2026-07-12T00:02:0{index}Z",
+            }
+            for index in range(5)
         ]
     }
 
@@ -291,6 +372,118 @@ def test_completed_todo_requires_a_later_outcome_checkpoint(
     assert bool(gaps) is expects_gap
 
 
+def test_four_completed_todos_do_not_force_a_chain_checkpoint() -> None:
+    active_vision = _outcome_vision(
+        generated_at="2026-07-12T00:01:00Z",
+        evidence_refs=["result:bounded-progress"],
+    )
+    summary = {
+        "recent_completed_advancement_items": [
+            {
+                "todo_id": f"todo_completed_slice_{index}",
+                "claimed_by": AGENT_ID,
+                "completed_at": f"2026-07-12T00:02:0{index}Z",
+            }
+            for index in range(4)
+        ]
+    }
+
+    assert (
+        acceptance_gaps_from_todo_completion_checkpoint(
+            active_vision,
+            _material_checkpoint(generated_at="2026-07-12T00:01:00Z"),
+            agent_todo_summary=summary,
+            agent_id=AGENT_ID,
+        )
+        == []
+    )
+
+
+def test_qualified_checkpoint_resets_the_completed_todo_chain() -> None:
+    active_vision = _outcome_vision(
+        generated_at="2026-07-12T00:02:00Z",
+        evidence_refs=["result:checkpointed-milestone"],
+    )
+    checkpoint = _material_checkpoint(generated_at="2026-07-12T00:02:00Z")
+    completed_at = [
+        "2026-07-12T00:01:00Z",
+        "2026-07-12T00:03:00Z",
+        "2026-07-12T00:04:00Z",
+        "2026-07-12T00:05:00Z",
+        "2026-07-12T00:06:00Z",
+    ]
+    summary = {
+        "recent_completed_advancement_items": [
+            {
+                "todo_id": f"todo_completed_slice_{index}",
+                "claimed_by": AGENT_ID,
+                "completed_at": timestamp,
+            }
+            for index, timestamp in enumerate(completed_at)
+        ]
+    }
+
+    assert (
+        acceptance_gaps_from_todo_completion_checkpoint(
+            active_vision,
+            checkpoint,
+            agent_todo_summary=summary,
+            agent_id=AGENT_ID,
+        )
+        == []
+    )
+
+
+def test_completed_chain_replan_precedes_runnable_advancement() -> None:
+    active_vision = _outcome_vision(
+        generated_at="2026-07-12T00:01:00Z",
+        evidence_refs=["result:bounded-progress"],
+    )
+    completed_items = [
+        {
+            "todo_id": f"todo_completed_slice_{index}",
+            "claimed_by": AGENT_ID,
+            "completed_at": f"2026-07-12T00:02:0{index}Z",
+        }
+        for index in range(5)
+    ]
+    gaps = acceptance_gaps_from_todo_completion_checkpoint(
+        active_vision,
+        _material_checkpoint(generated_at="2026-07-12T00:01:00Z"),
+        agent_todo_summary={
+            "recent_completed_advancement_items": completed_items,
+        },
+        agent_id=AGENT_ID,
+    )
+    runnable = {
+        "todo_id": "todo_next_slice",
+        "status": "open",
+        "task_class": "advancement_task",
+        "claimed_by": AGENT_ID,
+    }
+
+    obligation = derive_goal_frontier_replan_obligation_from_summaries(
+        user_todo_summary={"open_count": 0},
+        agent_todo_summary={
+            "open_count": 1,
+            "current_agent_claimed_open_count": 1,
+            "current_agent_claimed_advancement_count": 1,
+            "unclaimed_open_count": 0,
+            "executable_backlog_items": [runnable],
+        },
+        work_lane_contract={"lane": "advancement_task", "must_attempt_work": True},
+        agent_id=AGENT_ID,
+        existing_replan_obligation=None,
+        acceptance_gaps=gaps,
+    )
+
+    assert obligation is not None
+    trigger = obligation["triggers"][0]
+    assert trigger["kind"] == "vision_outcome_checkpoint_required"
+    assert trigger["completed_todo_count"] == 5
+    assert trigger["completed_todo_threshold"] == 5
+
+
 def test_plain_refresh_after_completed_todo_does_not_clear_checkpoint_gap() -> None:
     active_vision = _outcome_vision(generated_at="2026-07-12T00:00:00Z")
     checkpoint = {
@@ -300,10 +493,11 @@ def test_plain_refresh_after_completed_todo_does_not_clear_checkpoint_gap() -> N
     summary = {
         "recent_completed_advancement_items": [
             {
-                "todo_id": "todo_completed_milestone",
+                "todo_id": f"todo_completed_milestone_{index}",
                 "claimed_by": AGENT_ID,
-                "completed_at": "2026-07-12T00:02:00Z",
+                "completed_at": f"2026-07-12T00:02:0{index}Z",
             }
+            for index in range(5)
         ]
     }
 
@@ -459,3 +653,14 @@ def test_recent_completed_advancement_projection_is_agent_scoped() -> None:
         "todo_current_completed_4",
         "todo_current_completed_3",
     ]
+    gaps = acceptance_gaps_from_todo_completion_checkpoint(
+        _outcome_vision(
+            generated_at="2026-07-12T00:02:00Z",
+            evidence_refs=["result:checkpointed-milestone"],
+        ),
+        _material_checkpoint(generated_at="2026-07-12T00:02:00Z"),
+        agent_todo_summary=summary,
+        agent_id=AGENT_ID,
+    )
+    assert gaps[0]["completed_todo_count"] == 5
+    assert gaps[0]["completed_todo_threshold"] == 5

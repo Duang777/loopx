@@ -122,6 +122,12 @@ npm run build
 npm run dev
 ```
 
+`npm run dev` starts the Vite UI together with the loopback status and Chat
+services on ports `5173`, `8766`, and `8767`. Use `npm run dev:web` when those
+LoopX services are already running separately. Vite proxies the default
+`/status.json` request to port `8766`, so an SSH user only needs to forward port
+`5173` for the normal development page.
+
 The default screen is the Chinese-first control-plane home. It is meant to
 answer the operator's first questions before raw status drill-down: which
 project line is active, which user todo is truly blocking, which agent todo is

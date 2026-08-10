@@ -38,16 +38,6 @@ export type ChatStatus = {
   goals: ChatGoal[];
 };
 
-export type ChatAdapterCapability = {
-  agent_id: string;
-  display_name: string;
-  adapter_kind: string;
-  available: boolean;
-  streaming: boolean;
-  resume: boolean;
-  interrupt: boolean;
-};
-
 export type ChatCapabilities = {
   ok: true;
   schema_version: "loopx_chat_capabilities_v0" | "loopx_chat_capabilities_v1";
@@ -59,41 +49,21 @@ export type ChatCapabilities = {
   streaming?: boolean;
   resume?: boolean;
   interrupt?: boolean;
-  adapters?: ChatAdapterCapability[];
+  adapters?: Array<{
+    agent_id: string;
+    display_name: string;
+    adapter_kind: string;
+    available: boolean;
+    streaming: boolean;
+    resume: boolean;
+    interrupt: boolean;
+  }>;
 };
 
 export type ChatRouteCandidate = {
   agentId: string;
   available: boolean;
 };
-
-function normalizedAgentIdentity(value: string) {
-  return value.trim().toLocaleLowerCase();
-}
-
-export function chatAgentAdapterAvailable(
-  capabilities: Pick<ChatCapabilities, "adapters"> | null,
-  agentId: string,
-  label: string,
-) {
-  return chatAgentAdapterId(capabilities, agentId, label) !== null;
-}
-
-export function chatAgentAdapterId(
-  capabilities: Pick<ChatCapabilities, "adapters"> | null,
-  agentId: string,
-  label: string,
-) {
-  const normalizedAgentId = normalizedAgentIdentity(agentId);
-  const normalizedLabel = normalizedAgentIdentity(label);
-  const adapter = capabilities?.adapters?.find((candidate) =>
-    candidate.available && (
-      normalizedAgentIdentity(candidate.agent_id) === normalizedAgentId
-      || normalizedAgentIdentity(candidate.display_name) === normalizedLabel
-    )
-  );
-  return adapter?.agent_id ?? null;
-}
 
 export function selectAvailableChatAgent<T extends ChatRouteCandidate>(
   options: T[],
@@ -287,6 +257,9 @@ export const stewardPrompts: StewardPrompt[] = [
 ];
 
 export function agentBackendLabel(agentBackend: string | null | undefined) {
+  if (agentBackend === "multi_adapter") {
+    return "Local Agent endpoints";
+  }
   if (agentBackend === "codex_app_server") {
     return "Codex app-server";
   }

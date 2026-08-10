@@ -11,15 +11,13 @@ export {
   agentBackendLabel,
   answerLocalStatusQuestion,
   buildGoalStudioNodes,
-  chatAgentAdapterAvailable,
-  chatAgentAdapterId,
   chatFailureMessage,
   completedGoalReviews,
   pendingGoalReviews,
   proposalReviewState,
   sessionInvalidatedByPayload,
-  selectChatGoal,
   selectAvailableChatAgent,
+  selectChatGoal,
   stewardPrompts,
   turnReplaySafeByPayload,
   todoNoWriteReceiptFromPayload,
@@ -32,7 +30,6 @@ export {
 } from "./chat-model";
 export type {
   AgentResponse,
-  ChatAdapterCapability,
   ChatCapabilities,
   ChatGoal,
   ChatStatus,
@@ -239,6 +236,7 @@ export async function createChatSession(
   goalId: string,
   agentId = "codex",
   mode: "resume_latest" | "new" = "resume_latest",
+  contextKind: "goal" | "manager" = "goal",
 ) {
   return requestJson<{
     agent_id: string;
@@ -248,7 +246,7 @@ export async function createChatSession(
     session_id: string;
   }>("/api/chat/sessions", {
     method: "POST",
-    body: JSON.stringify({ goal_id: goalId, agent_id: agentId, mode }),
+    body: JSON.stringify({ goal_id: goalId, agent_id: agentId, mode, context_kind: contextKind }),
   });
 }
 
@@ -260,34 +258,84 @@ export type ChatStreamEvent = {
   payload: Record<string, unknown>;
 };
 
+export type ChatSessionSummary = {
+  session_id: string;
+  goal_id: string;
+  agent_id: string;
+  adapter_kind: string;
+  channel_id?: string;
+  status: string;
+  active_turn_id: string | null;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+  resumable: boolean;
+};
+
+export type ChatVisibleMessage = {
+  message_id: string;
+  turn_id: string | null;
+  role: string;
+  text: string;
+  created_at: string;
+};
+
 export type ChatSessionSnapshot = {
   ok: true;
   schema_version: "loopx_chat_store_v1";
-  session: {
-    session_id: string;
-    goal_id: string;
-    agent_id: string;
-    adapter_kind: string;
-    status: string;
-    active_turn_id: string | null;
-    last_error_code: string | null;
-    created_at: string;
-    updated_at: string;
-    last_activity_at: string;
-    resumable: boolean;
-  };
-  messages: Array<{
-    message_id: string;
-    turn_id: string | null;
-    role: string;
-    text: string;
-    created_at: string;
-  }>;
+  session: ChatSessionSummary;
+  messages: ChatVisibleMessage[];
   active_turn: Record<string, unknown> | null;
 };
 
 export async function fetchChatSession(sessionId: string) {
   return requestJson<ChatSessionSnapshot>(`/api/chat/sessions/${sessionId}`);
+}
+
+export async function fetchChatSessions(options: {
+  agentId: string;
+  channelId: string;
+  goalId?: string;
+}) {
+  const query = new URLSearchParams();
+  query.set("agent_id", options.agentId);
+  query.set("channel_id", options.channelId);
+  if (options.goalId) query.set("goal_id", options.goalId);
+  return requestJson<{
+    ok: true;
+    schema_version: "loopx_chat_session_list_v1";
+    sessions: ChatSessionSummary[];
+  }>(`/api/chat/sessions?${query.toString()}`);
+}
+
+export function mergeChatSessionMessages(snapshots: ChatSessionSnapshot[]) {
+  const messages = new Map<string, ChatVisibleMessage>();
+  for (const snapshot of snapshots) {
+    for (const message of snapshot.messages) {
+      messages.set(message.message_id, message);
+    }
+  }
+  return [...messages.values()].sort((left, right) =>
+    left.created_at.localeCompare(right.created_at)
+      || left.message_id.localeCompare(right.message_id)
+  );
+}
+
+export async function fetchChatHistory(options: {
+  agentId: string;
+  channelId: string;
+  goalId?: string;
+}) {
+  const listed = await fetchChatSessions(options);
+  const snapshots = await Promise.all(
+    listed.sessions.map((session) => fetchChatSession(session.session_id)),
+  );
+  return {
+    messages: mergeChatSessionMessages(snapshots),
+    sessions: listed.sessions,
+    snapshots,
+  };
 }
 
 export async function acceptChatTurn(sessionId: string, message: string, clientTurnId: string) {
@@ -392,6 +440,7 @@ export async function sendChatTurnStreaming(
   options: {
     clientTurnId?: string;
     onDelta?: (text: string) => void;
+    onActivity?: (label: string) => void;
     onPhase?: (phase: string, turnId: string) => void;
     signal?: AbortSignal;
   } = {},
@@ -407,8 +456,11 @@ export async function sendChatTurnStreaming(
     accepted.events_url,
     (event) => {
       options.onPhase?.(event.kind, accepted.turn_id);
-      if (event.kind === "assistant.delta") {
+      if (event.kind === "answer.delta" || event.kind === "assistant.delta") {
         options.onDelta?.(String(event.payload.text ?? ""));
+      }
+      if (event.kind === "agent.phase") {
+        options.onActivity?.(String(event.payload.label ?? "Agent 正在处理"));
       }
       if (event.kind === "turn.completed") {
         finalResponse = event.payload.response;

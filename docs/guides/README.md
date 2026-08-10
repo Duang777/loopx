@@ -10,6 +10,7 @@ Guides are task-oriented paths for people starting or operating LoopX.
 - [Custom Agent runner integration (中文)](custom-agent-runner-integration.zh-CN.md)
 - [Auto-research command path](auto-research-command-path.md)
 - [Multi-agent product recipe](multi-agent-product-recipe.md)
+- [Codex App multi-provider switching](codex-app-provider-switching.md)
 
 Stable semantics belong in [reference contracts](../reference/README.md);
 product rationale belongs in the [product index](../product/README.md).

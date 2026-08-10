@@ -63,10 +63,15 @@ def source_git_commit(root: Path = REPO_ROOT) -> str:
     return commit
 
 
-def run_install(env: dict[str, str], release_id: str) -> subprocess.CompletedProcess[str]:
+def run_install(
+    env: dict[str, str],
+    release_id: str,
+    *,
+    cwd: Path = REPO_ROOT,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(INSTALL_SCRIPT)],
-        cwd=REPO_ROOT,
+        cwd=cwd,
         env={**env, "LOOPX_RELEASE_ID": release_id},
         check=True,
         capture_output=True,
@@ -207,7 +212,15 @@ def main() -> int:
         }
         source_commit = source_git_commit()
 
-        install = run_install(env, "install-smoke-initial")
+        shadow_cwd = root / "shadow-checkout"
+        shadow_package = shadow_cwd / "loopx"
+        shadow_package.mkdir(parents=True)
+        (shadow_package / "__init__.py").write_text(
+            '"""Deliberately incomplete package that must not shadow the release."""\n',
+            encoding="utf-8",
+        )
+
+        install = run_install(env, "install-smoke-initial", cwd=shadow_cwd)
         assert "loopx installed locally" in install.stdout, install.stdout
         assert "promotion-readiness evidence is missing" in install.stderr, install.stderr
         assert "non-blocking" in install.stderr, install.stderr
