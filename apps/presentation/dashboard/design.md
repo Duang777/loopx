@@ -288,6 +288,12 @@ server. Codex and Claude Code retain a read-only boundary; Claude Code may use
 only `Read`, `Glob`, and `Grep`. Direct model providers do not receive host
 tools. `Status only` stays local and makes no model call.
 
+Codex Chat uses ordinary resumable app-server Threads. The selected LoopX Goal
+remains a local Session binding and is supplied to each Turn as supporting
+public-safe context. Chat does not enable Codex's autonomous Goal mode or call
+`thread/goal/set`; that mode interprets later input as execution continuation
+and does not preserve the direct question-and-answer contract required here.
+
 Custom ACP Agents use the stable
 [ACP v1 newline-delimited stdio transport](https://agentclientprotocol.com/protocol/v1/transports).
 A remote Agent can be connected through an owner-controlled stdio bridge such
