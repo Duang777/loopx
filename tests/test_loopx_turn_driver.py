@@ -95,6 +95,21 @@ def test_turn_plan_projects_ready_route_without_side_effects() -> None:
     ]
     assert payload["transaction"]["receipt_seed"]["status"] == "not_executed"
     assert payload["transaction"]["receipt_seed"]["next_phase"] == "host_execute"
+    settlement_plan = payload["transaction"]["settlement_plan"]
+    assert settlement_plan["identity"]["goal_id"] == "fixture-goal"
+    assert settlement_plan["identity"]["agent_id"] == "codex-fixture"
+    assert settlement_plan["identity"]["todo_id"] == "todo_fixture0001"
+    assert [step["kind"] for step in settlement_plan["ordered_steps"]] == [
+        "validation",
+        "durable_writeback",
+        "quota_spend",
+    ]
+    for step in settlement_plan["ordered_steps"]:
+        assert step["owner"]
+        assert step["precondition"]
+        assert step["idempotency_key_ref"] == "$.identity.effect_id"
+        assert step["expected_receipt"]
+    assert settlement_plan["host_handoff"]["inside_agent_settlement"] is False
     assert payload["turn_envelope"] == envelope
     assert payload["effects"] == {
         "host_invoked": False,
@@ -445,6 +460,14 @@ def test_turn_plan_transaction_key_is_stable_and_todo_scoped() -> None:
 
     assert first["transaction"]["turn_key"] == repeated["transaction"]["turn_key"]
     assert first["transaction"]["turn_key"] != changed["transaction"]["turn_key"]
+    assert (
+        first["transaction"]["settlement_plan"]["identity"]["effect_id"]
+        == repeated["transaction"]["settlement_plan"]["identity"]["effect_id"]
+    )
+    assert (
+        first["transaction"]["settlement_plan"]["identity"]["effect_id"]
+        != changed["transaction"]["settlement_plan"]["identity"]["effect_id"]
+    )
 
 
 def test_turn_plan_instance_id_distinguishes_new_turns_from_retries() -> None:
@@ -915,6 +938,7 @@ def test_turn_cli_consumes_live_state_without_writes(
     assert exit_code == 0
     assert payload["route"]["kind"] == LoopXTurnRoute.READY_FOR_HOST.value
     assert payload["session"]["action"] == "start_new"
+    assert "settlement_plan" not in payload["transaction"]
     assert payload["turn_envelope"]["action_signature"]["matches"] is True
     assert payload["effects"]["state_written"] is False
     assert before == after

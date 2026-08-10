@@ -16,7 +16,6 @@ from loopx.control_plane.testing.quota_fixtures import (
 )
 from loopx.quota import build_quota_should_run
 
-
 GOAL_ID = "monitor-replan-agent-scope-fixture"
 AGENT_ID = "codex-quality-agent"
 PEER_AGENT_ID = "codex-delivery-peer"
@@ -36,7 +35,7 @@ def _guard(
             task_class="continuous_monitor",
             claimed_by=AGENT_ID,
             target_key="github-pr-123",
-            consecutive_no_change="2",
+            consecutive_no_change="5",
             cadence="30m",
             next_due_at="2099-01-01T00:00:00+00:00",
         ),
@@ -72,7 +71,7 @@ def _guard(
                 task_class="continuous_monitor",
                 claimed_by=AGENT_ID,
                 target_key="github-pr-456",
-                consecutive_no_change="2",
+                consecutive_no_change="5",
                 cadence="1h",
                 next_due_at="2099-01-01T00:00:00+00:00",
             ),
@@ -139,8 +138,8 @@ def test_peer_advancement_does_not_suppress_current_monitor_streak_replan() -> N
     trigger = obligation["triggers"][0]
     assert trigger["kind"] == "monitor_no_change_streak"
     assert trigger["todo_id"] == "todo_stalled_monitor"
-    assert trigger["run_count"] == 2
-    assert trigger["threshold"] == 2
+    assert trigger["run_count"] == 5
+    assert trigger["threshold"] == 5
 
     frontier = guard["goal_frontier_projection"]
     assert frontier["monitor_only_lanes"]["present"] is True
@@ -170,13 +169,13 @@ def test_interleaved_monitors_keep_independent_no_change_streaks() -> None:
         "kind": "monitor_no_change_streak",
         "section": "agent_todo_summary.monitor_open_items",
         "text": (
-            "monitor github-pr-456 recorded 2 consecutive unchanged polls "
+            "monitor github-pr-456 recorded 5 consecutive unchanged polls "
             "without selectable advancement"
         ),
         "todo_id": "todo_unchanged_twice",
         "monitor_target_id": "github-pr-456",
-        "run_count": 2,
-        "threshold": 2,
+        "run_count": 5,
+        "threshold": 5,
         "agent_id": AGENT_ID,
     }
     assert [
@@ -267,6 +266,7 @@ def test_three_peer_status_quota_and_monitor_recommendations_stay_agent_scoped()
                     "schema_version": "goal_vision_replan_contract_v0",
                     "agent_id": AGENT_ID,
                     "state": "vision_active",
+                    "todo_delta": ["activate:todo_quality_prerequisite"],
                     "vision_patch": {
                         "acceptance_summary": (
                             "Keep quality qualification advancing until closed."
@@ -370,7 +370,7 @@ def _combined_user_frontier_guard(*, user_task_class: str) -> dict:
         task_class="continuous_monitor",
         claimed_by=AGENT_ID,
         target_key="github-pr-123",
-        consecutive_no_change="2",
+        consecutive_no_change="5",
         cadence="30m",
         next_due_at="2099-01-01T00:00:00+00:00",
     )
@@ -415,13 +415,16 @@ def _combined_user_frontier_guard(*, user_task_class: str) -> dict:
                     "schema_version": "goal_vision_replan_contract_v0",
                     "agent_id": AGENT_ID,
                     "state": "vision_active",
+                    "todo_delta": [
+                        "activate:todo_blocked_release_baseline"
+                    ],
                     "vision_patch": {
                         "acceptance_summary": (
                             "Keep release qualification advancing until closed."
                         ),
                         "advancement_policy": "repeat_until_closed",
                         "replan_trigger_summary": (
-                            "Replan after two unchanged monitor observations."
+                            "Replan after five unchanged monitor observations."
                         ),
                     },
                 },

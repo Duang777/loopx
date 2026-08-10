@@ -13,6 +13,10 @@ GOAL_VISION_ADVANCEMENT_POLICY_CHOICES = tuple(
     policy.value for policy in GoalVisionAdvancementPolicy
 )
 
+# A completed advancement chain gets one outcome-continuity checkpoint at this
+# cadence. Agent-facing projections must preserve at least the same window.
+COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD = 5
+
 
 def normalize_goal_vision_advancement_policy(value: Any) -> str:
     candidate = str(value or "").strip().lower().replace("-", "_")

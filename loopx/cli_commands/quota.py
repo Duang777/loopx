@@ -10,15 +10,22 @@ from ..control_plane.quota.cli_projection import (
     compact_quota_should_run_cli_payload,
 )
 from ..control_plane.quota.error_codes import quota_error_code
+from ..control_plane.quota.effect_program import SettlementIdentity
 from ..control_plane.quota.heartbeat_receipt import (
     fail_heartbeat_receipt,
     find_heartbeat_receipt,
     heartbeat_receipt_view,
+    upgrade_identityless_heartbeat_receipt,
 )
 from ..control_plane.quota.live_decision import build_live_quota_should_run_decision
 from ..control_plane.quota.monitor_poll import find_quota_monitor_poll_turn
 from ..control_plane.quota.scheduler_ack import (
     record_quota_scheduler_failure_for_decision,
+)
+from ..control_plane.quota.settlement_cli import (
+    attach_spend_settlement_result,
+    quota_rollout_details,
+    quota_rollout_todo_id,
 )
 from ..control_plane.quota.spend_sources import (
     DEFAULT_SLOT_SPEND_SOURCE,
@@ -279,9 +286,9 @@ def register_quota_command(subparsers: argparse._SubParsersAction) -> None:
     quota_parser.add_argument(
         "--turn-instance-id",
         help=(
-            "Stable heartbeat trigger id for `quota should-run`. The command "
-            "persists one idempotent receipt and, for a quiet no-progress "
-            "decision, its stall observation. Reuse the same id on retries."
+            "Stable heartbeat settlement id for `quota should-run` and "
+            "`quota spend-slot`. The guard persists one idempotent receipt; "
+            "reuse the same id through writeback, spend, and retries."
         ),
     )
     quota_parser.add_argument("--slots", type=int, default=1, help="Slots to account for `quota spend-slot`.")
@@ -398,11 +405,14 @@ def _prepare_quota_command_context(
     heartbeat_turn_id = normalize_turn_instance_id(
         getattr(args, "turn_instance_id", None)
     )
-    if heartbeat_turn_id and command != "should-run":
-        raise ValueError("--turn-instance-id is only valid with `quota should-run`")
+    if heartbeat_turn_id and command not in {"should-run", "spend-slot"}:
+        raise ValueError(
+            "--turn-instance-id is only valid with `quota should-run` or "
+            "`quota spend-slot`"
+        )
     if heartbeat_turn_id and not args.agent_id:
-        raise ValueError("turn-scoped `quota should-run` requires --agent-id")
-    if heartbeat_turn_id and bool(args.dry_run):
+        raise ValueError("turn-scoped quota settlement requires --agent-id")
+    if heartbeat_turn_id and command == "should-run" and bool(args.dry_run):
         raise ValueError("turn-scoped `quota should-run` cannot use --dry-run")
 
     scan_roots = [Path(item).expanduser() for item in args.scan_path]
@@ -585,6 +595,78 @@ def _quota_renderer(
     }.get(command, render_quota_markdown)
 
 
+def _reconcile_existing_heartbeat_receipt(
+    payload: dict[str, object],
+    args: argparse.Namespace,
+    *,
+    runtime_root: Path,
+    turn_instance_id: str,
+    existing: dict[str, object],
+) -> tuple[dict[str, object], str, bool, str]:
+    """Bind an identity-less same-turn receipt without changing a bound receipt."""
+
+    receipt = existing
+    receipt_status = "replayed"
+    receipt_appended = False
+    rollout_todo_id = quota_rollout_todo_id(payload, args)
+    if rollout_todo_id:
+        existing_details_value = receipt.get("details")
+        existing_details = (
+            existing_details_value
+            if isinstance(existing_details_value, Mapping)
+            else {}
+        )
+        existing_todo_id = str(existing_details.get("todo_id") or "").strip()
+        existing_effect_id = str(
+            existing_details.get("settlement_effect_id") or ""
+        ).strip()
+        expected_effect_id = SettlementIdentity(
+            goal_id=args.goal_id,
+            agent_id=args.agent_id,
+            todo_id=rollout_todo_id,
+            turn_instance_id=turn_instance_id,
+        ).effect_id
+        if existing_todo_id and existing_effect_id:
+            if (
+                existing_todo_id != rollout_todo_id
+                or existing_effect_id != expected_effect_id
+            ):
+                raise ValueError(
+                    "heartbeat receipt settlement identity conflicts with the "
+                    "current selected Todo"
+                )
+        else:
+            rollout_details = quota_rollout_details(
+                payload,
+                args,
+                todo_id=rollout_todo_id,
+            )
+            receipt, upgraded = upgrade_identityless_heartbeat_receipt(
+                runtime_root,
+                goal_id=args.goal_id,
+                agent_id=args.agent_id,
+                turn_instance_id=turn_instance_id,
+                todo_id=rollout_todo_id,
+                settlement_effect_id=expected_effect_id,
+                status=str(
+                    payload.get("effective_action")
+                    or payload.get("decision")
+                    or "should-run"
+                ),
+                summary=f"heartbeat quota receipt upgraded for turn={turn_instance_id}",
+                details=rollout_details,
+            )
+            if upgraded:
+                receipt_status = "upgraded"
+                receipt_appended = True
+    details_value = receipt.get("details")
+    details: Mapping[str, object] = (
+        details_value if isinstance(details_value, Mapping) else {}
+    )
+    stall_observation = str(details.get("stall_observation") or "not_applicable")
+    return receipt, receipt_status, receipt_appended, stall_observation
+
+
 def handle_quota_command(
     args: argparse.Namespace,
     *,
@@ -595,6 +677,8 @@ def handle_quota_command(
 ) -> int:
     heartbeat_turn_id: str | None = None
     heartbeat_receipt_existing: dict[str, object] | None = None
+    heartbeat_receipt_existing_status = "replayed"
+    heartbeat_receipt_existing_appended = False
     heartbeat_receipt_ready = False
     heartbeat_stall_observation = "not_evaluated"
     detail_sections: frozenset[str] = frozenset()
@@ -636,13 +720,17 @@ def handle_quota_command(
                     turn_instance_id=heartbeat_turn_id,
                 )
                 if heartbeat_receipt_existing:
-                    details = (
-                        heartbeat_receipt_existing.get("details")
-                        if isinstance(heartbeat_receipt_existing.get("details"), Mapping)
-                        else {}
-                    )
-                    heartbeat_stall_observation = str(
-                        details.get("stall_observation") or "not_applicable"
+                    (
+                        heartbeat_receipt_existing,
+                        heartbeat_receipt_existing_status,
+                        heartbeat_receipt_existing_appended,
+                        heartbeat_stall_observation,
+                    ) = _reconcile_existing_heartbeat_receipt(
+                        payload,
+                        args,
+                        runtime_root=runtime_root,
+                        turn_instance_id=heartbeat_turn_id,
+                        existing=heartbeat_receipt_existing,
                     )
                     heartbeat_receipt_ready = True
                 else:
@@ -801,6 +889,7 @@ def handle_quota_command(
                 available_capabilities=args.available_capabilities,
                 operator_inbox_urgency_projector=operator_inbox_urgency_projector,
                 todo_id=args.todo_id,
+                turn_instance_id=heartbeat_turn_id,
             )
         elif args.quota_command == "void-slot":
             payload = void_quota_slot(
@@ -826,30 +915,21 @@ def handle_quota_command(
         )
     should_log_quota = args.quota_command in QUOTA_EVENT_KINDS and (
         args.quota_command == "should-run"
-        or (payload.get("ok") and bool(payload.get("appended")))
+        or (
+            payload.get("ok")
+            and (
+                bool(payload.get("appended"))
+                or bool(payload.get("receipt_repair_required"))
+            )
+        )
     )
     if should_log_quota:
-        rollout_details = {
-            "command": "quota",
-            "quota_command": args.quota_command,
-            "ok": bool(payload.get("ok")),
-            "should_run": bool(payload.get("should_run")),
-            "appended": bool(payload.get("appended")),
-            "slots": payload.get("slots") or "",
-            "source": payload.get("source") or "",
-            "todo_id": payload.get("todo_id") or "",
-            "target_key": payload.get("target_key") or "",
-            "successor_todo_ids": ",".join(
-                str(todo_id)
-                for todo_id in (
-                    payload.get("successor_todo_ids")
-                    if isinstance(payload.get("successor_todo_ids"), list)
-                    else []
-                )
-                if str(todo_id).strip()
-            ),
-            "applied_rrule": payload.get("applied_rrule") or "",
-        }
+        rollout_todo_id = quota_rollout_todo_id(payload, args)
+        rollout_details = quota_rollout_details(
+            payload,
+            args,
+            todo_id=rollout_todo_id,
+        )
         if heartbeat_turn_id and args.quota_command == "should-run":
             if not heartbeat_receipt_ready:
                 prior_reason = str(payload.get("reason") or "").strip()
@@ -867,7 +947,7 @@ def handle_quota_command(
                 payload["heartbeat_receipt"] = heartbeat_receipt_view(
                     heartbeat_receipt_existing,
                     turn_instance_id=heartbeat_turn_id,
-                    status="replayed",
+                    status=heartbeat_receipt_existing_status,
                 )
                 payload["rollout_event"] = {
                     "schema_version": heartbeat_receipt_existing.get("schema_version"),
@@ -875,13 +955,19 @@ def handle_quota_command(
                     "event_kind": heartbeat_receipt_existing.get("event_kind"),
                     "recorded_at": heartbeat_receipt_existing.get("recorded_at"),
                     "status": heartbeat_receipt_existing.get("status"),
-                    "appended": False,
+                    "appended": heartbeat_receipt_existing_appended,
                 }
             else:
                 rollout_details.update(
                     {
                         "turn_instance_id": heartbeat_turn_id,
                         "stall_observation": heartbeat_stall_observation,
+                        "settlement_effect_id": (
+                            f"{args.goal_id}:{args.agent_id}:{rollout_todo_id}:"
+                            f"{heartbeat_turn_id}"
+                            if rollout_todo_id
+                            else ""
+                        ),
                     }
                 )
                 append_cli_rollout_event(
@@ -911,9 +997,10 @@ def handle_quota_command(
                     turn_instance_id=heartbeat_turn_id,
                 )
                 if receipt:
-                    rollout_event = (
-                        payload.get("rollout_event")
-                        if isinstance(payload.get("rollout_event"), Mapping)
+                    rollout_event_value = payload.get("rollout_event")
+                    rollout_event: Mapping[str, object] = (
+                        rollout_event_value
+                        if isinstance(rollout_event_value, Mapping)
                         else {}
                     )
                     payload["heartbeat_receipt"] = heartbeat_receipt_view(
@@ -938,6 +1025,12 @@ def handle_quota_command(
                 runtime_root_arg=runtime_root_arg,
                 event_kind=QUOTA_EVENT_KINDS[args.quota_command],
                 agent_id=args.agent_id,
+                todo_id=rollout_todo_id,
+                run_id=(
+                    heartbeat_turn_id
+                    if args.quota_command == "spend-slot"
+                    else None
+                ),
                 status=str(
                     payload.get("effective_action")
                     or payload.get("decision")
@@ -952,6 +1045,15 @@ def handle_quota_command(
                 details=rollout_details,
                 allow_failed=args.quota_command == "should-run",
             )
+            if args.quota_command == "spend-slot" and heartbeat_turn_id:
+                attach_spend_settlement_result(
+                    payload,
+                    runtime_root=runtime_root,
+                    goal_id=args.goal_id,
+                    agent_id=args.agent_id,
+                    todo_id=rollout_todo_id,
+                    turn_instance_id=heartbeat_turn_id,
+                )
     if bool(getattr(args, "turn_envelope", False)):
         payload = build_turn_envelope(
             payload,

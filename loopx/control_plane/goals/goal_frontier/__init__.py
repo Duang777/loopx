@@ -15,10 +15,13 @@ from ...work_items.autonomous_replan_ack import (
     autonomous_replan_ack_matches_frontier,
 )
 from ...work_items.autonomous_replan_obligation import (
-    AUTONOMOUS_REPLAN_STALL_THRESHOLD,
+    MONITOR_NO_CHANGE_STREAK_THRESHOLD,
     build_autonomous_replan_obligation_payload,
 )
-from ...work_items.repair_delta import repair_delta_kinds_have_frontier_delta
+from ...work_items.repair_delta import (
+    repair_delta_kinds_have_frontier_delta,
+    validate_repair_delta_claims,
+)
 from ..goal_vision_policy import goal_vision_repeats_advancement_until_closed
 from ..goal_vision_state import (
     goal_vision_state_is_closed,
@@ -69,6 +72,13 @@ TODO_TASK_CLASS_ADVANCEMENT = "advancement_task"
 TODO_TASK_CLASS_MONITOR = "continuous_monitor"
 LONG_TODO_CHAIN_ADVANCEMENT_THRESHOLD = 15
 LONG_TODO_CHAIN_OPEN_THRESHOLD = 20
+VISION_FRONTIER_TODO_DELTA_ACTIONS = {
+    "activate",
+    "create",
+    "reopen",
+    "resume",
+    "retain",
+}
 
 
 def safe_non_negative_int(value: Any) -> int:
@@ -236,6 +246,8 @@ def _watch_lane_ack_covers_dead_monitor_repeat(
     *,
     replan_obligation: dict[str, Any] | None,
     acceptance_gaps: list[dict[str, Any]],
+    agent_todo_summary: dict[str, Any] | None,
+    agent_id: str | None,
 ) -> bool:
     """Keep an as-needed watch ACK valid across unchanged heartbeat receipts."""
 
@@ -255,15 +267,78 @@ def _watch_lane_ack_covers_dead_monitor_repeat(
         delta_kind="watch_lane_continuation",
     ):
         return False
+    if not isinstance(ack, dict):
+        return False
     if not acceptance_gaps or any(
         gap.get("kind") != "vision_acceptance_gap"
         for gap in acceptance_gaps
     ):
         return False
-    return not any(
+    if any(
         goal_vision_repeats_advancement_until_closed(gap.get("advancement_policy"))
         for gap in acceptance_gaps
+    ):
+        return False
+    frontier_identity = str(
+        replan_obligation.get("frontier_identity")
+        if isinstance(replan_obligation, dict)
+        else ""
+    ).strip()
+    if (
+        not frontier_identity
+        or str(ack.get("frontier_identity") or "").strip() != frontier_identity
+    ):
+        return False
+    delta_contract = ack.get("delta_contract")
+    evidence_todo_ids = {
+        str(todo_id).strip()
+        for evidence in (
+            delta_contract.get("auto_evidence") or []
+            if isinstance(delta_contract, dict)
+            else []
+        )
+        if isinstance(evidence, dict)
+        and evidence.get("kind") == "watch_lane_continuation"
+        for todo_id in (evidence.get("todo_ids") or [])
+        if str(todo_id or "").strip()
+    }
+    if not evidence_todo_ids:
+        return False
+    vision_todo_ids = {
+        str(todo_id).strip()
+        for gap in acceptance_gaps
+        for todo_id in (gap.get("vision_todo_ids") or [])
+        if str(todo_id or "").strip()
+    }
+    if (
+        len(evidence_todo_ids) != 1
+        or not vision_todo_ids
+        or not evidence_todo_ids.issubset(vision_todo_ids)
+    ):
+        return False
+    summary = agent_todo_summary if isinstance(agent_todo_summary, dict) else {}
+    exact_watch_items_by_id: dict[str, dict[str, Any]] = {}
+    for lane in (
+        "items",
+        "current_agent_claimed_monitor_items",
+        "claimed_monitor_open_items",
+        "monitor_open_items",
+    ):
+        for item in summary.get(lane) or []:
+            if not isinstance(item, dict):
+                continue
+            todo_id = str(item.get("todo_id") or "").strip()
+            if todo_id in evidence_todo_ids:
+                exact_watch_items_by_id[todo_id] = item
+    accepted, _, _ = validate_repair_delta_claims(
+        ["watch_lane_continuation"],
+        agent_todo_summary={"items": list(exact_watch_items_by_id.values())},
+        agent_id=agent_id,
+        advancement_policy="as_needed",
+        next_action_changed=False,
+        vision_patch_written=False,
     )
+    return "watch_lane_continuation" in accepted
 
 
 def _watch_lane_ack_covers_blocked_successor_repeat(
@@ -497,6 +572,16 @@ def acceptance_gaps_from_agent_vision(
     }
     if acceptance:
         gap["acceptance_summary"] = acceptance
+    vision_todo_ids = [
+        todo_id
+        for value in (agent_vision.get("todo_delta") or [])
+        if isinstance(value, str)
+        and (parts := value.strip().partition(":"))[1]
+        and parts[0].strip().lower() in VISION_FRONTIER_TODO_DELTA_ACTIONS
+        and (todo_id := _compact_projection_text(parts[2], limit=120))
+    ]
+    if vision_todo_ids:
+        gap["vision_todo_ids"] = list(dict.fromkeys(vision_todo_ids))
     advancement_policy = _compact_projection_text(
         patch.get("advancement_policy"),
         limit=32,
@@ -821,7 +906,7 @@ def _monitor_no_change_streak_trigger(
         if agent_id and claimed_by != agent_id:
             continue
         no_change_count = safe_non_negative_int(item.get("consecutive_no_change"))
-        if no_change_count < AUTONOMOUS_REPLAN_STALL_THRESHOLD:
+        if no_change_count < MONITOR_NO_CHANGE_STREAK_THRESHOLD:
             continue
         target_key = str(
             item.get("target_key") or item.get("todo_id") or "monitor"
@@ -844,7 +929,7 @@ def _monitor_no_change_streak_trigger(
         "todo_id": monitor.get("todo_id"),
         "monitor_target_id": target_key,
         "run_count": no_change_count,
-        "threshold": AUTONOMOUS_REPLAN_STALL_THRESHOLD,
+        "threshold": MONITOR_NO_CHANGE_STREAK_THRESHOLD,
         "agent_id": agent_id,
     }
 
@@ -1292,6 +1377,16 @@ def derive_goal_frontier_replan_obligation_from_summaries(
                     "agent_id": agent_id,
                     "acceptance_summary": gap.get("acceptance_summary"),
                     "advancement_policy": gap.get("advancement_policy"),
+                    **{
+                        key: gap.get(key)
+                        for key in (
+                            "completed_todo_id",
+                            "completed_todo_count",
+                            "completed_todo_threshold",
+                            "completed_todo_ids",
+                        )
+                        if gap.get(key) is not None
+                    },
                 }
                 for gap in compact_acceptance_gaps[:3]
             ],
@@ -1376,7 +1471,7 @@ def derive_goal_frontier_replan_obligation_from_summaries(
             schema_version=AUTONOMOUS_REPLAN_OBLIGATION_SCHEMA_VERSION,
             agent_id=agent_id,
             include_agent_id=True,
-            stall_threshold=AUTONOMOUS_REPLAN_STALL_THRESHOLD,
+            stall_threshold=MONITOR_NO_CHANGE_STREAK_THRESHOLD,
             trigger_count=1,
             triggers=[monitor_no_change_trigger],
             guidance_actions=[
@@ -1643,6 +1738,8 @@ def build_goal_frontier_projection_context_from_status(
             effective_replan_ack,
             replan_obligation=replan_obligation,
             acceptance_gaps=acceptance_gaps,
+            agent_todo_summary=agent_todo_summary,
+            agent_id=agent_id,
         )
     )
     watch_lane_ack_covers_blocked_successor_repeat = (
@@ -1665,6 +1762,7 @@ def build_goal_frontier_projection_context_from_status(
                 replan_obligation,
             )
             or watch_lane_ack_covers_blocked_successor_repeat
+            or watch_lane_ack_covers_dead_monitor_repeat
         )
         and (
             not acceptance_gaps

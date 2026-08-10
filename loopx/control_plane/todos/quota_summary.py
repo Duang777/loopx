@@ -10,6 +10,7 @@ from ..agents.agent_scope import (
     agent_scope_item_claimed_by,
 )
 from ..agents.capability_gate import missing_required_capabilities
+from ..goals.goal_vision_policy import COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD
 from ..runtime.time import now_utc
 from .claim_visibility import (
     build_agent_claim_scoped_open_items,
@@ -123,7 +124,7 @@ QUOTA_PAYLOAD_LANE_LIMITS = {
     "current_agent_claimed_advancement_items": QUOTA_PAYLOAD_VISIBILITY_LANE_LIMIT,
     "current_agent_claimed_monitor_items": QUOTA_PAYLOAD_VISIBILITY_LANE_LIMIT,
     "current_agent_blocker_items": QUOTA_PAYLOAD_DIAGNOSTIC_LANE_LIMIT,
-    "recent_completed_advancement_items": 5,
+    "recent_completed_advancement_items": COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD,
     "claimed_by_others_items": QUOTA_PAYLOAD_DIAGNOSTIC_LANE_LIMIT,
     "other_agent_scoped_items": QUOTA_PAYLOAD_DIAGNOSTIC_LANE_LIMIT,
     "other_agent_bound_user_action_items": QUOTA_PAYLOAD_DIAGNOSTIC_LANE_LIMIT,
@@ -519,8 +520,9 @@ def summarize_user_todos_for_quota(
         "active_next_action_executable_items": lanes.active_next_action_executable_items,
         "backlog_items": lanes.display_open_items[:TODO_BACKLOG_ITEM_LIMIT],
         "executable_backlog_items": lanes.executable_items[:TODO_BACKLOG_ITEM_LIMIT],
-        "recent_completed_advancement_items": recent_completed_advancement_items,
     }
+    if recent_completed_advancement_items:
+        summary["recent_completed_advancement_items"] = recent_completed_advancement_items
     if blocker_items:
         summary["blocker_open_count"] = len(blocker_items)
     if current_agent_blocker_items:

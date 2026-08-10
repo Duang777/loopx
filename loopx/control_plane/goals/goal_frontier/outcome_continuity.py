@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ...agents.agent_scope import agent_scope_item_claimed_by
 from ...work_items.repair_delta import repair_delta_kinds_have_frontier_delta
+from ..goal_vision_policy import (
+    COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD,
+    goal_vision_repeats_advancement_until_closed,
+)
 from ..goal_vision_state import goal_vision_state_is_closed
 
 VISION_OUTCOME_CHECKPOINT_REQUIRED_TRIGGER = "vision_outcome_checkpoint_required"
@@ -22,8 +26,6 @@ REPEAT_VISION_REPLAN_SATISFYING_DELTA_KINDS = (
     "runnable_todo_set",
     "successor_or_supersede",
 )
-
-
 def _compact_text(value: Any, *, limit: int) -> str | None:
     text = " ".join(str(value or "").strip().split())
     return text[:limit] if text else None
@@ -326,11 +328,11 @@ def _iso_timestamp(value: Any) -> float | None:
     if not text:
         return None
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -361,8 +363,40 @@ def _checkpoint_covers_completed_todo(
         for value in (checkpoint.get("repair_delta_kinds") or [])
         if str(value or "").strip()
     }
+    if repair_delta_kinds & set(REPEAT_VISION_REPLAN_SATISFYING_DELTA_KINDS):
+        return True
+    qualification_vision_value = checkpoint.get("qualification_agent_vision")
+    qualification_vision = (
+        qualification_vision_value
+        if isinstance(qualification_vision_value, dict)
+        else agent_vision
+    )
+    qualification_patch = _dict_field(qualification_vision, "vision_patch")
+    if goal_vision_repeats_advancement_until_closed(
+        qualification_patch.get("advancement_policy")
+    ):
+        return False
+    path_delta = _dict_field(qualification_vision, "path_delta")
+    evidence_refs = [
+        value
+        for value in (path_delta.get("evidence_refs") or [])
+        if _compact_text(value, limit=140)
+    ]
+    fresh_vision_patch = bool(
+        checkpoint.get("decision") == "patched"
+        and checkpoint.get("generated_at")
+        and checkpoint.get("generated_at")
+        == qualification_vision.get("generated_at")
+    )
     return bool(
-        repair_delta_kinds & set(REPEAT_VISION_REPLAN_SATISFYING_DELTA_KINDS)
+        fresh_vision_patch
+        and _compact_text(qualification_patch.get("acceptance_summary"), limit=420)
+        and _compact_text(path_delta.get("outcome"), limit=32) == "replan"
+        and evidence_refs
+        and {
+            "goal_vision_patch",
+            "watch_lane_continuation",
+        }.issubset(repair_delta_kinds)
     )
 
 
@@ -373,7 +407,7 @@ def acceptance_gaps_from_todo_completion_checkpoint(
     agent_todo_summary: dict[str, Any] | None,
     agent_id: str | None,
 ) -> list[dict[str, Any]]:
-    """Require a qualified outcome checkpoint after a scoped todo completion."""
+    """Require a checkpoint after a bounded chain of scoped completions."""
 
     if not isinstance(agent_vision, dict):
         return []
@@ -388,11 +422,16 @@ def acceptance_gaps_from_todo_completion_checkpoint(
         if isinstance(item, dict)
         and agent_scope_item_claimed_by(item) == agent_id
     ]
-    latest_item = max(
-        completed_items,
+    completed_items = [
+        item
+        for item in completed_items
+        if _iso_timestamp(item.get("completed_at")) is not None
+    ]
+    completed_items.sort(
         key=lambda item: _iso_timestamp(item.get("completed_at")) or 0.0,
-        default=None,
+        reverse=True,
     )
+    latest_item = completed_items[0] if completed_items else None
     if not isinstance(latest_item, dict):
         return []
     completed_at = _iso_timestamp(latest_item.get("completed_at"))
@@ -409,6 +448,23 @@ def acceptance_gaps_from_todo_completion_checkpoint(
     ):
         return []
 
+    qualified_checkpoint_at = (
+        checkpoint_generated_at
+        if isinstance(checkpoint, dict)
+        and checkpoint_generated_at is not None
+        and _checkpoint_covers_completed_todo(agent_vision, checkpoint)
+        else None
+    )
+    uncheckpointed_items = [
+        item
+        for item in completed_items
+        if qualified_checkpoint_at is None
+        or (_iso_timestamp(item.get("completed_at")) or 0.0)
+        > qualified_checkpoint_at
+    ]
+    if len(uncheckpointed_items) < COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD:
+        return []
+
     patch = _dict_field(agent_vision, "vision_patch")
     return [
         {
@@ -416,7 +472,8 @@ def acceptance_gaps_from_todo_completion_checkpoint(
             "source": "recent_completed_advancement_todo",
             "agent_id": agent_id or agent_vision.get("agent_id"),
             "replan_trigger_summary": (
-                "completed advancement work has no later final-outcome checkpoint"
+                "a completed advancement Todo chain has no later final-outcome "
+                "checkpoint"
             ),
             "acceptance_summary": (
                 _compact_text(patch.get("acceptance_summary"), limit=420)
@@ -425,6 +482,15 @@ def acceptance_gaps_from_todo_completion_checkpoint(
             "advancement_policy": patch.get("advancement_policy"),
             "completed_todo_id": latest_item.get("todo_id"),
             "completed_at": latest_item.get("completed_at"),
+            "completed_todo_count": len(uncheckpointed_items),
+            "completed_todo_threshold": COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD,
+            "completed_todo_ids": [
+                item.get("todo_id")
+                for item in uncheckpointed_items[
+                    :COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD
+                ]
+                if item.get("todo_id")
+            ],
             "checkpoint_generated_at": (
                 checkpoint.get("generated_at")
                 if isinstance(checkpoint, dict)

@@ -7,6 +7,10 @@
 | Author | LoopX maintainers |
 | Scope | Public control-plane docs, packet contracts, refactor direction, test strategy |
 
+> Language note: the
+> [Chinese version](./agent-loop-effect-interpreter-v0.zh-CN.md) and this
+> English version are semantic mirrors. A difference between them is a defect.
+
 ## Summary
 
 LoopX harness should be explained, designed, and tested as **the effectful
@@ -173,6 +177,46 @@ The public lecture series distinguishes three layers of composition:
 
 LoopX does not expose a generic Python middleware registry. Its around
 semantics are declarative and packet-shaped.
+
+### Bounded Kleisli Runtime Decision
+
+M7 uses Kleisli composition as an execution requirement, not as decorative
+terminology. The selected turn-closeout slice should be explainable as a
+sequence of typed steps:
+
+```text
+A => F[B]
+B => F[C]
+A => F[C]
+```
+
+For this slice, `F` must preserve a receipt-bearing result with explicit
+cancellation, permission-denial, budget-rejection, and settlement outcomes.
+Composition may be implemented with a closeout-local `bind`, `flat_map`, or
+`and_then` seam, but M7.2 must prove the semantics rather than standardize one
+method name. Its focused tests must cover:
+
+- identity: adding the typed no-op step does not change receipts or effects;
+- associativity: regrouping the same ordered steps does not change their
+  receipts, short-circuit point, or externally visible effect sequence;
+- ordered short-circuit: a typed failure prevents later effects without
+  erasing the failure kind;
+- replay: a durable receipt skips an already committed effect; and
+- non-commutativity: writeback, spend, and host handoff may not be reordered.
+
+The runtime contract has two first-class callers. The default Codex App path
+settles a normal LoopX turn through data-encoded CLI effects across agent and
+host boundaries. The isolated turn driver executes the same settlement shape
+through in-process callbacks. They should share the plan, receipt, effect
+identity, and failure algebra, but they need not share one executor because
+their authority boundaries differ. A generic `Kleisli`, middleware stack,
+executor registry, or general `Effect` monad remains premature until shared
+execution ownership, not just similar packet fields, is proven.
+
+The shared settlement algebra is owned by the core `effect_program` module.
+Quota supplies the Codex App/CLI plan builder and compatibility re-exports;
+each runtime adapter composes the core algebra instead of inheriting a domain
+program or moving its execution authority into a generic base class.
 
 ### Handler Is Data, Not a Callable
 
@@ -432,30 +476,48 @@ builders compute their decisions and then map them onto `EffectTurn`. M7 must
 not react by making every state family implement one protocol. It must first
 prove that a typed effect runtime removes one real orchestration split-brain.
 
-M7.0: inventory real multi-step runtime candidates. Compare at least turn
-closeout, guided bootstrap, and quota-to-host scheduling. For each candidate,
-name the executor owner, externally visible effects, idempotency key,
-settlement receipt, partial-failure boundary, and old source of truth that
-would be deleted. Guided bootstrap is a candidate, not a preselected answer:
-some ordered steps belong to the model, user, or host and cannot safely run in
-one in-process executor.
+M7.0: inventory real multi-step runtime candidates. The selected core is
+normal-turn settlement from a stable quota decision through validated
+writeback and exactly-once spend. It has two real adapters: the default Codex
+App interaction path and the isolated turn driver. Scheduler apply and ACK
+remain delegated host handoffs. Guided bootstrap was not selected because some
+ordered steps belong to the model, user, or host; quota-to-host scheduling was
+not selected because LoopX cannot settle the external automation mutation
+itself.
 
 M7.1: characterize the selected vertical slice before adding a protocol.
 Capture parity fixtures for legal and illegal transitions, partial execution,
-retry, cancellation, permission denial, budget rejection, and settlement.
+retry, cancellation, permission denial, budget rejection, and settlement. The
+durable transfer must include cancellation at writeback and scheduler handoff,
+permission denial at host execution and quota spend, and spend-budget
+rejection after writeback. This stage preserves current runtime behavior,
+including any split projection that M7.2 is expected to repair. It must also
+characterize the default Codex App selection-drift seam: after the selected
+Todo is completed and writeback advances the frontier, spend must still settle
+the original effect identity rather than bind to a newly selected successor.
 
-M7.2: replace that slice with one typed plan/receipt path. A plan step must
-carry a stable kind, owner, precondition, idempotency identity, and expected
-receipt. Raw mappings and free-form CLI commands may remain compatibility
-payloads, but they are not the semantic execution contract. Delete the old
-builder or settlement path in the same stage.
+M7.2: replace the core settlement truth with one typed plan/receipt algebra. A
+plan step must carry a stable kind, owner, precondition, idempotency identity,
+and expected receipt. First, make the default Codex App path bind completion,
+refresh, and spend to the original quota-turn effect identity instead of a
+fresh Todo selection. Then make the isolated turn driver consume the same
+algebra. Each replacement PR must delete its corresponding manual command or
+settlement truth. Raw mappings and free-form CLI commands may remain
+compatibility payloads, but they are not the semantic execution contract. The
+composition must satisfy the identity, associativity, short-circuit, replay,
+and ordering properties defined above, keep cancellation, permission denial,
+and budget rejection distinct, and leave scheduler apply or ACK outside the
+agent-owned settlement boundary.
 
-M7.3: generalize only after a second runtime caller needs the proven plan and
-receipt semantics. At that point, extract the smallest shared interpreter or
-executor protocol; do not add a registry or generic composition framework.
-`quota should-run` may derive both its packet and effect projection from one
-canonical decision plan, but constructing `EffectTurn` earlier is not itself
-an acceptance condition.
+M7.3: after both M7.2 adapters consume the proven plan and receipt semantics,
+compare their execution ownership. Extract the smallest shared executor or
+Kleisli-like bind protocol only if it deletes duplicate orchestration without
+crossing the Codex App agent/host boundary. Do not add a registry or generic
+composition framework. `quota should-run` may derive both its packet and
+effect projection from one canonical decision plan, but constructing
+`EffectTurn` earlier is not itself an acceptance condition. If the two callers
+share only the algebra and not an executor boundary, close M7.3 with a
+structured no-follow-up decision and keep their executors local.
 
 M7.4: expand one bounded family at a time only when it removes duplicate
 knowledge. Todo, monitor, capability, scheduler, and gate state machines keep

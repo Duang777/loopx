@@ -179,11 +179,43 @@ def assert_explicit_promotion_is_auditable() -> None:
         assert default_release["promotion_mode"] == "explicit_override", default_release
 
 
+def assert_skill_preflight_failure_preserves_default() -> None:
+    with tempfile.TemporaryDirectory(prefix="loopx-promotion-skill-preflight-") as tmp:
+        root = Path(tmp)
+        env, bin_dir, releases_dir = base_env(root)
+        env["LOOPX_PROMOTE_DEFAULT"] = "1"
+        env["LOOPX_INSTALL_SKILL"] = "1"
+        skills_dir = root / "workspace" / ".agents" / "skills"
+        env["LOOPX_SKILLS_DIR"] = str(skills_dir)
+        env["LOOPX_ENTRY_HOST_SURFACE"] = "ark-managed-agent"
+
+        user_skill = skills_dir / "loopx" / "SKILL.md"
+        user_skill.parent.mkdir(parents=True)
+        user_skill.write_text("# User-owned LoopX skill\n", encoding="utf-8")
+        default = bin_dir / "loopx"
+        default.write_text("#!/usr/bin/env bash\nexit 41\n", encoding="utf-8")
+        default.chmod(0o755)
+
+        install = run_install(
+            env,
+            release_id="blocked-skill-preflight",
+            check=False,
+        )
+
+        assert install.returncode != 0, install.stdout
+        assert "exact-host entry skill cannot be materialized" in install.stderr
+        assert not default.is_symlink(), default
+        assert "exit 41" in default.read_text(encoding="utf-8"), default
+        assert not (releases_dir / "blocked-skill-preflight").exists(), releases_dir
+        assert user_skill.read_text(encoding="utf-8") == "# User-owned LoopX skill\n"
+
+
 def main() -> int:
     assert_untrusted_checkout_is_canary_only()
     assert_untrusted_checkout_preserves_implicit_default_skill_root()
     assert_exact_host_install_rejects_user_owned_entry_skill()
     assert_explicit_promotion_is_auditable()
+    assert_skill_preflight_failure_preserves_default()
     print("local-install-promotion-boundary-smoke ok")
     return 0
 
