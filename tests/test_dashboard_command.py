@@ -100,3 +100,72 @@ def test_dashboard_launcher_installs_missing_frontend_dependencies(
         "ci",
         "run dev:web",
     ]
+
+
+def test_dashboard_launcher_selects_a_compatible_nvm_node(
+    tmp_path: Path,
+) -> None:
+    release_root = tmp_path / "release"
+    scripts_dir = release_root / "scripts"
+    dashboard_dir = release_root / "apps" / "presentation" / "dashboard"
+    fake_bin = tmp_path / "bin"
+    nvm_bin = tmp_path / "nvm" / "versions" / "node" / "v22.22.2" / "bin"
+    scripts_dir.mkdir(parents=True)
+    dashboard_dir.mkdir(parents=True)
+    fake_bin.mkdir()
+    nvm_bin.mkdir(parents=True)
+    shutil.copy2(
+        Path(__file__).resolve().parents[1] / "scripts" / "dashboard-dev.sh",
+        scripts_dir / "dashboard-dev.sh",
+    )
+
+    npm_log = tmp_path / "npm.log"
+    (fake_bin / "python3.13").write_text(
+        "#!/usr/bin/env bash\nexit 0\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "node").write_text(
+        "#!/usr/bin/env bash\nexit 1\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "npm").write_text(
+        "#!/usr/bin/env bash\nexit 1\n",
+        encoding="utf-8",
+    )
+    (nvm_bin / "node").write_text(
+        "#!/usr/bin/env bash\nexit 0\n",
+        encoding="utf-8",
+    )
+    (nvm_bin / "npm").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$LOOPX_NPM_LOG"\n'
+        'if [[ "$1" == "ci" ]]; then\n'
+        "  mkdir -p node_modules/.bin\n"
+        "  touch node_modules/.bin/vite\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    for executable in (*fake_bin.iterdir(), *nvm_bin.iterdir()):
+        executable.chmod(0o755)
+
+    completed = subprocess.run(
+        ["bash", str(scripts_dir / "dashboard-dev.sh")],
+        cwd=release_root,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "NVM_DIR": str(tmp_path / "nvm"),
+            "LOOPX_NPM_LOG": str(npm_log),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Using compatible Node.js from" in completed.stdout
+    assert npm_log.read_text(encoding="utf-8").splitlines() == [
+        "ci",
+        "run dev:web",
+    ]

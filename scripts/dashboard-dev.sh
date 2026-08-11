@@ -9,18 +9,40 @@ STATUS_PID=""
 CHAT_PID=""
 PYTHON_BIN=""
 
-if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-  echo "LoopX dashboard requires Node.js and npm." >&2
-  echo "Install Node.js 22, then retry: loopx dashboard" >&2
-  exit 1
-fi
-
-if ! node -e '
+node_is_supported() {
+  "$1" -e '
 const [major, minor] = process.versions.node.split(".").map(Number);
 const supported = (major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22;
 process.exit(supported ? 0 : 1);
-'; then
+' 2>/dev/null
+}
+
+select_node_runtime() {
+  if command -v node >/dev/null 2>&1 \
+    && command -v npm >/dev/null 2>&1 \
+    && node_is_supported "$(command -v node)"; then
+    return 0
+  fi
+
+  local nvm_root="${NVM_DIR:-${HOME}/.nvm}"
+  local node_candidate
+  local npm_candidate
+  for node_candidate in "${nvm_root}"/versions/node/*/bin/node; do
+    [ -x "${node_candidate}" ] || continue
+    npm_candidate="$(dirname "${node_candidate}")/npm"
+    if [ -x "${npm_candidate}" ] && node_is_supported "${node_candidate}"; then
+      export PATH="$(dirname "${node_candidate}"):${PATH}"
+      echo "Using compatible Node.js from $(dirname "${node_candidate}")"
+      return 0
+    fi
+  done
+
   echo "LoopX dashboard requires Node.js 20.19+ or 22.12+. Node.js 22 is recommended." >&2
+  echo "Install Node.js 22, then retry: loopx dashboard" >&2
+  return 1
+}
+
+if ! select_node_runtime; then
   exit 1
 fi
 
