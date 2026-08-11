@@ -116,6 +116,19 @@ generated site artifact.
 
 ## Run
 
+From any directory after installing LoopX:
+
+```bash
+loopx dashboard
+```
+
+This command installs the dashboard's npm dependencies on first run, then
+starts the Vite UI together with the loopback status and Chat services. Open
+`http://127.0.0.1:5173/` after the readiness messages appear.
+
+The equivalent source-checkout command remains available for dashboard
+development:
+
 ```bash
 npm ci
 npm run build
