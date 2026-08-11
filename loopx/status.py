@@ -1379,6 +1379,7 @@ def collect_status(
     include_task_graph: bool = False,
     goal_id: str | None = None,
     available_capabilities: Any = None,
+    include_public_boundary_scan: bool = True,
 ) -> dict[str, Any]:
     return _collect_status_read_model(
         registry_path=registry_path,
@@ -1388,5 +1389,6 @@ def collect_status(
         include_task_graph=include_task_graph,
         goal_id=goal_id,
         available_capabilities=available_capabilities,
+        include_public_boundary_scan=include_public_boundary_scan,
         context=build_status_collection_context(),
     )

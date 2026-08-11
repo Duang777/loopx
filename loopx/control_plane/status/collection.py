@@ -42,6 +42,7 @@ def collect_status(
     include_task_graph: bool = False,
     goal_id: str | None = None,
     available_capabilities: Any = None,
+    include_public_boundary_scan: bool = True,
 ) -> dict[str, Any]:
     display_limit = max(0, limit)
     control_plane_limit = max(display_limit, context.status_control_plane_context_limit)
@@ -71,6 +72,7 @@ def collect_status(
         scan_roots=scan_roots,
         limit=limit,
         goal_id_filter=goal_filter,
+        include_public_boundary_scan=include_public_boundary_scan,
     )
     contract = project_contract_health_for_goal(contract, goal_id=goal_filter)
     queue = context.build_attention_queue(
@@ -112,7 +114,12 @@ def collect_status(
         "warnings": contract.get("warnings") or [],
         "checks": contract.get("checks") or [],
     }
-    for key in ("error_diagnostics", "global_errors", "goal_errors"):
+    for key in (
+        "error_diagnostics",
+        "global_errors",
+        "goal_errors",
+        "public_boundary_scan",
+    ):
         if contract.get(key):
             contract_projection[key] = contract[key]
     payload = {
