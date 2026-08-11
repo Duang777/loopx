@@ -60,6 +60,7 @@ class VisibleResponseStreamFilter:
     """Stream safe operator text while withholding the structured review envelope."""
 
     _FLUSH_BOUNDARIES = {"\n", "。", "！", "？"}
+    _MAX_PENDING_CHARS = 160
 
     def __init__(self, *, protected_paths: Iterable[Path | str] = ()) -> None:
         self.protected_paths = tuple(protected_paths)
@@ -74,9 +75,25 @@ class VisibleResponseStreamFilter:
             self.visible_pending = ""
             return redact_local_paths(ready, protected_paths=self.protected_paths)
         boundary = -1
-        for index, character in enumerate(self.visible_pending):
+        search_limit = min(len(self.visible_pending), self._MAX_PENDING_CHARS)
+        for index, character in enumerate(self.visible_pending[:search_limit]):
             if character in self._FLUSH_BOUNDARIES:
                 boundary = index + 1
+        if boundary < 0 and len(self.visible_pending) >= self._MAX_PENDING_CHARS:
+            prefix = self.visible_pending[: self._MAX_PENDING_CHARS + 1]
+            whitespace = max(prefix.rfind(" "), prefix.rfind("\t"))
+            if whitespace >= 0:
+                boundary = whitespace + 1
+            elif _ABSOLUTE_LOCAL_PATH.search(prefix) is None:
+                boundary = self._MAX_PENDING_CHARS
+            else:
+                for index, character in enumerate(
+                    self.visible_pending[self._MAX_PENDING_CHARS :],
+                    start=self._MAX_PENDING_CHARS,
+                ):
+                    if character in " \t\r\n`'\"<>":
+                        boundary = index + 1
+                        break
         if boundary < 0:
             return ""
         ready = self.visible_pending[:boundary]

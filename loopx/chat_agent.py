@@ -271,18 +271,19 @@ class CodexChatAgentSession:
         self._write({"method": method, "params": params})
 
     def _next_message(self, *, deadline: float) -> dict[str, Any]:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise self._runtime_error("Codex app-server timed out.")
-        try:
-            message = self.messages.get(timeout=min(0.5, remaining))
-        except queue.Empty:
-            return self._next_message(deadline=deadline)
-        if isinstance(message, EOFError):
-            raise self._runtime_error("Codex app-server closed before completing the request.")
-        if isinstance(message, Exception):
-            raise self._runtime_error("Codex app-server returned an unreadable response.")
-        return message
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise self._runtime_error("Codex app-server timed out.")
+            try:
+                message = self.messages.get(timeout=min(0.5, remaining))
+            except queue.Empty:
+                continue
+            if isinstance(message, EOFError):
+                raise self._runtime_error("Codex app-server closed before completing the request.")
+            if isinstance(message, Exception):
+                raise self._runtime_error("Codex app-server returned an unreadable response.")
+            return message
 
     def _check_server_gate(self, message: dict[str, Any]) -> None:
         if message.get("id") is not None and message.get("method"):

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 from typing import Any
 import uuid
 
@@ -86,10 +87,17 @@ def _atomic_write_json(path: Path, payload: dict[str, Any], *, preserve_mode: bo
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    _append_jsonl_rows(path, [payload])
+
+
+def _append_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        handle.write("\n")
+        for payload in rows:
+            handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
     os.chmod(path, 0o600)
@@ -114,6 +122,10 @@ class ChatSessionStore:
     def __init__(self, runtime_root: Path) -> None:
         self.root = runtime_root.expanduser().resolve() / "chat"
         self.sessions_root = self.root / "sessions"
+        self._event_lock = threading.RLock()
+        self._event_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._event_pending: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._event_flush_locks: dict[tuple[str, str], threading.Lock] = {}
         self.sessions_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
         os.chmod(self.sessions_root, 0o700)
@@ -333,11 +345,31 @@ class ChatSessionStore:
             _atomic_write_json(path, payload, preserve_mode=True)
             return payload
 
-    def append_event(self, session_id: str, turn_id: str, *, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
-        path = self._event_path(session_id, turn_id)
-        with exclusive_file_lock(path, agent_id="loopx-chat", operation="append_chat_event"):
-            rows = _read_jsonl(path)
-            sequence = max((int(row.get("sequence") or 0) for row in rows), default=0) + 1
+    def _event_rows_locked(self, session_id: str, turn_id: str) -> list[dict[str, Any]]:
+        key = (session_id, turn_id)
+        rows = self._event_cache.get(key)
+        if rows is None:
+            rows = _read_jsonl(self._event_path(session_id, turn_id))
+            self._event_cache[key] = rows
+        return rows
+
+    def _event_flush_lock(self, key: tuple[str, str]) -> threading.Lock:
+        with self._event_lock:
+            return self._event_flush_locks.setdefault(key, threading.Lock())
+
+    def append_event(
+        self,
+        session_id: str,
+        turn_id: str,
+        *,
+        kind: str,
+        payload: dict[str, Any],
+        buffered: bool = False,
+    ) -> dict[str, Any]:
+        key = (session_id, turn_id)
+        with self._event_lock:
+            rows = self._event_rows_locked(session_id, turn_id)
+            sequence = int(rows[-1].get("sequence") or 0) + 1 if rows else 1
             event = {
                 "schema_version": CHAT_EVENT_SCHEMA_VERSION,
                 "event_id": str(sequence),
@@ -346,18 +378,42 @@ class ChatSessionStore:
                 "created_at": utc_now(),
                 "payload": payload,
             }
-            _append_jsonl(path, event)
+            rows.append(event)
+            self._event_pending.setdefault(key, []).append(event)
+        if not buffered:
+            self.flush_events(session_id, turn_id)
         return event
+
+    def flush_events(self, session_id: str, turn_id: str) -> int:
+        """Persist queued events in one ordered append and one data fsync."""
+        key = (session_id, turn_id)
+        path = self._event_path(session_id, turn_id)
+        flush_lock = self._event_flush_lock(key)
+        flushed = 0
+        with flush_lock:
+            while True:
+                with self._event_lock:
+                    pending = self._event_pending.pop(key, [])
+                if not pending:
+                    return flushed
+                try:
+                    with exclusive_file_lock(path, agent_id="loopx-chat", operation="append_chat_events"):
+                        _append_jsonl_rows(path, pending)
+                except Exception:
+                    with self._event_lock:
+                        later = self._event_pending.get(key, [])
+                        self._event_pending[key] = [*pending, *later]
+                    raise
+                flushed += len(pending)
 
     def events_after(self, session_id: str, turn_id: str, event_id: str | None) -> list[dict[str, Any]]:
         try:
             after = int(event_id or 0)
         except ValueError:
             after = 0
-        return [
-            row for row in _read_jsonl(self._event_path(session_id, turn_id))
-            if int(row.get("sequence") or 0) > after
-        ]
+        with self._event_lock:
+            rows = list(self._event_rows_locked(session_id, turn_id))
+        return [row for row in rows if int(row.get("sequence") or 0) > after]
 
     def compact_completed_events(self, *, older_than_hours: float = 24.0) -> int:
         """Drop replay-only deltas after the durable final message is old enough."""
@@ -374,8 +430,12 @@ class ChatSessionStore:
                 continue
             if completed > cutoff:
                 continue
+            session_id = turn_path.parent.parent.name
+            turn_id = turn_path.stem
+            self.flush_events(session_id, turn_id)
             event_path = turn_path.with_name(f"{turn_path.stem}.events.jsonl")
-            rows = _read_jsonl(event_path)
+            with self._event_lock:
+                rows = list(self._event_rows_locked(session_id, turn_id))
             retained = [
                 row for row in rows
                 if row.get("kind") not in {
@@ -389,6 +449,8 @@ class ChatSessionStore:
                 continue
             with exclusive_file_lock(event_path, agent_id="loopx-chat", operation="compact_chat_events"):
                 _replace_jsonl(event_path, retained)
+            with self._event_lock:
+                self._event_cache[(session_id, turn_id)] = retained
             compacted += 1
         return compacted
 
