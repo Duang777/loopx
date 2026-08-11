@@ -383,7 +383,8 @@ export async function streamChatTurn(
   let attempts = 0;
   let terminal = false;
   while (!terminal && attempts < 4) {
-    const url = new URL(eventsUrl, window.location.origin);
+    const origin = typeof window === "undefined" ? "http://127.0.0.1" : window.location.origin;
+    const url = new URL(eventsUrl, origin);
     if (cursor) url.searchParams.set("after", cursor);
     try {
       const response = await fetch(url, {
@@ -419,7 +420,7 @@ export async function streamChatTurn(
       if (signal?.aborted) throw error;
       attempts += 1;
       if (attempts >= 4) throw error;
-      await new Promise((resolve) => window.setTimeout(resolve, 250 * 2 ** (attempts - 1)));
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 250 * 2 ** (attempts - 1)));
     }
   }
   if (!terminal) {
@@ -450,38 +451,102 @@ export async function sendChatTurnStreaming(
     message,
     options.clientTurnId ?? crypto.randomUUID(),
   );
-  let finalResponse: unknown = null;
-  const outcome: { failure: Record<string, unknown> | null } = { failure: null };
-  await streamChatTurn(
+  return receiveChatTurnStreaming(
+    sessionId,
+    accepted.turn_id,
     accepted.events_url,
-    (event) => {
-      options.onPhase?.(event.kind, accepted.turn_id);
-      if (event.kind === "answer.delta" || event.kind === "assistant.delta") {
-        options.onDelta?.(String(event.payload.text ?? ""));
-      }
-      if (event.kind === "agent.phase") {
-        options.onActivity?.(String(event.payload.label ?? "Agent 正在处理"));
-      }
-      if (event.kind === "turn.completed") {
-        finalResponse = event.payload.response;
-      }
-      if (event.kind === "turn.failed") {
-        outcome.failure = event.payload;
-      }
-    },
-    options.signal,
+    options,
   );
+}
+
+async function receiveChatTurnStreaming(
+  sessionId: string,
+  turnId: string,
+  eventsUrl: string,
+  options: {
+    onDelta?: (text: string) => void;
+    onActivity?: (label: string) => void;
+    onPhase?: (phase: string, turnId: string) => void;
+    signal?: AbortSignal;
+  } = {},
+) {
+  let finalResponse: unknown = null;
+  const outcome: {
+    failure: Record<string, unknown> | null;
+    interrupted: Record<string, unknown> | null;
+  } = { failure: null, interrupted: null };
+  try {
+    await streamChatTurn(
+      eventsUrl,
+      (event) => {
+        options.onPhase?.(event.kind, turnId);
+        if (event.kind === "answer.delta" || event.kind === "assistant.delta") {
+          options.onDelta?.(String(event.payload.text ?? ""));
+        }
+        if (event.kind === "agent.phase") {
+          options.onActivity?.(String(event.payload.label ?? "Agent 正在处理"));
+        }
+        if (event.kind === "turn.completed") {
+          finalResponse = event.payload.response;
+        }
+        if (event.kind === "turn.failed") {
+          outcome.failure = event.payload;
+        }
+        if (event.kind === "turn.interrupted") {
+          outcome.interrupted = event.payload;
+        }
+      },
+      options.signal,
+    );
+  } catch (error) {
+    if (error instanceof ChatApiError && !options.signal?.aborted) {
+      throw new ChatApiError(error.message, {
+        ...error.payload,
+        events_url: eventsUrl,
+        reconnectable: true,
+        session_id: sessionId,
+        turn_id: turnId,
+      });
+    }
+    throw error;
+  }
   if (outcome.failure) {
     throw new ChatApiError(
       String(outcome.failure.message || "Agent 回合失败。"),
       outcome.failure,
     );
   }
+  if (outcome.interrupted) {
+    throw new ChatApiError("Agent 回合已中断。", {
+      ...outcome.interrupted,
+      error_code: "turn_interrupted",
+      session_id: sessionId,
+      turn_id: turnId,
+    });
+  }
   return {
     response: agentResponseSchema.parse(finalResponse),
     sessionId,
-    turnId: accepted.turn_id,
+    turnId,
   };
+}
+
+export async function resumeChatTurnStreaming(
+  sessionId: string,
+  turnId: string,
+  options: {
+    onDelta?: (text: string) => void;
+    onActivity?: (label: string) => void;
+    onPhase?: (phase: string, turnId: string) => void;
+    signal?: AbortSignal;
+  } = {},
+) {
+  return receiveChatTurnStreaming(
+    sessionId,
+    turnId,
+    `/api/chat/sessions/${sessionId}/turns/${turnId}/events`,
+    options,
+  );
 }
 
 export async function sendChatTurn(sessionId: string, message: string) {

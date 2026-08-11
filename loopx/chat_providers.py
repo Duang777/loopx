@@ -13,7 +13,7 @@ from typing import Any, Callable
 from urllib import request
 import uuid
 
-from .chat import parse_agent_response
+from .chat import VisibleResponseStreamFilter, parse_agent_response
 from .chat_agent import CodexChatAgentError, _host_tool_gate, _turn_prompt
 
 
@@ -33,6 +33,8 @@ class ClaudeCodeAdapter:
     claude_bin: str
     work_dir: Path
     session_id: str
+    tool_scope: str = "read_only"
+    context_summary: str = ""
     resumed: bool = False
     current_process: subprocess.Popen[str] | None = field(default=None, repr=False)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -48,6 +50,8 @@ class ClaudeCodeAdapter:
         claude_bin: str,
         work_dir: Path,
         resume_thread_id: str | None = None,
+        tool_scope: str = "read_only",
+        context_summary: str = "",
     ) -> "ClaudeCodeAdapter":
         resolved = shutil.which(claude_bin)
         if not resolved:
@@ -55,10 +59,14 @@ class ClaudeCodeAdapter:
                 "Claude Code",
                 "Install Claude Code or select another healthy Agent endpoint.",
             )
+        if tool_scope not in {"read_only", "disabled"}:
+            raise ValueError("Claude Code tool_scope must be read_only or disabled")
         return cls(
             claude_bin=resolved,
             work_dir=work_dir.resolve(),
             session_id=resume_thread_id or str(uuid.uuid4()),
+            tool_scope=tool_scope,
+            context_summary=context_summary,
             resumed=bool(resume_thread_id),
         )
 
@@ -68,6 +76,8 @@ class ClaudeCodeAdapter:
             "streaming": True,
             "resume": True,
             "interrupt": True,
+            "tool_calls": self.tool_scope != "disabled",
+            "tool_scope": self.tool_scope,
         }
 
     def start_turn(self, message: str, event_sink: EventSink) -> dict[str, Any]:
@@ -76,18 +86,19 @@ class ClaudeCodeAdapter:
             "--print",
             "--output-format",
             "stream-json",
+            "--verbose",
             "--include-partial-messages",
             "--permission-mode",
             "plan",
             "--tools",
-            "",
+            "Read,Glob,Grep" if self.tool_scope == "read_only" else "",
             "--disable-slash-commands",
         ]
         if self.resumed:
             command.extend(["--resume", self.session_id])
         else:
             command.extend(["--session-id", self.session_id])
-        command.append(_turn_prompt(message))
+        command.append(_turn_prompt(message, context_summary=self.context_summary))
         event_sink("turn.started", {"upstream_turn_id": self.session_id})
         event_sink("agent.phase", {"label": "正在连接 Claude Code"})
         try:
@@ -105,6 +116,8 @@ class ClaudeCodeAdapter:
             self.current_process = process
         parts: list[str] = []
         result_text = ""
+        display_filter = VisibleResponseStreamFilter(protected_paths=[self.work_dir])
+        visible_delta_count = 0
         try:
             assert process.stdout is not None
             for raw_line in process.stdout:
@@ -128,7 +141,12 @@ class ClaudeCodeAdapter:
                     if event.get("type") == "content_block_delta":
                         delta = event.get("delta")
                         if isinstance(delta, dict) and delta.get("type") == "text_delta":
-                            parts.append(str(delta.get("text") or ""))
+                            chunk = str(delta.get("text") or "")
+                            parts.append(chunk)
+                            visible = display_filter.feed(chunk)
+                            if visible:
+                                visible_delta_count += 1
+                                event_sink("answer.delta", {"text": visible})
                 elif payload.get("type") == "result":
                     result_text = str(payload.get("result") or "")
             return_code = process.wait()
@@ -138,10 +156,20 @@ class ClaudeCodeAdapter:
             with self.lock:
                 self.current_process = None
         raw_response = "".join(parts) or result_text
+        if not parts and result_text:
+            visible = display_filter.feed(result_text)
+            if visible:
+                visible_delta_count += 1
+                event_sink("answer.delta", {"text": visible})
+        visible_tail = display_filter.finish()
+        if visible_tail:
+            visible_delta_count += 1
+            event_sink("answer.delta", {"text": visible_tail})
         response = parse_agent_response(raw_response, protected_paths=[self.work_dir])
         self.resumed = True
         event_sink("agent.phase", {"label": "正在整理回答"})
-        event_sink("answer.delta", {"text": str(response.get("message") or "")})
+        if visible_delta_count == 0:
+            event_sink("answer.delta", {"text": str(response.get("message") or "")})
         event_sink("answer.final", {"response": response})
         return response
 

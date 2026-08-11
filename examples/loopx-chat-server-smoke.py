@@ -38,7 +38,11 @@ for line in sys.stdin:
     elif method in {"thread/start", "thread/resume"}:
         result = {"thread": {"id": "thread-chat-server"}}
     elif method in {"thread/goal/set", "thread/goal/get"}:
-        result = {"goal": {"threadId": "thread-chat-server", "status": "active"}}
+        print(json.dumps({
+            "id": request_id,
+            "error": {"code": -32601, "message": "Goal mode must not be used for Chat"},
+        }), flush=True)
+        continue
     elif method == "turn/start":
         turn_id = "turn-chat-server"
         force_failure = "force session failure" in json.dumps(message.get("params") or {})
@@ -209,6 +213,7 @@ def main() -> None:
         ChatRequestHandler,
         build_bounded_chat_status_projection,
     )
+    from loopx.chat_endpoints import AgentEndpointRegistry
 
     try:
         ChatHTTPServer(("127.0.0.1", 70_000), ChatRequestHandler)
@@ -238,6 +243,14 @@ def main() -> None:
         fake_codex = root / "codex"
         fake_codex.write_text(FAKE_CODEX, encoding="utf-8")
         fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+        AgentEndpointRegistry(root / "runtime" / "chat").upsert(
+            {
+                "agent_id": "fixture-acp",
+                "display_name": "Fixture ACP",
+                "command": [str(fake_codex), "--private-binding"],
+                "location": "remote",
+            }
+        )
         port = free_port()
         base_url = f"http://127.0.0.1:{port}"
         command = [
@@ -276,6 +289,13 @@ def main() -> None:
             assert capabilities["resume"] is True, capabilities
             assert capabilities["interrupt"] is True, capabilities
             assert capabilities["adapters"][0]["agent_id"] == "codex", capabilities
+            endpoints = wait_for_json(f"{base_url}/api/chat/endpoints")
+            fixture_endpoint = next(
+                item for item in endpoints["endpoints"] if item["agent_id"] == "fixture-acp"
+            )
+            assert fixture_endpoint["location"] == "remote", endpoints
+            assert "command" not in fixture_endpoint, endpoints
+            assert "private-binding" not in json.dumps(endpoints), endpoints
 
             with urllib.request.urlopen(f"{base_url}/chat/", timeout=4) as response:
                 html = response.read().decode("utf-8")
@@ -351,10 +371,14 @@ def main() -> None:
             ) as response:
                 event_stream = response.read().decode("utf-8")
             assert "event: answer.delta" in event_stream, event_stream
+            assert "Visible streaming answer." in event_stream, event_stream
             assert "I found one reviewable step." in event_stream, event_stream
             assert "<loopx-review-json>" not in event_stream, event_stream
             assert "event: proposal.ready" in event_stream, event_stream
             assert "event: turn.completed" in event_stream, event_stream
+            assert event_stream.index("Visible streaming answer.") < event_stream.index(
+                "event: turn.completed"
+            ), event_stream
             code, duplicate = request_json(
                 f"{base_url}/api/chat/sessions/{session_id}/turns",
                 method="POST",

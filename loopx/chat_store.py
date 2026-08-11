@@ -34,6 +34,13 @@ def _opaque_id(value: Any, *, field: str) -> str:
     return token
 
 
+def _upstream_id(value: Any) -> str:
+    token = str(value or "").strip()
+    if not token or len(token) > 1024 or any(ord(character) < 32 for character in token):
+        raise ValueError("upstream_thread_id must be a bounded opaque string")
+    return token
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -131,6 +138,7 @@ class ChatSessionStore:
         agent_id: str,
         adapter_kind: str,
         upstream_thread_id: str,
+        upstream_mode: str = "default",
         channel_id: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
@@ -145,7 +153,8 @@ class ChatSessionStore:
             "goal_id": _opaque_id(goal_id, field="goal_id"),
             "agent_id": _opaque_id(agent_id, field="agent_id"),
             "adapter_kind": _opaque_id(adapter_kind, field="adapter_kind"),
-            "upstream_thread_id": _opaque_id(upstream_thread_id, field="upstream_thread_id"),
+            "upstream_thread_id": _upstream_id(upstream_thread_id),
+            "upstream_mode": _opaque_id(upstream_mode, field="upstream_mode"),
             "channel_id": _opaque_id(channel_id or f"goal.{goal_id}", field="channel_id"),
             "status": "ready",
             "active_turn_id": None,
@@ -168,10 +177,21 @@ class ChatSessionStore:
             payload = self.load_session(session_id)
             if payload is None:
                 raise KeyError("chat session was not found")
-            allowed = {"status", "active_turn_id", "last_activity_at", "last_error_code", "upstream_thread_id"}
+            allowed = {
+                "status",
+                "active_turn_id",
+                "last_activity_at",
+                "last_error_code",
+                "upstream_thread_id",
+                "upstream_mode",
+            }
             unknown = set(changes) - allowed
             if unknown:
                 raise ValueError(f"unsupported chat session fields: {sorted(unknown)}")
+            if "upstream_thread_id" in changes:
+                changes["upstream_thread_id"] = _upstream_id(changes["upstream_thread_id"])
+            if "upstream_mode" in changes:
+                changes["upstream_mode"] = _opaque_id(changes["upstream_mode"], field="upstream_mode")
             payload.update(changes)
             payload["updated_at"] = utc_now()
             _atomic_write_json(path, payload, preserve_mode=True)

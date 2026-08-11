@@ -3,6 +3,7 @@ import {
   fetchChatHistory,
   mergeChatSessionMessages,
   parseCompletedDecisionHistory,
+  resumeChatTurnStreaming,
   serializeCompletedDecisionHistory,
   type ChatSessionSnapshot,
   type StoredDecisionHistoryItem,
@@ -565,8 +566,93 @@ async function checkSessionHistoryRecoveryContract() {
   }
 }
 
+async function checkActiveTurnStreamRecoveryContract() {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  let attempt = 0;
+  const event = (id: string, kind: string, payload: Record<string, unknown>) =>
+    `id: ${id}\nevent: ${kind}\ndata: ${JSON.stringify({
+      event_id: id,
+      sequence: Number(id),
+      kind,
+      created_at: "2026-08-10T02:00:00Z",
+      payload,
+    })}\n\n`;
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    requests.push(url);
+    attempt += 1;
+    const body = attempt === 1
+      ? event("1", "answer.delta", { text: "恢复中的回答。" })
+      : event("2", "turn.completed", {
+          response: {
+            schema_version: "loopx_chat_agent_response_v0",
+            message: "恢复中的回答。",
+            proposals: [],
+            gate: null,
+          },
+        });
+    return new Response(body, {
+      headers: { "Content-Type": "text/event-stream" },
+      status: 200,
+    });
+  }) as typeof fetch;
+  const deltas: string[] = [];
+  try {
+    const result = await resumeChatTurnStreaming("session-active", "turn-active", {
+      onDelta: (text) => deltas.push(text),
+    });
+    check(result.response.message === "恢复中的回答。", "active Turn recovery should return the final response");
+    check(deltas.join("") === "恢复中的回答。", "active Turn recovery should replay visible deltas once");
+    check(requests.length === 2, "a non-terminal SSE close should reconnect");
+    check(
+      requests[0]?.endsWith("/api/chat/sessions/session-active/turns/turn-active/events") === true,
+      "active Turn recovery should use the persisted Session and Turn ids",
+    );
+    check(requests[1]?.endsWith("/events?after=1") === true, "SSE reconnect should continue after the last event id");
+
+    globalThis.fetch = (async () => new Response("", {
+      headers: { "Content-Type": "text/event-stream" },
+      status: 200,
+    })) as typeof fetch;
+    let reconnectError: unknown = null;
+    try {
+      await resumeChatTurnStreaming("session-active", "turn-active");
+    } catch (error) {
+      reconnectError = error;
+    }
+    check(reconnectError instanceof Error, "exhausted SSE reconnects should surface an error");
+    check(
+      reconnectError instanceof Error
+        && "payload" in reconnectError
+        && (reconnectError as { payload: Record<string, unknown> }).payload.reconnectable === true,
+      "exhausted SSE reconnects should preserve enough state for a Continue connection action",
+    );
+
+    globalThis.fetch = (async () => new Response(
+      event("3", "turn.interrupted", {}),
+      { headers: { "Content-Type": "text/event-stream" }, status: 200 },
+    )) as typeof fetch;
+    let interruptedError: unknown = null;
+    try {
+      await resumeChatTurnStreaming("session-active", "turn-active");
+    } catch (error) {
+      interruptedError = error;
+    }
+    check(
+      interruptedError instanceof Error
+        && "payload" in interruptedError
+        && (interruptedError as { payload: Record<string, unknown> }).payload.error_code === "turn_interrupted",
+      "an interrupted recovered Turn should surface an explicit interrupted result",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 void checkSessionCloseContract()
   .then(checkSessionHistoryRecoveryContract)
+  .then(checkActiveTurnStreamRecoveryContract)
   .then(() => console.log("chat-route-smoke: ok"))
   .catch((error) => {
     console.error(error);

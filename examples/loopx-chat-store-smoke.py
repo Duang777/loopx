@@ -24,11 +24,14 @@ def main() -> None:
             agent_id="codex",
             adapter_kind="codex_app_server",
             upstream_thread_id="thread-private",
+            upstream_mode="chat",
         )
         session_id = session["session_id"]
         public = store.public_session(session)
         assert public["resumable"] is True, public
         assert "upstream_thread_id" not in public, public
+        assert "upstream_mode" not in public, public
+        assert session["upstream_mode"] == "chat", session
         assert store.latest_session(goal_id="goal-one", agent_id="codex") == session
         store.update_session(session_id, status="resume_failed", last_error_code="resume_failed")
         assert store.latest_session(goal_id="goal-one", agent_id="codex") is None
