@@ -310,11 +310,23 @@ identifier to the upstream Agent session and persists visible messages, the
 active Turn, and ordered public-safe events. The browser never receives the
 upstream thread identifier.
 
-While an Agent is running, the visible response streams by complete line or
-sentence. The response envelope used for Todo and gate proposals remains in
-the backend parser and never enters the conversation. Local absolute paths,
-thought chunks, raw tool output, and credentials are excluded from streamed
-events and durable visible messages.
+While an Agent is running, the visible response streams by complete line,
+sentence, or a bounded 160-character prose segment. This keeps the first useful
+text moving even when a provider emits one long sentence. The response envelope
+used for Todo and gate proposals remains in the backend parser and never enters
+the conversation. Local absolute paths, thought chunks, raw tool output, and
+credentials are excluded from streamed events and durable visible messages.
+
+Live deltas receive their ordered event id in memory and become available to
+SSE immediately. The runtime appends pending events to disk in batches at most
+50 milliseconds apart and checkpoints Turn and Session activity metadata at
+most 500 milliseconds apart. A terminal event, final visible message,
+interruption, or controller shutdown forces an immediate flush. This removes
+per-token file locking and JSON rewrites while keeping the maximum transient
+delta loss window on an abrupt process crash to 50 milliseconds. The upstream
+Agent thread binding remains durable and resumable. SSE replay reads the event
+log once after process start and serves subsequent polls from the ordered
+in-memory cache.
 
 Refresh and reconnect follow this contract:
 

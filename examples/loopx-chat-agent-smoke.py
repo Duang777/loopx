@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -14,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from loopx.chat import VisibleResponseStreamFilter  # noqa: E402
 from loopx.chat_agent import (  # noqa: E402
     CodexChatAgentError,
     CodexChatAgentSession,
@@ -127,6 +130,48 @@ for line in sys.stdin:
 
 
 def main() -> None:
+    class EmptyThenMessageQueue:
+        def __init__(self) -> None:
+            self.empty_reads = 0
+
+        def get(self, *, timeout: float) -> dict[str, object]:
+            assert timeout > 0
+            self.empty_reads += 1
+            if self.empty_reads <= 1_200:
+                raise queue.Empty
+            return {"kind": "ready"}
+
+    polling_session = object.__new__(CodexChatAgentSession)
+    polling_session.messages = EmptyThenMessageQueue()
+    assert polling_session._next_message(deadline=time.monotonic() + 5) == {"kind": "ready"}
+
+    stream_filter = VisibleResponseStreamFilter()
+    long_sentence_chunks = ["This is a deliberately long visible response segment " for _ in range(5)]
+    early_visible = "".join(stream_filter.feed(chunk) for chunk in long_sentence_chunks)
+    assert early_visible, "long prose must become visible before sentence punctuation"
+    assert early_visible + stream_filter.finish() == "".join(long_sentence_chunks)
+
+    chinese_filter = VisibleResponseStreamFilter()
+    long_chinese = "持续输出让用户更早看到有效结果并及时调整方向" * 20
+    chinese_early = "".join(
+        chinese_filter.feed(long_chinese[index : index + 12])
+        for index in range(0, len(long_chinese), 12)
+    )
+    assert chinese_early, "Chinese prose must stream without whitespace or sentence punctuation"
+    assert chinese_early + chinese_filter.finish() == long_chinese
+
+    protected_path = "/home/example/project"
+    path_filter = VisibleResponseStreamFilter(protected_paths=[protected_path])
+    path_text = ("前" * 150) + protected_path + "/secret.txt 后续内容"
+    path_early = "".join(
+        path_filter.feed(path_text[index : index + 12])
+        for index in range(0, len(path_text), 12)
+    )
+    path_visible = path_early + path_filter.finish()
+    assert path_early, "a protected path crossing the segment boundary must not stall the stream"
+    assert protected_path not in path_visible, path_visible
+    assert "[project]" in path_visible, path_visible
+
     with tempfile.TemporaryDirectory(prefix="loopx-chat-agent-") as raw_tmp:
         root = Path(raw_tmp)
         fake_codex = root / "codex"

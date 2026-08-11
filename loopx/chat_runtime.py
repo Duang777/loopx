@@ -87,6 +87,98 @@ class CodexAppServerAdapter:
         return self.session.process.poll() is None
 
 
+class _TurnEventBuffer:
+    """Keep live events readable in memory and checkpoint them in bounded batches."""
+
+    def __init__(
+        self,
+        *,
+        store: ChatSessionStore,
+        session_id: str,
+        turn_id: str,
+        event_flush_interval_sec: float = 0.05,
+        metadata_checkpoint_interval_sec: float = 0.5,
+    ) -> None:
+        self.store = store
+        self.session_id = session_id
+        self.turn_id = turn_id
+        self.event_flush_interval_sec = event_flush_interval_sec
+        self.metadata_checkpoint_interval_sec = metadata_checkpoint_interval_sec
+        self.lock = threading.RLock()
+        self.stop_event = threading.Event()
+        self.closed = False
+        self.last_checkpoint_at = time.monotonic()
+        turn = store.load_turn(session_id, turn_id) or {}
+        self.progress: dict[str, Any] = {
+            "last_activity_at": turn.get("last_activity_at") or utc_now(),
+            "first_event_at": turn.get("first_event_at"),
+            "delta_count": int(turn.get("delta_count") or 0),
+        }
+        self.metadata_dirty = False
+        self.flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
+        self.flush_thread.start()
+
+    def _flush_loop(self) -> None:
+        while not self.stop_event.wait(self.event_flush_interval_sec):
+            try:
+                self.store.flush_events(self.session_id, self.turn_id)
+            except Exception:
+                # Pending rows remain queued. The owning Turn retries during close,
+                # where a persistent failure is handled by the normal runtime path.
+                return
+
+    def _checkpoint_locked(self, *, force: bool = False) -> None:
+        if not self.metadata_dirty:
+            return
+        now = time.monotonic()
+        if not force and now - self.last_checkpoint_at < self.metadata_checkpoint_interval_sec:
+            return
+        changes = dict(self.progress)
+        if not changes.get("first_event_at"):
+            changes.pop("first_event_at", None)
+        self.store.update_turn(self.session_id, self.turn_id, **changes)
+        self.store.update_session(
+            self.session_id,
+            last_activity_at=str(changes["last_activity_at"]),
+        )
+        self.metadata_dirty = False
+        self.last_checkpoint_at = now
+
+    def emit(self, kind: str, payload: dict[str, Any]) -> None:
+        with self.lock:
+            if self.closed:
+                return
+            now = utc_now()
+            self.progress["last_activity_at"] = now
+            if not self.progress.get("first_event_at"):
+                self.progress["first_event_at"] = now
+            if kind in {"answer.delta", "assistant.delta"}:
+                self.progress["delta_count"] = int(self.progress.get("delta_count") or 0) + 1
+            if kind == "turn.started":
+                self.progress["status"] = "running"
+                self.progress["upstream_turn_id"] = payload.get("upstream_turn_id")
+            self.metadata_dirty = True
+            self.store.append_event(
+                self.session_id,
+                self.turn_id,
+                kind=kind,
+                payload=payload,
+                buffered=True,
+            )
+            self._checkpoint_locked()
+
+    def close(self) -> None:
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+        self.stop_event.set()
+        self.flush_thread.join(timeout=max(1.0, self.event_flush_interval_sec * 4))
+        with self.lock:
+            self.store.flush_events(self.session_id, self.turn_id)
+            self._checkpoint_locked(force=True)
+
+
 class ChatRuntimeController:
     def __init__(
         self,
@@ -108,6 +200,7 @@ class ChatRuntimeController:
         self.endpoint_registry = endpoint_registry or AgentEndpointRegistry(store.root)
         self.adapters: dict[str, ChatRuntimeAdapter] = {}
         self.cancelled_turns: set[tuple[str, str]] = set()
+        self.turn_event_buffers: dict[tuple[str, str], _TurnEventBuffer] = {}
         self.lock = threading.RLock()
         self.session_open_locks: dict[tuple[str, str, str], threading.Lock] = {}
 
@@ -422,6 +515,13 @@ class ChatRuntimeController:
     ) -> None:
         started = utc_now()
         self.store.update_turn(session_id, turn_id, status="starting", started_at=started)
+        event_buffer = _TurnEventBuffer(
+            store=self.store,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        with self.lock:
+            self.turn_event_buffers[(session_id, turn_id)] = event_buffer
 
         def consume_interrupted() -> bool:
             key = (session_id, turn_id)
@@ -435,21 +535,11 @@ class ChatRuntimeController:
             with self.lock:
                 if (session_id, turn_id) in self.cancelled_turns:
                     return
-            now = utc_now()
-            changes: dict[str, Any] = {"last_activity_at": now}
-            current_turn = self.store.load_turn(session_id, turn_id) or {}
-            if not current_turn.get("first_event_at"):
-                changes["first_event_at"] = now
-            if kind in {"answer.delta", "assistant.delta"}:
-                changes["delta_count"] = int(current_turn.get("delta_count") or 0) + 1
-            if kind == "turn.started":
-                changes.update(status="running", upstream_turn_id=payload.get("upstream_turn_id"))
-            self.store.update_turn(session_id, turn_id, **changes)
-            self.store.update_session(session_id, last_activity_at=now)
-            self.store.append_event(session_id, turn_id, kind=kind, payload=payload)
+            event_buffer.emit(kind, payload)
 
         try:
             response = adapter.start_turn(message, event_sink)
+            event_buffer.close()
             if consume_interrupted():
                 return
             if response.get("message"):
@@ -483,6 +573,7 @@ class ChatRuntimeController:
                 last_error_code=None,
             )
         except CodexChatTimeoutError as exc:
+            event_buffer.close()
             if consume_interrupted():
                 return
             try:
@@ -491,6 +582,7 @@ class ChatRuntimeController:
                 pass
             self._fail_turn(session_id, turn_id, exc.error_code, str(exc), status="timed_out")
         except CodexChatAgentError as exc:
+            event_buffer.close()
             if consume_interrupted():
                 return
             self._fail_turn(session_id, turn_id, exc.error_code, str(exc), status="failed", gate=exc.gate)
@@ -499,9 +591,14 @@ class ChatRuntimeController:
                     self.adapters.pop(session_id, None)
                 self.store.update_session(session_id, status="stale", last_error_code="transport_disconnected")
         except Exception as exc:  # noqa: BLE001 - preserve compact runtime failure.
+            event_buffer.close()
             if consume_interrupted():
                 return
             self._fail_turn(session_id, turn_id, "runtime_error", str(exc), status="failed")
+        finally:
+            event_buffer.close()
+            with self.lock:
+                self.turn_event_buffers.pop((session_id, turn_id), None)
 
     def _fail_turn(
         self,
@@ -544,6 +641,7 @@ class ChatRuntimeController:
             return turn
         with self.lock:
             adapter = self.adapters.get(session_id)
+            event_buffer = self.turn_event_buffers.get((session_id, turn_id))
         self.store.update_turn(session_id, turn_id, status="interrupting")
         with self.lock:
             self.cancelled_turns.add((session_id, turn_id))
@@ -552,6 +650,8 @@ class ChatRuntimeController:
                 adapter.interrupt_turn(str(turn.get("upstream_turn_id") or "") or None)
             except Exception:
                 pass
+        if event_buffer is not None:
+            event_buffer.close()
         completed = utc_now()
         updated = self.store.update_turn(
             session_id,
@@ -587,6 +687,13 @@ class ChatRuntimeController:
             return False
         with self.lock:
             adapter = self.adapters.pop(session_id, None)
+            event_buffers = [
+                buffer
+                for (buffer_session_id, _), buffer in self.turn_event_buffers.items()
+                if buffer_session_id == session_id
+            ]
+        for event_buffer in event_buffers:
+            event_buffer.close()
         if adapter is not None:
             adapter.close_session()
         self.store.update_session(session_id, status="closed", active_turn_id=None)
@@ -595,6 +702,10 @@ class ChatRuntimeController:
     def close(self) -> None:
         with self.lock:
             adapters = list(self.adapters.values())
+            event_buffers = list(self.turn_event_buffers.values())
             self.adapters.clear()
+            self.turn_event_buffers.clear()
+        for event_buffer in event_buffers:
+            event_buffer.close()
         for adapter in adapters:
             adapter.close_session()

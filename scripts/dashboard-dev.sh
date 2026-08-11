@@ -4,9 +4,56 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DASHBOARD_DIR="${REPO_ROOT}/apps/presentation/dashboard"
 STATUS_PID=""
 CHAT_PID=""
 PYTHON_BIN=""
+
+node_is_supported() {
+  "$1" -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+const supported = (major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22;
+process.exit(supported ? 0 : 1);
+' 2>/dev/null
+}
+
+select_node_runtime() {
+  if command -v node >/dev/null 2>&1 \
+    && command -v npm >/dev/null 2>&1 \
+    && node_is_supported "$(command -v node)"; then
+    return 0
+  fi
+
+  local nvm_root="${NVM_DIR:-${HOME}/.nvm}"
+  local node_candidate
+  local npm_candidate
+  for node_candidate in "${nvm_root}"/versions/node/*/bin/node; do
+    [ -x "${node_candidate}" ] || continue
+    npm_candidate="$(dirname "${node_candidate}")/npm"
+    if [ -x "${npm_candidate}" ] && node_is_supported "${node_candidate}"; then
+      export PATH="$(dirname "${node_candidate}"):${PATH}"
+      echo "Using compatible Node.js from $(dirname "${node_candidate}")"
+      return 0
+    fi
+  done
+
+  echo "LoopX dashboard requires Node.js 20.19+ or 22.12+. Node.js 22 is recommended." >&2
+  echo "Install Node.js 22, then retry: loopx dashboard" >&2
+  return 1
+}
+
+if ! select_node_runtime; then
+  exit 1
+fi
+
+if [ ! -x "${DASHBOARD_DIR}/node_modules/.bin/vite" ]; then
+  echo "Installing LoopX dashboard dependencies (first run only)..."
+  cd "${DASHBOARD_DIR}"
+  if ! npm ci; then
+    echo "LoopX dashboard dependency installation failed." >&2
+    exit 1
+  fi
+fi
 
 wait_for_service() {
   local service_name="$1"
@@ -56,7 +103,7 @@ done
 if [ -z "${PYTHON_BIN}" ]; then
   echo "LoopX requires Python 3.11 or newer to start status and Chat services." >&2
   echo "Starting the Vite UI only; use the bundled example until Python is upgraded." >&2
-  cd "${REPO_ROOT}/apps/presentation/dashboard"
+  cd "${DASHBOARD_DIR}"
   exec npm run dev:web
 fi
 
@@ -87,5 +134,5 @@ echo "  UI:     http://127.0.0.1:5173/"
 echo "  Status: http://127.0.0.1:8766/status.json"
 echo "  Chat:   http://127.0.0.1:8767/api/chat/capabilities"
 
-cd "${REPO_ROOT}/apps/presentation/dashboard"
+cd "${DASHBOARD_DIR}"
 npm run dev:web
