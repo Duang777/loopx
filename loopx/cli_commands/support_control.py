@@ -26,6 +26,7 @@ from ..chat_server import (
 )
 from ..chat_endpoints import AgentEndpointRegistry
 from ..control_plane.scheduler.execution_context import SchedulerRuntimeProfile
+from ..dashboard_launcher import launch_dashboard
 from ..history import load_registry
 from ..paths import resolve_runtime_root
 from ..presentation.renderers.status_markdown import render_status_markdown
@@ -83,6 +84,7 @@ SUPPORT_CONTROL_COMMANDS = {
     "backup-state",
     "chat",
     "chat-endpoint",
+    "dashboard",
     "heartbeat-prequota",
     "heartbeat-prompt",
     "promotion-gate",
@@ -516,6 +518,11 @@ def register_support_control_commands(
         help="Custom Agent id used by the remove action.",
     )
 
+    subparsers.add_parser(
+        "dashboard",
+        help="Start the local LoopX dashboard, status service, and Chat service.",
+    )
+
 
 def handle_support_control_command(
     args: argparse.Namespace,
@@ -922,6 +929,18 @@ def handle_support_control_command(
             print_payload(payload, args.format, render_status_markdown)
             return 1
         return 0
+
+    if args.command == "dashboard":
+        try:
+            return launch_dashboard()
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "schema_version": "loopx_dashboard_start_v0",
+                "error": str(exc),
+            }
+            print_payload(payload, args.format, render_status_markdown)
+            return 1
 
     if args.command == "chat":
         try:
