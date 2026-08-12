@@ -1,0 +1,581 @@
+#!/usr/bin/env node
+// Focused browser smoke for the personal Agent workspace first screen and interactions.
+
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dashboardDir = resolve(repoRoot, "apps/presentation/dashboard");
+const outputDir = resolve(repoRoot, "output/playwright/personal-workspace");
+const port = Number(process.env.LOOPX_PERSONAL_WORKSPACE_PORT ?? "5196");
+
+function loadPlaywright() {
+  const candidates = [
+    process.env.LOOPX_PLAYWRIGHT_PACKAGE,
+    resolve(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright"),
+  ].filter(Boolean);
+  try { return require("playwright"); } catch {}
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try { return require(candidate); } catch {}
+  }
+  throw new Error("Playwright package not found");
+}
+
+function startServer() {
+  const nodeBin = process.env.LOOPX_NODE_BIN || process.execPath;
+  const viteBin = resolve(dashboardDir, "node_modules/vite/bin/vite.js");
+  return spawn(nodeBin, [viteBin, "--host", "127.0.0.1", "--port", String(port), "--strictPort", "--force"], {
+    cwd: dashboardDir,
+    env: { ...process.env },
+    stdio: "ignore",
+  });
+}
+
+async function waitFor(url) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    try { if ((await fetch(url)).ok) return; } catch {}
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+  }
+  throw new Error(`Timed out waiting for ${url}`);
+}
+
+async function installApi(page) {
+  const runtime = page.__loopxRuntime ??= { actionProposals: new Map(), messages: new Map(), sessions: new Map(), turnMessages: new Map() };
+  const actionProposals = runtime.actionProposals;
+  const sessions = runtime.sessions;
+  const messages = runtime.messages;
+  const turnMessages = runtime.turnMessages;
+  const actionKinds = new Map(Array.from(actionProposals.values(), (proposal) => [proposal.proposal_id, proposal.action_kind]));
+  const state = {
+    actionApplies: [],
+    actionCancels: [],
+    actionPreviews: [],
+    durableResources: new Set(),
+    durableWriteCount: 0,
+    interrupts: [],
+    actionTransitions: [],
+    turnRequests: [],
+  };
+  await page.route(`http://127.0.0.1:${port}/status.json`, async (route) => {
+    const fixture = require(resolve(repoRoot, "examples/status.example.json"));
+    const first = fixture.attention_queue?.items?.[0];
+    if (first) {
+      first.waiting_on = "user_or_controller";
+      first.user_todos = {
+        items: [{ done: false, goal_id: first.goal_id, index: 0, role: "user", text: "确认本轮独立审查范围", todo_id: "todo-browser-user-gate" }],
+        open_count: 1,
+        source_section: "User Todo",
+        total_count: 1,
+      };
+    }
+    await route.fulfill({ contentType: "application/json", json: fixture, status: 200 });
+  });
+  await page.route("**/api/chat/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/chat/capabilities") {
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true, schema_version: "loopx_chat_capabilities_v1", agent_backend: "multi_adapter",
+        sandbox: "read-only", approval_policy: "never", todo_write: "preview_locked",
+        goal_id: null, streaming: true, resume: true, interrupt: true, typed_actions: true,
+        action_kinds: ["goal.create", "agent.bind", "heartbeat.bind", "monitor.create", "run.correct"],
+        adapters: [
+          { agent_id: "codex", display_name: "Codex", adapter_kind: "codex_app_server", available: true, streaming: true, resume: true, interrupt: true },
+          { agent_id: "claude-code", display_name: "Claude Code", adapter_kind: "claude_code_cli", available: true, streaming: true, resume: true, interrupt: true },
+          { agent_id: "offline-agent", display_name: "Offline Agent", adapter_kind: "acp", available: false, streaming: false, resume: false, interrupt: false },
+        ],
+      }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/sessions" && request.method() === "GET") {
+      const requestedGoal = url.searchParams.get("goal_id");
+      const requestedAgent = url.searchParams.get("agent_id");
+      const requestedChannel = url.searchParams.get("channel_id");
+      const matched = [...sessions.values()].filter((session) =>
+        (!requestedGoal || session.goal_id === requestedGoal)
+        && (!requestedAgent || session.agent_id === requestedAgent)
+        && (!requestedChannel || session.channel_id === requestedChannel)
+      );
+      await route.fulfill({ contentType: "application/json", json: { ok: true, schema_version: "loopx_chat_session_list_v1", sessions: matched }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/sessions" && request.method() === "POST") {
+      const body = request.postDataJSON();
+      const session_id = `session-${body.context_kind}-${body.goal_id}-${body.agent_id}`;
+      const existing = body.mode === "resume_latest" ? sessions.get(session_id) : null;
+      const session = existing ?? { session_id, goal_id: body.goal_id, agent_id: body.agent_id, adapter_kind: body.agent_id, channel_id: body.context_kind === "manager" ? "manager" : `goal.${body.goal_id}`, status: "ready", active_turn_id: null, last_error_code: null, created_at: "2026-08-13T01:00:00Z", updated_at: "2026-08-13T01:00:00Z", last_activity_at: "2026-08-13T01:00:00Z", resumable: true };
+      sessions.set(session_id, session);
+      messages.set(session_id, messages.get(session_id) ?? []);
+      await route.fulfill({ contentType: "application/json", json: { ok: true, agent_id: body.agent_id, goal_id: body.goal_id, resumed: body.mode === "resume_latest", session_id }, status: 201 });
+      return;
+    }
+    const snapshot = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
+    if (snapshot && request.method() === "GET") {
+      const session = sessions.get(snapshot[1]);
+      await route.fulfill({ contentType: "application/json", json: { ok: true, schema_version: "loopx_chat_store_v1", session, messages: messages.get(snapshot[1]) ?? [], active_turn: null }, status: session ? 200 : 404 });
+      return;
+    }
+    const turns = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/turns$/);
+    if (turns && request.method() === "POST") {
+      const body = request.postDataJSON();
+      const turn_id = `turn-${Date.now()}`;
+      turnMessages.set(turn_id, body.message);
+      const current = sessions.get(turns[1]);
+      if (current) sessions.set(turns[1], { ...current, active_turn_id: turn_id, status: "busy", updated_at: "2026-08-13T01:00:01Z" });
+      messages.get(turns[1])?.push({ message_id: `${turn_id}-user`, turn_id, role: "user", text: body.message, created_at: "2026-08-13T01:00:01Z" });
+      state.turnRequests.push({ message: body.message, sessionId: turns[1], turnId: turn_id });
+      await route.fulfill({ contentType: "application/json", json: { ok: true, session_id: turns[1], turn_id, created: true, status: "running", events_url: `/events/${turns[1]}/${turn_id}` }, status: 202 });
+      return;
+    }
+    const interrupt = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/turns\/([^/]+)\/interrupt$/);
+    if (interrupt && request.method() === "POST") {
+      const current = sessions.get(interrupt[1]);
+      if (current) sessions.set(interrupt[1], { ...current, active_turn_id: null, status: "ready", updated_at: "2026-08-13T01:00:02Z" });
+      state.interrupts.push({ sessionId: interrupt[1], turnId: interrupt[2] });
+      await route.fulfill({ contentType: "application/json", json: { ok: true, session_id: interrupt[1], turn_id: interrupt[2], status: "interrupted" }, status: 200 });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", json: { ok: true }, status: 200 });
+  });
+  await page.route("**/events/**", async (route) => {
+    const answer = "已沿用当前 Goal 与 Agent Session。接下来会先核对状态，再继续推进。";
+    const parts = new URL(route.request().url()).pathname.split("/").filter(Boolean);
+    const sessionId = parts[1];
+    const turnId = parts[2];
+    await new Promise((resolveWait) => setTimeout(resolveWait, /(中断控制|刷新恢复)/u.test(turnMessages.get(turnId) ?? "") ? 5000 : 1200));
+    const activeSession = sessions.get(sessionId);
+    if (!activeSession || activeSession.active_turn_id !== turnId) {
+      await route.fulfill({ contentType: "text/event-stream", body: "", status: 200 });
+      return;
+    }
+    if (sessionId && messages.has(sessionId)) {
+      const visible = messages.get(sessionId);
+      if (!visible.some((message) => message.message_id === `${turnId}-assistant`)) {
+        visible.push({ message_id: `${turnId}-assistant`, turn_id: turnId, role: "assistant", text: answer, created_at: "2026-08-13T01:00:02Z" });
+      }
+    }
+    const event = (id, kind, payload) => `id: ${id}\nevent: ${kind}\ndata: ${JSON.stringify({ event_id: id, sequence: Number(id), kind, created_at: "2026-08-13T01:00:02Z", payload })}\n\n`;
+    await route.fulfill({ contentType: "text/event-stream", body: event("1", "assistant.delta", { text: answer }) + event("2", "turn.completed", { response: { schema_version: "loopx_chat_agent_response_v0", message: answer, proposals: [], gate: null } }), status: 200 });
+    const current = sessions.get(sessionId);
+    if (current?.active_turn_id === turnId) sessions.set(sessionId, { ...current, active_turn_id: null, status: "ready", updated_at: "2026-08-13T01:00:02Z" });
+  });
+  await page.route("**/api/actions?**", async (route) => {
+    const url = new URL(route.request().url());
+    const goalId = url.searchParams.get("goal_id");
+    const contextKind = url.searchParams.get("context_kind");
+    const proposals = Array.from(actionProposals.values()).filter((proposal) => {
+      if (proposal.status === "cancelled") return false;
+      if (goalId && (proposal.context?.goal_id ?? proposal.normalized_parameters?.goal_id) !== goalId) return false;
+      return !contextKind || proposal.context?.kind === contextKind;
+    });
+    await route.fulfill({ contentType: "application/json", json: { ok: true, schema_version: "loopx_chat_action_list_v1", proposals }, status: 200 });
+  });
+  await page.route("**/api/actions/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/actions/preview") {
+      const body = request.postDataJSON();
+      const proposal_id = `proposal-${body.idempotency_key}`;
+      actionKinds.set(proposal_id, body.action_kind);
+      state.actionPreviews.push({ ...body, proposalId: proposal_id });
+      const proposal = {
+        schema_version: "loopx_chat_action_proposal_v1", proposal_id, action_kind: body.action_kind,
+        summary: body.summary, normalized_parameters: body.normalized_parameters, context: body.context,
+        expected_state_fingerprint: "fixture-r1", permission_classification: "durable_write",
+        validation_evidence: ["fixture validation"], available_transitions: ["apply", "cancel"],
+        status: "preview_ready", receipt: null, stale: null, created_at: "2026-08-13T01:00:00Z", updated_at: "2026-08-13T01:00:00Z",
+      };
+      actionProposals.set(proposal_id, proposal);
+      await route.fulfill({ contentType: "application/json", json: { ok: true, proposal }, status: 201 });
+      return;
+    }
+    const apply = url.pathname.match(/^\/api\/actions\/(.+)\/apply$/);
+    if (apply) {
+      state.actionApplies.push(apply[1]);
+      if (actionKinds.get(apply[1]) === "heartbeat.bind") {
+        await route.fulfill({ contentType: "application/json", json: { ok: false, schema_version: "loopx_chat_action_gate_v1", error: "Host activation required", error_code: "protected_action", gate: { kind: "host_activation_required", summary: "需要 Codex App 宿主创建 Heartbeat 自动化。", next_action: "确认宿主自动化后重新验证。" }, write_attempted: false }, status: 409 });
+        return;
+      }
+      const actionKind = actionKinds.get(apply[1]) ?? "goal.create";
+      const resourceKey = `${actionKind}:${apply[1]}`;
+      if (!state.durableResources.has(resourceKey)) {
+        state.durableResources.add(resourceKey);
+        state.durableWriteCount += 1;
+      }
+      const proposal = {
+        schema_version: "loopx_chat_action_proposal_v1", proposal_id: apply[1], action_kind: actionKind,
+        summary: "已应用", normalized_parameters: {}, context: {}, expected_state_fingerprint: "fixture-r1",
+        permission_classification: "durable_write", validation_evidence: [], available_transitions: ["apply", "cancel"],
+        status: "applied", receipt: { receipt_id: "fixture-receipt" }, stale: null, created_at: "2026-08-13T01:00:00Z", updated_at: "2026-08-13T01:00:01Z",
+      };
+      actionProposals.set(apply[1], proposal);
+      await route.fulfill({ contentType: "application/json", json: { ok: true, proposal, turn: null }, status: 200 });
+      return;
+    }
+    const cancel = url.pathname.match(/^\/api\/actions\/(.+)\/cancel$/);
+    if (cancel) {
+      state.actionCancels.push(cancel[1]);
+      const proposal = {
+        schema_version: "loopx_chat_action_proposal_v1", proposal_id: cancel[1], action_kind: actionKinds.get(cancel[1]) ?? "goal.create",
+        summary: "已取消", normalized_parameters: {}, context: {}, expected_state_fingerprint: "fixture-r1",
+        permission_classification: "durable_write", validation_evidence: [], available_transitions: ["apply", "cancel"],
+        status: "cancelled", receipt: null, stale: null, created_at: "2026-08-13T01:00:00Z", updated_at: "2026-08-13T01:00:01Z",
+      };
+      actionProposals.set(cancel[1], proposal);
+      await route.fulfill({ contentType: "application/json", json: { ok: true, proposal }, status: 200 });
+      return;
+    }
+    const transition = url.pathname.match(/^\/api\/actions\/(.+)\/(defer|reject|regenerate)$/);
+    if (transition) {
+      const existing = actionProposals.get(transition[1]);
+      const nextId = transition[2] === "regenerate" ? `${transition[1]}-regenerated` : transition[1];
+      const proposal = {
+        ...(existing ?? {}),
+        schema_version: "loopx_chat_action_proposal_v1",
+        proposal_id: nextId,
+        action_kind: existing?.action_kind ?? actionKinds.get(transition[1]) ?? "goal.create",
+        summary: existing?.summary ?? "已更新决定",
+        normalized_parameters: existing?.normalized_parameters ?? {},
+        context: existing?.context ?? {},
+        expected_state_fingerprint: "fixture-r1",
+        permission_classification: "durable_write",
+        validation_evidence: [],
+        available_transitions: ["apply", "cancel"],
+        status: transition[2] === "defer" ? "deferred" : transition[2] === "reject" ? "rejected" : "preview_ready",
+        receipt: null,
+        stale: null,
+        created_at: existing?.created_at ?? "2026-08-13T01:00:00Z",
+        updated_at: "2026-08-13T01:00:01Z",
+      };
+      actionProposals.set(nextId, proposal);
+      state.actionTransitions.push({ proposalId: transition[1], transition: transition[2] });
+      await route.fulfill({ contentType: "application/json", json: { ok: true, proposal }, status: 200 });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", json: { ok: true }, status: 200 });
+  });
+  return state;
+}
+
+async function main() {
+  const { chromium } = loadPlaywright();
+  await mkdir(outputDir, { recursive: true });
+  const results = new Map(Array.from({ length: 15 }, (_, index) => [index + 1, { status: "UNTESTED", note: "" }]));
+  const observations = [];
+  const pass = (criterion, note) => results.set(criterion, { status: "PASS", note });
+  const fail = (criterion, note) => results.set(criterion, { status: "FAIL", note });
+  const server = startServer();
+  let browser;
+  try {
+    const url = `http://127.0.0.1:${port}/?statusUrl=/status.json`;
+    await waitFor(url);
+    browser = await chromium.launch({ channel: "chrome", headless: true });
+    const page = await browser.newPage({ viewport: { width: 1512, height: 982 } });
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+    const api = await installApi(page);
+    await page.goto(url, { waitUntil: "networkidle" });
+    try {
+      await page.getByTestId("personal-goal-home").waitFor({ state: "visible", timeout: 15_000 });
+    } catch (error) {
+      throw new Error(`${error.message}; url=${page.url()}; errors=${pageErrors.join(" | ")}; body=${(await page.locator("body").innerText()).slice(0, 1000)}`);
+    }
+    const body = await page.locator("body").innerText();
+    for (const text of ["LoopX 管家", "需要你", "运行中", "最近产出", "GOALS", "Codex"]) {
+      if (!body.includes(text)) {
+        await page.screenshot({ path: resolve(outputDir, "desktop-first-screen-failed.png"), fullPage: false, animations: "disabled" });
+        throw new Error(`First screen missing ${text}; body=${body.slice(0, 2000)}`);
+      }
+    }
+    if (await page.locator(".personal-global-rail").count()) throw new Error("Old icon rail is visible");
+    pass(1, "Single Goal sidebar is visible and the old icon rail is absent.");
+    if (await page.locator(".personal-timeline-row").filter({ hasText: /查看|纠偏/u }).count()) throw new Error("Browse rows expose repeated action buttons");
+    pass(2, "Browse rows are full-row click targets without repeated action columns.");
+    await page.screenshot({ path: resolve(outputDir, "desktop-first-screen.png"), fullPage: false, animations: "disabled" });
+    pass(4, "First viewport exposes attention, active work, and recent output channels with counts.");
+    pass(15, "Desktop viewport matches the approved single-sidebar/channel/drawer composition.");
+
+    await page.getByRole("button", { name: "创建 Goal" }).click();
+    await page.getByText("变更预览").waitFor({ state: "visible" });
+    const goalPreview = api.actionPreviews.at(-1);
+    for (const field of ["agent_id", "goal_id", "heartbeat", "initial_todos", "permission", "stop_condition", "workspace_ref"]) {
+      if (!(field in (goalPreview?.normalized_parameters ?? {}))) throw new Error(`Goal preview missing ${field}`);
+    }
+    if (api.durableWriteCount !== 0) throw new Error("Goal preview wrote durable state before confirmation");
+    pass(7, "Goal preview includes Goal, Agent, workspace, permissions, Todos, heartbeat, and stop condition fields.");
+    await page.getByRole("button", { name: "创建并启动", exact: true }).click();
+    await page.getByText(/已应用/).first().waitFor({ state: "visible" });
+    if (api.durableWriteCount !== 1) throw new Error("Goal apply did not create exactly one durable resource");
+    await page.evaluate(async (proposalId) => {
+      await fetch(`/api/actions/${proposalId}/apply`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    }, goalPreview.proposalId);
+    if (api.durableWriteCount !== 1) throw new Error("Repeated proposal apply duplicated durable state");
+    pass(9, "A repeated apply request kept one durable resource and one first-turn resource key.");
+    await page.getByRole("button", { name: /关闭详情/ }).click();
+
+    const goalButton = page.locator(".personal-goal-link").first();
+    await goalButton.click();
+    await page.getByRole("button", { name: "Tasks" }).click();
+    await page.locator(".personal-object-list").first().waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Files" }).click();
+    await page.getByRole("button", { name: "Chat" }).click();
+
+    const composer = page.getByLabel("向 LoopX 发送消息");
+    await composer.fill("添加一个「补充回归测试」Todo，并交给 Codex");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByText("变更预览").waitFor({ state: "visible" });
+    const naturalTodo = api.actionPreviews.find((preview) => preview.action_kind === "todo.create" && preview.normalized_parameters.text === "补充回归测试");
+    if (naturalTodo?.normalized_parameters.endpoint_id !== "codex") throw new Error("Natural-language Todo creation lost the selected Endpoint");
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+
+    await composer.fill("让 Claude Code 负责管理这个 Goal");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByText("变更预览").waitFor({ state: "visible" });
+    const naturalBinding = api.actionPreviews.find((preview) => preview.action_kind === "agent.bind" && preview.normalized_parameters.agent_id === "claude-code");
+    if (!naturalBinding) throw new Error("Natural-language Agent binding did not create a typed preview");
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+
+    const run = page.locator(".personal-run-row").first();
+    await run.click();
+    await page.getByText("运行详情").waitFor({ state: "visible" });
+    const correction = page.getByLabel("输入纠偏信息");
+    await correction.fill("先核对权限边界，再继续推进。");
+    await page.getByRole("button", { name: "发送纠偏" }).click();
+    await page.getByText(/已沿用当前 Goal/).waitFor({ state: "visible", timeout: 10_000 });
+    const firstCorrection = api.turnRequests.find((turn) => turn.message === "先核对权限边界，再继续推进。");
+    if (!firstCorrection?.sessionId.startsWith("session-goal-")) throw new Error("Run correction did not use a Goal-scoped Session");
+    pass(5, "Run-detail correction used a recoverable Goal-scoped Agent Session.");
+    await page.getByRole("button", { name: /关闭详情/ }).click();
+
+    await page.getByRole("button", { name: "Agent 设置" }).click();
+    await page.getByText("Agent 设置").last().waitFor({ state: "visible" });
+    await page.getByRole("button", { name: /关闭详情/ }).click();
+
+    await page.getByRole("button", { name: "创建 Goal" }).click();
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+
+    await composer.fill("每天推进这个 Goal，设置 heartbeat");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByText("变更预览").waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "确认并应用", exact: true }).click();
+    await page.getByText("需要宿主确认").waitFor({ state: "visible" });
+    if (api.durableWriteCount !== 1) throw new Error("Protected heartbeat gate wrote durable state");
+    pass(8, "Preview and protected-gate paths performed zero durable writes before confirmation.");
+    pass(11, "Heartbeat apply surfaced an explicit host-activation gate.");
+    const heartbeatPreview = api.actionPreviews.find((preview) => preview.action_kind === "heartbeat.bind");
+    if (!heartbeatPreview) throw new Error("Continuation intent did not map to heartbeat.bind");
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+
+    await page.getByRole("button", { name: "Tasks" }).click();
+    const taskRow = page.locator(".personal-object-list").first().locator("button").first();
+    await taskRow.click();
+    await page.getByText("Todo 详情").waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "生成预览" }).click();
+    await page.getByText("变更预览").waitFor({ state: "visible" });
+    if (!api.actionPreviews.some((preview) => preview.action_kind === "todo.update" && preview.normalized_parameters.operation === "reassign")) throw new Error("Todo reassign did not create a typed preview");
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+    for (const [label, actionKind, operation] of [
+      ["标记阻塞", "todo.update", "block"],
+      ["暂缓", "todo.update", "defer"],
+      ["标记完成", "todo.update", "complete"],
+      ["创建后续 Todo", "todo.create", null],
+    ]) {
+      await taskRow.click();
+      await page.getByRole("button", { name: label, exact: true }).click();
+      await page.getByText("变更预览").waitFor({ state: "visible" });
+      if (!api.actionPreviews.some((preview) => preview.action_kind === actionKind && (operation === null || preview.normalized_parameters.operation === operation))) throw new Error(`Todo ${label} did not create the expected typed preview`);
+      await page.getByRole("button", { name: "取消", exact: true }).click();
+    }
+    await page.getByRole("button", { name: "Chat" }).click();
+    await page.getByRole("dialog").filter({ hasText: "变更预览" }).waitFor({ state: "hidden" });
+
+    await page.getByRole("button", { name: "创建定时检查" }).click();
+    await page.getByText("变更预览").waitFor({ state: "visible" });
+    const monitorCreate = api.actionPreviews.find((preview) => preview.action_kind === "monitor.create");
+    if (!monitorCreate) throw new Error("Bounded monitor configuration did not map to monitor.create");
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+
+    await goalButton.click();
+    const schedule = page.locator(".personal-schedule-row").first();
+    for (const [label, operation] of [["立即运行", "run_now"], ["暂停", "pause"], ["改为每 2 小时", "edit"], ["停止定时检查", "stop"]]) {
+      await schedule.click();
+      await page.getByText("定时检查", { exact: true }).last().waitFor({ state: "visible" });
+      await page.getByRole("button", { name: label, exact: true }).click();
+      await page.getByText("变更预览").waitFor({ state: "visible" });
+      const monitorUpdate = api.actionPreviews.find((preview) => preview.action_kind === "monitor.update" && preview.normalized_parameters.operation === operation);
+      if (!monitorUpdate) throw new Error(`Monitor ${operation} did not map to monitor.update`);
+      await page.getByRole("button", { name: "取消", exact: true }).click();
+    }
+    pass(10, "Continuation mapped to heartbeat.bind and bounded monitoring mapped to monitor.create/continuous_monitor UI.");
+
+    const agentSelect = page.getByLabel("选择 Agent");
+    const unavailableAgent = agentSelect.locator('option[value="offline-agent"]');
+    if ((await unavailableAgent.count()) !== 1) throw new Error(`Unavailable Agent missing; options=${await agentSelect.locator("option").allTextContents()}`);
+    const unavailableDisabled = (await unavailableAgent.getAttribute("disabled")) !== null;
+    const unavailableLabel = await unavailableAgent.textContent();
+    if (!unavailableDisabled || !unavailableLabel?.includes("不可用")) {
+      throw new Error(`Unavailable Agent is selectable or lacks explanation; disabled=${unavailableDisabled}; label=${unavailableLabel}`);
+    }
+    pass(14, "Codex remained the healthy default and the unavailable Agent option was disabled with explanation.");
+    await agentSelect.selectOption("claude-code");
+    if ((await agentSelect.inputValue()) !== "claude-code") throw new Error("Healthy Agent selection did not update");
+    await page.getByRole("button", { name: "刷新状态" }).click();
+
+    await page.locator(".personal-run-row").first().click();
+    const runningCorrection = page.getByLabel("输入纠偏信息");
+    await runningCorrection.fill("保持运行，等我检查中断控制。 ");
+    await page.getByRole("button", { name: "发送纠偏" }).click();
+    await page.getByText("更多运行操作").click();
+    const interruptButton = page.getByRole("button", { name: "中断本次运行" });
+    try {
+      await interruptButton.waitFor({ state: "visible", timeout: 8_000 });
+    } catch (error) {
+      await page.screenshot({ path: resolve(outputDir, "interrupt-state-failed.png"), fullPage: true, animations: "disabled" });
+      throw new Error(`${error.message}; body=${(await page.locator("body").innerText()).slice(-4000)}`);
+    }
+    await interruptButton.click();
+    const secondCorrection = api.turnRequests.find((turn) => turn.message.includes("中断控制"));
+    if (!secondCorrection || secondCorrection.sessionId === firstCorrection.sessionId) {
+      throw new Error("Agent change reused the earlier Agent Session or failed to start the second correction");
+    }
+    if (!api.interrupts.some((turn) => turn.sessionId === secondCorrection.sessionId && turn.turnId === secondCorrection.turnId)) {
+      throw new Error("Interrupt did not target the active Session and Turn");
+    }
+    await page.getByRole("button", { name: /关闭详情/ }).click();
+    await page.getByText("已中断。你可以在当前会话继续发送消息。", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+    await page.locator(".personal-run-row").first().click();
+    const rowHandle = page.locator(".personal-run-row").first();
+    await page.getByRole("button", { name: /关闭详情/ }).press("Escape");
+    await rowHandle.waitFor({ state: "visible" });
+    if (!(await rowHandle.evaluate((element) => element === document.activeElement))) throw new Error("Drawer Escape did not restore focus to the selected row");
+
+    await page.getByRole("button", { name: /LoopX 管家/ }).first().click();
+    await page.getByRole("button", { name: /需要你/ }).first().click();
+    await page.locator(".personal-attention-row").first().click();
+    await page.getByText("需要你", { exact: true }).last().waitFor({ state: "visible" });
+    await page.getByText("更多决定").click();
+    await page.getByRole("button", { name: "稍后决定", exact: true }).click();
+    await page.getByText("变更预览").waitFor({ state: "visible" });
+    const deferredDecision = api.actionPreviews.find((preview) => preview.action_kind === "gate.resolve" && preview.normalized_parameters.decision === "defer");
+    if (!deferredDecision) throw new Error("Decision defer did not create a Gate preview");
+    await page.getByRole("button", { name: "稍后", exact: true }).click();
+    await page.getByText(/已暂缓/).waitFor({ state: "visible" });
+    if (!api.actionTransitions.some((transition) => transition.transition === "defer")) throw new Error("Proposal defer transition was not sent");
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+    const runningChannel = page.getByRole("button", { name: /运行中/ }).first();
+    const projectedRunCount = Number.parseInt((await runningChannel.locator("small").textContent()) ?? "0", 10) || 0;
+    await runningChannel.click();
+    const runningRows = await page.locator(".personal-run-row").count();
+    if ((projectedRunCount > 0) !== (runningRows > 0)) {
+      throw new Error(`Running channel count/content mismatch: count=${projectedRunCount}, rows=${runningRows}`);
+    }
+    await page.getByRole("button", { name: /最近产出/ }).first().click();
+    const output = page.locator(".personal-output-row").first();
+    if (!(await output.count())) {
+      fail(3, "The recent-output channel has no output row; attention, run, and schedule drawers opened correctly.");
+      fail(13, "No recent output row is available to verify artifact/evidence lineage in the channel.");
+    } else {
+      await output.click();
+      await page.getByText("产出详情").waitFor({ state: "visible" });
+      await page.getByRole("button", { name: "打开", exact: true }).click();
+      await page.getByText("产出详情").waitFor({ state: "hidden" });
+      await page.getByText("Files & Outputs", { exact: true }).waitFor({ state: "visible" });
+    }
+    if (results.get(3).status !== "FAIL") pass(3, "Attention, run, schedule, and output rows opened their typed drawers.");
+
+    const visibleText = await page.locator("body").innerText();
+    if (/session-goal-|turn-\d{6,}|\/Users\/|credential|provider payload|tool output/u.test(visibleText)) {
+      fail(12, "Default surface exposes a raw runtime identifier, path, credential, or provider/tool payload.");
+    } else {
+      pass(12, "Default surface kept raw runtime ids, paths, credentials, and provider/tool payloads hidden.");
+    }
+    if (results.get(13).status !== "FAIL") pass(13, "Progress and output rows retain Goal, Agent, schedule, evidence, or output projection lineage.");
+
+    await page.locator(".personal-goal-link").first().click();
+    await page.locator(".personal-run-row").first().click();
+    await page.getByLabel("输入纠偏信息").fill("保持运行，用于验证刷新恢复。 ");
+    await page.getByRole("button", { name: "发送纠偏" }).click();
+    const recoveryTurn = api.turnRequests.find((turn) => turn.message.includes("刷新恢复"));
+    if (!recoveryTurn) throw new Error("Active recovery Turn was not accepted");
+
+    try {
+      await page.reload({ waitUntil: "networkidle" });
+      await page.getByTestId("personal-goal-home").waitFor({ state: "visible" });
+      await page.locator(".personal-goal-link").first().click();
+      await page.getByText("保持运行，用于验证刷新恢复。").waitFor({ state: "visible", timeout: 10_000 });
+      await page.getByText("正在整理…").waitFor({ state: "hidden", timeout: 10_000 });
+      const recovered = page.__loopxRuntime.sessions.get(recoveryTurn.sessionId);
+      if (recovered?.active_turn_id !== null && recovered?.active_turn_id !== recoveryTurn.turnId) {
+        throw new Error("Recovered Session points at a different active Turn");
+      }
+      pass(6, "Reload restored visible Goal history and resumed the active Turn SSE stream.");
+    } catch (error) {
+      fail(6, "Reload did not restore the active Goal conversation and reconnect its active Turn within 10 seconds.");
+      await page.screenshot({ path: resolve(outputDir, "refresh-recovery-failed.png"), fullPage: true, animations: "disabled" });
+      observations.push(`Refresh recovery failure: ${error.message}`);
+    }
+
+    const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
+    await installApi(mobile);
+    await mobile.goto(url, { waitUntil: "networkidle" });
+    await mobile.getByTestId("personal-goal-home").waitFor({ state: "visible" });
+    const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    if (mobileOverflow > 1) throw new Error(`Mobile workspace has ${mobileOverflow}px horizontal overflow`);
+    await mobile.screenshot({ path: resolve(outputDir, "mobile-first-screen.png"), fullPage: false, animations: "disabled" });
+    const mobileComposer = mobile.getByLabel("向 LoopX 发送消息");
+    const composerBox = await mobileComposer.boundingBox();
+    if (!composerBox || composerBox.y + composerBox.height > 844) throw new Error("Mobile composer is outside the visible safe area");
+    await mobile.getByRole("button", { name: "打开 Goal 导航" }).click();
+    await mobile.getByRole("button", { name: "打开 Goal 导航" }).waitFor({ state: "visible" });
+    if (await mobile.getByRole("button", { name: "打开 Goal 导航" }).getAttribute("aria-expanded") !== "true") {
+      throw new Error(`Mobile navigation state did not open: ${await mobile.locator(".personal-workspace-shell").getAttribute("class")}`);
+    }
+    const mobileSidebarProbe = await mobile.locator(".personal-workspace-sidebar").evaluate((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return { className: element.parentElement?.className, display: style.display, height: rect.height, width: rect.width, x: rect.x };
+    });
+    if (mobileSidebarProbe.display === "none" || mobileSidebarProbe.width < 100) {
+      throw new Error(`Mobile sidebar did not become visible: ${JSON.stringify(mobileSidebarProbe)}`);
+    }
+    await mobile.keyboard.press("Escape");
+    if (await mobile.getByRole("button", { name: "打开 Goal 导航" }).getAttribute("aria-expanded") !== "false") {
+      throw new Error("Mobile navigation did not close on Escape");
+    }
+    await mobile.getByRole("button", { name: "打开 Goal 导航" }).click();
+    const mobileManagerLink = mobile.locator(".personal-manager-link");
+    try {
+      await mobileManagerLink.waitFor({ state: "visible", timeout: 1500 });
+    } catch {
+      throw new Error(`Mobile manager link hidden after open: sidebar=${JSON.stringify(mobileSidebarProbe)} chain=${JSON.stringify(await mobileManagerLink.evaluate((element) => { const chain = []; let current = element; while (current && chain.length < 6) { const style = getComputedStyle(current); const rect = current.getBoundingClientRect(); chain.push({ className: current.className, display: style.display, height: rect.height, position: style.position, width: rect.width, x: rect.x }); current = current.parentElement; } return chain; }))}`);
+    }
+    await mobile.getByRole("button", { name: /运行中/ }).first().click();
+    await mobile.locator(".personal-channel").waitFor({ state: "visible" });
+    await mobile.close();
+    const report = { criteria: Object.fromEntries(results), observations };
+    await writeFile(resolve(outputDir, "acceptance-results.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    console.log(`personal-workspace-browser-smoke: ok\npreview=${url}\nscreenshot=${resolve(outputDir, "desktop-first-screen.png")}`);
+    const failures = [...results.entries()].filter(([, result]) => result.status !== "PASS");
+    if (failures.length) throw new Error(`Acceptance failures: ${failures.map(([criterion, result]) => `${criterion} ${result.status}: ${result.note}`).join(" | ")}`);
+  } finally {
+    if ([...results.values()].some((result) => result.status !== "PASS")) {
+      await writeFile(resolve(outputDir, "acceptance-results.json"), `${JSON.stringify({ criteria: Object.fromEntries(results), observations }, null, 2)}\n`, "utf8");
+    }
+    await browser?.close();
+    server.kill("SIGTERM");
+  }
+}
+
+await main();

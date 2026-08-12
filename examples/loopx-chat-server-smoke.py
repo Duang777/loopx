@@ -299,21 +299,18 @@ def main() -> None:
 
             with urllib.request.urlopen(f"{base_url}/chat/", timeout=4) as response:
                 html = response.read().decode("utf-8")
-            assert "LoopX Goal Studio" in html, html
+            assert "LoopX 个人 Agent 工作区" in html, html
             stylesheet_match = re.search(r'href="(/chat/assets/[^"]+\.css)"', html)
             assert stylesheet_match, html
             with urllib.request.urlopen(f"{base_url}{stylesheet_match.group(1)}", timeout=4) as response:
                 stylesheet = response.read().decode("utf-8")
-            assert ".chat-goal-map" in stylesheet, "packaged chat stylesheet is incomplete"
+            assert ".personal-workspace" in stylesheet, "packaged workspace stylesheet is incomplete"
 
             status_payload = wait_for_json(f"{base_url}/status.json")
-            assert status_payload["schema_version"] == "loopx_chat_status_v0", status_payload
-            assert status_payload["selected_goal_id"] == GOAL_ID, status_payload
-            assert status_payload["goal_count"] == 2, status_payload
-            assert {goal["goal_id"] for goal in status_payload["goals"]} == {
-                GOAL_ID,
-                SECOND_GOAL_ID,
-            }, status_payload
+            assert status_payload["ok"] is True, status_payload
+            assert status_payload["goal_count"] == 1, status_payload
+            assert status_payload["goal_filter"] == GOAL_ID, status_payload
+            assert status_payload["global_registry"]["ok"] is True, status_payload
             assert str(root) not in json.dumps(status_payload), status_payload
 
             code, created = request_json(
@@ -347,6 +344,28 @@ def main() -> None:
                 manager_created["session_id"]
             ], listed_manager
 
+            code, projection_exchange = request_json(
+                f"{base_url}/api/chat/projection-messages",
+                method="POST",
+                body={
+                    "answer": "当前没有阻塞。",
+                    "context_kind": "manager",
+                    "question": "现在该做什么？",
+                },
+            )
+            assert code == 201 and projection_exchange["session_id"], projection_exchange
+            projection_history = wait_for_json(
+                f"{base_url}/api/chat/sessions?agent_id=status-only&channel_id=manager"
+            )
+            assert len(projection_history["sessions"]) == 1, projection_history
+            projection_snapshot = wait_for_json(
+                f"{base_url}/api/chat/sessions/{projection_exchange['session_id']}"
+            )
+            assert [message["text"] for message in projection_snapshot["messages"]] == [
+                "现在该做什么？",
+                "当前没有阻塞。",
+            ], projection_snapshot
+
             code, turn = request_json(
                 f"{base_url}/api/chat/sessions/{session_id}/turns",
                 method="POST",
@@ -379,6 +398,25 @@ def main() -> None:
             assert event_stream.index("Visible streaming answer.") < event_stream.index(
                 "event: turn.completed"
             ), event_stream
+            first_event_id = next(
+                line.split(":", 1)[1].strip()
+                for line in event_stream.splitlines()
+                if line.startswith("id:")
+            )
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{base_url}{accepted['events_url']}",
+                    headers={
+                        "Accept": "text/event-stream",
+                        "Last-Event-ID": first_event_id,
+                        "Origin": "http://127.0.0.1:5173",
+                    },
+                ),
+                timeout=4,
+            ) as response:
+                replay_stream = response.read().decode("utf-8")
+            assert f"id: {first_event_id}\n" not in replay_stream, replay_stream
+            assert "event: turn.completed" in replay_stream, replay_stream
             code, duplicate = request_json(
                 f"{base_url}/api/chat/sessions/{session_id}/turns",
                 method="POST",
@@ -475,11 +513,13 @@ def main() -> None:
             assert state_file.read_text(encoding="utf-8").count(TODO_TEXT) == 1
             refreshed_status = wait_for_json(f"{base_url}/status.json")
             refreshed_goal = next(
-                goal for goal in refreshed_status["goals"] if goal["goal_id"] == GOAL_ID
+                item
+                for item in refreshed_status["attention_queue"]["items"]
+                if item["goal_id"] == GOAL_ID
             )
             projected_todos = [
                 todo
-                for todo in refreshed_goal["todos"]
+                for todo in refreshed_goal["project_asset"]["agent_todos"]["items"]
                 if todo["todo_id"] == receipt["todo_id"]
             ]
             assert len(projected_todos) == 1, refreshed_status
