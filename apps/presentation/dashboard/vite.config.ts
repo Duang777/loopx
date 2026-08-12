@@ -16,6 +16,10 @@ export default defineConfig({
         target: "http://127.0.0.1:8767",
         changeOrigin: false,
       },
+      "/api/actions": {
+        target: "http://127.0.0.1:8767",
+        changeOrigin: false,
+      },
     },
   },
   preview: {
