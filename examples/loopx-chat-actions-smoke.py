@@ -578,7 +578,8 @@ def assert_http_action_api(root: Path) -> None:
         state_after_monitor = state_path.read_text(encoding="utf-8")
         assert "task_class=continuous_monitor" in state_after_monitor, state_after_monitor
         assert "cadence=30m" in state_after_monitor, state_after_monitor
-        assert "resume_when=pr_merged:example%2Floopx%233559" in state_after_monitor, state_after_monitor
+        assert "next_due_at=" in state_after_monitor, state_after_monitor
+        assert "pr_merged" in state_after_monitor, state_after_monitor
 
         monitor_todo_id = monitor_receipt["resource_ids"]["todo_id"]
         lifecycle_actions = [

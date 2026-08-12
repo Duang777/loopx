@@ -14,6 +14,8 @@ from .chat import apply_todo_review_preview, build_todo_review_preview
 from .chat_action_store import ActionConflictError, ChatActionStore
 from .chat_store import ChatSessionStore
 from .configure_goal import configure_goal
+from .control_plane.runtime.time import now_utc
+from .control_plane.scheduler.monitor_todo import monitor_next_due_at
 from .history import load_registry
 from .host_loop_activation import build_host_loop_activation_packet
 from .quota import build_quota_should_run
@@ -96,6 +98,35 @@ def _normalize_cadence(value: Any) -> str:
     if match:
         return f"{int(match.group('count'))}{match.group('unit').lower()}"
     raise ValueError("cadence must look like 30m, 2h, 1d, hourly, or daily")
+
+
+def _monitor_metadata(parameters: Mapping[str, Any]) -> dict[str, str]:
+    metadata = {
+        key: str(parameters[key])
+        for key in ("target_key", "cadence")
+        if parameters.get(key)
+    }
+    cadence = metadata.get("cadence")
+    if cadence:
+        next_due_at = monitor_next_due_at(
+            generated_at=now_utc().isoformat(),
+            cadence=cadence,
+        )
+        if next_due_at:
+            metadata["next_due_at"] = next_due_at
+    return metadata
+
+
+def _monitor_text(parameters: Mapping[str, Any]) -> str | None:
+    target = str(parameters.get("target") or "").strip()
+    stop_condition = str(parameters.get("stop_condition") or "").strip()
+    if target and stop_condition:
+        return f"{target} (stop when {stop_condition})"
+    if target:
+        return target
+    if stop_condition:
+        return f"Monitor until {stop_condition}"
+    return None
 
 
 class ChatActionService:
@@ -1086,16 +1117,12 @@ class ChatActionService:
             registry_path=self.registry_path,
             goal_id=goal_id,
             role="agent",
-            text=str(parameters["target"]),
+            text=_monitor_text(parameters) or str(parameters["target"]),
             task_class="continuous_monitor",
             action_kind="observe",
             claimed_by=agent_id,
             agent_id=agent_id,
-            resume_when=str(parameters["stop_condition"]),
-            monitor_metadata={
-                "target_key": str(parameters["target_key"]),
-                "cadence": str(parameters["cadence"]),
-            },
+            monitor_metadata=_monitor_metadata(parameters),
             dry_run=False,
         )
         todo_id = _opaque(result.get("todo_id"), field="todo_id")
@@ -1251,20 +1278,18 @@ class ChatActionService:
                 "dry_run": False,
             }
             if operation == "pause":
-                kwargs.update(status="deferred")
+                kwargs.update(
+                    status="blocked",
+                    note="Owner paused this continuous monitor from typed Chat action.",
+                )
                 outcome = "monitor_paused"
             elif operation == "resume":
                 kwargs.update(status="open")
                 outcome = "monitor_resumed"
             else:
                 kwargs.update(
-                    text=parameters.get("target"),
-                    resume_when=parameters.get("stop_condition"),
-                    monitor_metadata={
-                        key: parameters[key]
-                        for key in ("target_key", "cadence")
-                        if parameters.get(key)
-                    },
+                    text=_monitor_text(parameters),
+                    monitor_metadata=_monitor_metadata(parameters),
                 )
                 outcome = "monitor_updated"
             result = update_goal_todo(**kwargs)
