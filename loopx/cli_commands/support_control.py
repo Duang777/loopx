@@ -458,6 +458,11 @@ def register_support_control_commands(
         help="Codex CLI executable used for the read-only app-server session.",
     )
     chat_parser.add_argument(
+        "--claude-bin",
+        default="claude",
+        help="Claude Code CLI executable used for read-only Agent sessions.",
+    )
+    chat_parser.add_argument(
         "--startup-timeout-seconds",
         type=float,
         default=30.0,
@@ -957,6 +962,7 @@ def handle_support_control_command(
                 port=args.port,
                 goal_id=args.goal_id,
                 codex_bin=args.codex_bin,
+                claude_bin=args.claude_bin,
                 startup_timeout_sec=max(0.1, float(args.startup_timeout_seconds)),
                 idle_timeout_sec=max(0.1, float(args.idle_timeout_seconds)),
                 hard_timeout_sec=max(0.1, float(args.hard_timeout_seconds)),

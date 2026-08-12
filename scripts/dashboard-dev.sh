@@ -8,6 +8,8 @@ DASHBOARD_DIR="${REPO_ROOT}/apps/presentation/dashboard"
 STATUS_PID=""
 CHAT_PID=""
 PYTHON_BIN=""
+CODEX_BIN="codex"
+CLAUDE_BIN="claude"
 
 node_is_supported() {
   "$1" -e '
@@ -107,6 +109,29 @@ if [ -z "${PYTHON_BIN}" ]; then
   exec npm run dev:web
 fi
 
+resolve_agent_binary() {
+  local binary_name="$1"
+  local discovered=""
+  if command -v "${binary_name}" >/dev/null 2>&1; then
+    command -v "${binary_name}"
+    return 0
+  fi
+  for discovered in \
+    "${HOME}/.npm-global/bin/${binary_name}" \
+    "${HOME}/.local/bin/${binary_name}" \
+    "${HOME}"/.nvm/versions/node/*/bin/"${binary_name}"; do
+    if [ -x "${discovered}" ]; then
+      printf '%s\n' "${discovered}"
+      return 0
+    fi
+  done
+  printf '%s\n' "${binary_name}"
+}
+
+CODEX_BIN="$(resolve_agent_binary codex)"
+CLAUDE_BIN="$(resolve_agent_binary claude)"
+echo "LoopX Agent executables: Codex=${CODEX_BIN}; Claude Code=${CLAUDE_BIN}"
+
 cd "${REPO_ROOT}"
 "${PYTHON_BIN}" -m loopx.cli serve-status \
   --global-registry \
@@ -119,6 +144,8 @@ STATUS_PID=$!
   --global-registry \
   --host 127.0.0.1 \
   --port 8767 \
+  --codex-bin "${CODEX_BIN}" \
+  --claude-bin "${CLAUDE_BIN}" \
   --no-open &
 CHAT_PID=$!
 
