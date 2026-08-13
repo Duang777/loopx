@@ -13,9 +13,10 @@ for (const field of ["dependencies", "nextTransition", "ownerLabel", "todoId", "
   assert.match(model, new RegExp(`${field}\\??:`), `Todo exposes ${field}`);
 }
 assert.match(drawer, /actionKind: "todo\.update"/, "Todo mutations use typed previews");
-for (const operation of ["reassign", "block", "defer", "complete"]) {
+for (const operation of ["reassign", "block", "defer"]) {
   assert.match(drawer, new RegExp(`operation:\\s*"${operation}"`), `Todo supports ${operation}`);
 }
+assert.match(drawer, /previewTodoTransition\(selection\.item, "complete"/, "Todo complete is the primary drawer action");
 assert.match(drawer, /actionKind: "todo\.create"/, "Todo successor uses the canonical create action");
 
 for (const field of ["evidence", "explanation"]) {

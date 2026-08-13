@@ -378,7 +378,7 @@ async function main() {
     await page.getByRole("button", { name: "取消", exact: true }).click();
 
     await page.getByRole("button", { name: "Tasks" }).click();
-    const taskRow = page.locator(".personal-object-list").first().locator("button").first();
+    const taskRow = page.locator(".personal-object-list", { hasText: "进行中" }).locator("button").first();
     await taskRow.click();
     await page.getByText("Todo 详情").waitFor({ state: "visible" });
     await page.getByRole("button", { name: "生成预览" }).click();
@@ -392,6 +392,8 @@ async function main() {
       ["创建后续 Todo", "todo.create", null],
     ]) {
       await taskRow.click();
+      const moreMenu = page.locator("details.personal-compact-menu", { hasText: "更多操作" });
+      if (!(await moreMenu.getAttribute("open"))) await moreMenu.locator("summary").click();
       await page.getByRole("button", { name: label, exact: true }).click();
       await page.getByText("变更预览").waitFor({ state: "visible" });
       if (!api.actionPreviews.some((preview) => preview.action_kind === actionKind && (operation === null || preview.normalized_parameters.operation === operation))) throw new Error(`Todo ${label} did not create the expected typed preview`);
@@ -564,6 +566,14 @@ async function main() {
     await mobile.getByRole("button", { name: /运行中/ }).first().click();
     await mobile.locator(".personal-channel").waitFor({ state: "visible" });
     await mobile.close();
+    await page.getByRole("button", { name: "野兽主题" }).click();
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "brutal") throw new Error("Theme toggle did not switch the shell to the brutal theme");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "brutal") throw new Error("Brutal theme did not persist across reload");
+    await page.getByRole("button", { name: "默认主题" }).click();
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Theme toggle did not switch back to the paper theme");
+    pass(16, "Theme toggle switched to the brutal theme, persisted across reload, and switched back.");
     const report = { criteria: Object.fromEntries(results), observations };
     await writeFile(resolve(outputDir, "acceptance-results.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
     console.log(`personal-workspace-browser-smoke: ok\npreview=${url}\nscreenshot=${resolve(outputDir, "desktop-first-screen.png")}`);
