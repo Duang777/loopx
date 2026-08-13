@@ -572,3 +572,7 @@
 
 .personal-proposal-state.is-error:has(small) { display: grid; gap: 4px; align-items: start; }
 .personal-proposal-state.is-error small { line-height: 1.5; word-break: break-all; }
+
+.personal-gate-cli-hint { display: grid; gap: 6px; margin-top: 10px; }
+.personal-gate-cli-hint code { display: block; padding: 8px 10px; border: 1px solid var(--pw-line); border-radius: 7px; background: var(--pw-bg, #f7f6f2); font-size: 11.5px; line-height: 1.5; user-select: all; word-break: break-all; }
+.personal-gate-cli-hint small { color: var(--pw-muted); line-height: 1.5; }

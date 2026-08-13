@@ -380,9 +380,22 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], onClo
             {selection.item.status === "error" ? <div className="personal-proposal-state is-error"><span>应用失败，当前预览没有继续写入。</span>{selection.item.errorMessage ? <small>{selection.item.errorMessage}</small> : null}</div> : null}
             {selection.item.status === "rejected" ? <p className="personal-proposal-state is-error">已拒绝，这项变更不会写入。</p> : null}
             {selection.item.status === "deferred" ? <p className="personal-proposal-state is-gated">已暂缓，可稍后继续应用或重新生成。</p> : null}
-            {selection.item.status === "gated" ? <div className="personal-proposal-state is-gated"><span><strong>需要宿主确认</strong>{selection.item.gate?.summary}</span>{selection.item.gate?.nextAction ? <small>{selection.item.gate.nextAction}</small> : null}</div> : null}
+            {selection.item.status === "gated" ? <div className="personal-proposal-state is-gated"><span><strong>需要宿主确认</strong>页面无权直接批准这类权限变更，你的点击没有写入任何内容。</span>{selection.item.gate?.nextAction ? <small>{selection.item.gate.nextAction}</small> : null}</div> : null}
+            {selection.item.status === "gated" && selection.item.actionKind === "gate.resolve" ? (() => {
+              const fieldValue = (label: string) => selection.item.fields.find((field) => field.label === label)?.value;
+              const gateGoalId = fieldValue("goal id");
+              const gateTodoId = fieldValue("todo id");
+              if (!gateGoalId || !gateTodoId) return null;
+              return (
+                <section className="personal-detail-card personal-gate-cli-hint">
+                  <small>在终端执行一条命令即可完成审批：</small>
+                  <code>loopx todo complete --goal-id {gateGoalId} --todo-id {gateTodoId} --decision-outcome approve</code>
+                  <small>不同意就把末尾的 approve 换成 reject。执行后这条提醒会自动消失。</small>
+                </section>
+              );
+            })() : null}
             {selection.item.workspaceCandidates?.length ? <div className="personal-workspace-candidates" aria-label="可选择的工作区">{selection.item.workspaceCandidates.map((candidate) => <button key={candidate.workspaceRef} onClick={() => void callbacks.onSelectWorkspaceCandidate?.(selection.item, candidate.workspaceRef)} type="button"><strong>{candidate.label}</strong><small>{candidate.workspaceRef}</small></button>)}</div> : null}
-            <button className="personal-primary-action" disabled={!['ready', 'error', 'deferred'].includes(selection.item.status)} onClick={() => void callbacks.onApplyProposal?.(selection.item)} type="button"><Check size={17} />{selection.item.status === "applying" ? "正在应用…" : selection.item.status === "error" ? "安全重试" : selection.item.primaryLabel ?? "确认并应用"}</button>
+            {selection.item.status !== "gated" ? <button className="personal-primary-action" disabled={!['ready', 'error', 'deferred'].includes(selection.item.status)} onClick={() => void callbacks.onApplyProposal?.(selection.item)} type="button"><Check size={17} />{selection.item.status === "applying" ? "正在应用…" : selection.item.status === "error" ? "安全重试" : selection.item.primaryLabel ?? "确认并应用"}</button> : null}
             {["stale", "error", "gated", "rejected"].includes(selection.item.status) ? <button className="personal-secondary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "regenerate")} type="button"><RotateCcw size={16} />重新生成预览</button> : null}
             {["ready", "gated"].includes(selection.item.status) ? <div className="personal-drawer-action-grid"><button className="personal-secondary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "defer")} type="button">稍后</button><button className="personal-secondary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "reject")} type="button">拒绝</button></div> : null}
             {!["applied", "applying"].includes(selection.item.status) ? <button className="personal-secondary-action" onClick={() => callbacks.onCancelProposal?.(selection.item)} type="button">取消</button> : null}
