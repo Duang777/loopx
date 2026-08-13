@@ -201,6 +201,7 @@ class ChatRuntimeController:
         self.adapters: dict[str, ChatRuntimeAdapter] = {}
         self.cancelled_turns: set[tuple[str, str]] = set()
         self.turn_event_buffers: dict[tuple[str, str], _TurnEventBuffer] = {}
+        self.turn_done_events: dict[tuple[str, str], threading.Event] = {}
         self.lock = threading.RLock()
         self.session_open_locks: dict[tuple[str, str, str], threading.Lock] = {}
 
@@ -238,8 +239,8 @@ class ChatRuntimeController:
                 "streaming": False,
                 "resume": True,
                 "interrupt": False,
-                "tool_calls": False,
-                "trust_scope": "model_only",
+                "tool_calls": True,
+                "trust_scope": "read_only",
                 "source": "builtin",
             },
             {
@@ -250,8 +251,8 @@ class ChatRuntimeController:
                 "streaming": False,
                 "resume": True,
                 "interrupt": False,
-                "tool_calls": False,
-                "trust_scope": "model_only",
+                "tool_calls": True,
+                "trust_scope": "read_only",
                 "source": "builtin",
             },
         ]
@@ -265,7 +266,7 @@ class ChatRuntimeController:
         goal_id: str,
         objective: str,
         resume_thread_id: str | None = None,
-        history: list[dict[str, str]] | None = None,
+        history: list[dict[str, Any]] | None = None,
     ) -> ChatRuntimeAdapter:
         if agent_id == "codex":
             history_context = ""
@@ -502,6 +503,8 @@ class ChatRuntimeController:
             },
             daemon=True,
         )
+        with self.lock:
+            self.turn_done_events[(session_id, str(turn["turn_id"]))] = threading.Event()
         worker.start()
         return turn, True
 
@@ -599,6 +602,9 @@ class ChatRuntimeController:
             event_buffer.close()
             with self.lock:
                 self.turn_event_buffers.pop((session_id, turn_id), None)
+                done_event = self.turn_done_events.pop((session_id, turn_id), None)
+            if done_event is not None:
+                done_event.set()
 
     def _fail_turn(
         self,
@@ -642,6 +648,7 @@ class ChatRuntimeController:
         with self.lock:
             adapter = self.adapters.get(session_id)
             event_buffer = self.turn_event_buffers.get((session_id, turn_id))
+            done_event = self.turn_done_events.get((session_id, turn_id))
         self.store.update_turn(session_id, turn_id, status="interrupting")
         with self.lock:
             self.cancelled_turns.add((session_id, turn_id))
@@ -652,6 +659,20 @@ class ChatRuntimeController:
                 pass
         if event_buffer is not None:
             event_buffer.close()
+        if done_event is not None and not done_event.wait(timeout=5.0):
+            # A notification-only interrupt can be lost when an upstream runtime
+            # is unhealthy. Stop that transport before making the Session ready;
+            # the next Turn will resume the persisted upstream thread on a fresh
+            # adapter instead of racing two readers on one event stream.
+            if adapter is not None:
+                try:
+                    adapter.close_session()
+                except Exception:
+                    pass
+            with self.lock:
+                if self.adapters.get(session_id) is adapter:
+                    self.adapters.pop(session_id, None)
+            done_event.wait(timeout=1.0)
         completed = utc_now()
         updated = self.store.update_turn(
             session_id,
@@ -699,13 +720,34 @@ class ChatRuntimeController:
         self.store.update_session(session_id, status="closed", active_turn_id=None)
         return True
 
+    def resume_session(self, *, session_id: str, work_dir: Path, objective: str) -> dict[str, Any]:
+        session = self.store.load_session(session_id)
+        if session is None or session.get("status") == "closed":
+            raise KeyError("chat session was not found")
+        self.store.update_session(
+            session_id,
+            status="stale",
+            active_turn_id=None,
+            last_error_code=None,
+        )
+        self._ensure_adapter(session, work_dir=work_dir, objective=objective)
+        restored = self.store.load_session(session_id)
+        if restored is None:
+            raise KeyError("chat session was not found")
+        return restored
+
     def close(self) -> None:
         with self.lock:
             adapters = list(self.adapters.values())
             event_buffers = list(self.turn_event_buffers.values())
+            done_events = list(self.turn_done_events.values())
             self.adapters.clear()
             self.turn_event_buffers.clear()
+        for done_event in done_events:
+            done_event.wait(timeout=0.5)
         for event_buffer in event_buffers:
             event_buffer.close()
         for adapter in adapters:
             adapter.close_session()
+        for done_event in done_events:
+            done_event.wait(timeout=1.0)

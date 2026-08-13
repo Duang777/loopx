@@ -21,6 +21,7 @@ from loopx.chat_store import ChatSessionStore  # noqa: E402
 FAKE_CODEX = r'''#!/usr/bin/env python3
 import json
 import sys
+import time
 
 active_turn = None
 assert "goals" not in sys.argv, sys.argv
@@ -58,6 +59,7 @@ for line in sys.stdin:
     elif method == "turn/interrupt":
         result = {}
         print(json.dumps({"id": request_id, "result": result}), flush=True)
+        time.sleep(0.15)
         if active_turn:
             print(json.dumps({"method": "turn/completed", "params": {"threadId": "durable-thread", "turn": {"id": active_turn, "status": "interrupted"}}}), flush=True)
         continue
@@ -148,10 +150,25 @@ def main() -> None:
             time.sleep(0.02)
         interrupted = second.interrupt_turn(session_id=session_id, turn_id=slow["turn_id"])
         assert interrupted["status"] == "interrupted", interrupted
+        assert second.turn_event_buffers == {}, second.turn_event_buffers
         time.sleep(0.1)
         assert store.load_turn(session_id, slow["turn_id"])["status"] == "interrupted"
         assert store.load_session(session_id)["status"] == "ready"
         assert store.messages(session_id)[-1]["text"] == "已中断。你可以在当前会话继续发送消息。"
+        continued, created = second.submit_turn(
+            session_id=session_id,
+            client_turn_id="continue-after-interrupt",
+            message="complete normally after interrupt",
+            work_dir=root,
+            objective="Keep the thread durable.",
+        )
+        assert created is True
+        continued = second.wait_for_turn(
+            session_id=session_id,
+            turn_id=continued["turn_id"],
+            timeout_sec=3,
+        )
+        assert continued["status"] == "completed", continued
         second.close()
 
     print("loopx-chat-runtime-smoke: ok")

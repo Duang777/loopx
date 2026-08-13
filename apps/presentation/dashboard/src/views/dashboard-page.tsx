@@ -87,11 +87,15 @@ import {
 import {
   ChatApiError,
   applyTodo,
+  closeChatSession,
   createChatSession,
   fetchChatCapabilities,
   fetchChatHistory,
+  fetchChatSessions,
   interruptChatTurn,
   previewTodo,
+  recordProjectionExchange,
+  resumeChatSession,
   resumeChatTurnStreaming,
   sendChatTurnStreaming,
   selectAvailableChatAgent,
@@ -122,6 +126,11 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { cn } from "../lib/utils";
+import { PersonalWorkspacePage } from "../features/personal-workspace/personal-workspace-page";
+import {
+  normalizePersonalHomeModel,
+  type WorkspaceTimelineItem,
+} from "../features/personal-workspace/personal-workspace-model";
 
 type LaneKey = "user" | "codex" | "watch";
 
@@ -4530,6 +4539,7 @@ type PersonalNeedsYouItem = {
   taskClass: string | null;
   text: string;
   todoId: string;
+  updatedAt: string | null;
 };
 
 type PersonalAgentTodoItem = {
@@ -4538,6 +4548,7 @@ type PersonalAgentTodoItem = {
   evidence: string | null;
   index: number;
   status: string | null;
+  taskClass: string | null;
   text: string;
   todoId: string;
 };
@@ -4546,7 +4557,10 @@ type PersonalRunEvidence = {
   generatedAt: string;
   label: string;
   metadata: string;
+  runId: string | null;
+  safePreview: string;
   summary: string;
+  todoId: string | null;
 };
 
 type PersonalGoalItem = {
@@ -4608,11 +4622,27 @@ type PersonalProposalCard = {
 };
 
 type PersonalAgentOption = {
+  adapterKind?: string;
   agentId: string;
   available: boolean;
   capability: string;
+  interrupt?: boolean;
   label: string;
+  location?: string;
+  resume?: boolean;
+  source?: string;
   statusLabel: string;
+  streaming?: boolean;
+  toolCalls?: boolean;
+  trustScope?: string;
+};
+
+type PersonalRuntimeBinding = {
+  agentId: string;
+  resumable: boolean;
+  sessionId: string;
+  status: string;
+  turnId?: string;
 };
 
 const personalAgentSelectionStorageKey = "loopx.personal-agent-selection.v1";
@@ -4767,6 +4797,7 @@ function personalAgentTodos(row: GoalDirectoryRow): PersonalAgentTodoItem[] {
     evidence: todo.evidence ? compactShareText(todo.evidence, 96) : null,
     index: todo.index,
     status: todo.status ?? null,
+    taskClass: todo.task_class ?? null,
     text: personalTodoText(todo),
     todoId: todo.todo_id?.trim() || `${row.goal.id}:agent:${todo.index}`,
   }));
@@ -4819,7 +4850,10 @@ function personalRunEvidence(payload: StatusPayload, row: GoalDirectoryRow): Per
     generatedAt: latestValidation?.generated_at ?? latestRun?.generated_at ?? eventSummary?.latest_event_at ?? "",
     label: latestValidation ? "最近验证" : "最近运行",
     metadata,
+    runId: latestRun ? `${row.goal.id}:${latestRun.generated_at}` : null,
+    safePreview: [summary, metadata].filter(Boolean).join("\n"),
     summary,
+    todoId: row.queueItem?.project_asset?.agent_todos?.items.find((todo) => !todo.done)?.todo_id ?? null,
   };
 }
 
@@ -5040,6 +5074,7 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
         text: personalTodoText(todo),
         todoId: todo.todo_id?.trim() || `${item.goal_id}:user:${todo.index}`,
         todoOrder,
+        updatedAt: todo.updated_at ?? null,
       }));
   }).sort((left, right) =>
     Number(right.blocking) - Number(left.blocking)
@@ -5122,12 +5157,21 @@ function PersonalGoalHome({
   toggleTheme: () => void;
 }) {
   const [runtimeAgents, setRuntimeAgents] = useState<Array<{
+    adapter_kind: string;
     agent_id: string;
-    display_name: string;
     available: boolean;
+    display_name: string;
+    interrupt: boolean;
+    location?: string;
+    resume: boolean;
+    source?: string;
+    streaming: boolean;
+    tool_calls?: boolean;
+    trust_scope?: string;
   }>>([]);
   const model = buildPersonalHomeModel(payload, rows);
   const selectedGoal = model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
+  const sessionDiscoveryKey = model.goals.map((goal) => `${goal.goalId}:${goal.agentId}`).join("|");
   const contextId = selectedGoal?.goalId ?? "manager";
   const managerSummary = !payload.ok
     || !payload.contract.ok
@@ -5140,10 +5184,18 @@ function PersonalGoalHome({
   const discoveredAgents: PersonalAgentOption[] = runtimeAgents.length > 0
     ? runtimeAgents.map((agent) => ({
         agentId: agent.agent_id,
+        adapterKind: agent.adapter_kind,
         available: agent.available,
         capability: personalAgentCapability(agent.agent_id),
+        interrupt: agent.interrupt,
         label: agent.display_name,
+        location: agent.location,
+        resume: agent.resume,
+        source: agent.source,
         statusLabel: agent.available ? "可用" : "需要配置",
+        streaming: agent.streaming,
+        toolCalls: agent.tool_calls,
+        trustScope: agent.trust_scope,
       }))
     : [{
         agentId: "codex",
@@ -5158,8 +5210,14 @@ function PersonalGoalHome({
       agentId: "status-only",
       available: true,
       capability: "不调用模型",
+      adapterKind: "status_projection",
+      interrupt: false,
       label: "仅查状态",
+      resume: true,
       statusLabel: "只读",
+      streaming: false,
+      toolCalls: false,
+      trustScope: "read_only",
     },
   ];
   const defaultAgentId = discoveredAgents.find((agent) => agent.label === "Codex" && agent.available)?.agentId
@@ -5175,6 +5233,7 @@ function PersonalGoalHome({
   const [messagesByContext, setMessagesByContext] = useState<Record<string, PersonalManagerMessage[]>>({});
   const [proposalsByContext, setProposalsByContext] = useState<Record<string, PersonalProposalCard[]>>({});
   const [sendingContextId, setSendingContextId] = useState<string | null>(null);
+  const [runtimeBindings, setRuntimeBindings] = useState<Record<string, PersonalRuntimeBinding>>({});
   const managerMessageId = useRef(1);
   const proposalId = useRef(1);
   const sessionIds = useRef(new Map<string, string>());
@@ -5211,6 +5270,17 @@ function PersonalGoalHome({
       }
     : model;
 
+  function recordRuntimeBinding(targetContextId: string, binding: PersonalRuntimeBinding | null) {
+    setRuntimeBindings((current) => {
+      if (binding === null) {
+        const next = { ...current };
+        delete next[targetContextId];
+        return next;
+      }
+      return { ...current, [targetContextId]: binding };
+    });
+  }
+
   useEffect(() => {
     let cancelled = false;
     void fetchChatCapabilities()
@@ -5234,7 +5304,7 @@ function PersonalGoalHome({
   }, [selectedAgents]);
 
   useEffect(() => {
-    if (selectedAgent.agentId === "status-only" || !selectedAgent.available) return;
+    if (!selectedAgent.available) return;
     const targetContextId = contextId;
     const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
     const contextKind = selectedGoal ? "goal" : "manager";
@@ -5242,6 +5312,7 @@ function PersonalGoalHome({
     const anchorGoalId = selectedGoal?.goalId ?? model.goals[0]?.goalId ?? "";
     let cancelled = false;
     let recoveryController: AbortController | null = null;
+    let latestDiscoveredSessionId: string | null = null;
     void (async () => {
       try {
         const history = await fetchChatHistory({
@@ -5268,9 +5339,17 @@ function PersonalGoalHome({
             })),
           };
         });
+        if (selectedAgent.agentId === "status-only") return;
         const latest = history.sessions[0];
+        latestDiscoveredSessionId = latest?.session_id ?? null;
         if (latest && !latest.resumable) {
           newSessionRequired.current.add(sessionKey);
+          recordRuntimeBinding(targetContextId, {
+            agentId: selectedAgent.agentId,
+            resumable: false,
+            sessionId: latest.session_id,
+            status: "resume_failed",
+          });
           return;
         }
         const sessionGoalId = latest?.goal_id ?? anchorGoalId;
@@ -5283,16 +5362,30 @@ function PersonalGoalHome({
         );
         if (cancelled) return;
         sessionIds.current.set(sessionKey, created.session_id);
-        newSessionRequired.current.delete(sessionKey);
         const activeSnapshot = history.snapshots.find(
           (snapshot) => snapshot.session.session_id === created.session_id,
         );
         const activeTurnId = activeSnapshot?.session.active_turn_id ?? "";
+        recordRuntimeBinding(targetContextId, {
+          agentId: selectedAgent.agentId,
+          resumable: true,
+          sessionId: created.session_id,
+          status: activeTurnId ? "running" : "ready",
+          turnId: activeTurnId || undefined,
+        });
+        newSessionRequired.current.delete(sessionKey);
         if (!activeTurnId) return;
         const recoveryKey = `${created.session_id}:${activeTurnId}`;
         if (recoveringTurnKeys.current.has(recoveryKey)) return;
         recoveringTurnKeys.current.add(recoveryKey);
         activeTurnIds.current.set(targetContextId, activeTurnId);
+        recordRuntimeBinding(targetContextId, {
+          agentId: selectedAgent.agentId,
+          resumable: true,
+          sessionId: created.session_id,
+          status: "running",
+          turnId: activeTurnId,
+        });
         setSendingContextId(targetContextId);
         recoveryController = new AbortController();
         streamControllers.current.set(targetContextId, recoveryController);
@@ -5370,6 +5463,12 @@ function PersonalGoalHome({
           if (activeTurnIds.current.get(targetContextId) === activeTurnId) {
             activeTurnIds.current.delete(targetContextId);
           }
+          recordRuntimeBinding(targetContextId, {
+            agentId: selectedAgent.agentId,
+            resumable: true,
+            sessionId: created.session_id,
+            status: "ready",
+          });
           if (streamControllers.current.get(targetContextId) === recoveryController) {
             streamControllers.current.delete(targetContextId);
           }
@@ -5381,6 +5480,14 @@ function PersonalGoalHome({
         if (cancelled) return;
         if (error instanceof ChatApiError && error.payload.error_code === "resume_failed") {
           newSessionRequired.current.add(sessionKey);
+          if (latestDiscoveredSessionId) {
+            recordRuntimeBinding(targetContextId, {
+              agentId: selectedAgent.agentId,
+              resumable: false,
+              sessionId: latestDiscoveredSessionId,
+              status: "resume_failed",
+            });
+          }
         }
       }
     })();
@@ -5389,6 +5496,40 @@ function PersonalGoalHome({
       recoveryController?.abort();
     };
   }, [contextId, model.goals[0]?.goalId, selectedGoal?.goalId, selectedAgent.agentId, selectedAgent.available, selectedAgent.label]);
+
+  useEffect(() => {
+    if (selectedGoal || model.goals.length === 0) return;
+    let cancelled = false;
+    void Promise.all(model.goals.map(async (goal) => {
+      const listed = await fetchChatSessions({
+        agentId: goal.agentId,
+        channelId: `goal.${goal.goalId}`,
+        goalId: goal.goalId,
+      });
+      return { goalId: goal.goalId, session: listed.sessions[0] ?? null };
+    })).then((rows) => {
+      if (cancelled) return;
+      setRuntimeBindings((current) => {
+        const next = { ...current };
+        for (const row of rows) {
+          if (!row.session) continue;
+          next[row.goalId] = {
+            agentId: row.session.agent_id,
+            resumable: row.session.resumable,
+            sessionId: row.session.session_id,
+            status: row.session.active_turn_id ? "running" : row.session.status,
+            turnId: row.session.active_turn_id ?? undefined,
+          };
+        }
+        return next;
+      });
+    }).catch(() => {
+      // The read-only status projection remains available while Session discovery reconnects.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionDiscoveryKey, selectedGoal?.goalId]);
 
   useEffect(() => {
     if (!agentMenuOpen) {
@@ -5469,14 +5610,30 @@ function PersonalGoalHome({
     }));
   }
 
-  async function sendManagerQuestion(rawQuestion: string) {
+  async function sendManagerQuestion(rawQuestion: string, route?: { agentId?: string; goalId?: string | null }) {
     const question = rawQuestion.trim();
     if (!question) {
       return;
     }
-    const targetContextId = contextId;
-    const targetGoal = selectedGoal ?? questionModel.goals[0] ?? null;
-    const selectedRoute = selectedAgent;
+    const targetContextId = route && "goalId" in route
+      ? route.goalId ?? "manager"
+      : contextId;
+    const targetGoal = targetContextId === "manager"
+      ? questionModel.goals[0] ?? model.goals[0] ?? null
+      : model.goals.find((goal) => goal.goalId === targetContextId) ?? null;
+    const selectedRoute = route?.agentId
+      ? selectAvailableChatAgent(agentOptions, route.agentId, defaultAgentId)
+      : selectedAgent;
+    const targetQuestionModel = targetGoal
+      ? {
+          ...model,
+          blockingTodoCount: model.userTodos.filter((todo) => todo.goalId === targetGoal.goalId && todo.blocking).length,
+          goals: [targetGoal],
+          openUserTodoCount: model.userTodos.filter((todo) => todo.goalId === targetGoal.goalId).length,
+          userTodos: model.userTodos.filter((todo) => todo.goalId === targetGoal.goalId),
+          visibleUserTodos: model.userTodos.filter((todo) => todo.goalId === targetGoal.goalId),
+        }
+      : model;
     const userMessageId = managerMessageId.current++;
     setMessagesByContext((messages) => ({
       ...messages,
@@ -5488,9 +5645,9 @@ function PersonalGoalHome({
     setManagerInput("");
     setSendingContextId(targetContextId);
 
-    const isProjectionQuickQuestion = managerQuickPrompts.includes(question);
+  const isProjectionQuickQuestion = managerQuickPrompts.includes(question);
     if (isProjectionQuickQuestion || selectedRoute.agentId === "status-only" || !targetGoal) {
-      const answer = answerPersonalManagerQuestion(payload, questionModel, question);
+      const answer = answerPersonalManagerQuestion(payload, targetQuestionModel, question);
       const usesStatusOnlyRoute = selectedRoute.agentId === "status-only";
       appendManagerAssistantMessage(targetContextId, {
         agentLabel: usesStatusOnlyRoute ? "仅查状态" : "LoopX 管家",
@@ -5498,11 +5655,19 @@ function PersonalGoalHome({
         sourceLabel: usesStatusOnlyRoute ? "LoopX 状态投影 · 仅查状态" : "LoopX 状态投影",
         text: answer.text,
       });
+      void recordProjectionExchange({
+        answer: [answer.text, ...answer.lines.slice(0, 3)].filter(Boolean).join("\n"),
+        contextKind: targetContextId === "manager" ? "manager" : "goal",
+        goalId: targetContextId === "manager" ? undefined : targetContextId,
+        question,
+      }).catch(() => {
+        // The current projection answer remains visible when local history persistence is unavailable.
+      });
       setSendingContextId(null);
       return;
     }
 
-    const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
+    const sessionKey = `${targetContextId}:${selectedRoute.agentId}`;
     let streamingMessageId: number | null = null;
     try {
       let sessionId = sessionIds.current.get(sessionKey);
@@ -5512,10 +5677,16 @@ function PersonalGoalHome({
           targetGoal.goalId,
           selectedRoute.agentId,
           mode,
-          selectedGoal ? "goal" : "manager",
+          targetContextId === "manager" ? "manager" : "goal",
         );
         sessionId = session.session_id;
         sessionIds.current.set(sessionKey, sessionId);
+        recordRuntimeBinding(targetContextId, {
+          agentId: selectedRoute.agentId,
+          resumable: true,
+          sessionId,
+          status: "ready",
+        });
         newSessionRequired.current.delete(sessionKey);
       }
       let streamedText = "";
@@ -5524,9 +5695,9 @@ function PersonalGoalHome({
         agentLabel: selectedRoute.label,
         lines: [],
         pending: true,
-        sourceLabel: selectedGoal
-          ? `${selectedRoute.label} 只读 Agent · ${personalGoalTitle(targetGoal.goalId)}`
-          : `${selectedRoute.label} 管家 · 跨 Goal 只读`,
+        sourceLabel: targetContextId !== "manager"
+          ? `${selectedRoute.label} Agent · ${personalGoalTitle(targetGoal.goalId)}`
+          : `${selectedRoute.label} 管家 · 跨 Goal`,
         text: "",
       });
       const streamed = await sendChatTurnStreaming(sessionId, question, {
@@ -5559,6 +5730,13 @@ function PersonalGoalHome({
         },
         onPhase: (_phase, turnId) => {
           activeTurnIds.current.set(targetContextId, turnId);
+          recordRuntimeBinding(targetContextId, {
+            agentId: selectedRoute.agentId,
+            resumable: true,
+            sessionId,
+            status: "running",
+            turnId,
+          });
         },
       });
       const response = streamed.response;
@@ -5606,6 +5784,12 @@ function PersonalGoalHome({
       if (payloadError?.error_code === "resume_failed") {
         sessionIds.current.delete(sessionKey);
         newSessionRequired.current.add(sessionKey);
+        recordRuntimeBinding(targetContextId, {
+          agentId: selectedRoute.agentId,
+          resumable: false,
+          sessionId: runtimeBindings[targetContextId]?.sessionId ?? "resume-failed",
+          status: "resume_failed",
+        });
       }
       const gate = payloadError?.gate;
       const gateSummary = gate && typeof gate === "object"
@@ -5618,7 +5802,7 @@ function PersonalGoalHome({
         reconnect: payloadError?.reconnectable === true,
         sourceLabel: "LoopX Chat 本地后端",
         text: payloadError?.error_code === "resume_failed"
-          ? `原 ${selectedRoute.label} 会话无法恢复。请再次发送这条消息，LoopX 会为当前 Goal 新建会话。`
+          ? `原 ${selectedRoute.label} 会话无法恢复。本地历史已经保留，请在运行详情里选择“重试恢复”或“开始新 Session”。`
           : error instanceof Error ? error.message : `${selectedRoute.label} 会话暂时不可用。`,
       };
       if (streamingMessageId === null) {
@@ -5629,15 +5813,26 @@ function PersonalGoalHome({
     } finally {
       activeTurnIds.current.delete(targetContextId);
       streamControllers.current.delete(targetContextId);
+      const boundSessionId = sessionIds.current.get(sessionKey);
+      if (boundSessionId) {
+        recordRuntimeBinding(targetContextId, {
+          agentId: selectedRoute.agentId,
+          resumable: true,
+          sessionId: boundSessionId,
+          status: "ready",
+        });
+      }
       setSendingContextId((current) => current === targetContextId ? null : current);
     }
   }
 
-  async function interruptManagerTurn() {
-    const targetContextId = contextId;
-    const sessionKey = `${targetContextId}:${selectedAgent.agentId}`;
-    const sessionId = sessionIds.current.get(sessionKey);
-    const turnId = activeTurnIds.current.get(targetContextId);
+  async function interruptManagerTurn(run?: { agentId: string; goalId: string; sessionId?: string; turnId?: string }) {
+    const targetContextId = run?.goalId ?? contextId;
+    const binding = runtimeBindings[targetContextId];
+    const agentId = run?.agentId ?? binding?.agentId ?? selectedAgent.agentId;
+    const sessionKey = `${targetContextId}:${agentId}`;
+    const sessionId = run?.sessionId ?? binding?.sessionId ?? sessionIds.current.get(sessionKey);
+    const turnId = run?.turnId ?? binding?.turnId ?? activeTurnIds.current.get(targetContextId);
     if (!sessionId || !turnId) return;
     try {
       interruptedContexts.current.add(targetContextId);
@@ -5648,9 +5843,61 @@ function PersonalGoalHome({
       throw error;
     } finally {
       activeTurnIds.current.delete(targetContextId);
+      recordRuntimeBinding(targetContextId, {
+        agentId,
+        resumable: true,
+        sessionId,
+        status: "ready",
+      });
       streamControllers.current.delete(targetContextId);
       setSendingContextId((current) => current === targetContextId ? null : current);
     }
+  }
+
+  async function retryManagerSession(run: { agentId: string; goalId: string; sessionId?: string }) {
+    const targetContextId = run.goalId;
+    const sessionKey = `${targetContextId}:${run.agentId}`;
+    const sessionId = run.sessionId ?? runtimeBindings[targetContextId]?.sessionId ?? sessionIds.current.get(sessionKey);
+    if (!sessionId) return;
+    try {
+      const restored = await resumeChatSession(sessionId);
+      sessionIds.current.set(sessionKey, sessionId);
+      newSessionRequired.current.delete(sessionKey);
+      recordRuntimeBinding(targetContextId, {
+        agentId: run.agentId,
+        resumable: restored.session.resumable,
+        sessionId,
+        status: restored.session.status,
+      });
+    } catch {
+      recordRuntimeBinding(targetContextId, {
+        agentId: run.agentId,
+        resumable: false,
+        sessionId,
+        status: "resume_failed",
+      });
+    }
+  }
+
+  function startNewManagerSession(run: { agentId: string; goalId: string }) {
+    const sessionKey = `${run.goalId}:${run.agentId}`;
+    sessionIds.current.delete(sessionKey);
+    newSessionRequired.current.add(sessionKey);
+    recordRuntimeBinding(run.goalId, {
+      agentId: run.agentId,
+      resumable: true,
+      sessionId: "new-session-pending",
+      status: "ready",
+    });
+  }
+
+  async function closeManagerSession(run: { agentId: string; goalId: string; sessionId?: string }) {
+    const sessionKey = `${run.goalId}:${run.agentId}`;
+    const sessionId = run.sessionId ?? runtimeBindings[run.goalId]?.sessionId ?? sessionIds.current.get(sessionKey);
+    if (sessionId && sessionId !== "new-session-pending") await closeChatSession(sessionId);
+    sessionIds.current.delete(sessionKey);
+    newSessionRequired.current.add(sessionKey);
+    recordRuntimeBinding(run.goalId, null);
   }
 
   async function previewPersonalProposal(card: PersonalProposalCard) {
@@ -5774,407 +6021,150 @@ function PersonalGoalHome({
           title: selectedGoal ? "当前没有阻止 Agent 继续的运行异常" : "当前没有全局健康异常",
         };
 
+  const workspaceTimeline: WorkspaceTimelineItem[] = [
+    ...(!selectedGoal && runtimeBindings.manager?.status === "resume_failed" ? [{
+      id: "run:manager:resume-failed",
+      kind: "run" as const,
+      run: {
+        agentId: runtimeBindings.manager.agentId,
+        agentLabel: personalAgentLabel(runtimeBindings.manager.agentId),
+        canInterrupt: false,
+        completedSteps: 0,
+        goalId: "manager",
+        goalTitle: "LoopX 管家",
+        latestActivity: "本地聊天历史已经保留，上游 Agent Session 需要恢复。",
+        resumable: false,
+        runId: "manager:resume-failed",
+        sessionId: runtimeBindings.manager.sessionId,
+        sessionStatus: "resume_failed",
+        status: "failed" as const,
+        title: "原 Agent Session 无法恢复",
+        totalSteps: 1,
+        outputs: [],
+      },
+    }] : []),
+    ...(selectedGoal ? [{
+      id: `run:${selectedGoal.goalId}`,
+      kind: "run" as const,
+      run: {
+        agentId: runtimeBindings[selectedGoal.goalId]?.agentId ?? selectedGoal.agentId,
+        agentLabel: personalAgentLabel(runtimeBindings[selectedGoal.goalId]?.agentId ?? selectedGoal.agentId),
+        canInterrupt: Boolean(runtimeBindings[selectedGoal.goalId]?.turnId),
+        completedSteps: selectedGoal.agentTodos.filter((todo) => todo.done).length,
+        goalId: selectedGoal.goalId,
+        goalTitle: selectedGoal.title,
+        latestActivity: selectedGoal.agentSentence,
+        resumable: runtimeBindings[selectedGoal.goalId]?.resumable ?? true,
+        runId: `goal:${selectedGoal.goalId}`,
+        sessionId: runtimeBindings[selectedGoal.goalId]?.sessionId,
+        sessionStatus: runtimeBindings[selectedGoal.goalId]?.status,
+        status: runtimeBindings[selectedGoal.goalId]?.turnId
+          ? "running" as const
+          : selectedGoal.state === "需修复"
+            ? "failed" as const
+            : "waiting" as const,
+        title: selectedGoal.nextSentence,
+        totalSteps: selectedGoal.agentTodos.length || 1,
+        turnId: runtimeBindings[selectedGoal.goalId]?.turnId,
+        outputs: selectedGoal.runEvidence ? [{
+          createdAt: selectedGoal.runEvidence.generatedAt,
+          kind: "evidence" as const,
+          outputId: `${selectedGoal.goalId}:latest-evidence`,
+          title: selectedGoal.runEvidence.label,
+        }] : [],
+      },
+    }] : []),
+    ...contextMessages.map((message): WorkspaceTimelineItem => ({
+      id: `message:${message.id}`,
+      kind: "message",
+      message: {
+        agentLabel: message.agentLabel,
+        id: String(message.id),
+        pending: message.pending,
+        role: message.role,
+        text: message.text || (message.pending ? "Agent 正在处理…" : message.lines.join("\n")),
+      },
+    })),
+    ...(selectedGoal ? [selectedGoal] : model.goals).flatMap((goal) => goal.runEvidence ? [{
+      id: `output:${goal.goalId}:${goal.runEvidence.generatedAt || "latest"}`,
+      kind: "output" as const,
+      output: {
+        agentLabel: personalAgentLabel(goal.agentId),
+        createdAt: goal.runEvidence.generatedAt,
+        goalId: goal.goalId,
+        goalTitle: goal.title,
+        kind: "evidence" as const,
+        outputId: `${goal.goalId}:latest-evidence`,
+        runId: goal.runEvidence.runId ?? undefined,
+        safePreview: goal.runEvidence.safePreview,
+        summary: goal.runEvidence.summary,
+        title: goal.runEvidence.label,
+        todoId: goal.runEvidence.todoId ?? undefined,
+      },
+    }] : []),
+  ];
+  const workspaceModel = {
+    ...normalizePersonalHomeModel(model),
+    timeline: workspaceTimeline,
+  };
   return (
-    <div className={theme === "dark" ? "dark" : ""}>
-      <main className={cn("personal-workspace", selectedGoal && "has-selected-goal", mobilePanel === "goals" && "mobile-goals-visible")} data-testid="personal-goal-home">
-        <aside className="personal-global-rail">
-          <a className="personal-rail-logo" href="/" aria-label="LoopX 管家首页">
-            <GitBranch className="h-4 w-4" />
-          </a>
-          <nav aria-label="个人工作区主导航">
-            <button aria-label="Chat" className="is-active" onClick={openManagerChat} type="button">
-              <MessageCircle className="h-4 w-4" />
-            </button>
-            <button aria-label="Goals" onClick={openGoalList} type="button">
-              <LayoutDashboard className="h-4 w-4" />
-            </button>
-            <button aria-label="设置，预览中暂不可用" disabled type="button">
-              <Settings className="h-4 w-4" />
-            </button>
-          </nav>
-          <span className={cn("personal-health-dot", payload.ok ? "is-healthy" : "is-unhealthy")} title={payload.ok ? "LoopX 运行正常" : "LoopX 需要检查"} />
-        </aside>
-
-        <aside className="personal-goal-sidebar" data-testid="personal-goal-list">
-          <header>
-            <h1>Goals</h1>
-            <button aria-label="新建 Goal，预览中暂不可用" disabled type="button"><Plus className="h-4 w-4" /></button>
-          </header>
-          <button
-            className={cn("personal-manager-row", !selectedGoal && "is-selected")}
-            data-testid="personal-manager-home"
-            onClick={openManagerChat}
-            type="button"
-          >
-            <span className="personal-goal-icon"><Sparkles className="h-4 w-4" /></span>
-            <span>
-              <strong>LoopX 管家</strong>
-              <small>{model.openUserTodoCount > 0 ? `${model.openUserTodoCount} 项需要你` : "汇总所有 Goals"}</small>
-            </span>
-          </button>
-          <div className="personal-goal-scroll">
-            {model.goals.map((goal) => (
-              <button
-                aria-label={`${goal.title}；${goal.agentSentence}；${goal.state}；Goal id ${goal.goalId}`}
-                className={cn("personal-goal-list-row", selectedGoal?.goalId === goal.goalId && "is-selected")}
-                data-testid="personal-goal-row"
-                key={goal.goalId}
-                onClick={() => openGoalChat(goal.goalId)}
-                type="button"
-              >
-                <span className={cn("personal-state-dot", goal.state === "等你" && "is-blocking", goal.state === "推进中" && "is-progressing", goal.state === "需修复" && "is-repair")} />
-                <span className="personal-goal-list-copy">
-                  <strong>{goal.title}</strong>
-                  <small>{goal.agentSentence}</small>
-                </span>
-                <Badge variant={personalGoalStateVariant[goal.state]}>{goal.state}</Badge>
-              </button>
-            ))}
-          </div>
-          <footer>
-            <span>{model.goals.length} 个活跃 Goal</span>
-            <button aria-label="刷新 Goals" disabled={isLoading} onClick={onRefresh} type="button">
-              <RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} />
-            </button>
-          </footer>
-        </aside>
-
-        <section className="personal-chat-pane">
-          <header className="personal-chat-header">
-            <div className="personal-chat-title">
-              {selectedGoal ? (
-                <button aria-label="返回 Goals" className="personal-chat-back" onClick={openGoalList} type="button">
-                  <ArrowLeft className="h-4 w-4" />
-                </button>
-              ) : (
-                <>
-                  <button aria-label="打开 Goals" className="personal-mobile-goals-button" onClick={openGoalList} type="button">
-                    <LayoutDashboard className="h-4 w-4" />
-                  </button>
-                  <span className="personal-manager-icon"><Bot className="h-4 w-4" /></span>
-                </>
-              )}
-              <div>
-                <h2>{selectedGoal?.title ?? "LoopX 管家"}</h2>
-                <p>{selectedGoalHeaderSummary}</p>
-              </div>
-            </div>
-            <div className="personal-chat-actions">
-              <div className="personal-agent-picker">
-                <button
-                  aria-expanded={agentMenuOpen}
-                  aria-haspopup="menu"
-                  className="personal-agent-trigger"
-                  data-testid="personal-agent-trigger"
-                  onClick={() => setAgentMenuOpen((open) => !open)}
-                  ref={agentTriggerRef}
-                  type="button"
-                >
-                  <Bot className="h-4 w-4" />
-                  {selectedAgent.label}
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </button>
-                {agentMenuOpen ? (
-                  <>
-                    <button aria-label="关闭 Agent 选择器" className="personal-agent-menu-backdrop" onClick={() => setAgentMenuOpen(false)} type="button" />
-                    <div aria-label="选择 Agent" className="personal-agent-menu" data-testid="personal-agent-menu" ref={agentMenuRef} role="menu">
-                      <div className="personal-agent-menu-title">选择 Agent</div>
-                      {agentOptions.map((agent) => (
-                        <button
-                          className={cn(agent.agentId === selectedAgent.agentId && "is-selected")}
-                          data-testid="personal-agent-option"
-                          disabled={!agent.available}
-                          key={agent.agentId}
-                          onClick={() => chooseAgent(agent.agentId)}
-                          role="menuitem"
-                          type="button"
-                        >
-                          <span className="personal-agent-avatar">{agent.label.slice(0, 1)}</span>
-                          <span>
-                            <strong>{agent.label}</strong>
-                            <small>{agent.capability} · {agent.statusLabel}</small>
-                          </span>
-                          <span className={cn("personal-agent-online", !agent.available && "is-offline")} />
-                          {agent.agentId === selectedAgent.agentId ? <CheckCircle2 className="h-4 w-4" /> : null}
-                        </button>
-                      ))}
-                      <div className="personal-agent-menu-footer">来自本地 Agent Endpoint；密钥仅由后端环境读取</div>
-                    </div>
-                  </>
-                ) : null}
-              </div>
-              <span className="personal-live-badge" data-testid="personal-source-label"><span />{source.kind === "url" ? "实时" : source.kind === "file" ? "文件" : "示例"}</span>
-              <button aria-label="切换主题" onClick={toggleTheme} type="button">
-                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </button>
-              <button
-                aria-label={selectedGoal?.state === "需修复" ? "查看原因" : selectedGoal ? "打开 Goal 进度" : "打开运行详情"}
-                className={cn(selectedGoal && "personal-progress-trigger")}
-                data-testid="personal-running-details-trigger"
-                onClick={() => setDetailsOpen(true)}
-                ref={detailsTriggerRef}
-                type="button"
-              >
-                {selectedGoal ? <><Gauge className="h-4 w-4" /><span>{selectedGoal.state === "需修复" ? "查看原因" : "Goal 进度"}</span></> : <MoreHorizontal className="h-4 w-4" />}
-              </button>
-            </div>
-          </header>
-
-          <div className="personal-chat-scroll">
-            <StatusContractFreshnessWarning payload={payload} source={source} />
-
-            {selectedGoal ? (
-              <div className="personal-goal-projection" data-source-goal-id={selectedGoal.goalId} data-testid="personal-goal-summary">
-                <div className="personal-projection-author" data-source-agent-id={selectedGoal.agentId}>
-                  <span className="personal-agent-avatar">{personalAgentLabel(selectedGoal.agentId).slice(0, 1)}</span>
-                  <div>
-                    <strong>{personalAgentLabel(selectedGoal.agentId)}</strong>
-                    <small>当前 Todo 归属 · 来自 LoopX 状态投影</small>
-                  </div>
-                </div>
-
-                {goalAgentTodos.length > 0 ? (
-                  <section className="personal-plan-card" data-testid="personal-agent-plan-card">
-                    <header>
-                      <div>
-                        <strong>计划进度</strong>
-                        <small>来自 {goalAgentTodos.length} 项 Agent Todo</small>
-                      </div>
-                      <span>{goalProgressLabel}</span>
-                    </header>
-                    <div className="personal-plan-list">
-                      {visiblePlanTodos.map((todo) => (
-                        <div
-                          className={cn("personal-plan-row", todo.done && "is-done")}
-                          data-source-todo-id={todo.todoId}
-                          key={todo.todoId}
-                        >
-                          {todo.done ? <CheckCircle2 className="h-4 w-4" /> : <Clock3 className="h-4 w-4" />}
-                          <span>{todo.text}</span>
-                          {todo.claimedBy ? <small>{personalAgentLabel(todo.claimedBy)}</small> : null}
-                        </div>
-                      ))}
-                    </div>
-                    {goalAgentTodos.length > visiblePlanTodos.length ? (
-                      <button onClick={() => setDetailsOpen(true)} type="button">
-                        查看全部 {goalAgentTodos.length} 项 Todo
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </button>
-                    ) : null}
-                  </section>
-                ) : (
-                  <section className="personal-plan-card is-empty" data-testid="personal-agent-plan-card">
-                    <header>
-                      <div>
-                        <strong>当前工作</strong>
-                        <small>暂未投影结构化 Agent Todo</small>
-                      </div>
-                    </header>
-                    <p>{selectedGoal.agentSentence}</p>
-                  </section>
-                )}
-
-                {selectedGoal.runEvidence ? (
-                  <button
-                    className="personal-run-evidence-card"
-                    data-source-generated-at={selectedGoal.runEvidence.generatedAt || undefined}
-                    data-testid="personal-run-evidence-card"
-                    onClick={() => setDetailsOpen(true)}
-                    type="button"
-                  >
-                    <span className="personal-evidence-icon"><FileCheck2 className="h-4 w-4" /></span>
-                    <span>
-                      <strong>{selectedGoal.runEvidence.label}</strong>
-                      <small>{selectedGoal.runEvidence.summary}</small>
-                    </span>
-                    <em>{selectedGoal.runEvidence.metadata}</em>
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                ) : null}
-              </div>
-            ) : (
-              <section className="personal-chat-welcome" data-testid="personal-manager-summary">
-                <span className="personal-manager-icon"><Bot className="h-4 w-4" /></span>
-                <div>
-                  <h3>你好，我是 LoopX 管家</h3>
-                  <p>{managerSummary}</p>
-                </div>
-              </section>
-            )}
-
-            {selectedGoal?.needsYou ? (
-              <section
-                aria-label={`需要你处理：${selectedGoal.needsYou}`}
-                className="personal-decision-card"
-                data-source-goal-id={selectedGoal.goalId}
-                data-source-todo-id={selectedGoal.needsYouTodoId ?? undefined}
-                data-testid="personal-needs-you"
-              >
-                <div>
-                  <span>需要你</span>
-                  {selectedGoal.needsYouTodoId ? <span className="sr-only">来源 Todo {selectedGoal.needsYouTodoId}</span> : null}
-                  <h3>{selectedGoal.needsYou}</h3>
-                  <p>{selectedGoal.needsYouBlocking ? "这项决定正在阻塞当前执行路径。" : "这项用户待办会保留，直到你回复或明确暂缓。"}</p>
-                </div>
-                <div className="personal-decision-actions">
-                  <button onClick={() => beginDecisionReply(`暂缓处理：${selectedGoal.needsYou}`)} type="button">稍后</button>
-                  <button onClick={() => beginDecisionReply(`关于「${selectedGoal.needsYou}」：`)} type="button">{personalDecisionPrimaryLabel(selectedGoal)}</button>
-                </div>
-              </section>
-            ) : null}
-
-            {!selectedGoal && contextMessages.length === 0 ? (
-              <div className="personal-manager-quick-actions">
-                {managerQuickPrompts.map((prompt) => (
-                  <button data-testid="personal-manager-quick-action" key={prompt} onClick={() => void sendManagerQuestion(prompt)} type="button">
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-
-            <div aria-live="polite" className="personal-manager-thread" data-testid="personal-manager-thread">
-              {contextMessages.map((message) => (
-                <article className={cn("personal-manager-message", `is-${message.role}`)} key={message.id}>
-                  {message.role === "assistant" ? <span className="personal-message-author">{message.agentLabel ?? selectedAgent.label}</span> : null}
-                  {message.text ? <div className="personal-message-answer">{personalVisibleAgentMessage(message.text)}</div> : null}
-                  {message.pending && !message.text ? <p className="personal-message-pending">Agent 正在处理…</p> : null}
-                  {message.lines.length > 0 ? <ul>{message.lines.map((line) => <li key={line}>{line}</li>)}</ul> : null}
-                  {message.role === "assistant" && (message.activity?.length ?? 0) > 0 ? (
-                    <details className="personal-message-activity" open={message.pending}>
-                      <summary>{message.pending ? "执行过程" : `查看执行过程（${message.activity?.length ?? 0} 步）`}</summary>
-                      <ol>{message.activity?.map((item) => <li key={item}>{item}</li>)}</ol>
-                    </details>
-                  ) : null}
-                  {message.reconnect ? (
-                    <button className="personal-message-reconnect" onClick={() => window.location.reload()} type="button">
-                      继续连接
-                    </button>
-                  ) : null}
-                  {message.sourceLabel ? <small>{message.sourceLabel}</small> : null}
-                </article>
-              ))}
-            </div>
-
-            {contextProposals.length > 0 ? (
-              <div className="personal-proposal-list" data-testid="personal-proposal-list">
-                {contextProposals.map((card) => (
-                  <section
-                    className={cn("personal-proposal-card", `is-${card.state}`)}
-                    data-source-goal-id={card.goalId}
-                    data-testid="personal-proposal-card"
-                    key={card.id}
-                  >
-                    <header>
-                      <span>{card.proposal.priority}</span>
-                      <strong>{personalProposalStateLabel(card.state)}</strong>
-                      <small>{personalGoalTitle(card.goalId)}</small>
-                    </header>
-                    <p>{card.proposal.text}</p>
-                    {card.proposal.rationale ? <small>{card.proposal.rationale}</small> : null}
-                    {card.statusMessage ? <div className="personal-proposal-status">{card.statusMessage}</div> : null}
-                    {card.receiptLabel ? <code>{card.receiptLabel}</code> : null}
-                    {!(["approved", "rejected", "cancelled"] as PersonalProposalState[]).includes(card.state) ? (
-                      <div className="personal-proposal-actions">
-                        {card.state === "ready" ? (
-                          <button onClick={() => void approvePersonalProposal(card)} type="button">批准写入</button>
-                        ) : (
-                          <button disabled={card.state === "previewing" || card.state === "applying"} onClick={() => void previewPersonalProposal(card)} type="button">
-                            {card.state === "stale" ? "重新预览" : "生成预览"}
-                          </button>
-                        )}
-                        <button disabled={card.state === "applying"} onClick={() => settlePersonalProposal(card, "rejected")} type="button">拒绝</button>
-                        <button disabled={card.state === "applying"} onClick={() => settlePersonalProposal(card, "cancelled")} type="button">取消</button>
-                      </div>
-                    ) : null}
-                  </section>
-                ))}
-              </div>
-            ) : null}
-
-          </div>
-
-          <form
-            aria-label={selectedGoal ? `${selectedGoal.title} 的 Goal Chat 输入区` : "LoopX 管家输入区"}
-            className="personal-manager-composer"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void sendManagerQuestion(managerInput);
-            }}
-          >
-            <div className="personal-composer-tools">
-              <button
-                aria-label={`切换当前 Agent：${selectedAgent.label}`}
-                onClick={() => setAgentMenuOpen(true)}
-                type="button"
-              >
-                <Bot className="h-3.5 w-3.5" />
-                <span>{selectedAgent.label}</span>
-                <ChevronDown className="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              aria-label={selectedGoal ? `向 ${selectedAgent.label} 发送消息` : "向 LoopX 管家提问"}
-              data-testid="personal-manager-composer"
-              onChange={(event) => setManagerInput(event.target.value)}
-              placeholder={selectedGoal ? `向 ${selectedAgent.label} 发送消息…` : "问问 Goals，或交代一个任务…"}
-              ref={managerInputRef}
-              type="text"
-              value={managerInput}
-            />
-            {sendingContextId === contextId ? (
-              <button
-                aria-label="中断当前 Agent 回合"
-                className="personal-send-button"
-                data-testid="personal-manager-interrupt"
-                onClick={() => void interruptManagerTurn()}
-                type="button"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            ) : (
-              <button aria-label="发送问题" className="personal-send-button" data-testid="personal-manager-send" disabled={!managerInput.trim()} type="submit">
-                <Send className="h-4 w-4" />
-              </button>
-            )}
-          </form>
-        </section>
-
-        {detailsOpen ? (
-          <div className="personal-details-backdrop" onClick={(event) => event.currentTarget === event.target && setDetailsOpen(false)}>
-            <aside aria-label="运行详情" aria-modal="true" className="personal-running-details" data-testid="personal-running-details" role="dialog">
-              <header>
-                <div><h2>{selectedGoal ? "Goal 进度" : "运行详情"}</h2><p>{selectedGoal?.title ?? "全部 Goals"}</p></div>
-                <button aria-label="关闭运行详情" autoFocus onClick={() => setDetailsOpen(false)} ref={detailsCloseRef} type="button"><X className="h-4 w-4" /></button>
-              </header>
-              <section className="personal-diagnosis-card">
-                <span>{diagnosis.label}</span>
-                <h3>{diagnosis.title}</h3>
-                <dl>
-                  <div><dt>影响</dt><dd>{diagnosis.impact}</dd></div>
-                  <div><dt>建议</dt><dd>{diagnosis.suggestion}</dd></div>
-                  <div><dt>负责人</dt><dd>{diagnosis.owner}</dd></div>
-                </dl>
-              </section>
-              <details>
-                <summary>完整 Todo 投影</summary>
-                <p>{selectedGoal ? `${goalUserTodos.length} 项开放用户 Todo；${completedAgentTodoCount}/${goalAgentTodos.length} 项 Agent Todo 已完成。` : `${model.openUserTodoCount} 项开放用户 Todo。`}</p>
-                {selectedGoal && goalAgentTodos.length > 0 ? (
-                  <ul className="personal-details-todo-list">
-                    {goalAgentTodos.map((todo) => <li className={cn(todo.done && "is-done")} key={todo.todoId}>{todo.text}</li>)}
-                  </ul>
-                ) : null}
-              </details>
-              <details>
-                <summary>Agent 运行记录</summary>
-                <p>{selectedGoal?.runEvidence?.summary ?? (selectedGoal?.latestActivity ? `最近状态时间：${selectedGoal.latestActivity}` : "当前投影没有提供活动时间。")}</p>
-              </details>
-              <details><summary>证据与状态源</summary><p>状态来自公开安全的 LoopX 投影。原始日志与本机路径不会在这里展示。</p></details>
-              <a className="personal-ops-link" href={personalOpsHref(selectedGoal?.goalId)}>打开完整控制台<ChevronRight className="h-4 w-4" /></a>
-            </aside>
-          </div>
-        ) : null}
-      </main>
+    <div className={theme === "dark" ? "dark" : ""} data-testid="personal-goal-home">
+      <PersonalWorkspacePage
+        agents={agentOptions.map((agent) => ({
+          adapterKind: agent.adapterKind,
+          agentId: agent.agentId,
+          available: agent.available,
+          capability: agent.capability,
+          interrupt: agent.interrupt,
+          label: agent.label,
+          location: agent.location,
+          resume: agent.resume,
+          source: agent.source,
+          streaming: agent.streaming,
+          toolCalls: agent.toolCalls,
+          trustScope: agent.trustScope,
+          workspaceCompatibility: agent.available ? "当前 Goal 写入前验证" : "不可用，需先修复 Endpoint",
+        }))}
+        callbacks={{
+          onApplyAttention: (attention) => openGoalChat(attention.goalId),
+          onCorrectRun: async (run, message) => {
+            if (selectedGoal?.goalId !== run.goalId) openGoalChat(run.goalId);
+            await sendManagerQuestion(message, { agentId: run.agentId, goalId: run.goalId });
+          },
+          onCloseRunSession: closeManagerSession,
+          onInterruptRun: async (run) => interruptManagerTurn(run),
+          onOpenGoal: openGoalChat,
+          onOpenOutput: (output) => openGoalChat(output.goalId),
+          onExportOutput: async (output) => {
+            const contents = [
+              `# ${output.title}`,
+              "",
+              output.summary ?? "",
+              "",
+              output.safePreview ?? "此产出没有可用的公开安全预览。",
+              "",
+              `Goal: ${output.goalId}`,
+              `Todo: ${output.todoId ?? "unlinked"}`,
+              `Run: ${output.runId ?? "unlinked"}`,
+            ].join("\n");
+            const url = URL.createObjectURL(new Blob([contents], { type: "text/markdown;charset=utf-8" }));
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = `${output.outputId.replace(/[^a-z0-9._-]+/gi, "-")}.md`;
+            anchor.click();
+            URL.revokeObjectURL(url);
+          },
+          onRefresh,
+          onRetryResumeRun: retryManagerSession,
+          onSelectAgent: chooseAgent,
+          onSelectGoal: (goalId) => goalId ? openGoalChat(goalId) : openManagerChat(),
+          onSendMessage: async (message, agentId, goalId) => sendManagerQuestion(message, { agentId, goalId }),
+          onStartNewRunSession: startNewManagerSession,
+        }}
+        model={workspaceModel}
+        selectedAgentId={selectedAgent.agentId}
+        selectedGoalId={selectedGoal?.goalId ?? null}
+      />
     </div>
   );
 }

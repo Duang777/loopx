@@ -17,12 +17,15 @@ from .chat import (
     redact_local_paths,
 )
 from .chat_agent import CodexChatAgentError
+from .chat_actions import ChatActionService, ProtectedActionGate
+from .chat_action_store import ACTION_KINDS, ActionConflictError, ChatActionStore
 from .chat_runtime import ChatRuntimeController, TERMINAL_TURN_STATES
 from .chat_store import ChatSessionStore
 from .history import load_registry
 from .paths import resolve_runtime_root
 from .registry import registry_goals, resolve_state_file
 from .state_projection import build_active_state_structured_projection
+from .status import collect_status
 from .status_server import is_loopback_host, is_loopback_origin
 
 
@@ -33,15 +36,20 @@ DEFAULT_CHAT_STATUS_PATH = "/status.json"
 CHAT_CAPABILITIES_PATH = "/api/chat/capabilities"
 CHAT_ENDPOINTS_PATH = "/api/chat/endpoints"
 CHAT_SESSIONS_PATH = "/api/chat/sessions"
+CHAT_PROJECTION_MESSAGES_PATH = "/api/chat/projection-messages"
 MANAGER_AGENT_GOAL_ID = "loopx-manager"
 MANAGER_AGENT_OBJECTIVE = (
-    "Serve as the user's read-only LoopX Goal manager. Answer only the current user message "
-    "in concise Chinese. Summarize and clarify Goal state; do not continue a project objective, "
-    "inspect repositories, modify files, run commands, or create Todo items. When an action or "
-    "Todo write is needed, ask the user to open the relevant Goal first."
+    "Serve as the user's LoopX Goal manager. Answer only the current user message in concise Chinese. "
+    "Summarize and clarify Goal state, and convert requested durable changes into bounded proposals. "
+    "Do not inspect repositories, modify files, run commands, or mutate LoopX state in this Chat Turn. "
+    "Goal, Todo, Agent, heartbeat, monitor, gate, and correction changes must be presented through "
+    "the typed preview and explicit apply control plane. Never claim that a durable change happened "
+    "until the control plane returns a verified receipt."
 )
 CHAT_TODO_DRY_RUN_PATH = "/api/chat/todo/dry-run"
 CHAT_TODO_APPLY_PATH = "/api/chat/todo/apply"
+CHAT_ACTIONS_PATH = "/api/actions"
+CHAT_ACTION_PREVIEW_PATH = f"{CHAT_ACTIONS_PATH}/preview"
 
 
 def default_chat_assets_dir() -> Path:
@@ -305,6 +313,8 @@ class ChatHTTPServer(ThreadingHTTPServer):
     assets_dir: Path
     verbose: bool
     chat_store: ChatSessionStore
+    action_store: ChatActionStore
+    action_service: ChatActionService
     runtime_controller: ChatRuntimeController
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -406,13 +416,26 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
 
     def _status(self) -> None:
         try:
-            registry = load_registry(self.server.registry_path)
-            projection = build_bounded_chat_status_projection(
-                registry=registry,
-                selected_goal_id=self.server.selected_goal_id,
+            projection = collect_status(
+                registry_path=self.server.registry_path,
+                runtime_root_override=self.server.runtime_root_override,
+                scan_roots=self.server.scan_roots,
+                limit=self.server.limit,
+                goal_id=self.server.selected_goal_id,
+                include_public_boundary_scan=False,
+            )
+            protected_paths = [
+                self.server.registry_path,
+                *self.server.scan_roots,
+            ]
+            projection = json.loads(
+                redact_local_paths(
+                    json.dumps(projection, ensure_ascii=False),
+                    protected_paths=protected_paths,
+                )
             )
         except Exception:
-            self._send_error("LoopX status could not be projected for Chat.", status=500)
+            self._send_error("LoopX status could not be projected for the workspace.", status=500)
             return
         self._send_json(projection)
 
@@ -475,6 +498,56 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                 "session": public,
             },
             status=200 if resumed else 201,
+        )
+
+    def _record_projection_exchange(self) -> None:
+        """Persist a status-only exchange in the same owner-local message store."""
+        try:
+            body = self._read_json()
+            unknown = set(body) - {"goal_id", "context_kind", "question", "answer"}
+            if unknown:
+                raise ValueError("unknown projection message field")
+            context_kind = _compact_text(body.get("context_kind"), limit=40) or "manager"
+            if context_kind not in {"goal", "manager"}:
+                raise ValueError("context_kind must be goal or manager")
+            goal_id = _compact_text(body.get("goal_id"), limit=160)
+            if context_kind == "goal" and not goal_id:
+                raise ValueError("goal_id is required for Goal projection messages")
+            question = str(body.get("question") or "").strip()
+            answer = str(body.get("answer") or "").strip()
+            if not question or not answer:
+                raise ValueError("question and answer are required")
+            if len(question) > 20_000 or len(answer) > 100_000:
+                raise ValueError("projection message is too large")
+            channel_id = "manager" if context_kind == "manager" else f"goal.{goal_id}"
+            session = self.server.chat_store.latest_session(
+                goal_id=None if context_kind == "manager" else goal_id,
+                agent_id="status-only",
+                channel_id=channel_id,
+            )
+            if session is None:
+                session = self.server.chat_store.create_session(
+                    goal_id=goal_id or MANAGER_AGENT_GOAL_ID,
+                    agent_id="status-only",
+                    adapter_kind="status_projection",
+                    upstream_thread_id="local-status-projection",
+                    upstream_mode="projection",
+                    channel_id=channel_id,
+                )
+            session_id = str(session["session_id"])
+            self.server.chat_store.append_message(session_id, role="user", text=question)
+            self.server.chat_store.append_message(session_id, role="agent", text=answer)
+            self.server.chat_store.update_session(session_id, last_activity_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        except Exception as exc:  # noqa: BLE001 - local validation response.
+            self._send_error(str(exc))
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_projection_exchange_v1",
+                "session_id": session_id,
+            },
+            status=201,
         )
 
     def _session_turn(self, session_id: str) -> None:
@@ -661,6 +734,40 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _resume_session(self, session_id: str) -> None:
+        try:
+            session = self.server.chat_store.load_session(session_id)
+            if session is None:
+                raise KeyError("chat session was not found")
+            registry, goal = self._registry_and_goal(str(session["goal_id"]))
+            context = _goal_public_context(registry, goal)
+            objective = (
+                MANAGER_AGENT_OBJECTIVE
+                if session.get("channel_id") == "manager"
+                else str(context["objective"] or context["title"])
+            )
+            restored = self.server.runtime_controller.resume_session(
+                session_id=session_id,
+                work_dir=context["project"],
+                objective=objective,
+            )
+        except KeyError:
+            self._send_error("chat session was not found", status=404)
+            return
+        except CodexChatAgentError as exc:
+            self._send_error(str(exc), status=424, error_code=exc.error_code, gate=exc.gate)
+            return
+        except Exception as exc:  # noqa: BLE001 - compact local validation error.
+            self._send_error(str(exc), status=424, error_code="resume_failed")
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_session_resume_v1",
+                "session": self.server.chat_store.public_session(restored),
+            }
+        )
+
     def _todo(self, *, apply: bool) -> None:
         try:
             body = self._read_json()
@@ -696,6 +803,239 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(payload)
 
+    def _action_preview(self) -> None:
+        try:
+            proposal = self.server.action_service.preview(self._read_json())
+        except ProtectedActionGate as exc:
+            self._send_json(
+                {
+                    "ok": False,
+                    "schema_version": "loopx_chat_action_preview_gate_v1",
+                    "error": "This preview needs an explicit public-safe selection.",
+                    "error_code": "action_preview_gate",
+                    "gate": exc.gate,
+                    "write_attempted": False,
+                },
+                status=409,
+            )
+            return
+        except ActionConflictError as exc:
+            self._send_error(str(exc), status=409, error_code="action_conflict")
+            return
+        except (KeyError, ValueError) as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_action_preview")
+            return
+        except Exception:
+            self._send_error(
+                "Typed action preview could not be created.",
+                status=400,
+                error_code="action_preview_failed",
+            )
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_action_preview_v1",
+                "proposal": proposal,
+            },
+            status=201,
+        )
+
+    def _action_snapshot(self, proposal_id: str) -> None:
+        try:
+            proposal = self.server.action_service.load(proposal_id)
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_proposal_id")
+            return
+        if proposal is None:
+            self._send_error(
+                "typed Chat action proposal was not found",
+                status=404,
+                error_code="action_not_found",
+            )
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_action_v1",
+                "proposal": proposal,
+            }
+        )
+
+    def _action_list(self) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        goal_id = _compact_text((query.get("goal_id") or [""])[0], limit=200) or None
+        context_kind = _compact_text(
+            (query.get("context_kind") or [""])[0], limit=200
+        ) or None
+        status = _compact_text((query.get("status") or [""])[0], limit=80) or None
+        try:
+            proposals = self.server.action_store.list(
+                goal_id=goal_id,
+                context_kind=context_kind,
+                status=status,
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_action_query")
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_action_list_v1",
+                "proposals": proposals,
+            }
+        )
+
+    def _action_cancel(self, proposal_id: str) -> None:
+        try:
+            body = self._read_json()
+            if body:
+                raise ValueError("action cancel request must be empty")
+            proposal = self.server.action_service.cancel(proposal_id)
+        except KeyError:
+            self._send_error(
+                "typed Chat action proposal was not found",
+                status=404,
+                error_code="action_not_found",
+            )
+            return
+        except ActionConflictError as exc:
+            self._send_error(str(exc), status=409, error_code="action_conflict")
+            return
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_action_cancel")
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_action_cancel_v1",
+                "proposal": proposal,
+            }
+        )
+
+    def _action_transition(self, proposal_id: str, transition: str) -> None:
+        try:
+            body = self._read_json()
+            if body:
+                raise ValueError("action transition request must be empty")
+            if transition == "regenerate":
+                proposal = self.server.action_service.regenerate(proposal_id)
+                status = 201
+            elif transition == "reject":
+                proposal = self.server.action_service.reject(proposal_id)
+                status = 200
+            elif transition == "defer":
+                proposal = self.server.action_service.defer(proposal_id)
+                status = 200
+            else:
+                raise ValueError("unsupported action transition")
+        except KeyError:
+            self._send_error(
+                "typed Chat action proposal was not found",
+                status=404,
+                error_code="action_not_found",
+            )
+            return
+        except ActionConflictError as exc:
+            self._send_error(str(exc), status=409, error_code="action_conflict")
+            return
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_action_transition")
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_action_transition_v1",
+                "proposal": proposal,
+            },
+            status=status,
+        )
+
+    def _action_apply(self, proposal_id: str) -> None:
+        try:
+            body = self._read_json()
+            if body:
+                raise ValueError("action apply request must be empty")
+            result = self.server.action_service.apply(proposal_id)
+        except ProtectedActionGate as exc:
+            try:
+                proposal = self.server.action_store.mark_gated(proposal_id, gate=exc.gate)
+            except (ActionConflictError, KeyError, ValueError):
+                proposal = self.server.action_store.load(proposal_id)
+            self._send_json(
+                {
+                    "ok": False,
+                    "schema_version": "loopx_chat_action_gate_v1",
+                    "error": "This action requires a protected canonical LoopX transition.",
+                    "error_code": "protected_action",
+                    "gate": exc.gate,
+                    "proposal": proposal,
+                    "write_attempted": False,
+                },
+                status=409,
+            )
+            return
+        except KeyError:
+            self._send_error(
+                "typed Chat action proposal was not found",
+                status=404,
+                error_code="action_not_found",
+            )
+            return
+        except ActionConflictError as exc:
+            self._send_error(str(exc), status=409, error_code="action_conflict")
+            return
+        except ValueError as exc:
+            try:
+                self.server.action_store.mark_failed(
+                    proposal_id,
+                    error_code="invalid_canonical_transition",
+                    message=str(exc),
+                )
+            except (ActionConflictError, KeyError, ValueError):
+                pass
+            self._send_error(str(exc), status=400, error_code="invalid_action_apply")
+            return
+        except Exception:
+            try:
+                self.server.action_store.mark_failed(
+                    proposal_id,
+                    error_code="canonical_action_failed",
+                    message="Canonical LoopX service did not complete the transition.",
+                )
+            except (ActionConflictError, KeyError, ValueError):
+                pass
+            self._send_error(
+                "Typed action could not be applied through its canonical LoopX service.",
+                status=424,
+                error_code="canonical_action_failed",
+            )
+            return
+        proposal = result["proposal"]
+        if proposal.get("status") == "stale":
+            self._send_json(
+                {
+                    "ok": False,
+                    "schema_version": "loopx_chat_action_stale_v1",
+                    "error": "The source state changed; regenerate the action preview.",
+                    "error_code": "action_stale",
+                    "proposal": proposal,
+                    "write_attempted": False,
+                },
+                status=409,
+            )
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_action_apply_v1",
+                "proposal": proposal,
+                "turn": result.get("turn"),
+                "gate": result.get("gate"),
+            },
+            status=202 if result.get("turn") else 200,
+        )
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/healthz":
@@ -714,6 +1054,8 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
                     "streaming": True,
                     "resume": True,
                     "interrupt": True,
+                    "typed_actions": True,
+                    "action_kinds": sorted(ACTION_KINDS),
                     "adapters": self.server.runtime_controller.capabilities(),
                 }
             )
@@ -729,6 +1071,13 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             return
         if path == CHAT_SESSIONS_PATH:
             self._list_sessions()
+            return
+        if path == CHAT_ACTIONS_PATH:
+            self._action_list()
+            return
+        action_parts = path.strip("/").split("/")
+        if len(action_parts) == 3 and action_parts[:2] == ["api", "actions"]:
+            self._action_snapshot(action_parts[2])
             return
         session_parts = path.strip("/").split("/")
         if len(session_parts) == 4 and session_parts[:3] == ["api", "chat", "sessions"]:
@@ -761,6 +1110,33 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == CHAT_SESSIONS_PATH:
             self._create_session()
+            return
+        if path == CHAT_PROJECTION_MESSAGES_PATH:
+            self._record_projection_exchange()
+            return
+        session_action_parts = path.strip("/").split("/")
+        if (
+            len(session_action_parts) == 5
+            and session_action_parts[:3] == ["api", "chat", "sessions"]
+            and session_action_parts[4] == "resume"
+        ):
+            self._resume_session(session_action_parts[3])
+            return
+        if path == CHAT_ACTION_PREVIEW_PATH:
+            self._action_preview()
+            return
+        action_parts = path.strip("/").split("/")
+        if (
+            len(action_parts) == 4
+            and action_parts[:2] == ["api", "actions"]
+            and action_parts[3] in {"apply", "cancel", "regenerate", "reject", "defer"}
+        ):
+            if action_parts[3] == "apply":
+                self._action_apply(action_parts[2])
+            elif action_parts[3] == "cancel":
+                self._action_cancel(action_parts[2])
+            else:
+                self._action_transition(action_parts[2], action_parts[3])
             return
         prefix = f"{CHAT_SESSIONS_PATH}/"
         if path.startswith(prefix) and path.endswith("/turns"):
@@ -813,6 +1189,7 @@ def serve_chat(
     port: int,
     goal_id: str | None,
     codex_bin: str,
+    claude_bin: str,
     startup_timeout_sec: float,
     idle_timeout_sec: float,
     hard_timeout_sec: float,
@@ -841,12 +1218,21 @@ def serve_chat(
         registry_path=registry_path,
     )
     server.chat_store = ChatSessionStore(runtime_root)
+    server.action_store = ChatActionStore(runtime_root / "chat" / "actions")
     server.runtime_controller = ChatRuntimeController(
         store=server.chat_store,
         codex_bin=codex_bin,
+        claude_bin=claude_bin,
         startup_timeout_sec=startup_timeout_sec,
         idle_timeout_sec=idle_timeout_sec,
         hard_timeout_sec=hard_timeout_sec,
+    )
+    server.action_service = ChatActionService(
+        store=server.action_store,
+        registry_path=registry_path,
+        chat_store=server.chat_store,
+        runtime_controller=server.runtime_controller,
+        workspace_roots=scan_roots,
     )
     url = f"http://{host}:{port}{DEFAULT_CHAT_PATH}"
     print(f"Serving LoopX Chat at {url}", flush=True)

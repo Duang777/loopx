@@ -96,6 +96,8 @@ export const chatCapabilitiesSchema = z.object({
   streaming: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  typed_actions: z.boolean().optional(),
+  action_kinds: z.array(z.string()).optional(),
   adapters: z.array(z.object({
     agent_id: z.string(),
     display_name: z.string(),
@@ -104,6 +106,10 @@ export const chatCapabilitiesSchema = z.object({
     streaming: z.boolean(),
     resume: z.boolean(),
     interrupt: z.boolean(),
+    location: z.string().optional(),
+    source: z.string().optional(),
+    tool_calls: z.boolean().optional(),
+    trust_scope: z.string().optional(),
   })).optional(),
 });
 
@@ -208,6 +214,126 @@ export class ChatApiError extends Error {
   }
 }
 
+export const typedActionKindSchema = z.enum([
+  "goal.create",
+  "goal.update",
+  "todo.create",
+  "todo.update",
+  "agent.bind",
+  "heartbeat.bind",
+  "monitor.create",
+  "monitor.update",
+  "gate.resolve",
+  "run.correct",
+]);
+
+export const typedActionProposalSchema = z.object({
+  schema_version: z.literal("loopx_chat_action_proposal_v1"),
+  proposal_id: z.string().min(1),
+  action_kind: typedActionKindSchema,
+  summary: z.string().min(1),
+  normalized_parameters: z.record(z.string(), z.unknown()),
+  context: z.record(z.string(), z.unknown()),
+  expected_state_fingerprint: z.string().min(1),
+  permission_classification: z.string().min(1),
+  validation_evidence: z.array(z.unknown()),
+  available_transitions: z.array(z.enum(["apply", "cancel", "regenerate", "reject", "defer"])),
+  status: z.enum(["preview_ready", "applying", "gated", "failed", "rejected", "deferred", "cancelled", "stale", "applied"]),
+  receipt: z.record(z.string(), z.unknown()).nullable(),
+  stale: z.record(z.string(), z.unknown()).nullable(),
+  gate: z.record(z.string(), z.unknown()).nullable().optional(),
+  error: z.record(z.string(), z.unknown()).nullable().optional(),
+  checkpoint: z.record(z.string(), z.unknown()).nullable().optional(),
+  regenerated_from: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export type TypedActionKind = z.infer<typeof typedActionKindSchema>;
+export type TypedActionProposal = z.infer<typeof typedActionProposalSchema>;
+
+export type TypedActionPreviewRequest = {
+  actionKind: TypedActionKind;
+  context: Record<string, unknown>;
+  idempotencyKey: string;
+  normalizedParameters: Record<string, unknown>;
+  summary: string;
+};
+
+const typedActionEnvelopeSchema = z.object({
+  ok: z.literal(true),
+  proposal: typedActionProposalSchema,
+});
+
+export async function previewTypedAction(request: TypedActionPreviewRequest) {
+  const payload = await requestJson<unknown>("/api/actions/preview", {
+    method: "POST",
+    body: JSON.stringify({
+      action_kind: request.actionKind,
+      context: request.context,
+      idempotency_key: request.idempotencyKey,
+      normalized_parameters: request.normalizedParameters,
+      summary: request.summary,
+    }),
+  });
+  return typedActionEnvelopeSchema.parse(payload).proposal;
+}
+
+export async function loadTypedAction(proposalId: string) {
+  return typedActionEnvelopeSchema.parse(
+    await requestJson<unknown>(`/api/actions/${encodeURIComponent(proposalId)}`),
+  ).proposal;
+}
+
+const typedActionListEnvelopeSchema = z.object({
+  ok: z.literal(true),
+  schema_version: z.literal("loopx_chat_action_list_v1"),
+  proposals: z.array(typedActionProposalSchema),
+});
+
+export async function listTypedActions(filters: { contextKind?: string; goalId?: string } = {}) {
+  const query = new URLSearchParams();
+  if (filters.contextKind) query.set("context_kind", filters.contextKind);
+  if (filters.goalId) query.set("goal_id", filters.goalId);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return typedActionListEnvelopeSchema.parse(
+    await requestJson<unknown>(`/api/actions${suffix}`),
+  ).proposals;
+}
+
+export async function applyTypedAction(proposalId: string) {
+  const payload = await requestJson<unknown>(
+    `/api/actions/${encodeURIComponent(proposalId)}/apply`,
+    { method: "POST", body: "{}" },
+  );
+  return z.object({
+    ok: z.literal(true),
+    proposal: typedActionProposalSchema,
+    turn: z.record(z.string(), z.unknown()).nullable().optional(),
+  }).parse(payload);
+}
+
+export async function cancelTypedAction(proposalId: string) {
+  return typedActionEnvelopeSchema.parse(
+    await requestJson<unknown>(`/api/actions/${encodeURIComponent(proposalId)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    }),
+  ).proposal;
+}
+
+export async function transitionTypedAction(
+  proposalId: string,
+  transition: "regenerate" | "reject" | "defer",
+) {
+  return typedActionEnvelopeSchema.parse(
+    await requestJson<unknown>(`/api/actions/${encodeURIComponent(proposalId)}/${transition}`, {
+      method: "POST",
+      body: "{}",
+    }),
+  ).proposal;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     cache: "no-store",
@@ -219,7 +345,13 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   });
   const payload = (await response.json()) as Record<string, unknown>;
   if (!response.ok) {
-    throw new ChatApiError(String(payload.error || `HTTP ${response.status}`), payload);
+    const proposal = payload.proposal && typeof payload.proposal === "object"
+      ? payload.proposal as Record<string, unknown>
+      : null;
+    const staleMessage = proposal?.status === "stale"
+      ? "来源状态已变化，请重新生成预览。"
+      : null;
+    throw new ChatApiError(staleMessage ?? String(payload.error || `HTTP ${response.status}`), payload);
   }
   return payload as T;
 }
@@ -230,6 +362,26 @@ export async function fetchChatStatus() {
 
 export async function fetchChatCapabilities() {
   return chatCapabilitiesSchema.parse(await requestJson<unknown>("/api/chat/capabilities"));
+}
+
+export async function recordProjectionExchange(options: {
+  answer: string;
+  contextKind: "goal" | "manager";
+  goalId?: string;
+  question: string;
+}) {
+  return requestJson<{ ok: true; schema_version: "loopx_chat_projection_exchange_v1"; session_id: string }>(
+    "/api/chat/projection-messages",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        answer: options.answer,
+        context_kind: options.contextKind,
+        goal_id: options.goalId,
+        question: options.question,
+      }),
+    },
+  );
 }
 
 export async function createChatSession(
@@ -451,6 +603,7 @@ export async function sendChatTurnStreaming(
     message,
     options.clientTurnId ?? crypto.randomUUID(),
   );
+  options.onPhase?.("turn.accepted", accepted.turn_id);
   return receiveChatTurnStreaming(
     sessionId,
     accepted.turn_id,
@@ -570,6 +723,13 @@ export async function closeChatSession(sessionId: string) {
     });
   }
   return result;
+}
+
+export async function resumeChatSession(sessionId: string) {
+  return requestJson<{ ok: true; schema_version: "loopx_chat_session_resume_v1"; session: ChatSessionSummary }>(
+    `/api/chat/sessions/${sessionId}/resume`,
+    { method: "POST", body: "{}" },
+  );
 }
 
 export async function previewTodo(goalId: string, text: string) {

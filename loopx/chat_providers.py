@@ -19,6 +19,91 @@ from .chat_agent import CodexChatAgentError, _host_tool_gate, _turn_prompt
 
 EventSink = Callable[[str, dict[str, Any]], None]
 
+_PRIVATE_PARTS = {".git", ".env", ".ssh", ".aws", ".config", "node_modules"}
+
+
+def _read_only_tools(provider: str) -> list[dict[str, Any]]:
+    definitions = [
+        ("list_files", "List public project files matching a bounded glob.", {
+            "type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"], "additionalProperties": False,
+        }),
+        ("search_text", "Search public project text files for a literal string.", {
+            "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False,
+        }),
+        ("read_file", "Read a bounded public project text file by relative path.", {
+            "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False,
+        }),
+    ]
+    if provider == "anthropic":
+        return [{"name": name, "description": description, "input_schema": schema} for name, description, schema in definitions]
+    return [{"type": "function", "name": name, "description": description, "parameters": schema, "strict": True} for name, description, schema in definitions]
+
+
+def _safe_project_path(root: Path, value: Any) -> Path:
+    relative = Path(str(value or "").strip())
+    if not str(relative) or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("tool path must be project-relative")
+    if any(part in _PRIVATE_PARTS or part.startswith(".env") for part in relative.parts):
+        raise ValueError("tool path is outside the public project boundary")
+    selected = (root / relative).resolve()
+    try:
+        selected.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError("tool path escaped the project root") from exc
+    return selected
+
+
+def _execute_read_only_tool(root: Path, name: str, arguments: Any) -> str:
+    if not isinstance(arguments, dict):
+        return json.dumps({"ok": False, "error": "tool arguments must be an object"})
+    try:
+        if name == "list_files":
+            pattern = str(arguments.get("pattern") or "").strip()
+            if not pattern or pattern.startswith("/") or ".." in Path(pattern).parts:
+                raise ValueError("glob must stay inside the project")
+            rows = []
+            for path in root.glob(pattern):
+                try:
+                    relative = path.resolve().relative_to(root.resolve())
+                except ValueError:
+                    continue
+                if path.is_file() and not any(part in _PRIVATE_PARTS or part.startswith(".env") for part in relative.parts):
+                    rows.append(relative.as_posix())
+                if len(rows) >= 80:
+                    break
+            return json.dumps({"ok": True, "files": sorted(rows)}, ensure_ascii=False)
+        if name == "read_file":
+            path = _safe_project_path(root, arguments.get("path"))
+            if not path.is_file() or path.stat().st_size > 256_000:
+                raise ValueError("file is unavailable or exceeds the read limit")
+            return json.dumps({"ok": True, "text": path.read_text(encoding="utf-8", errors="replace")[:64_000]}, ensure_ascii=False)
+        if name == "search_text":
+            query = str(arguments.get("query") or "").strip()
+            if not query or len(query) > 240:
+                raise ValueError("search query must be 1 to 240 characters")
+            matches: list[dict[str, Any]] = []
+            for path in root.rglob("*"):
+                if not path.is_file() or path.stat().st_size > 256_000:
+                    continue
+                try:
+                    relative = path.resolve().relative_to(root.resolve())
+                except ValueError:
+                    continue
+                if any(part in _PRIVATE_PARTS or part.startswith(".env") for part in relative.parts):
+                    continue
+                try:
+                    for line_number, line in enumerate(path.read_text(encoding="utf-8", errors="strict").splitlines(), 1):
+                        if query in line:
+                            matches.append({"file": relative.as_posix(), "line": line_number, "text": line[:500]})
+                            if len(matches) >= 40:
+                                return json.dumps({"ok": True, "matches": matches}, ensure_ascii=False)
+                except (OSError, UnicodeError):
+                    continue
+            return json.dumps({"ok": True, "matches": matches}, ensure_ascii=False)
+        raise ValueError("unknown read-only tool")
+    except (OSError, ValueError) as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
 
 def _provider_error(label: str, next_action: str) -> CodexChatAgentError:
     return CodexChatAgentError(
@@ -194,7 +279,7 @@ class DirectModelAdapter:
     api_key: str = field(repr=False)
     work_dir: Path
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    history: list[dict[str, str]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
     timeout_sec: float = 180.0
 
     @property
@@ -207,6 +292,8 @@ class DirectModelAdapter:
             "streaming": False,
             "resume": True,
             "interrupt": False,
+            "tool_calls": True,
+            "tool_scope": "read_only",
         }
 
     def _post(self, url: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
@@ -228,38 +315,63 @@ class DirectModelAdapter:
         event_sink("turn.started", {"upstream_turn_id": self.session_id})
         event_sink("agent.phase", {"label": f"正在连接 {self.provider.title()}"})
         prompt = _turn_prompt(message)
-        if self.provider == "anthropic":
-            messages = [*self.history, {"role": "user", "content": prompt}]
-            payload = self._post(
-                "https://api.anthropic.com/v1/messages",
-                {"model": self.model, "max_tokens": 2048, "messages": messages},
-                {
-                    "content-type": "application/json",
-                    "x-api-key": self.api_key,
-                    "anthropic-version": "2023-06-01",
-                },
-            )
-            content = payload.get("content")
-            raw_response = "".join(
-                str(block.get("text") or "")
-                for block in content if isinstance(block, dict) and block.get("type") == "text"
-            ) if isinstance(content, list) else ""
-        elif self.provider == "openai":
-            messages = [*self.history, {"role": "user", "content": prompt}]
-            payload = self._post(
-                "https://api.openai.com/v1/responses",
-                {"model": self.model, "input": messages},
-                {"content-type": "application/json", "authorization": f"Bearer {self.api_key}"},
-            )
-            raw_response = str(payload.get("output_text") or "")
-            if not raw_response and isinstance(payload.get("output"), list):
-                raw_response = "".join(
-                    str(part.get("text") or "")
-                    for item in payload["output"] if isinstance(item, dict)
+        messages: list[dict[str, Any]] = [*self.history, {"role": "user", "content": prompt}]
+        raw_response = ""
+        for _round in range(5):
+            if self.provider == "anthropic":
+                payload = self._post(
+                    "https://api.anthropic.com/v1/messages",
+                    {"model": self.model, "max_tokens": 2048, "messages": messages, "tools": _read_only_tools("anthropic")},
+                    {
+                        "content-type": "application/json",
+                        "x-api-key": self.api_key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                )
+                content = payload.get("content")
+                blocks = content if isinstance(content, list) else []
+                raw_response = "".join(str(block.get("text") or "") for block in blocks if isinstance(block, dict) and block.get("type") == "text")
+                calls = [block for block in blocks if isinstance(block, dict) and block.get("type") == "tool_use"]
+                if not calls:
+                    break
+                event_sink("agent.phase", {"label": f"{self.provider.title()} 正在检查项目上下文"})
+                messages.append({"role": "assistant", "content": blocks})
+                messages.append({"role": "user", "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": str(call.get("id") or ""),
+                    "content": _execute_read_only_tool(self.work_dir, str(call.get("name") or ""), call.get("input")),
+                } for call in calls]})
+            elif self.provider == "openai":
+                payload = self._post(
+                    "https://api.openai.com/v1/responses",
+                    {"model": self.model, "input": messages, "tools": _read_only_tools("openai"), "tool_choice": "auto"},
+                    {"content-type": "application/json", "authorization": f"Bearer {self.api_key}"},
+                )
+                output = payload.get("output")
+                rows = output if isinstance(output, list) else []
+                calls = [item for item in rows if isinstance(item, dict) and item.get("type") == "function_call"]
+                raw_response = str(payload.get("output_text") or "") or "".join(
+                    str(part.get("text") or "") for item in rows if isinstance(item, dict)
                     for part in item.get("content", []) if isinstance(part, dict) and part.get("type") == "output_text"
                 )
+                if not calls:
+                    break
+                event_sink("agent.phase", {"label": f"{self.provider.title()} 正在检查项目上下文"})
+                messages.extend(rows)
+                for call in calls:
+                    try:
+                        arguments = json.loads(str(call.get("arguments") or "{}"))
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    messages.append({
+                        "type": "function_call_output",
+                        "call_id": str(call.get("call_id") or ""),
+                        "output": _execute_read_only_tool(self.work_dir, str(call.get("name") or ""), arguments),
+                    })
+            else:
+                raise ValueError(f"unsupported direct model provider: {self.provider}")
         else:
-            raise ValueError(f"unsupported direct model provider: {self.provider}")
+            raise _provider_error(self.provider.title(), "The model exceeded the bounded read-only tool-call limit.")
         response = parse_agent_response(raw_response, protected_paths=[self.work_dir])
         self.history.extend([
             {"role": "user", "content": prompt},
@@ -285,7 +397,7 @@ def direct_model_from_environment(
     provider: str,
     work_dir: Path,
     session_id: str | None = None,
-    history: list[dict[str, str]] | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> DirectModelAdapter:
     if provider == "anthropic":
         key_name = "ANTHROPIC_API_KEY"

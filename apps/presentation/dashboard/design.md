@@ -1,620 +1,710 @@
-# LoopX Personal Goal Workspace Design
+# LoopX Personal Agent Workspace — Final Design
 
 ## Status
 
-- Product surface: personal Goal workspace
-- Primary interaction: Chat
-- Default Agent: Codex
-- Audience: an individual managing personal Goals and delegated Agent work
-- Scope: product and interaction contract for the dashboard presentation app
+- Product surface: personal Goal and Agent workspace
+- Primary interaction: channel-style Chat
+- Default Agent: Codex when healthy and compatible
+- Audience: one owner managing personal Goals, Todos, Agent work, and recurring execution
+- Implementation target: `apps/presentation/dashboard`
+- Design reference: [final desktop mockup](public/showcase/loopx-personal-agent-control-plane-final.png)
+- Review state: owner approved the first-screen direction on 2026-08-12
 
-## Product Intent
+![LoopX personal Agent control plane final design](public/showcase/loopx-personal-agent-control-plane-final.png)
 
-LoopX should help one person answer four questions with minimal effort:
+## Product Decision
 
-1. What Goals exist?
-2. What needs my attention now?
-3. What is each Agent doing?
-4. What should happen next?
+LoopX uses one personal workspace with three layers:
 
-The daily experience uses one stable workspace: select a Goal on the left and
-work with an Agent in Chat on the right. Control-plane internals remain
-available through a secondary running-details surface.
+1. A single left sidebar for the Manager and Goal directory.
+2. A central channel timeline for conversation, progress, decisions, and outputs.
+3. A contextual right drawer for focused inspection and action.
+
+The main surface is optimized for reading and conversation. Rows do not repeat
+`View`, `Correct`, `Open`, `Approve`, or `Pause` buttons. A row is the entry;
+selecting it opens the right drawer, where the relevant controls and focused
+Chat are available.
+
+Natural-language requests are a first-class control path. The owner can ask
+LoopX to create a Goal, assign an Agent, add Todos, configure a Goal heartbeat,
+or create a recurring monitor. A durable or high-impact request produces a
+structured preview before LoopX writes state or starts work.
+
+## User Outcomes
+
+The product must answer five questions with little interpretation:
+
+1. What needs me now?
+2. What are my Agents doing?
+3. What changed or finished recently?
+4. How do I correct the active work without losing context?
+5. How do I describe a Goal or recurring job and let LoopX configure it safely?
 
 ## Design Principles
 
-1. **Chat is the workspace.** Goal status, decisions, instructions, and Agent
-   progress share one conversation timeline.
-2. **User action has the highest priority.** An open user Todo becomes the most
-   prominent card. Empty user-Todo sections are hidden.
-3. **Show conclusions first.** Translate control-plane fields into current
-   progress, required user action, and next step.
-4. **Progressive disclosure.** Evidence, event history, quota, raw state, and
-   full Todo lists live in running details.
-5. **One primary action per state.** The main action is either respond to a
-   decision, enter Chat, or inspect an abnormal run.
-6. **Agent identity is always visible.** The active Agent appears in the Chat
-   header and composer and can be changed before sending a message.
-7. **State remains attributable.** Every summary or action keeps a link to its
-   source Goal, Todo, run, or finding without exposing raw internals by default.
+1. **Chat is the workspace.** Conversation and durable LoopX projections share
+   one chronological surface.
+2. **Browse first, act after selection.** Lists stay quiet; controls appear in
+   the contextual drawer.
+3. **One visible primary action.** A preview or gate exposes one emphasized
+   transition. Secondary paths live in a compact overflow menu.
+4. **Natural language becomes typed intent.** LoopX classifies the request,
+   shows the target and impact, then applies a verified transition.
+5. **Correction preserves continuity.** A message sent from a running detail
+   drawer continues the selected Goal × Agent Session whenever it is
+   recoverable.
+6. **Agent identity and authority stay visible.** Every execution, proposal,
+   and output names its Agent and relevant permission boundary.
+7. **Technical state is available on demand.** Raw ids, quota receipts,
+   registry findings, and transport diagnostics stay collapsed.
+8. **Every visible claim has lineage.** Progress and completion derive from
+   Todo, run, gate, artifact, or public-safe event projections.
 
 ## Information Architecture
 
 ```text
-Personal Goal Workspace
-├── Manager Chat
-│   ├── cross-Goal summary
-│   ├── needs-your-attention queue
-│   ├── Agent activity summary
-│   └── create or redirect work
-├── Goal Chat
-│   ├── current progress
-│   ├── needs you
-│   ├── next step
-│   ├── conversation
-│   └── Agent execution cards
-└── Running details
-    ├── diagnosis summary
-    ├── full Todo projection
-    ├── Agent runs
-    ├── evidence and timeline
-    └── control-plane state
+LoopX Personal Workspace
+├── LoopX Manager
+│   ├── needs-you digest
+│   ├── active Agent work
+│   ├── recent outputs
+│   ├── cross-Goal conversation
+│   └── natural-language action proposals
+├── Goals
+│   └── Goal Channel
+│       ├── Chat
+│       ├── Tasks
+│       └── Files
+├── Context Drawer
+│   ├── user decision
+│   ├── Todo detail
+│   ├── Run / Session detail and correction
+│   ├── heartbeat or monitor detail
+│   └── artifact preview
+└── Settings
+    ├── Agent endpoints
+    ├── workspace mappings
+    ├── permission profiles
+    └── credential references
 ```
-
-There is no separate daily Goal-management dashboard. The former operator
-console becomes the secondary running-details surface.
 
 ## Desktop Shell
 
 ```text
-┌────────┬──────────────────────┬──────────────────────────────────────┐
-│ Global │ Goals                │ Chat                                 │
-│ rail   │                      │                                      │
-│        │ ● Launch Chat v1     │ LoopX Manager   Codex ▾   Live      │
-│ Chat   │   Needs you          │                                      │
-│ Goals  │ ○ Reading plan       │ Conversation and structured cards    │
-│        │   In progress        │                                      │
-│        │ ○ Health routine     │                                      │
-│        │   Quiet              │                                      │
-│        │                      │ [Codex ▾] [Current Goal]  Composer   │
-│        │ + New Goal           │                                      │
-└────────┴──────────────────────┴──────────────────────────────────────┘
+┌────────────────────┬──────────────────────────────────┬──────────────────────┐
+│ LoopX              │ LoopX Manager          Codex ▾   │ Context drawer       │
+│                    │                                  │                      │
+│ Manager          3 │ Channel timeline                 │ Selected object      │
+│                    │                                  │ context              │
+│ Goals              │ Messages                         │                      │
+│ ● Goal A          2 │ Progress / decision cards       │ Focused Chat or      │
+│ ● Goal B          1 │ Action previews                 │ one primary action   │
+│ ○ Goal C            │ Outputs                          │                      │
+│                    │                                  │ Advanced diagnostics │
+│ Settings / owner   │ [Agent ▾] Composer               │ collapsed            │
+└────────────────────┴──────────────────────────────────┴──────────────────────┘
 ```
 
-### Global rail
+### Single sidebar
 
-Keep the rail narrow. The MVP needs only:
+The narrow icon rail is removed. The sidebar contains:
 
-- Chat
-- Goals
-- Settings
+- `LoopX Manager`, including the current attention count;
+- the active Goal directory;
+- one semantic state and optional count per Goal;
+- Settings and owner identity at the bottom.
 
-History and advanced product areas can arrive later. Goal and Chat selection
-remain in the second column.
+The Goal row state vocabulary is intentionally small:
 
-### Goal list
+- `Needs repair`
+- `Needs you`
+- `Waiting`
+- `In progress`
+- `Complete`
+- `Quiet`
 
-Each Goal row shows:
+Completed Goals can move behind a filter. Raw Goal ids never lead the visible
+row.
 
-- a human-readable Goal title;
-- one short status sentence;
-- one semantic status: `Needs you`, `In progress`, `Waiting`, `Quiet`,
-  `Needs repair`, or `Complete`;
-- an optional unread or attention dot.
+### Central channel
 
-Raw Goal ids stay available to running details and accessible labels. They do
-not lead the visible row.
+The central surface remains conversational in both contexts:
 
-## Manager Chat
+- Manager Channel: cross-Goal digest, questions, and action proposals.
+- Goal Channel: Goal-scoped conversation, Todo progress, executions, gates,
+  and outputs.
 
-Manager Chat is the default state when no Goal is selected. It summarizes all
-active Goals and accepts cross-Goal questions or instructions.
+When a Goal is selected, compact `Chat`, `Tasks`, and `Files` tabs may appear
+under the header. They are navigation, so they use text-tab treatment and do
+not compete with actions.
 
-### Empty conversation state
+### Context drawer
+
+The drawer opens only after the owner selects a row or timeline object. Closing
+it expands the central channel. It supports five content modes through one
+stable container:
+
+1. Decision detail
+2. Todo detail
+3. Run / Session detail
+4. Heartbeat or recurring-monitor detail
+5. Artifact preview
+
+The drawer header states the selected object and its source Goal. `Advanced
+diagnostics` remains collapsed at the bottom.
+
+## Manager Channel
+
+The Manager is the default route when no Goal is selected. Its initial digest
+prioritizes:
+
+1. `Needs you`
+2. `Agents working`
+3. `Recent outputs`
+
+Each item is a full-row entry with a status, short reason, and chevron. Lists
+contain no repeated action buttons. Selecting a row opens the matching drawer.
+
+After the owner sends a message, normal messages and structured proposal cards
+join the same timeline. Useful quick prompts remain limited to two or three
+examples, such as:
+
+- `What should I do now?`
+- `Summarize today's progress.`
+- `Create a recurring monitor.`
+
+Fast status questions may use the deterministic local projection. Planning,
+judgment, and execution requests route to the selected Agent.
+
+## Goal Channel
+
+The Goal header shows one compact summary:
 
 ```text
-LoopX Manager   Codex ▾   Live
-
-Good morning. You have 2 items to handle, and 3 Agents are working.
-
-[What should I do now?]
-[Which Goals are waiting for me?]
-[What are the Agents doing?]
-
-Ask about Goals, or assign a task...
+LoopX project development
+Codex · In progress 2/3 · 1 item needs you
 ```
 
-### Supported interaction classes
+The timeline supports:
 
-- status lookup;
-- priority recommendation;
-- cross-Goal comparison;
-- Goal creation;
-- Todo creation or revision;
-- Agent assignment;
-- pause, resume, archive, or repair requests subject to LoopX authority.
+1. owner messages;
+2. Agent replies;
+3. Agent Todo progress;
+4. execution progress;
+5. user decisions and gates;
+6. artifacts and evidence;
+7. action proposals and application receipts.
 
-Fast status lookups may use a deterministic local projection. Requests that
-need planning, judgment, or execution go to the selected Agent.
+Chat prose cannot mark a Todo complete. Completion appears only after a
+durable LoopX transition or validated execution event.
 
-The three fixed quick questions always use that deterministic projection and
-show truthful LoopX attribution. Free-form messages follow the Agent selected
-in the Chat dropdown, with Codex as the default route.
+## Run And Session Presentation
 
-## Goal Chat
+LoopX distinguishes four related concepts:
 
-Selecting a Goal keeps the same shell and binds the conversation to that
-Goal's context.
+| Concept | Purpose | Visible treatment |
+| --- | --- | --- |
+| Chat Session | Persistent Goal × Agent × channel conversation context | Hidden behind channel history |
+| Run Session | One Agent execution attempt for a Todo or requested action | Human-readable execution row/card |
+| Turn | One owner or Agent interaction within a Chat Session | Timeline message or streamed reply |
+| Event | Ordered progress, state, or output signal | Compact meaningful update; raw events stay collapsed |
 
-### Header
+The first screen uses a readable label such as `Codex · Review MR 3559`.
+`session_id`, upstream thread identifiers, and transport details stay inside
+advanced diagnostics.
+
+An active execution row shows:
+
+- Goal;
+- Agent;
+- task label;
+- compact progress fraction or phase;
+- latest meaningful activity;
+- semantic status;
+- one chevron.
+
+Selecting the row opens Run detail.
+
+## Same-Session Agent Correction
+
+The Run detail drawer contains a focused `Correct with <Agent>` conversation.
+It includes the selected Goal, Todo, Run, and Agent scope automatically.
+
+Example:
 
 ```text
-Launch Chat v1
-Codex · In progress 2/4 · 1 item needs you          Goal progress
-```
+Owner
+Focus on permission and data-leak risks. Do not submit yet.
 
-The header compresses the selected Goal's interaction contract into one line:
-active Agent, projected Agent-Todo progress, and open user-Todo count. The
-`Goal progress` action opens running details. Repository, quota, boundary, and
-raw runtime metadata stay out of the first screen.
-
-### Projection timeline
-
-Goal Chat renders durable LoopX projections as structured timeline cards. It
-does not invent prior user messages or treat transient Chat text as completed
-work.
-
-```text
 Codex
+Understood. I will stay read-only, finish the risk list, and wait for approval.
 
-Plan progress                                               2/4
-✓ Inspect the concurrent refresh path
-✓ Update the refresh implementation
-● Run regression tests
-○ Prepare the change for review
-
-Recent run
-Regression evidence is available                            View details
-
-Needs you
-Confirm whether the validated change may continue     [Later] [Respond]
+[Add direction or adjust requirements…]                         [Send]
 ```
 
-Rules:
+Correction rules:
 
-- The plan card is built from the selected Goal's structured `agent_todos`.
-- Completed and open Todo rows preserve their source `todo_id`.
-- When a user action exists, limit the first-screen plan preview to three rows
-  so the complete needs-you card remains visible at compact desktop heights.
-- The user-action card is built from an open `user_todo` or an explicit
-  operator gate. Hide it when no user action exists.
-- The recent-run card uses compact `run_history` or event-ledger evidence.
-- Each visible sentence stays public-safe and traceable to its source Goal,
-  Todo, run, or event summary.
-- Raw classifications, commands, file paths, and logs remain in running
-  details.
+1. Send a new Turn to the current recoverable Chat Session.
+2. Preserve the current `goal_id`, `agent_id`, `session_id`, and selected Run
+   context.
+3. Never transfer a running execution because the global Agent selector
+   changed.
+4. Treat permission, workspace, protected-scope, and Agent-transfer changes as
+   typed action proposals that require preview.
+5. Show streamed visible output and compact tool phases; exclude thought text,
+   raw tool output, credentials, and private paths.
+6. When upstream resume fails, preserve local history and offer `Retry resume`
+   or `Start a new Session with this context`. Do not replay the last message
+   automatically.
 
-### Conversation timeline
+The compact `More` menu contains secondary runtime actions:
 
-The timeline supports six item types:
+- interrupt;
+- retry after terminal failure;
+- start a new Session;
+- close the current Session.
 
-1. user message;
-2. Agent response;
-3. user-action card;
-4. Agent Todo plan card;
-5. Agent execution card;
-6. run-evidence card.
+## Natural-Language Control
 
-Example execution card:
+The Manager and Goal composers are command surfaces as well as Chat inputs.
+LoopX classifies each message into one of these intent families:
+
+| Intent | Example | Handling |
+| --- | --- | --- |
+| Read | `Which Agents are stuck?` | Answer from deterministic projection or selected Agent |
+| Correct | `Inspect permissions first and wait before submitting.` | Continue the scoped Session when authority is unchanged |
+| Goal write | `Create a Goal for the Agent control plane.` | Generate a typed preview |
+| Todo write | `Add a regression-test Todo and give it to Codex.` | Generate a typed preview |
+| Agent binding | `Use Claude Code for research and Codex for implementation.` | Validate endpoints and preview bindings |
+| Goal heartbeat | `Keep this Goal moving every morning.` | Preview host heartbeat binding and lifecycle policy |
+| Recurring monitor | `Check MR status every 30 minutes.` | Preview a bounded `continuous_monitor` Todo and schedule |
+| Protected transition | `Release this version.` | Produce an explicit operator gate |
+
+### Impact-aware execution
+
+- Read-only questions execute immediately.
+- Scoped conversational correction executes immediately when it stays within
+  the existing authority envelope.
+- Durable state changes produce a structured preview.
+- Protected, destructive, credentialed, production, or externally visible
+  actions require an explicit gate.
+
+Every proposal records a Goal revision or equivalent state fingerprint.
+Applying a stale proposal writes nothing and asks the owner to regenerate the
+preview.
+
+## Goal Creation Flow
+
+The owner can say:
 
 ```text
-Codex is working
-Connecting discovered Agents and preserving Codex as the default
-
-In progress                                      View details
+Create a Goal to improve the Agent control plane. Bind the current repository,
+use Codex, check progress every morning, analyze before editing, and ask me
+before submitting.
 ```
 
-The execution card shows a compact state and latest meaningful progress. Full
-logs stay in running details.
-
-### User-action card
+LoopX responds with a single structured card:
 
 ```text
-Needs you
-Confirm the updated first screen
+Goal creation preview
 
-[Approve] [Tell the Agent what to change]
+Name             Improve the Agent control plane
+Agent            Codex
+Workspace        Current repository
+Permission       Repository write · confirm before submit
+Heartbeat        Every day at 09:00
+Stop condition   Goal complete
+
+Initial plan
+1. Inspect the current control-plane implementation and permission boundary
+2. Design the implementation slices and verification plan
+3. Implement and validate one bounded slice at a time
+
+[Create and start]                                      Modify settings
 ```
 
-Rules:
+`Create and start` performs one idempotent transaction or a resumable saga:
 
-- Render only open user Todos or explicit authority gates.
-- Use the Todo's exact decision scope for actions.
-- Preserve reject and cancel paths when the underlying contract supports them.
-- Confirm material writes or protected actions before execution.
+1. Validate the target project and Goal id.
+2. Validate the Agent endpoint, health, capability, trust scope, and workspace
+   mapping.
+3. Create or connect the Goal and its authority boundary.
+4. Write ordered initial Todos.
+5. Bind the selected Agent identity.
+6. Generate and bind the Goal heartbeat when requested.
+7. Refresh the public-safe projection.
+8. Create or resume the Goal Chat Session.
+9. Start the first eligible bounded Turn only after quota and gate checks.
+10. Return an apply receipt and navigate to the new Goal Channel.
 
-## Agent Discovery And Selection
+A partial failure leaves a visible resumable result. Retrying with the same
+proposal id cannot duplicate the Goal, Todos, schedule, or first Turn.
 
-The Chat header and composer expose the active Agent through a compact
-selector. New conversations select Codex when Codex is available.
+## Heartbeat And Recurring Monitor
 
-```text
-Choose Agent
+The interface accepts friendly language while preserving two distinct LoopX
+contracts.
 
-✓ Codex           Default · code and project execution
-  Claude Code     Complex analysis and long tasks
-  Trae CLI Agent  Frontend and interaction implementation
-  Coco Agent      General tasks
-  Status only     No model call
+### Goal heartbeat
 
-  Manage discovered Agents
+A Goal heartbeat wakes the host Agent to reassess and advance the Goal under
+LoopX quota, gate, boundary, and scheduler rules. It is suitable for requests
+such as:
+
+- `Keep this Goal moving every morning.`
+- `Continue this Goal while there is eligible work.`
+
+The preview shows:
+
+- Goal and Agent identity;
+- host surface;
+- initial cadence;
+- permission boundary;
+- quota behavior;
+- notification policy;
+- stop or pause condition.
+
+LoopX generates the lifecycle body from `heartbeat-prompt`; the UI never asks
+the owner to edit raw prompt text or RRULE syntax.
+
+### Recurring monitor
+
+A recurring monitor watches a bounded target and materializes as an Agent Todo
+with `task_class=continuous_monitor`. It is suitable for requests such as:
+
+- `Check MR 3559 every 30 minutes and notify me on failure.`
+- `Review the daily data refresh until the migration completes.`
+
+The preview shows:
+
+- target and target key;
+- cadence and timezone;
+- next due time;
+- Agent;
+- notification rule;
+- boundedness through expiry, completion, or another supported stop condition;
+- expected permission and cost boundary.
+
+Each due execution creates or resumes a Run Session and posts meaningful
+progress and output back to its Goal Channel. The `Tasks` tab includes a
+`Scheduled and continuous` group. Selecting a monitor opens its drawer, where
+the owner can run now, pause, edit, resume, or stop it.
+
+## Proposal And Gate State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Interpreting
+    Interpreting --> Answered: read-only request
+    Interpreting --> PreviewReady: durable write
+    Interpreting --> GateReady: protected action
+    PreviewReady --> Applying: owner confirms
+    PreviewReady --> Cancelled: owner cancels
+    Applying --> Applied: receipt verified
+    Applying --> Stale: source revision changed
+    Applying --> Failed: bounded apply failure
+    Stale --> PreviewReady: regenerate
+    Failed --> Applying: safe idempotent retry
+    GateReady --> Applying: approved
+    GateReady --> Rejected: rejected
+    GateReady --> Deferred: deferred
 ```
 
-### Agent list contract
+Proposal cards never count as durable Goal or Todo state. Only a verified apply
+receipt and refreshed projection establish success.
 
-Each discovered Agent row should provide:
+## Drawer Modes
 
-- stable Agent id;
+### Decision
+
+- exact question and decision scope;
+- reason and evidence summary;
+- one primary decision;
+- defer, reject, or explain in `More`;
+- related execution and output.
+
+### Todo
+
+- Goal, owner, task class, status, dependencies, and next transition;
+- reassign, block, defer, complete, or create successor through previewed
+  transitions where required.
+
+### Run / Session
+
+- human-readable identity and progress;
+- latest meaningful activity;
+- same-Session correction composer;
+- outputs;
+- compact runtime actions;
+- advanced diagnostics.
+
+### Heartbeat / monitor
+
+- target, Agent, cadence, timezone, next and previous run;
+- notification and stop rules;
+- run now, pause, edit, resume, or stop;
+- execution history.
+
+### Artifact
+
+- safe inline preview when supported;
+- producing Goal, Todo, Agent, and Run lineage;
+- open or export controls inside the drawer.
+
+## Agent Selection And Binding
+
+The header and composer expose a compact Agent selector. Codex is selected for
+new conversations when it is healthy and compatible.
+
+Each choice shows:
+
 - display name;
-- provider and model label when available;
-- availability state;
+- provider or adapter kind;
+- availability;
 - short capability summary;
-- supported permission boundary;
-- workspace or repository compatibility when relevant.
+- trust scope;
+- workspace compatibility.
 
-### Selection behavior
+Codex and Claude Code use their native local runtimes. Direct OpenAI or
+Anthropic API-key endpoints expose the same selector contract and a bounded
+read-only project tool set (`list_files`, `search_text`, and `read_file`). Tool
+paths remain project-relative, sensitive directories are denied, and raw tool
+results are never persisted as visible Chat messages. Durable writes still go
+through typed LoopX previews and verified apply receipts.
 
-- Default to Codex for a new Chat.
-- Persist the selected Agent per Chat.
-- Allow switching before the next message.
-- Keep earlier messages attributed to the Agent that produced them.
-- Explain unavailable Agents and suggest an eligible alternative.
-- Do not silently transfer a running execution to another Agent.
-- Treat `Status only` as a deterministic read-only route.
+Selection routes the next Chat message. Existing Todo ownership remains in
+`claimed_by`, and active Sessions stay attached to their original Agent.
 
-## Chat Execution And Todo Decisions
+Endpoint commands, remote addresses, credential references, and workspace
+mappings remain owner-local. The browser consumes redacted health and
+capability projections. Endpoint mutation belongs in Settings and may require
+an explicit local CLI or trusted host action.
 
-The selected Chat route and the durable Todo owner remain separate fields:
-
-- the Agent selector routes the next message;
-- `claimed_by` identifies the Agent that owns an existing Todo;
-- changing the selector does not rewrite `claimed_by`;
-- the projection author always uses durable Todo ownership;
-- the Chat header and composer use the currently selected route.
-
-The first runtime set connects Codex app-server, Claude Code, direct model
-providers, and owner-configured ACP v1 Agents through the local LoopX Chat
-server. Codex and Claude Code retain a read-only boundary; Claude Code may use
-only `Read`, `Glob`, and `Grep`. Direct model providers do not receive host
-tools. `Status only` stays local and makes no model call.
-
-Codex Chat uses ordinary resumable app-server Threads. The selected LoopX Goal
-remains a local Session binding and is supplied to each Turn as supporting
-public-safe context. Chat does not enable Codex's autonomous Goal mode or call
-`thread/goal/set`; that mode interprets later input as execution continuation
-and does not preserve the direct question-and-answer contract required here.
-
-Custom ACP Agents use the stable
-[ACP v1 newline-delimited stdio transport](https://agentclientprotocol.com/protocol/v1/transports).
-A remote Agent can be connected through an owner-controlled stdio bridge such
-as SSH.
-LoopX advertises no client filesystem or terminal capabilities and rejects
-Agent-to-client permission requests. Agent-owned tool activity appears as a
-compact phase label; thought chunks and raw tool output never enter the visible
-conversation.
-
-### Session continuity and visible streaming
-
-Each Chat route owns a LoopX `session_id`. The local server binds that public
-identifier to the upstream Agent session and persists visible messages, the
-active Turn, and ordered public-safe events. The browser never receives the
-upstream thread identifier.
-
-While an Agent is running, the visible response streams by complete line,
-sentence, or a bounded 160-character prose segment. This keeps the first useful
-text moving even when a provider emits one long sentence. The response envelope
-used for Todo and gate proposals remains in the backend parser and never enters
-the conversation. Local absolute paths, thought chunks, raw tool output, and
-credentials are excluded from streamed events and durable visible messages.
-
-Live deltas receive their ordered event id in memory and become available to
-SSE immediately. The runtime appends pending events to disk in batches at most
-50 milliseconds apart and checkpoints Turn and Session activity metadata at
-most 500 milliseconds apart. A terminal event, final visible message,
-interruption, or controller shutdown forces an immediate flush. This removes
-per-token file locking and JSON rewrites while keeping the maximum transient
-delta loss window on an abrupt process crash to 50 milliseconds. The upstream
-Agent thread binding remains durable and resumable. SSE replay reads the event
-log once after process start and serves subsequent polls from the ordered
-in-memory cache.
-
-Refresh and reconnect follow this contract:
-
-1. Load the latest Session for the selected `(Goal, Agent, channel)` route.
-2. Restore visible messages from the local Session snapshot.
-3. When `active_turn_id` exists, reconnect to that Turn's event stream.
-4. Resume after the latest received event id, without restarting the Turn.
-5. Retry a broken SSE connection with bounded backoff.
-6. After automatic retries are exhausted, keep the Session and show
-   `Continue connecting`; the user can reattach without resending the message.
-
-An SSE disconnect never interrupts the upstream Turn. Sending the same
-`client_turn_id` returns the existing Turn, so browser retries cannot dispatch
-duplicate work. A failed upstream resume still leaves local visible history
-available and offers an explicit new-Session path.
-
-### Owner-local Endpoint binding
-
-Custom launch commands, remote connection details, workspace mappings, and
-credential references remain in the owner-only Chat runtime directory. The
-browser can list redacted availability and capability summaries, but it cannot
-add, modify, or delete launch commands. Endpoint changes require an explicit
-local CLI action:
-
-```text
-loopx chat-endpoint add --config ./private-agent-endpoint.json
-loopx chat-endpoint list
-loopx chat-endpoint remove --agent-id my-acp-agent
-```
-
-The private definition uses an argv list and never invokes a shell:
-
-```json
-{
-  "agent_id": "my-acp-agent",
-  "display_name": "My ACP Agent",
-  "adapter_kind": "acp",
-  "transport": "stdio",
-  "location": "local",
-  "trust_scope": "read_only",
-  "command": ["my-agent", "--acp"],
-  "workspace_mapping": []
-}
-```
-
-For a remote host, the command may launch an owner-configured SSH bridge and a
-workspace mapping translates the local Goal root to the Agent-side absolute
-path. The public Endpoint response omits both fields.
-
-When the selected Agent suggests new work, Chat adds a compact candidate card
-to the timeline:
-
-```text
-P1  Candidate Todo                         Launch Chat v1
-Run the focused Todo writeback smoke
-
-[Generate preview] [Reject] [Cancel]
-```
-
-The write path is deliberately two-stage:
-
-1. `Generate preview` calls the LoopX dry-run endpoint and locks the Goal
-   revision plus candidate identity.
-2. `Approve write` applies that exact preview and returns a Todo id and receipt.
-3. `Reject` and `Cancel` create local decision history only and perform zero
-   Goal writes.
-4. A stale preview returns a no-write receipt, clears the preview, and asks the
-   user to preview again.
-
-Candidate prose never counts as a durable Todo. Only a verified apply receipt
-and refreshed status projection establish that the Todo exists.
-
-## Simplified Goal Detail
-
-The optional compact detail view contains four sections:
-
-1. Manager summary
-2. Needs you
-3. Agent current work
-4. Recent activity
-
-```text
-← My Goals
-
-Launch Chat v1                                  In progress
-
-Manager summary
-Codex is validating Todo writeback. A PR follows successful validation.
-
-Needs you                                                       1
-Confirm the updated first screen                  [Approve] [Give feedback]
-
-Agent current work
-Codex · Running   Validate local Todo writeback              [Enter Chat]
-
-Recent activity                                                View all
-```
-
-This view can be reached from a Goal row or shared as a compact status page.
-Its primary action always returns to Chat.
-
-## Running Details
-
-Running details serve diagnosis and audit use cases. The entry stays quiet
-while a Goal is healthy and becomes a visible `View cause` action when LoopX
-reports an abnormal condition.
-
-### First screen
-
-The first screen starts with a diagnosis, not a data inventory:
-
-```text
-Running diagnosis
-
-Issue       Goal state has not refreshed recently
-Impact      Work may continue, but visible progress can be stale
-Suggestion  Refresh LoopX state
-Owner       LoopX automatic repair
-
-[Repair now]
-```
-
-### Expandable technical sections
-
-- full user and Agent Todo lists;
-- Agent run history;
-- evidence and validation receipts;
-- state transition timeline;
-- registry and status-source health;
-- quota and execution-boundary details;
-- public-safe raw projection.
-
-The technical sections remain collapsed until requested.
-
-## LoopX Projection Mapping
-
-| LoopX projection | User-facing surface |
-| --- | --- |
-| Goal directory / run-history Goal | Goal list and selected Goal context |
-| Goal objective and boundary | Goal identity; boundary stays in running details |
-| Structured `user_todos` | Needs-you card and exact response scope |
-| Structured `agent_todos` | Plan progress card and current work |
-| Todo `claimed_by` | Agent ownership attribution |
-| Latest run / event-ledger summary | Recent-run and evidence cards |
-| `interaction_contract.user_channel` | Whether the user-action card is visible |
-| `interaction_contract.agent_channel` | Whether the Goal reads as in progress or quiet |
-| `interaction_contract.cli_channel` | Available transitions in running details |
-| Recommended action | Compact next-step copy when no structured Todo is available |
-| Waiting-on state | Goal semantic status |
-| Agent-management projection | Discovered-Agent selector and activity attribution |
-| Registry finding / stale warning | Needs-repair state and View-cause action |
-| Evidence and event ledger | Running details |
-| Quota and execution contract | Running details and action availability |
-
-Presentation code must consume public-safe projection fields. It must not parse
-private planning files, raw logs, local absolute paths, or provider payloads.
-
-## Business Object Contract
-
-The workspace is a read model over five durable LoopX concepts:
+## Business Object Mapping
 
 ```text
 Goal
-├── objective and goal_boundary
+├── objective
+├── goal_boundary
+├── Agent bindings
 ├── user_todos
 ├── agent_todos
-├── registered or discovered Agents
-└── runs and evidence events
-
-interaction_contract = who acts next
-Goal Chat = public-safe presentation of that contract and its evidence
+│   └── continuous_monitor Todos
+├── Chat Sessions
+│   └── Turns and visible events
+├── Run Sessions
+│   └── evidence and artifacts
+├── heartbeat host binding
+└── interaction_contract
 ```
 
-The presentation layer follows these rules:
-
-1. A Goal is the durable container. Chat selection only changes the active
-   view and does not mutate Goal truth.
-2. A Todo is the work unit. A visual plan row must map to a structured Todo or
-   be clearly labeled as an unavailable projection.
-3. An Agent is an execution identity. Agent selection routes the next message
-   or newly created work; it does not silently transfer an existing claim.
-4. A run or event is evidence that work happened. Chat prose alone cannot mark
-   a Todo complete.
-5. The interaction contract decides whether the next transition belongs to
-   the user, Agent, or LoopX CLI.
-6. Running details preserve source lineage and expose the technical contract
-   without making it first-screen content.
-
-### Visible status derivation
-
-| Visible state | Durable signal |
+| LoopX source | Surface |
 | --- | --- |
-| Needs repair | High-severity registry finding, stale projection, or failed health state |
-| Needs you | Open user Todo or user-channel action requirement |
-| Waiting | External-evidence or monitor wait |
-| In progress | Runnable or claimed Agent Todo, or agent-channel work obligation |
-| Complete | Terminal Goal state with no open work |
-| Quiet | No user action and no current Agent work obligation |
+| Goal directory and objective | Sidebar and channel identity |
+| `goal_boundary` | Proposal permission summary and diagnostics |
+| `user_todos` | Needs-you rows and decision drawer |
+| `agent_todos` | Agent work rows and Goal task progress |
+| `claimed_by` | Agent attribution |
+| `continuous_monitor` metadata | Scheduled-and-continuous tasks and drawer |
+| Chat Session snapshot | Conversation history and resume state |
+| active Turn and safe events | Streaming reply and current phase |
+| run history and evidence | Execution progress, receipts, and outputs |
+| interaction contract | Who acts next and which transition is available |
+| quota and scheduler hint | Heartbeat eligibility and cadence detail |
+| Agent-management projection | Selector, binding preview, and endpoint health |
+| registry findings | Needs-repair state and diagnostics |
 
-Only the highest-priority state appears in the Goal list. Secondary state and
-evidence remain available in the selected Goal timeline and running details.
+Presentation code consumes stable public-safe projections. It does not parse
+private planning files, provider payloads, raw logs, credential material, or
+local absolute paths.
 
-## State Priority
+## Control-Plane API Requirements
 
-When several states apply to one Goal, use this visible priority:
+Existing Chat Session, asynchronous Turn, SSE, interrupt, and resume APIs remain
+the transport foundation. The final workspace adds a typed action layer with
+equivalent contracts:
 
-1. Needs repair
-2. Needs you
-3. Waiting for an external condition
-4. In progress
-5. Complete
-6. Quiet
+```text
+POST /api/actions/preview
+POST /api/actions/{proposal_id}/apply
+POST /api/actions/{proposal_id}/cancel
+GET  /api/actions/{proposal_id}
+```
 
-Only the highest-priority state appears in the Goal list. Additional context
-remains available in the Goal summary or running details.
+The action preview request carries:
+
+- natural-language input;
+- context kind: Manager, Goal, Todo, Run, or Schedule;
+- selected Goal, Agent, and visible object identifiers;
+- client-generated idempotency key.
+
+The response carries:
+
+- typed action kind;
+- human-readable summary;
+- normalized parameters;
+- expected Goal revision or state fingerprint;
+- permission and gate classification;
+- dry-run or validation evidence;
+- available transitions.
+
+Initial action kinds:
+
+- `goal.create`
+- `goal.update`
+- `todo.create`
+- `todo.update`
+- `agent.bind`
+- `heartbeat.bind`
+- `monitor.create`
+- `monitor.update`
+- `gate.resolve`
+- `run.correct`
+
+`run.correct` may route directly to the current Chat Turn contract when the
+authority envelope is unchanged. All other durable types follow preview and
+apply.
+
+## Visual System
+
+- Canvas: `#FBFAF7`
+- Panel: `#FFFFFF`
+- Primary ink: `#20232B`
+- Muted text: `#747A86`
+- LoopX blue: `#2F66E9`
+- Success: `#2DAA72`
+- Attention: `#D99028`
+- Failure: red, reserved for terminal or unsafe states
+- Border: subtle neutral 1 px
+- Radius: 10–12 px
+- Shadow: minimal and limited to overlays
+- Body type: 14–16 px with comfortable line height
+
+Button policy:
+
+- one emphasized primary action in an active preview or gate;
+- send buttons in active composers;
+- secondary actions as quiet text or overflow items;
+- zero repeated action-button columns in browse lists.
 
 ## Responsive Behavior
 
 ### Tablet
 
-- Collapse the global rail to icons.
-- Keep the Goal list as a resizable column.
-- Preserve the full Chat composer.
+- collapse the Goal directory behind a drawer;
+- keep the central channel full width;
+- open context detail as a right sheet;
+- preserve the active composer.
 
 ### Mobile
 
-- Show either the Goal list or Chat.
-- Use a back action to return from Chat to Goals.
-- Open the Agent selector as a bottom sheet.
-- Keep user-action buttons reachable without horizontal scrolling.
-- Open running details as a full-screen sheet.
+- show one of Goal directory, channel, or context sheet at a time;
+- use a back action to preserve navigation context;
+- open Agent selection as a bottom sheet;
+- keep preview confirmation and correction composer above the safe area;
+- maintain 44 px minimum touch targets.
 
 ## Accessibility
 
-- Support keyboard navigation for Goal and Agent lists.
-- Expose Agent availability and Goal state as text, not color alone.
-- Move focus into dialogs and restore it when they close.
-- Announce new Agent messages and state changes through a polite live region.
-- Keep touch targets at least 44 by 44 CSS pixels on mobile.
+- Support keyboard navigation across sidebar rows, timeline objects, and drawer
+  controls.
+- Expose status through text and icon semantics in addition to color.
+- Move focus into an opened drawer and restore it to the selected row on close.
+- Announce streamed Agent messages and durable state transitions with a polite
+  live region.
+- Label the correction composer with its Goal, Agent, and Run target.
 - Respect reduced-motion preferences.
 
-## MVP Scope
+## Implementation Plan
 
-The first implementation should include:
+### Phase 1 — Shell and browse interaction
 
-- two-column Goal and Chat workspace plus narrow global rail;
-- Manager Chat and Goal Chat contexts;
-- discovered-Agent selector with Codex default;
-- deterministic `Status only` route;
-- compact header status derived from current Todo ownership;
-- Agent-Todo plan card with progress and source lineage;
-- user-action card derived from a user Todo or explicit gate;
-- recent-run evidence card derived from public-safe run history;
-- compact running-details entry;
-- responsive desktop and mobile layouts;
-- public-safe LoopX status projection.
+- remove the narrow global icon rail;
+- build the single Manager/Goal sidebar;
+- convert attention, Agent work, and output lists to full-row selection;
+- implement the polymorphic context drawer;
+- remove repeated row action buttons.
 
-The MVP does not need:
+### Phase 2 — Same-Session correction
 
-- collaboration or shared ownership;
-- analytics charts;
-- a visual workflow builder;
-- arbitrary raw-log rendering;
-- automatic mid-run Agent transfer;
-- a standalone daily management dashboard.
+- add Run-detail conversation history;
+- bind correction messages to the selected Goal × Agent Session;
+- stream the new Turn through existing SSE;
+- expose resume failure, interrupt, retry, and new-Session recovery.
+
+### Phase 3 — Natural-language action proposals
+
+- add typed preview and idempotent apply contracts;
+- implement Goal creation, ordered Todo creation, and Agent binding;
+- render proposal, stale, failure, and receipt states in the channel timeline.
+
+### Phase 4 — Heartbeat and recurring monitors
+
+- classify Goal heartbeat and bounded monitor intents separately;
+- generate Goal heartbeat lifecycle configuration through LoopX policy;
+- create and edit `continuous_monitor` Todos;
+- add schedule detail, run history, pause/resume, and stop interactions.
+
+### Phase 5 — Tasks, files, and Agent settings
+
+- complete Goal `Tasks` and `Files` views using the same row/drawer pattern;
+- expose redacted endpoint health and capability choices;
+- preserve local-only endpoint mutation and credential boundaries.
+
+### Phase 6 — Verification and rollout
+
+- browser E2E for every visible entry and drawer transition;
+- real Chat, stream, refresh, resume, correction, interrupt, and retry tests;
+- idempotent Goal/heartbeat apply tests;
+- public/private boundary checks;
+- first-screen screenshot comparison and owner review before finalization.
 
 ## Acceptance Criteria
 
-1. A user can identify the next required action within five seconds.
-2. A user can see which Agent owns the current work without opening details.
-3. New Chats use Codex when it is available.
-4. A user can switch to another discovered Agent before sending a message.
-5. Selecting a Goal opens its Chat without navigating to the operator console.
-6. A Goal with no user action does not render an empty user-Todo panel.
-7. A Goal with an open user action exposes one clear primary response.
-8. Healthy Goals do not expose quota, evidence, or raw state on the first
-   screen.
-9. Abnormal Goals expose a concise cause, impact, suggested action, and owner.
-10. Every summary and action remains traceable to a public-safe LoopX
-    projection.
-11. Plan progress never relies on fabricated Chat history.
-12. A run card distinguishes recorded evidence from a planned Todo.
+1. The first screen contains one sidebar and no unexplained icon rail.
+2. Browse lists contain no repeated action-button column.
+3. Selecting any needs-you, Agent-work, schedule, or output row opens the
+   correct drawer.
+4. The owner can identify required attention, active Agent work, and recent
+   output within five seconds.
+5. A correction sent from Run detail reaches the same recoverable Goal × Agent
+   Chat Session and preserves context.
+6. Refreshing the page restores visible history and reconnects an active Turn.
+7. A natural-language Goal request creates a structured preview with Goal,
+   Agent, workspace, permissions, Todos, heartbeat, and stop condition.
+8. No Goal, Todo, Agent binding, heartbeat, or recurring monitor is written
+   before the required confirmation.
+9. Applying the same proposal twice cannot duplicate durable state or launch a
+   duplicate first Turn.
+10. A request for Goal continuation maps to the heartbeat contract; a request
+    to watch a bounded target maps to a `continuous_monitor` Todo.
+11. Protected operations remain explicit operator gates.
+12. Raw ids, logs, tool output, private paths, credentials, and provider
+    payloads stay outside the default visible surface.
+13. Every progress or output statement remains attributable to a public-safe
+    Todo, Run, event, gate, or artifact projection.
+14. Codex remains the default only when healthy and compatible; unavailable
+    Agents are explained before selection.
+15. The final implementation matches the approved first-screen design at
+    desktop width before commit or PR finalization.
+
+## Out Of Scope For The First Delivery
+
+- collaborative or multi-owner Goal editing;
+- visual workflow builders;
+- analytics dashboards and KPI charts;
+- raw terminal or tool-log rendering;
+- automatic mid-run Agent transfer;
+- browser-side storage of endpoint commands or credentials;
+- unreviewed execution of protected external actions.
 
 ## Chosen Defaults
 
-- Show active Goals in the left column; completed Goals live behind a filter.
-- Save Agent selection per Chat.
-- Use Codex as the default Agent.
-- Keep Manager Chat as the initial workspace.
-- Keep Goal detail and running details secondary to Chat.
-- Keep advanced control-plane data collapsed.
+- LoopX Manager is the initial route.
+- Codex is the default healthy Agent.
+- Goal Chat is the default Goal tab.
+- Lists browse; drawers act.
+- Corrections continue the scoped Session.
+- Durable natural-language operations use preview and apply.
+- Goal heartbeat and recurring monitor remain separate typed contracts.
+- Advanced diagnostics stay collapsed.

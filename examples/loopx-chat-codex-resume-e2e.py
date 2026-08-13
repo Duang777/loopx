@@ -50,6 +50,28 @@ def wait_completed(
     return turn
 
 
+def wait_running(
+    controller: ChatRuntimeController,
+    *,
+    session_id: str,
+    turn_id: str,
+    timeout_sec: float = 30.0,
+) -> dict[str, object]:
+    import time
+
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        turn = controller.store.load_turn(session_id, turn_id)
+        if (
+            isinstance(turn, dict)
+            and turn.get("status") == "running"
+            and turn.get("upstream_turn_id")
+        ):
+            return turn
+        time.sleep(0.02)
+    raise TimeoutError("Codex live turn did not start in time")
+
+
 def main() -> None:
     args = parse_args()
     if not args.execute:
@@ -133,6 +155,47 @@ def main() -> None:
         answer = str(response.get("message") or "") if isinstance(response, dict) else ""
         if marker not in answer:
             raise RuntimeError("Resumed Codex thread did not recall the prior-turn marker")
+
+        interrupt_turn, created = second.submit_turn(
+            session_id=session_id,
+            client_turn_id="interrupt-live-turn",
+            message="请深入检查当前空工作区，并在得出结论前持续分析一段时间。",
+            work_dir=work_dir,
+            objective="Validate durable Chat context across an app-server restart.",
+        )
+        if not created:
+            raise RuntimeError("Interrupt live turn was deduplicated")
+        interrupt_turn_id = str(interrupt_turn["turn_id"])
+        wait_running(
+            second,
+            session_id=session_id,
+            turn_id=interrupt_turn_id,
+        )
+        interrupted = second.interrupt_turn(
+            session_id=session_id,
+            turn_id=interrupt_turn_id,
+        )
+        if interrupted.get("status") != "interrupted":
+            raise RuntimeError("Codex live turn did not reach interrupted state")
+        final_turn, created = second.submit_turn(
+            session_id=session_id,
+            client_turn_id="continue-after-interrupt",
+            message="请仅回复：中断后同一会话可以继续。",
+            work_dir=work_dir,
+            objective="Validate durable Chat context across an app-server restart.",
+        )
+        if not created:
+            raise RuntimeError("Post-interrupt live turn was deduplicated")
+        final_completed = wait_completed(
+            second,
+            session_id=session_id,
+            turn_id=str(final_turn["turn_id"]),
+            timeout_sec=args.turn_timeout_seconds,
+        )
+        final_response = final_completed.get("response")
+        final_answer = str(final_response.get("message") or "") if isinstance(final_response, dict) else ""
+        if "中断后同一会话可以继续" not in final_answer:
+            raise RuntimeError("Codex did not continue after interrupt in the original Session")
         second.close()
     print(
         json.dumps(
@@ -142,6 +205,8 @@ def main() -> None:
                 "same_local_session": True,
                 "same_upstream_thread": True,
                 "context_recalled": True,
+                "interrupt_verified": True,
+                "continued_after_interrupt": True,
             },
             separators=(",", ":"),
         )

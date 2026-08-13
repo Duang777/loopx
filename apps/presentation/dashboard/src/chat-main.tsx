@@ -1,7 +1,8 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { RouterProvider } from "@tanstack/react-router";
 
-import { ChatPage } from "./views/chat-page";
+import { router } from "./router";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -19,10 +20,8 @@ const queryClient = new QueryClient({
     },
   },
 });
-const initialGoalId = new URLSearchParams(window.location.search).get("goalId") || "";
-
 createRoot(root).render(
   <QueryClientProvider client={queryClient}>
-    <ChatPage initialGoalId={initialGoalId} />
+    <RouterProvider router={router} />
   </QueryClientProvider>,
 );
