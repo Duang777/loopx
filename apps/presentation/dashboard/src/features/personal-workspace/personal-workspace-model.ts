@@ -12,6 +12,7 @@ export type WorkspaceAgentTodo = {
   done: boolean;
   evidence?: string | null;
   nextTransition?: string | null;
+  priority?: string | null;
   status?: string | null;
   taskClass?: string | null;
   text: string;
@@ -161,6 +162,7 @@ export type WorkspaceActionPreview = {
   };
   previewId: string;
   primaryLabel?: string;
+  errorMessage?: string;
   status: "draft" | "ready" | "applying" | "applied" | "gated" | "stale" | "error" | "rejected" | "deferred";
   title: string;
   sourceRequest?: WorkspaceActionPreviewRequest;
@@ -184,12 +186,32 @@ export type WorkspaceTimelineItem =
   | { id: string; kind: "output"; output: WorkspaceOutput }
   | { id: string; kind: "proposal"; proposal: WorkspaceActionPreview };
 
+export type WorkspaceWorker = {
+  agentId: string;
+  currentTodoGoalId?: string | null;
+  currentTodoText?: string | null;
+  lastActivityAt?: string | null;
+  state?: string | null;
+};
+
+export type WorkspaceGoalNotification = {
+  goalId: string;
+  configured: boolean;
+  enabled: boolean;
+  humanGateAutoNotifyEnabled: boolean;
+  lastNotifiedAt?: string | null;
+  receiptCount: number;
+  targetRef?: string | null;
+};
+
 export type WorkspaceModel = {
   blockingTodoCount: number;
+  goalNotifications?: WorkspaceGoalNotification[];
   goals: WorkspaceGoal[];
   openUserTodoCount: number;
   timeline?: WorkspaceTimelineItem[];
   userTodos: WorkspaceAttention[];
+  workers?: WorkspaceWorker[];
 };
 
 export type WorkspaceAgentOption = {
@@ -223,9 +245,11 @@ export type WorkspaceDrawerSelection =
 
 export type PersonalHomeCompatibleModel = {
   blockingTodoCount: number;
+  goalNotifications?: WorkspaceGoalNotification[];
   goals: WorkspaceGoal[];
   openUserTodoCount: number;
   userTodos: WorkspaceAttention[];
+  workers?: WorkspaceWorker[];
 };
 
 export type PersonalWorkspaceCallbacks = {
@@ -265,9 +289,11 @@ export type WorkspaceActionPreviewRequest = {
 export function normalizePersonalHomeModel(model: PersonalHomeCompatibleModel): WorkspaceModel {
   return {
     blockingTodoCount: model.blockingTodoCount,
+    goalNotifications: model.goalNotifications,
     goals: model.goals,
     openUserTodoCount: model.openUserTodoCount,
     userTodos: model.userTodos,
+    workers: model.workers,
   };
 }
 
@@ -315,4 +341,11 @@ export function hasGoalUsage(usage?: WorkspaceGoalUsage | null): usage is Worksp
 export function goalUsageLabel(usage?: WorkspaceGoalUsage | null): string | null {
   if (!hasGoalUsage(usage)) return null;
   return `7d ${formatTokenCount(usage.tokens7d)} tokens · ${formatCostUsd(usage.costUsd7d)}`;
+}
+
+export function workerStateLabel(state?: string | null): string {
+  if (state === "running") return "执行中";
+  if (state === "monitoring") return "监控中";
+  if (state === "blocked") return "受阻";
+  return "待命";
 }

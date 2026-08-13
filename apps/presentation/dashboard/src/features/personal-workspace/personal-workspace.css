@@ -531,3 +531,44 @@
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-compact-menu > div button:hover { background: #fff8d6; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-inline-agent-select { border: 2px solid #141414; border-radius: 4px; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-inline-agent-select select { border: 2px solid #141414; border-radius: 4px; color: #141414; }
+
+/* ===== 晨间摘要 + Agent 全景 + 会话提示 + 优先级徽章 ===== */
+.personal-digest-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; padding: 13px 16px; border: 1px solid var(--pw-line); border-radius: 14px; background: linear-gradient(135deg, #fff, #fbf7ee); }
+.personal-digest-card > strong { font-size: 13px; letter-spacing: 0.01em; }
+.personal-digest-stats { display: flex; gap: 8px; }
+.personal-digest-stats button { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 13px; border: 1px solid var(--pw-line-strong); border-radius: 99px; background: #fff; color: var(--pw-muted); cursor: pointer; font-size: 12px; }
+.personal-digest-stats button:hover { border-color: var(--pw-blue); color: var(--pw-blue-ink); }
+.personal-digest-stats b { color: var(--pw-text); font-size: 14px; }
+
+.personal-worker-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.personal-worker-strip > button { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 13px; border: 1px solid var(--pw-line); border-radius: 12px; background: #fff; color: inherit; cursor: pointer; text-align: left; box-shadow: 0 1px 3px rgb(30 28 20 / 6%); }
+.personal-worker-strip > button:hover { border-color: var(--pw-line-strong); }
+.personal-worker-state { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--pw-faint); }
+.personal-worker-state.is-running { background: #3fbf82; }
+.personal-worker-state.is-monitoring { background: var(--pw-blue); }
+.personal-worker-state.is-blocked { background: var(--pw-red); }
+.personal-worker-copy { display: grid; min-width: 0; gap: 1px; }
+.personal-worker-copy strong { overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.personal-worker-copy small { overflow: hidden; color: var(--pw-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+.personal-composer-hint { margin: 0 0 8px; color: var(--pw-faint); font-size: 11.5px; }
+
+.personal-priority-badge { padding: 1px 7px; border-radius: 6px; background: #f2f1ed; color: var(--pw-muted); font-size: 10.5px; font-weight: 700; }
+.personal-priority-badge.is-p0 { background: var(--pw-red-bg); color: var(--pw-red); }
+.personal-priority-badge.is-p1 { background: var(--pw-amber-bg); color: var(--pw-amber); }
+.personal-priority-badge.is-blocked { background: var(--pw-red-bg); color: var(--pw-red); }
+
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-card { border: 2px solid #141414; border-radius: 4px; background: #fff; box-shadow: 3px 3px 0 #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-stats button { border: 2px solid #141414; border-radius: 99px; color: #141414; box-shadow: 2px 2px 0 #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-stats button:hover { background: #ffe23f; border-color: #141414; color: #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-strip > button { border: 2px solid #141414; border-radius: 4px; box-shadow: 2px 2px 0 #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-state { border: 1.5px solid #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-state.is-running { background: #7ddb8a; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-state.is-monitoring { background: #35c5f0; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-priority-badge { border: 1.5px solid #141414; border-radius: 3px; }
+
+.personal-goal-notification code { padding: 1px 5px; border: 1px solid var(--pw-line); border-radius: 5px; background: var(--pw-bg, #f7f6f2); font-size: 11px; word-break: break-all; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-goal-notification code { border: 1.5px solid #141414; border-radius: 3px; background: #fff; }
+
+.personal-proposal-state.is-error:has(small) { display: grid; gap: 4px; align-items: start; }
+.personal-proposal-state.is-error small { line-height: 1.5; word-break: break-all; }

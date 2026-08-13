@@ -30,7 +30,11 @@ export function GoalTasksView({
   const attentionItems = userTodos
     .filter((todo) => todo.goalId === goal.goalId)
     .map((todo) => ({ ...todo, goalTitle: goal.title }));
-  const openAgentTodos = goal.agentTodos.filter((todo) => todo.taskClass !== "continuous_monitor" && !todo.done);
+  const priorityRank = (todo: WorkspaceGoal["agentTodos"][number]) =>
+    todo.priority === "P0" ? 0 : todo.priority === "P1" ? 1 : todo.priority === "P2" ? 2 : 3;
+  const openAgentTodos = goal.agentTodos
+    .filter((todo) => todo.taskClass !== "continuous_monitor" && !todo.done)
+    .sort((left, right) => priorityRank(left) - priorityRank(right));
   const doneAgentTodos = goal.agentTodos.filter((todo) => todo.taskClass !== "continuous_monitor" && todo.done);
   const scheduleItems = items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "schedule" }> => item.kind === "schedule");
   const isEmpty = !attentionItems.length && !openAgentTodos.length && !doneAgentTodos.length && !scheduleItems.length;
@@ -67,7 +71,12 @@ export function GoalTasksView({
           return (
             <div className="personal-task-card" key={todo.todoId}>
               <button onClick={() => onSelect({ item: enriched, kind: "todo" })} type="button">
-                <span>○</span><strong>{todo.text}</strong><small>{todo.claimedBy ?? goal.agentLabel ?? goal.agentId}</small>
+                <span>○</span><strong>{todo.text}</strong>
+                <small>
+                  {todo.priority ? <span className={`personal-priority-badge is-${todo.priority.toLowerCase()}`}>{todo.priority}</span> : null}
+                  {todo.status === "blocked" ? <span className="personal-priority-badge is-blocked">受阻</span> : null}
+                  {todo.claimedBy ?? goal.agentLabel ?? goal.agentId}
+                </small>
               </button>
               <div className="personal-task-card-actions">
                 <button aria-label={`标记完成：${todo.text}`} onClick={() => onQuickComplete?.(enriched)} title="标记完成" type="button"><Check size={14} /></button>

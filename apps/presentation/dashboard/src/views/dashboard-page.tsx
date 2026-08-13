@@ -4547,6 +4547,7 @@ type PersonalAgentTodoItem = {
   done: boolean;
   evidence: string | null;
   index: number;
+  priority: string | null;
   status: string | null;
   taskClass: string | null;
   text: string;
@@ -4582,10 +4583,26 @@ type PersonalGoalItem = {
 
 type PersonalHomeModel = {
   blockingTodoCount: number;
+  goalNotifications: Array<{
+    goalId: string;
+    configured: boolean;
+    enabled: boolean;
+    humanGateAutoNotifyEnabled: boolean;
+    lastNotifiedAt: string | null;
+    receiptCount: number;
+    targetRef: string | null;
+  }>;
   goals: PersonalGoalItem[];
   openUserTodoCount: number;
   userTodos: PersonalNeedsYouItem[];
   visibleUserTodos: PersonalNeedsYouItem[];
+  workers: Array<{
+    agentId: string;
+    currentTodoGoalId: string | null;
+    currentTodoText: string | null;
+    lastActivityAt: string | null;
+    state: string | null;
+  }>;
 };
 
 type PersonalManagerMessage = {
@@ -4796,6 +4813,7 @@ function personalAgentTodos(row: GoalDirectoryRow): PersonalAgentTodoItem[] {
     done: todo.done,
     evidence: todo.evidence ? compactShareText(todo.evidence, 96) : null,
     index: todo.index,
+    priority: todo.priority ?? null,
     status: todo.status ?? null,
     taskClass: todo.task_class ?? null,
     text: personalTodoText(todo),
@@ -5140,10 +5158,26 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
   });
   return {
     blockingTodoCount: allUserTodos.filter((todo) => todo.blocking).length,
+    goalNotifications: (payload.goal_channel_notification_projection?.goals ?? []).map((row) => ({
+      goalId: row.goal_id,
+      configured: row.configured,
+      enabled: row.enabled,
+      humanGateAutoNotifyEnabled: row.human_gate_auto_notify_enabled,
+      lastNotifiedAt: row.last_notified_at ?? null,
+      receiptCount: row.receipt_count,
+      targetRef: row.target_ref ?? null,
+    })),
     goals,
     openUserTodoCount: allUserTodos.length,
     userTodos: allUserTodos,
     visibleUserTodos: allUserTodos.slice(0, 5),
+    workers: (payload.agent_management_projection?.agents ?? []).map((agent) => ({
+      agentId: agent.agent_id,
+      currentTodoGoalId: agent.current_todo?.goal_id ?? null,
+      currentTodoText: agent.current_todo?.title ? compactShareText(agent.current_todo.title, 96) : null,
+      lastActivityAt: agent.last_activity_at ?? null,
+      state: agent.state ?? null,
+    })),
   };
 }
 
@@ -6044,13 +6078,13 @@ function PersonalGoalHome({
         completedSteps: 0,
         goalId: "manager",
         goalTitle: "LoopX 管家",
-        latestActivity: "本地聊天历史已经保留，上游 Agent Session 需要恢复。",
+        latestActivity: "本地聊天记录已保留，点我查看恢复方式。",
         resumable: false,
         runId: "manager:resume-failed",
         sessionId: runtimeBindings.manager.sessionId,
         sessionStatus: "resume_failed",
         status: "failed" as const,
-        title: "原 Agent Session 无法恢复",
+        title: "上次会话需要恢复",
         totalSteps: 1,
         outputs: [],
       },

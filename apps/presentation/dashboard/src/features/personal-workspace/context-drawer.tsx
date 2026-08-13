@@ -23,6 +23,7 @@ import type {
   WorkspaceAgentOption,
   WorkspaceAttention,
   WorkspaceDrawerSelection,
+  WorkspaceGoalNotification,
   WorkspaceTodo,
 } from "./personal-workspace-model";
 import { attentionAgeLabel, formatCostUsd, formatDurationMs, formatTokenCount, hasGoalUsage } from "./personal-workspace-model";
@@ -49,9 +50,10 @@ const decisionTransitions = [
   { label: "稍后决定", resolution: "defer" },
 ] as const;
 
-export function ContextDrawer({ agents, callbacks, onClose, selection }: {
+export function ContextDrawer({ agents, callbacks, goalNotifications = [], onClose, selection }: {
   agents: WorkspaceAgentOption[];
   callbacks: PersonalWorkspaceCallbacks;
+  goalNotifications?: WorkspaceGoalNotification[];
   onClose: () => void;
   selection: WorkspaceDrawerSelection;
 }) {
@@ -257,6 +259,32 @@ export function ContextDrawer({ agents, callbacks, onClose, selection }: {
                 </dl>
               ) : null}
             </section>
+            {(() => {
+              const notification = goalNotifications.find((row) => row.goalId === selection.item.goalId);
+              return (
+                <section className="personal-detail-card personal-goal-notification">
+                  <small>飞书通知</small>
+                  {notification?.configured ? (
+                    <>
+                      <h3>{notification.enabled ? "已启用" : "已停用"}</h3>
+                      <dl>
+                        <div><dt>Human-gate 自动通知</dt><dd>{notification.humanGateAutoNotifyEnabled ? "开" : "关"}</dd></div>
+                        <div><dt>已发送通知</dt><dd>{notification.receiptCount} 条</dd></div>
+                        {notification.lastNotifiedAt ? (
+                          <div><dt>最近通知</dt><dd>{notification.lastNotifiedAt}</dd></div>
+                        ) : null}
+                      </dl>
+                      <p>修改配置请使用 CLI：<code>loopx goal-channel configure --goal-id {selection.item.goalId}</code></p>
+                    </>
+                  ) : (
+                    <>
+                      <h3>未配置</h3>
+                      <p>配置后，当这个 Goal 出现需要你确认的变更时，会自动发飞书通知。使用 CLI 配置：<code>loopx goal-channel setup --goal-id {selection.item.goalId}</code></p>
+                    </>
+                  )}
+                </section>
+              );
+            })()}
             <div className="personal-drawer-action-grid">
               <button className="personal-secondary-action" onClick={() => callbacks.onRequestScheduleConfig?.("heartbeat", selection.item.goalId)} type="button"><Radio size={16} />设置 Heartbeat</button>
               <button className="personal-secondary-action" onClick={() => callbacks.onRequestScheduleConfig?.("monitor", selection.item.goalId)} type="button"><CalendarClock size={16} />添加定时检查</button>
@@ -349,7 +377,7 @@ export function ContextDrawer({ agents, callbacks, onClose, selection }: {
             </section>
             {selection.item.status === "applied" ? <p className="personal-proposal-state is-applied"><Check size={16} />已应用，LoopX 状态将刷新。</p> : null}
             {selection.item.status === "stale" ? <p className="personal-proposal-state is-stale">来源状态已变化，请重新生成预览。</p> : null}
-            {selection.item.status === "error" ? <p className="personal-proposal-state is-error">应用失败，当前预览没有继续写入。</p> : null}
+            {selection.item.status === "error" ? <div className="personal-proposal-state is-error"><span>应用失败，当前预览没有继续写入。</span>{selection.item.errorMessage ? <small>{selection.item.errorMessage}</small> : null}</div> : null}
             {selection.item.status === "rejected" ? <p className="personal-proposal-state is-error">已拒绝，这项变更不会写入。</p> : null}
             {selection.item.status === "deferred" ? <p className="personal-proposal-state is-gated">已暂缓，可稍后继续应用或重新生成。</p> : null}
             {selection.item.status === "gated" ? <div className="personal-proposal-state is-gated"><span><strong>需要宿主确认</strong>{selection.item.gate?.summary}</span>{selection.item.gate?.nextAction ? <small>{selection.item.gate.nextAction}</small> : null}</div> : null}

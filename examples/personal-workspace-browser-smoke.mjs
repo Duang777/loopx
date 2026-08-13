@@ -352,7 +352,7 @@ async function main() {
     const correction = page.getByLabel("输入纠偏信息");
     await correction.fill("先核对权限边界，再继续推进。");
     await page.getByRole("button", { name: "发送纠偏" }).click();
-    await page.getByText(/已沿用当前 Goal/).waitFor({ state: "visible", timeout: 10_000 });
+    await page.getByText(/已沿用当前 Goal/).last().waitFor({ state: "visible", timeout: 10_000 });
     const firstCorrection = api.turnRequests.find((turn) => turn.message === "先核对权限边界，再继续推进。");
     if (!firstCorrection?.sessionId.startsWith("session-goal-")) throw new Error("Run correction did not use a Goal-scoped Session");
     pass(5, "Run-detail correction used a recoverable Goal-scoped Agent Session.");
@@ -574,6 +574,12 @@ async function main() {
     await page.getByRole("button", { name: "默认主题" }).click();
     if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Theme toggle did not switch back to the paper theme");
     pass(16, "Theme toggle switched to the brutal theme, persisted across reload, and switched back.");
+    await page.locator(".personal-manager-link").first().click();
+    await page.waitForTimeout(600);
+    const workerCards = await page.locator(".personal-worker-strip > button").count();
+    if (workerCards !== 4) throw new Error(`Agent worker strip expected 4 cards, got ${workerCards}`);
+    if (!(await page.locator(".personal-digest-card").isVisible().catch(() => false))) throw new Error("Morning digest card did not render on the manager home");
+    pass(17, "Manager home surfaces the morning digest card and the agent worker strip.");
     const report = { criteria: Object.fromEntries(results), observations };
     await writeFile(resolve(outputDir, "acceptance-results.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
     console.log(`personal-workspace-browser-smoke: ok\npreview=${url}\nscreenshot=${resolve(outputDir, "desktop-first-screen.png")}`);

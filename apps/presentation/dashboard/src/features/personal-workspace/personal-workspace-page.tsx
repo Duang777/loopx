@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Send } from "lucide-react";
 
 import {
@@ -27,12 +27,22 @@ import type {
   WorkspaceModel,
   WorkspaceTimelineItem,
 } from "./personal-workspace-model";
-import { goalTitleFor } from "./personal-workspace-model";
+import { goalTitleFor, workerStateLabel } from "./personal-workspace-model";
 import { WorkspaceShell } from "./workspace-shell";
 import "./personal-workspace.css";
 
-function defaultTimeline(model: WorkspaceModel, selectedGoalId: string | null): WorkspaceTimelineItem[] {
-  const items: WorkspaceTimelineItem[] = [];
+function dedupeProposals(proposals: WorkspaceActionPreview[]): WorkspaceActionPreview[] {
+  const seen = new Set<string>();
+  return proposals.filter((proposal) => {
+    const subject = proposal.fields.find((field) => field.label === "todo id")?.value ?? "";
+    const key = [proposal.actionKind, proposal.goalId ?? "", subject, proposal.title, proposal.status].join(":");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function defaultTimeline(model: WorkspaceModel, selectedGoalId: string | null): WorkspaceTimelineItem[] {  const items: WorkspaceTimelineItem[] = [];
   if (selectedGoalId === null) {
     model.userTodos.slice(0, 4).forEach((attention) => items.push({
       attention: { ...attention, goalTitle: attention.goalTitle ?? goalTitleFor(model, attention.goalId) },
@@ -246,7 +256,17 @@ export function PersonalWorkspacePage({
   const [proposals, setProposals] = useState<Record<string, WorkspaceActionPreview>>({});
   const [selectedChannel, setSelectedChannel] = useState<WorkspaceChannel>("manager");
   const [selectedGoalTab, setSelectedGoalTab] = useState<WorkspaceGoalTab>("chat");
-  const [composer, setComposer] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => {
+    try {
+      const raw = window.sessionStorage.getItem("loopx-pw-composer-drafts");
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, string>
+        : {};
+    } catch {
+      return {};
+    }
+  });
   const [sending, setSending] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [pwTheme, setPwTheme] = useState<"brutal" | "paper">(() => {
@@ -267,8 +287,39 @@ export function PersonalWorkspacePage({
       return next;
     });
   }
+  const digestInitRef = useRef(false);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const [digest, setDigest] = useState<{ attention: number; done: number; failed: number } | null>(null);
   const selectedGoalId = controlledGoalId === undefined ? localGoalId : controlledGoalId;
   const selectedAgentId = controlledAgentId ?? localAgentId;
+  const composerDraftKey = `${selectedGoalId ?? "manager"}:${selectedAgentId}`;
+  const composer = drafts[composerDraftKey] ?? "";
+  function setComposer(value: string) {
+    setDrafts((current) => {
+      const next = { ...current };
+      if (value) {
+        next[composerDraftKey] = value;
+      } else {
+        delete next[composerDraftKey];
+      }
+      try {
+        window.sessionStorage.setItem("loopx-pw-composer-drafts", JSON.stringify(next));
+      } catch {
+        // Storage may be unavailable (private mode); drafts simply stay in memory.
+      }
+      return next;
+    });
+  }
+  function fillQuickPrompt(text: string) {
+    const existing = drafts[composerDraftKey]?.trimEnd();
+    setComposer(existing ? `${existing}\n${text}` : text);
+  }
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, [composer]);
   const selectedGoal = model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
   const managerProjectionId = selectedGoalId ?? (selectedChannel === "manager" ? null : "__manager_channel__");
   const items = useMemo(() => {
@@ -296,7 +347,7 @@ export function PersonalWorkspacePage({
       ...defaultTimeline(model, managerProjectionId === "__manager_channel__" ? null : managerProjectionId),
       ...(model.timeline ?? []),
       ...heartbeatSchedules,
-      ...Object.values(proposals).map((proposal) => ({ id: `proposal:${proposal.previewId}`, kind: "proposal" as const, proposal })),
+      ...dedupeProposals(Object.values(proposals)).map((proposal) => ({ id: `proposal:${proposal.previewId}`, kind: "proposal" as const, proposal })),
     ];
     const projected = [...new Map(merged.map((item) => [item.id, item])).values()];
     return projected.filter((item) => {
@@ -331,13 +382,36 @@ export function PersonalWorkspacePage({
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [mobileSidebarOpen]);
 
+  // Morning digest: computed once per manager-home visit, measured against the previous visit.
+  useEffect(() => {
+    if (digestInitRef.current || selectedGoalId || selectedChannel !== "manager" || !items.length) return;
+    digestInitRef.current = true;
+    let since = Number.NaN;
+    try {
+      since = Date.parse(window.localStorage.getItem("loopx-pw-last-visit") ?? "");
+      window.localStorage.setItem("loopx-pw-last-visit", new Date().toISOString());
+    } catch {
+      // Storage unavailable: show current attention count only, without a time baseline.
+    }
+    const runs = items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "run" }> => item.kind === "run").map((item) => item.run);
+    const isFresh = (time?: string) => {
+      const parsed = Date.parse(time ?? "");
+      return !Number.isNaN(since) && !Number.isNaN(parsed) && parsed > since;
+    };
+    setDigest({
+      attention: model.openUserTodoCount,
+      done: runs.filter((run) => run.status === "completed" && isFresh(run.latestActivity)).length,
+      failed: runs.filter((run) => (run.status === "failed" || run.status === "interrupted") && isFresh(run.latestActivity)).length,
+    });
+  }, [items, model.openUserTodoCount, selectedChannel, selectedGoalId]);
+
   useEffect(() => {
     let cancelled = false;
     void listTypedActions(selectedGoalId ? { goalId: selectedGoalId } : { contextKind: "manager" })
       .then((stored) => {
         if (cancelled) return;
         const restored = Object.fromEntries(stored
-          .filter((proposal) => proposal.status !== "cancelled")
+          .filter((proposal) => !["cancelled", "applied", "rejected"].includes(proposal.status))
           .map((proposal) => {
             const projected = workspaceProposal(proposal);
             return [projected.previewId, projected];
@@ -505,7 +579,11 @@ export function PersonalWorkspacePage({
           return;
         }
         const stale = error instanceof Error && /stale|状态.*变化|conflict/i.test(error.message);
-        const failed = { ...proposal, status: (stale ? "stale" : "error") as "stale" | "error" };
+        const failed = {
+          ...proposal,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          status: (stale ? "stale" : "error") as "stale" | "error",
+        };
         setProposals((current) => ({ ...current, [proposal.previewId]: failed }));
         setSelection({ item: failed, kind: "proposal" });
       }
@@ -700,9 +778,21 @@ export function PersonalWorkspacePage({
     }
   }
 
+  const selectedAgentLabel = agents.find((agent) => agent.agentId === selectedAgentId)?.label ?? selectedAgentId;
+  const goalRunningCount = items.filter((item) => item.kind === "run" && (item.run.status === "running" || item.run.status === "queued")).length;
+
   return (
     <WorkspaceShell
-      drawer={drawerSelection ? <ContextDrawer agents={agents} callbacks={drawerCallbacks} onClose={() => setSelection(null)} selection={drawerSelection} /> : null}
+      drawer={drawerSelection ? <ContextDrawer agents={agents} callbacks={drawerCallbacks} goalNotifications={model.goalNotifications ?? []} onClose={() => {
+        if (drawerSelection.kind === "proposal" && ["applied", "rejected"].includes(drawerSelection.item.status)) {
+          setProposals((current) => {
+            const next = { ...current };
+            delete next[drawerSelection.item.previewId];
+            return next;
+          });
+        }
+        setSelection(null);
+      }} selection={drawerSelection} /> : null}
       drawerOpen={drawerSelection !== null}
       mobileSidebarOpen={mobileSidebarOpen}
       onCloseMobileSidebar={() => setMobileSidebarOpen(false)}
@@ -712,6 +802,7 @@ export function PersonalWorkspacePage({
           <ChannelHeader
             agents={agents}
             mobileNavigationOpen={mobileSidebarOpen}
+            onOpenGoalDetail={selectedGoal ? () => setSelection({ item: selectedGoal, kind: "goal" }) : undefined}
             onRefresh={callbacks.onRefresh}
             onOpenNavigation={() => setMobileSidebarOpen(true)}
             onSelectAgent={selectAgent}
@@ -721,6 +812,29 @@ export function PersonalWorkspacePage({
             selectedGoalTab={selectedGoalTab}
           />
           <div className="personal-channel-scroll">
+            {!selectedGoal && digest && (digest.done + digest.failed + digest.attention) > 0 ? (
+              <section className="personal-digest-card" aria-label="你不在的时候">
+                <strong>你不在的时候</strong>
+                <div className="personal-digest-stats">
+                  <button onClick={() => selectChannel("outputs")} type="button"><b>{digest.done}</b>完成</button>
+                  <button onClick={() => selectChannel("running")} type="button"><b>{digest.failed}</b>异常</button>
+                  <button onClick={() => selectChannel("attention")} type="button"><b>{digest.attention}</b>等你确认</button>
+                </div>
+              </section>
+            ) : null}
+            {!selectedGoal && (model.workers ?? []).length ? (
+              <section className="personal-worker-strip" aria-label="Agent 全景">
+                {(model.workers ?? []).map((worker) => (
+                  <button key={worker.agentId} onClick={() => { if (worker.currentTodoGoalId) selectGoal(worker.currentTodoGoalId); }} type="button">
+                    <i className={`personal-worker-state is-${worker.state ?? "idle"}`} />
+                    <span className="personal-worker-copy">
+                      <strong>{worker.agentId}</strong>
+                      <small>{workerStateLabel(worker.state)}{worker.currentTodoText ? ` · ${worker.currentTodoText}` : ""}</small>
+                    </span>
+                  </button>
+                ))}
+              </section>
+            ) : null}
             {!selectedGoal ? (
               <section className="personal-manager-greeting">
                 <span><Bot size={20} /></span>
@@ -740,9 +854,16 @@ export function PersonalWorkspacePage({
             ) : <ChannelTimeline items={items} onSelect={setSelection} selectedGoal={selectedGoal} />}
           </div>
           <div className="personal-composer-wrap">
+            {selectedGoal ? (
+              <p className="personal-composer-hint">
+                {goalRunningCount > 0
+                  ? `${selectedAgentLabel} 正在执行 ${goalRunningCount} 个任务 · 你的消息作为纠偏进入本会话，不会打断执行`
+                  : `你的消息由 ${selectedAgentLabel} 在本 Goal 的会话中接收`}
+              </p>
+            ) : null}
             <div className="personal-quick-prompts">
-              <button onClick={() => setComposer("我现在该做什么？")} type="button">我现在该做什么？</button>
-              <button onClick={() => setComposer("总结今天的进展")} type="button">总结今天进展</button>
+              <button onClick={() => fillQuickPrompt("我现在该做什么？")} type="button">我现在该做什么？</button>
+              <button onClick={() => fillQuickPrompt("总结今天的进展")} type="button">总结今天进展</button>
               <button onClick={() => void requestSchedule("monitor", selectedGoalId)} type="button">创建定时检查</button>
             </div>
             <div className="personal-channel-composer">
@@ -757,6 +878,7 @@ export function PersonalWorkspacePage({
                   }
                 }}
                 placeholder={selectedGoal ? `询问或纠偏 ${selectedGoal.title}…` : "问问 LoopX 管家，或描述一个新 Goal…"}
+                ref={composerRef}
                 rows={1}
                 value={composer}
               />
