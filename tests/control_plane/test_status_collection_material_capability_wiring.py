@@ -93,6 +93,7 @@ def _context(tmp_path: Path) -> status_collection.StatusCollectionContext:
         build_status_contract=lambda: {"schema_version": "fixture"},
         build_contract_health_projection=lambda _contract: {},
         build_agent_management_projection=build_agent_management_projection,
+        build_goal_channel_notification_projection=lambda **_kwargs: {"goals": []},
         status_control_plane_context_limit=5,
         max_todo_index_items=5,
     )

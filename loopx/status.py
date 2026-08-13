@@ -34,6 +34,9 @@ from .execution_profile import (
     execution_profile_outcome_floor,
 )
 from .control_plane.goals.goal_channel_projection import build_goal_channel_projection
+from .extensions.lark.goal_channel_notification import (
+    build_goal_channel_notification_projection,
+)
 from .handoff_budget import handoff_budget_contract
 from .history import collect_history, load_registry
 from .history import STATUS_NEUTRAL_CLASSIFICATIONS as HISTORY_STATUS_NEUTRAL_CLASSIFICATIONS
@@ -1365,6 +1368,7 @@ def build_status_collection_context() -> StatusCollectionContext:
         build_status_contract=build_status_contract,
         build_contract_health_projection=build_contract_health_projection,
         build_agent_management_projection=_build_agent_management_projection_read_model,
+        build_goal_channel_notification_projection=build_goal_channel_notification_projection,
         status_control_plane_context_limit=STATUS_CONTROL_PLANE_CONTEXT_LIMIT,
         max_todo_index_items=MAX_TODO_INDEX_ITEMS,
     )
