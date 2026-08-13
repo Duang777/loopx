@@ -47,6 +47,7 @@ export type WorkspaceAttention = {
   priority?: "high" | "medium" | "low";
   text: string;
   todoId: string;
+  updatedAt?: string | null;
 };
 
 export type WorkspaceRun = {
@@ -262,4 +263,16 @@ export function normalizePersonalHomeModel(model: PersonalHomeCompatibleModel): 
 
 export function goalTitleFor(model: WorkspaceModel, goalId: string) {
   return model.goals.find((goal) => goal.goalId === goalId)?.title ?? goalId;
+}
+
+/** Human-readable waiting time for an open attention item; null when under an hour or unknown. */
+export function attentionAgeLabel(updatedAt?: string | null): string | null {
+  if (!updatedAt) return null;
+  const then = new Date(updatedAt).getTime();
+  if (Number.isNaN(then)) return null;
+  const diff = Date.now() - then;
+  if (diff < 3_600_000) return null;
+  const days = Math.floor(diff / 86_400_000);
+  if (days >= 1) return `${days} 天`;
+  return `${Math.floor(diff / 3_600_000)} 小时`;
 }

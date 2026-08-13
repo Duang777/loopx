@@ -4539,6 +4539,7 @@ type PersonalNeedsYouItem = {
   taskClass: string | null;
   text: string;
   todoId: string;
+  updatedAt: string | null;
 };
 
 type PersonalAgentTodoItem = {
@@ -5073,6 +5074,7 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
         text: personalTodoText(todo),
         todoId: todo.todo_id?.trim() || `${item.goal_id}:user:${todo.index}`,
         todoOrder,
+        updatedAt: todo.updated_at ?? null,
       }));
   }).sort((left, right) =>
     Number(right.blocking) - Number(left.blocking)

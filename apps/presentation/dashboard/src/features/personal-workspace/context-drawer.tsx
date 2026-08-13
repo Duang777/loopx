@@ -25,6 +25,7 @@ import type {
   WorkspaceDrawerSelection,
   WorkspaceTodo,
 } from "./personal-workspace-model";
+import { attentionAgeLabel } from "./personal-workspace-model";
 
 const focusableSelector = [
   "a[href]",
@@ -35,12 +36,13 @@ const focusableSelector = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
+type TodoOperation = "block" | "complete" | "defer" | "successor_create";
+
 const todoTransitions = [
   { label: "标记阻塞", operation: "block" },
   { label: "暂缓", operation: "defer" },
-  { label: "标记完成", operation: "complete" },
   { label: "创建后续 Todo", operation: "successor_create" },
-] as const;
+] as const satisfies readonly { label: string; operation: TodoOperation }[];
 
 const decisionTransitions = [
   { label: "拒绝", resolution: "reject" },
@@ -114,7 +116,7 @@ export function ContextDrawer({ agents, callbacks, onClose, selection }: {
     setCorrection("");
   }
 
-  async function previewTodoTransition(todo: WorkspaceTodo, operation: typeof todoTransitions[number]["operation"], label: string) {
+  async function previewTodoTransition(todo: WorkspaceTodo, operation: TodoOperation, label: string) {
     if (operation === "successor_create") {
       await callbacks.onPreviewAction?.({
         actionKind: "todo.create",
@@ -180,6 +182,7 @@ export function ContextDrawer({ agents, callbacks, onClose, selection }: {
               <dl>
                 <div><dt>Goal</dt><dd>{selection.item.goalTitle ?? selection.item.goalId}</dd></div>
                 <div><dt>优先级</dt><dd>{selection.item.priority ?? "medium"}</dd></div>
+                {attentionAgeLabel(selection.item.updatedAt) ? <div><dt>等待</dt><dd>已等待 {attentionAgeLabel(selection.item.updatedAt)}</dd></div> : null}
                 <div><dt>原因</dt><dd>{selection.item.explanation ?? "该决定会影响当前 Todo 的下一步执行。"}</dd></div>
                 <div><dt>证据</dt><dd>{selection.item.evidence ?? "暂无更多公开安全证据。"}</dd></div>
               </dl>
@@ -212,7 +215,11 @@ export function ContextDrawer({ agents, callbacks, onClose, selection }: {
               </dl>
             </section>
             <div className="personal-todo-actions" aria-label="Todo 变更预览">
-              <label className="personal-inline-agent-select">重新分配给
+              <strong className="personal-todo-actions-title">操作</strong>
+              {selection.item.done ? null : (
+                <button className="personal-primary-action" onClick={() => void previewTodoTransition(selection.item, "complete", "标记完成")} type="button"><Check size={17} />标记完成</button>
+              )}
+              <label className="personal-inline-agent-select">改派给
                 <select aria-label="选择 Todo 新负责人" onChange={(event) => setTodoAgentId(event.target.value)} value={todoAgentId}>
                   {agents.filter((agent) => agent.available).map((agent) => <option key={agent.agentId} value={agent.agentId}>{agent.label}</option>)}
                 </select>
@@ -224,9 +231,14 @@ export function ContextDrawer({ agents, callbacks, onClose, selection }: {
                   summary: `重新分配：${selection.item.text}`,
                 })} type="button">生成预览</button>
               </label>
-              {todoTransitions.map((transition) => (
-                <button className={transition.operation === "complete" ? "personal-primary-action" : "personal-secondary-action"} key={transition.operation} onClick={() => void previewTodoTransition(selection.item, transition.operation, transition.label)} type="button">{transition.label}</button>
-              ))}
+              <details className="personal-compact-menu">
+                <summary><MoreHorizontal size={17} />更多操作</summary>
+                <div>
+                  {todoTransitions.map((transition) => (
+                    <button key={transition.operation} onClick={() => void previewTodoTransition(selection.item, transition.operation, transition.label)} type="button">{transition.label}</button>
+                  ))}
+                </div>
+              </details>
             </div>
           </>
         ) : null}
@@ -368,19 +380,22 @@ export function ContextDrawer({ agents, callbacks, onClose, selection }: {
         ) : null}
 
         {selection.kind === "agent" ? (
-          <section className="personal-detail-card">
-            <small>{selection.item.available ? "健康检查通过" : "当前不可用"}</small>
-            <h3>{selection.item.label}</h3>
-            <p>{selection.item.capability ?? "LoopX Agent Endpoint"}</p>
+          <section className="personal-detail-card personal-agent-persona">
+            <div className="personal-agent-persona-head">
+              <span aria-hidden className="personal-agent-avatar">{selection.item.label.slice(0, 1)}</span>
+              <div className="personal-agent-persona-id">
+                <h3>{selection.item.label}</h3>
+                <p>{selection.item.capability ?? "LoopX Agent Endpoint"}</p>
+              </div>
+              <span className={`personal-agent-health ${selection.item.available ? "is-ok" : "is-off"}`}>{selection.item.available ? "健康" : "不可用"}</span>
+            </div>
             <dl>
-              <div><dt>Agent ID</dt><dd>{selection.item.agentId}</dd></div>
               <div><dt>适配器</dt><dd>{selection.item.adapterKind ?? "内置"}</dd></div>
               <div><dt>工具调用</dt><dd>{selection.item.toolCalls ? "支持" : "仅模型回复"}</dd></div>
               <div><dt>流式 / 恢复</dt><dd>{selection.item.streaming ? "流式" : "非流式"} · {selection.item.resume ? "可恢复" : "不可恢复"}</dd></div>
               <div><dt>信任范围</dt><dd>{selection.item.trustScope ?? "read_only"}</dd></div>
               <div><dt>位置</dt><dd>{selection.item.location ?? selection.item.source ?? "本地内置"}</dd></div>
               <div><dt>工作区兼容性</dt><dd>{selection.item.workspaceCompatibility ?? "写入前由 LoopX 验证"}</dd></div>
-              <div><dt>状态</dt><dd>{selection.item.available ? "可选择" : "需要本地配置"}</dd></div>
             </dl>
           </section>
         ) : null}

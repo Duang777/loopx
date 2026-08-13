@@ -1,6 +1,7 @@
 import { Bot, Sparkles } from "lucide-react";
 
 import { AttentionRow } from "./cards/attention-row";
+import { MarkdownText } from "./markdown";
 import { OutputRow } from "./cards/output-row";
 import { RunRow } from "./cards/run-row";
 import { ScheduleRow } from "./cards/schedule-row";
@@ -68,7 +69,7 @@ export function ChannelTimeline({
             {item.message.role !== "user" ? <span className="personal-message-avatar"><Bot size={17} /></span> : null}
             <div>
               <header><strong>{item.message.role === "user" ? "你" : item.message.agentLabel ?? "LoopX 管家"}</strong>{item.message.time ? <time>{item.message.time}</time> : null}</header>
-              <p>{item.message.text}</p>
+              {item.message.role === "user" ? <p>{item.message.text}</p> : <MarkdownText text={item.message.text} />}
               {item.message.pending ? <span className="personal-message-pending">正在整理…</span> : null}
             </div>
           </article>
