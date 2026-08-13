@@ -1,4 +1,4 @@
-import { Bot, ChevronRight, CircleUserRound, Clock3, FileCheck2, ListChecks, Palette, Plus, Settings2 } from "lucide-react";
+import { Bell, Bot, ChevronRight, CircleUserRound, Clock3, FileCheck2, ListChecks, Palette, Plus, Settings2 } from "lucide-react";
 
 import type { WorkspaceChannel, WorkspaceGoal } from "./personal-workspace-model";
 
@@ -16,6 +16,7 @@ export function GoalSidebar({
   activeRunCount,
   goals,
   onRequestGoalCreate,
+  onOpenNotifications,
   onOpenSettings,
   onSelectChannel,
   onSelectGoal,
@@ -30,6 +31,7 @@ export function GoalSidebar({
   activeRunCount: number;
   goals: WorkspaceGoal[];
   onRequestGoalCreate?: () => void;
+  onOpenNotifications?: () => void;
   onOpenSettings: () => void;
   onSelectChannel: (channel: WorkspaceChannel) => void;
   onSelectGoal: (goalId: string | null) => void;
@@ -101,6 +103,9 @@ export function GoalSidebar({
           <button aria-pressed={theme === "brutal"} className="personal-sidebar-utility" onClick={onToggleTheme} type="button"><Palette size={17} /><span>{theme === "brutal" ? "默认主题" : "野兽主题"}</span></button>
         ) : null}
         <button className="personal-sidebar-utility" onClick={onOpenSettings} type="button"><Settings2 size={17} /><span>Agent 设置</span></button>
+        {onOpenNotifications ? (
+          <button className="personal-sidebar-utility" onClick={onOpenNotifications} type="button"><Bell size={17} /><span>通知设置</span></button>
+        ) : null}
         <div className="personal-owner-row"><CircleUserRound size={22} /><span>{ownerLabel}</span></div>
       </div>
     </div>

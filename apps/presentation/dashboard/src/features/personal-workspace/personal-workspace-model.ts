@@ -238,6 +238,7 @@ export type WorkspaceDrawerSelection =
   | { item: WorkspaceOutput; kind: "output" }
   | { item: WorkspaceActionPreview; kind: "proposal" }
   | { item: WorkspaceAgentSettings; kind: "agent" }
+  | { kind: "notifications" }
   | {
       item: WorkspaceSchedule;
       kind: "schedule";
@@ -276,6 +277,10 @@ export type PersonalWorkspaceCallbacks = {
   onSelectAgent?: (agentId: string) => void;
   onSelectChannel?: (channel: WorkspaceChannel) => void;
   onSelectGoal?: (goalId: string | null) => void;
+  onOpenNotificationSettings?: () => void;
+  onFetchNotificationTargets?: () => Promise<Array<{ enabled: boolean; provider: string; target_name: string }>>;
+  onSetupGoalChannel?: (options: { execute: boolean; goalId: string; target: string }) => Promise<{ ok: boolean; blocker?: string; public_summary?: string; status?: string }>;
+  onToggleGoalAutoNotify?: (options: { autoNotify: boolean; goalId: string }) => Promise<{ ok: boolean; blocker?: string; public_summary?: string; status?: string }>;
 };
 
 export type WorkspaceActionPreviewRequest = {

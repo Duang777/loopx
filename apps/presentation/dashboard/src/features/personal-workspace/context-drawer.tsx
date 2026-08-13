@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Bell,
   Bot,
   CalendarClock,
   Check,
@@ -23,10 +24,12 @@ import type {
   WorkspaceAgentOption,
   WorkspaceAttention,
   WorkspaceDrawerSelection,
+  WorkspaceGoal,
   WorkspaceGoalNotification,
   WorkspaceTodo,
 } from "./personal-workspace-model";
 import { attentionAgeLabel, formatCostUsd, formatDurationMs, formatTokenCount, hasGoalUsage } from "./personal-workspace-model";
+import { NotificationSettingsPanel } from "./notification-settings-panel";
 
 const focusableSelector = [
   "a[href]",
@@ -50,10 +53,11 @@ const decisionTransitions = [
   { label: "稍后决定", resolution: "defer" },
 ] as const;
 
-export function ContextDrawer({ agents, callbacks, goalNotifications = [], onClose, selection }: {
+export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals = [], onClose, selection }: {
   agents: WorkspaceAgentOption[];
   callbacks: PersonalWorkspaceCallbacks;
   goalNotifications?: WorkspaceGoalNotification[];
+  goals?: WorkspaceGoal[];
   onClose: () => void;
   selection: WorkspaceDrawerSelection;
 }) {
@@ -101,8 +105,11 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], onClo
           : selection.kind === "proposal" ? "变更预览"
             : selection.kind === "schedule" ? (selection.item.scheduleKind === "heartbeat" ? "Heartbeat" : "定时检查")
               : selection.kind === "agent" ? "Agent 设置"
-                : "Goal 详情";
-  const goalId = selection.kind === "proposal" ? selection.item.goalId ?? "manager" : selection.kind === "agent" ? "workspace" : selection.item.goalId;
+                : selection.kind === "notifications" ? "通知设置"
+                  : "Goal 详情";
+  const goalId = selection.kind === "proposal" ? selection.item.goalId ?? "manager"
+    : selection.kind === "agent" || selection.kind === "notifications" ? "workspace"
+      : selection.item.goalId;
   const contextLabel = selection.kind === "attention" ? selection.item.goalTitle ?? "当前 Goal"
     : selection.kind === "todo" ? selection.item.goalTitle
       : selection.kind === "run" ? selection.item.goalTitle
@@ -110,7 +117,8 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], onClo
           : selection.kind === "goal" ? selection.item.title
             : selection.kind === "schedule" ? "当前 Goal 的自动运行"
               : selection.kind === "agent" ? "本地 Agent Endpoint"
-                : selection.item.goalId ? "当前 Goal 的待确认变更" : "管家待确认变更";
+                : selection.kind === "notifications" ? "飞书群通知绑定"
+                  : selection.item.goalId ? "当前 Goal 的待确认变更" : "管家待确认变更";
 
   async function sendCorrection() {
     if (selection.kind !== "run" || !correction.trim()) return;
@@ -274,14 +282,14 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], onClo
                           <div><dt>最近通知</dt><dd>{notification.lastNotifiedAt}</dd></div>
                         ) : null}
                       </dl>
-                      <p>修改配置请使用 CLI：<code>loopx goal-channel configure --goal-id {selection.item.goalId}</code></p>
                     </>
                   ) : (
                     <>
                       <h3>未配置</h3>
-                      <p>配置后，当这个 Goal 出现需要你确认的变更时，会自动发飞书通知。使用 CLI 配置：<code>loopx goal-channel setup --goal-id {selection.item.goalId}</code></p>
+                      <p>配置后，当这个 Goal 出现需要你确认的变更时，会自动发飞书通知。</p>
                     </>
                   )}
+                  <button className="personal-secondary-action" onClick={() => callbacks.onOpenNotificationSettings?.()} type="button"><Bell size={16} />管理通知设置</button>
                 </section>
               );
             })()}
@@ -450,6 +458,15 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], onClo
               <div><dt>工作区兼容性</dt><dd>{selection.item.workspaceCompatibility ?? "写入前由 LoopX 验证"}</dd></div>
             </dl>
           </section>
+        ) : null}
+
+        {selection.kind === "notifications" ? (
+          <NotificationSettingsPanel
+            callbacks={callbacks}
+            goalNotifications={goalNotifications}
+            goals={goals}
+            onChanged={() => callbacks.onRefresh?.()}
+          />
         ) : null}
 
         <button aria-expanded={diagnosticsOpen} className="personal-diagnostics-trigger" onClick={() => setDiagnosticsOpen((value) => !value)} type="button">

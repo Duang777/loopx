@@ -786,3 +786,60 @@ export function serializeCompletedDecisionHistory(
     }),
   );
 }
+
+export type GoalChannelTarget = {
+  enabled: boolean;
+  provider: string;
+  target_name: string;
+};
+
+const goalChannelTargetsSchema = z.object({
+  ok: z.literal(true),
+  targets: z.array(
+    z.object({
+      enabled: z.boolean(),
+      provider: z.string(),
+      target_name: z.string(),
+    }),
+  ),
+});
+
+export async function fetchGoalChannelTargets() {
+  return goalChannelTargetsSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-channel/targets"),
+  ).targets;
+}
+
+const goalChannelOperationSchema = z.object({
+  ok: z.boolean(),
+  blocker: z.string().optional(),
+  public_summary: z.string().optional(),
+  status: z.string().optional(),
+});
+
+export type GoalChannelOperation = z.infer<typeof goalChannelOperationSchema>;
+
+export async function setupGoalChannel(options: { execute: boolean; goalId: string; target: string }) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-channel/setup", {
+      method: "POST",
+      body: JSON.stringify({
+        execute: options.execute,
+        goal_id: options.goalId,
+        target: options.target,
+      }),
+    }),
+  );
+}
+
+export async function configureGoalChannelAutoNotify(options: { autoNotify: boolean; goalId: string }) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-channel/configure", {
+      method: "POST",
+      body: JSON.stringify({
+        auto_notify_human_gates: options.autoNotify,
+        goal_id: options.goalId,
+      }),
+    }),
+  );
+}

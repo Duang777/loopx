@@ -576,3 +576,30 @@
 .personal-gate-cli-hint { display: grid; gap: 6px; margin-top: 10px; }
 .personal-gate-cli-hint code { display: block; padding: 8px 10px; border: 1px solid var(--pw-line); border-radius: 7px; background: var(--pw-bg, #f7f6f2); font-size: 11.5px; line-height: 1.5; user-select: all; word-break: break-all; }
 .personal-gate-cli-hint small { color: var(--pw-muted); line-height: 1.5; }
+
+.personal-notification-list { display: grid; gap: 0; margin: 12px 0 0; padding: 0; list-style: none; }
+.personal-notification-row { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--pw-line); }
+.personal-notification-row:first-child { border-top: 0; padding-top: 4px; }
+.personal-notification-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.personal-notification-row-head strong { font-size: 13px; }
+.personal-notification-badge { flex: none; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 650; }
+.personal-notification-badge.is-on { background: var(--pw-green-bg); color: var(--pw-green); }
+.personal-notification-badge.is-off { background: var(--pw-bg, #f5f4ef); color: var(--pw-muted); }
+.personal-notification-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--pw-muted); font-size: 11.5px; }
+.personal-notification-toggle { display: flex; align-items: center; gap: 8px; color: var(--pw-text); cursor: pointer; font-size: 12.5px; }
+.personal-notification-toggle input { accent-color: var(--pw-blue); width: 15px; height: 15px; cursor: pointer; }
+.personal-notification-bind { display: flex; gap: 8px; }
+.personal-notification-bind select { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--pw-line-strong); border-radius: 8px; background: #fff; color: var(--pw-text); font-size: 12.5px; }
+.personal-notification-bind .personal-secondary-action { flex: none; }
+.personal-notification-confirm { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--pw-line); border-radius: 9px; background: var(--pw-bg, #faf9f5); }
+.personal-notification-confirm p { margin: 0; color: var(--pw-muted); font-size: 12px; line-height: 1.6; }
+.personal-notification-actions { display: flex; gap: 8px; }
+.personal-notification-error { margin: 0; color: var(--pw-red); font-size: 12px; line-height: 1.5; }
+.personal-notification-hint { margin: 0; color: var(--pw-muted); font-size: 12px; line-height: 1.6; }
+.personal-notification-hint code { display: inline-block; margin-top: 4px; padding: 2px 7px; border: 1px solid var(--pw-line); border-radius: 5px; background: var(--pw-bg, #f7f6f2); font-size: 11px; user-select: all; }
+.is-spinning { animation: personal-notification-spin 0.9s linear infinite; }
+@keyframes personal-notification-spin { to { transform: rotate(360deg); } }
+
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-notification-badge { border: 1.5px solid #141414; border-radius: 3px; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-notification-bind select { border: 2px solid #141414; border-radius: 4px; box-shadow: 2px 2px 0 #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-notification-confirm { border: 2px solid #141414; border-radius: 4px; background: #fff; box-shadow: 2px 2px 0 #141414; }

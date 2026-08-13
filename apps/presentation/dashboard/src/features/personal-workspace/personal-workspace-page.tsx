@@ -5,8 +5,11 @@ import {
   applyTypedAction,
   cancelTypedAction,
   ChatApiError,
+  configureGoalChannelAutoNotify,
+  fetchGoalChannelTargets,
   listTypedActions,
   previewTypedAction,
+  setupGoalChannel,
   transitionTypedAction,
   type TypedActionProposal,
 } from "../../data/chat";
@@ -623,6 +626,10 @@ export function PersonalWorkspacePage({
     },
     onPreviewAction: createPreview,
     onRequestScheduleConfig: (kind, goalId) => void requestSchedule(kind, goalId),
+    onOpenNotificationSettings: () => setSelection({ kind: "notifications" }),
+    onFetchNotificationTargets: () => fetchGoalChannelTargets(),
+    onSetupGoalChannel: (options) => setupGoalChannel(options),
+    onToggleGoalAutoNotify: (options) => configureGoalChannelAutoNotify(options),
     onUpdateSchedule: async (schedule, operation) => {
       const timestamp = Date.now().toString(36);
       const heartbeat = schedule.scheduleKind === "heartbeat";
@@ -783,7 +790,7 @@ export function PersonalWorkspacePage({
 
   return (
     <WorkspaceShell
-      drawer={drawerSelection ? <ContextDrawer agents={agents} callbacks={drawerCallbacks} goalNotifications={model.goalNotifications ?? []} onClose={() => {
+      drawer={drawerSelection ? <ContextDrawer agents={agents} callbacks={drawerCallbacks} goalNotifications={model.goalNotifications ?? []} goals={model.goals} onClose={() => {
         if (drawerSelection.kind === "proposal" && ["applied", "rejected"].includes(drawerSelection.item.status)) {
           setProposals((current) => {
             const next = { ...current };
@@ -893,6 +900,7 @@ export function PersonalWorkspacePage({
           attentionCount={model.openUserTodoCount}
           goals={model.goals}
           onRequestGoalCreate={() => void requestGoalCreate()}
+          onOpenNotifications={() => setSelection({ kind: "notifications" })}
           onOpenSettings={() => {
             const agent = agents.find((candidate) => candidate.agentId === selectedAgentId) ?? agents[0];
             if (agent) setSelection({ item: agent, kind: "agent" });

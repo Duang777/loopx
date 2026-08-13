@@ -21,6 +21,23 @@ from .chat_actions import ChatActionService, ProtectedActionGate
 from .chat_action_store import ACTION_KINDS, ActionConflictError, ChatActionStore
 from .chat_runtime import ChatRuntimeController, TERMINAL_TURN_STATES
 from .chat_store import ChatSessionStore
+from .control_plane.runtime.runtime_projection_route import (
+    resolve_goal_source_runtime_route,
+)
+from .extensions.lark import LARK_EXTENSION_ID, LARK_GOAL_CHANNEL_PERMISSION
+from .extensions.lark.goal_channel import (
+    configure_lark_goal_channel_automation,
+    default_goal_channel_binding_path,
+    default_goal_channel_target_path,
+    goal_channel_target_for_name,
+    list_goal_channel_targets,
+    read_goal_channel_targets,
+    setup_lark_goal_channel,
+)
+from .extensions.runtime import (
+    default_extension_state_file,
+    resolve_extension_activation,
+)
 from .history import load_registry
 from .paths import resolve_runtime_root
 from .registry import registry_goals, resolve_state_file
@@ -48,6 +65,9 @@ MANAGER_AGENT_OBJECTIVE = (
 )
 CHAT_TODO_DRY_RUN_PATH = "/api/chat/todo/dry-run"
 CHAT_TODO_APPLY_PATH = "/api/chat/todo/apply"
+CHAT_GOAL_CHANNEL_TARGETS_PATH = "/api/chat/goal-channel/targets"
+CHAT_GOAL_CHANNEL_SETUP_PATH = "/api/chat/goal-channel/setup"
+CHAT_GOAL_CHANNEL_CONFIGURE_PATH = "/api/chat/goal-channel/configure"
 CHAT_ACTIONS_PATH = "/api/actions"
 CHAT_ACTION_PREVIEW_PATH = f"{CHAT_ACTIONS_PATH}/preview"
 
@@ -803,6 +823,148 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(payload)
 
+    def _goal_channel_context(self, goal_id: str) -> tuple[dict[str, Any], Path]:
+        registry, _goal = self._registry_and_goal(goal_id)
+        route = resolve_goal_source_runtime_route(
+            registry_path=self.server.registry_path,
+            goal_id=goal_id,
+            registry=registry,
+        )
+        source_registry_path = Path(str(route["source_registry"]))
+        source_registry = (
+            registry
+            if source_registry_path.expanduser().resolve()
+            == self.server.registry_path.expanduser().resolve()
+            else load_registry(source_registry_path)
+        )
+        binding_path = default_goal_channel_binding_path(source_registry_path)
+        return source_registry, binding_path
+
+    def _goal_channel_target_path(self) -> Path:
+        registry = load_registry(self.server.registry_path)
+        runtime_root = resolve_runtime_root(
+            registry,
+            self.server.runtime_root_override,
+            registry_path=self.server.registry_path,
+        )
+        return default_goal_channel_target_path(runtime_root)
+
+    def _goal_channel_extension_ready(self) -> str | None:
+        try:
+            registry = load_registry(self.server.registry_path)
+            runtime_root = resolve_runtime_root(
+                registry,
+                self.server.runtime_root_override,
+                registry_path=self.server.registry_path,
+            )
+            resolve_extension_activation(
+                LARK_EXTENSION_ID,
+                state_file=default_extension_state_file(runtime_root),
+                required_permissions=(LARK_GOAL_CHANNEL_PERMISSION,),
+            )
+        except Exception:
+            return "install, enable, and doctor the bundled LoopX Lark extension"
+        return None
+
+    def _goal_channel_targets(self) -> None:
+        try:
+            packet = list_goal_channel_targets(target_path=self._goal_channel_target_path())
+        except Exception:
+            self._send_error("Goal Channel targets could not be listed.", status=400)
+            return
+        details = packet.get("details")
+        items = details.get("items") if isinstance(details, dict) else None
+        self._send_json({"ok": True, "targets": items if isinstance(items, list) else []})
+
+    def _goal_channel_setup(self) -> None:
+        try:
+            body = self._read_json()
+            if set(body) - {"goal_id", "target", "execute"}:
+                raise ValueError("unknown Goal Channel setup field")
+            goal_id = _compact_text(body.get("goal_id"), limit=160)
+            target_name = _compact_text(body.get("target"), limit=120)
+            execute = body.get("execute") is True
+            if not goal_id or not target_name:
+                raise ValueError("goal_id and target are required")
+            source_registry, binding_path = self._goal_channel_context(goal_id)
+            extension_blocker = self._goal_channel_extension_ready()
+            if extension_blocker is not None:
+                self._send_error(extension_blocker, status=400, error_code="extension_unavailable")
+                return
+            provider_target = goal_channel_target_for_name(
+                read_goal_channel_targets(self._goal_channel_target_path()),
+                target_name,
+            )
+            if provider_target is None:
+                self._send_error(
+                    "configure the named shared provider target first",
+                    status=400,
+                    error_code="provider_target_missing",
+                )
+                return
+            packet = setup_lark_goal_channel(
+                registry=source_registry,
+                registry_path=self.server.registry_path,
+                goal_id=goal_id,
+                binding_path=binding_path,
+                target_name=target_name,
+                provider_target=provider_target,
+                execute=execute,
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_goal_channel_setup")
+            return
+        except Exception:
+            self._send_error(
+                "the Goal Channel operation failed before a verified provider receipt",
+                status=400,
+                error_code="provider_api_failed",
+            )
+            return
+        if not packet.get("ok"):
+            packet["error"] = _compact_text(
+                packet.get("public_summary") or packet.get("blocker") or "Goal Channel setup failed"
+            )
+        self._send_json(packet, status=200 if packet.get("ok") else 400)
+
+    def _goal_channel_configure(self) -> None:
+        try:
+            body = self._read_json()
+            if set(body) - {"goal_id", "auto_notify_human_gates"}:
+                raise ValueError("unknown Goal Channel configure field")
+            goal_id = _compact_text(body.get("goal_id"), limit=160)
+            auto_notify = body.get("auto_notify_human_gates")
+            if not goal_id or not isinstance(auto_notify, bool):
+                raise ValueError("goal_id and auto_notify_human_gates are required")
+            source_registry, binding_path = self._goal_channel_context(goal_id)
+            if auto_notify:
+                extension_blocker = self._goal_channel_extension_ready()
+                if extension_blocker is not None:
+                    self._send_error(extension_blocker, status=400, error_code="extension_unavailable")
+                    return
+            packet = configure_lark_goal_channel_automation(
+                registry=source_registry,
+                goal_id=goal_id,
+                binding_path=binding_path,
+                human_gate_auto_notify=auto_notify,
+                execute=True,
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_goal_channel_configure")
+            return
+        except Exception:
+            self._send_error(
+                "the Goal Channel automation setting could not be updated",
+                status=400,
+                error_code="provider_api_failed",
+            )
+            return
+        if not packet.get("ok"):
+            packet["error"] = _compact_text(
+                packet.get("public_summary") or packet.get("blocker") or "Goal Channel configure failed"
+            )
+        self._send_json(packet, status=200 if packet.get("ok") else 400)
+
     def _action_preview(self) -> None:
         try:
             proposal = self.server.action_service.preview(self._read_json())
@@ -1075,6 +1237,9 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
         if path == CHAT_ACTIONS_PATH:
             self._action_list()
             return
+        if path == CHAT_GOAL_CHANNEL_TARGETS_PATH:
+            self._goal_channel_targets()
+            return
         action_parts = path.strip("/").split("/")
         if len(action_parts) == 3 and action_parts[:2] == ["api", "actions"]:
             self._action_snapshot(action_parts[2])
@@ -1157,6 +1322,12 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
             return
         if path == CHAT_TODO_APPLY_PATH:
             self._todo(apply=True)
+            return
+        if path == CHAT_GOAL_CHANNEL_SETUP_PATH:
+            self._goal_channel_setup()
+            return
+        if path == CHAT_GOAL_CHANNEL_CONFIGURE_PATH:
+            self._goal_channel_configure()
             return
         self._send_error("unknown path", status=404)
 
