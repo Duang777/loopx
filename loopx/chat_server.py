@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import subprocess
 import time
 import uuid
 import webbrowser
@@ -34,6 +35,17 @@ from .extensions.lark.goal_channel import (
     read_goal_channel_targets,
     setup_lark_goal_channel,
 )
+from .extensions.lark.goal_topic_connections import (
+    connect_lark_goal_topic,
+    disconnect_lark_goal_topic,
+    list_lark_apps,
+    list_lark_connections,
+    list_lark_group_chats,
+)
+from .extensions.lark.presentation.kanban import (
+    CommandRunner,
+    default_subprocess_runner,
+)
 from .extensions.runtime import (
     default_extension_state_file,
     resolve_extension_activation,
@@ -41,6 +53,7 @@ from .extensions.runtime import (
 from .history import load_registry
 from .paths import resolve_runtime_root
 from .registry import registry_goals, resolve_state_file
+from .repository_identity import normalize_repository_identity
 from .state_projection import build_active_state_structured_projection
 from .status import collect_status
 from .status_server import is_loopback_host, is_loopback_origin
@@ -68,6 +81,10 @@ CHAT_TODO_APPLY_PATH = "/api/chat/todo/apply"
 CHAT_GOAL_CHANNEL_TARGETS_PATH = "/api/chat/goal-channel/targets"
 CHAT_GOAL_CHANNEL_SETUP_PATH = "/api/chat/goal-channel/setup"
 CHAT_GOAL_CHANNEL_CONFIGURE_PATH = "/api/chat/goal-channel/configure"
+CHAT_GOAL_CONTEXTS_PATH = "/api/chat/goals/contexts"
+CHAT_LARK_APPS_PATH = "/api/chat/lark/apps"
+CHAT_LARK_CHATS_PATH = "/api/chat/lark/chats"
+CHAT_LARK_CONNECTIONS_PATH = "/api/chat/lark/connections"
 CHAT_ACTIONS_PATH = "/api/actions"
 CHAT_ACTION_PREVIEW_PATH = f"{CHAT_ACTIONS_PATH}/preview"
 
@@ -94,6 +111,61 @@ def _active_state_section(state_text: str, heading: str) -> str:
         if line.strip() and not line.lstrip().startswith("<!--")
     ]
     return _compact_text(" ".join(lines))
+
+
+def _default_git_runner(args: list[str]) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"returncode": 1, "stdout": ""}
+    return {"returncode": completed.returncode, "stdout": completed.stdout}
+
+
+def build_goal_repository_contexts(
+    *,
+    registry: dict[str, Any],
+    git_runner: Any = _default_git_runner,
+) -> list[dict[str, Any]]:
+    """Return local-API Goal repository labels without checkout paths."""
+
+    rows: list[dict[str, Any]] = []
+    for goal in registry_goals(registry):
+        goal_id = str(goal.get("id") or "").strip()
+        repo_text = str(goal.get("repo") or "").strip()
+        if not goal_id or not repo_text:
+            continue
+        project = Path(repo_text).expanduser().resolve()
+        remote_result = git_runner(
+            ["git", "-C", str(project), "config", "--get", "remote.origin.url"]
+        )
+        remote = str(remote_result.get("stdout") or "").strip()
+        try:
+            identity = normalize_repository_identity(remote)
+        except ValueError:
+            identity = f"loopx:{goal_id}"
+        branch_result = git_runner(
+            ["git", "-C", str(project), "branch", "--show-current"]
+        )
+        branch = _compact_text(branch_result.get("stdout"), limit=160)
+        label = identity.split("/", 1)[1] if identity.startswith("git:") and "/" in identity else goal_id
+        rows.append(
+            {
+                "goal_id": goal_id,
+                "repository": {
+                    "branch": branch,
+                    "identity": identity,
+                    "label": label,
+                    "read_only": True,
+                },
+            }
+        )
+    return rows
 
 
 def _goal_public_context(registry: dict[str, Any], goal: dict[str, Any]) -> dict[str, Any]:
@@ -336,6 +408,7 @@ class ChatHTTPServer(ThreadingHTTPServer):
     action_store: ChatActionStore
     action_service: ChatActionService
     runtime_controller: ChatRuntimeController
+    lark_runner: CommandRunner
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -849,6 +922,153 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
         )
         return default_goal_channel_target_path(runtime_root)
 
+    def _lark_runner(self) -> CommandRunner:
+        return getattr(self.server, "lark_runner", default_subprocess_runner)
+
+    def _goal_binding_paths(self, registry: dict[str, Any]) -> dict[str, Path]:
+        paths: dict[str, Path] = {}
+        for goal in registry_goals(registry):
+            goal_id = str(goal.get("id") or "").strip()
+            if not goal_id:
+                continue
+            try:
+                route = resolve_goal_source_runtime_route(
+                    registry_path=self.server.registry_path,
+                    goal_id=goal_id,
+                    registry=registry,
+                )
+                source_registry_path = Path(str(route["source_registry"]))
+                if source_registry_path.parent.name == ".loopx":
+                    paths[goal_id] = default_goal_channel_binding_path(source_registry_path)
+            except (OSError, ValueError):
+                continue
+        return paths
+
+    def _goal_contexts(self) -> None:
+        registry = load_registry(self.server.registry_path)
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_chat_goal_contexts_v0",
+                "goals": build_goal_repository_contexts(registry=registry),
+            }
+        )
+
+    def _lark_apps(self) -> None:
+        apps = list_lark_apps(runner=self._lark_runner())
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_lark_apps_v0",
+                "apps": apps,
+            }
+        )
+
+    def _lark_chats(self) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        app_ref = _compact_text(query.get("app_ref", [""])[0], limit=100)
+        keyword = _compact_text(query.get("query", [""])[0], limit=120)
+        if not app_ref:
+            self._send_error("app_ref is required", status=400, error_code="lark_app_required")
+            return
+        try:
+            chats = list_lark_group_chats(
+                app_ref=app_ref,
+                query=keyword or None,
+                runner=self._lark_runner(),
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_lark_app")
+            return
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_lark_group_chats_v0",
+                "chats": chats,
+            }
+        )
+
+    def _lark_connections(self) -> None:
+        registry = load_registry(self.server.registry_path)
+        rows = list_lark_connections(
+            registry=registry,
+            target_path=self._goal_channel_target_path(),
+            binding_paths=self._goal_binding_paths(registry),
+        )
+        self._send_json(
+            {
+                "ok": True,
+                "schema_version": "loopx_lark_goal_topic_connections_v0",
+                "connections": rows,
+            }
+        )
+
+    def _lark_connect(self) -> None:
+        try:
+            body = self._read_json()
+            allowed = {
+                "app_ref",
+                "chat_id",
+                "chat_name",
+                "execute",
+                "goal_id",
+                "incoming_mode",
+            }
+            if set(body) - allowed:
+                raise ValueError("unknown Lark connection field")
+            goal_id = _compact_text(body.get("goal_id"), limit=160)
+            app_ref = _compact_text(body.get("app_ref"), limit=100)
+            chat_id = _compact_text(body.get("chat_id"), limit=160)
+            chat_name = _compact_text(body.get("chat_name"), limit=120)
+            incoming_mode = _compact_text(body.get("incoming_mode"), limit=40) or "mentions"
+            if not goal_id or not app_ref or not chat_id or not chat_name:
+                raise ValueError("goal_id, app_ref, chat_id, and chat_name are required")
+            registry, binding_path = self._goal_channel_context(goal_id)
+            packet = connect_lark_goal_topic(
+                registry=registry,
+                goal_id=goal_id,
+                target_path=self._goal_channel_target_path(),
+                binding_path=binding_path,
+                app_ref=app_ref,
+                chat_id=chat_id,
+                chat_name=chat_name,
+                incoming_mode=incoming_mode,
+                execute=body.get("execute") is True,
+                runner=self._lark_runner(),
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_lark_connection")
+            return
+        except Exception:
+            self._send_error(
+                "the Lark connection operation failed before a verified provider receipt",
+                status=400,
+                error_code="provider_api_failed",
+            )
+            return
+        if not packet.get("ok"):
+            packet["error"] = _compact_text(
+                packet.get("public_summary") or packet.get("blocker") or "Lark connection failed"
+            )
+        self._send_json(packet, status=200 if packet.get("ok") else 400)
+
+    def _lark_disconnect(self) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        goal_id = _compact_text(query.get("goal_id", [""])[0], limit=160)
+        if not goal_id:
+            self._send_error("goal_id is required", status=400, error_code="goal_required")
+            return
+        try:
+            _registry, binding_path = self._goal_channel_context(goal_id)
+            packet = disconnect_lark_goal_topic(
+                binding_path=binding_path,
+                goal_id=goal_id,
+            )
+        except (OSError, ValueError) as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_lark_connection")
+            return
+        self._send_json(packet)
+
     def _goal_channel_extension_ready(self) -> str | None:
         try:
             registry = load_registry(self.server.registry_path)
@@ -1237,6 +1457,18 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
         if path == CHAT_ACTIONS_PATH:
             self._action_list()
             return
+        if path == CHAT_GOAL_CONTEXTS_PATH:
+            self._goal_contexts()
+            return
+        if path == CHAT_LARK_APPS_PATH:
+            self._lark_apps()
+            return
+        if path == CHAT_LARK_CHATS_PATH:
+            self._lark_chats()
+            return
+        if path == CHAT_LARK_CONNECTIONS_PATH:
+            self._lark_connections()
+            return
         if path == CHAT_GOAL_CHANNEL_TARGETS_PATH:
             self._goal_channel_targets()
             return
@@ -1329,12 +1561,18 @@ class ChatRequestHandler(BaseHTTPRequestHandler):
         if path == CHAT_GOAL_CHANNEL_CONFIGURE_PATH:
             self._goal_channel_configure()
             return
+        if path == CHAT_LARK_CONNECTIONS_PATH:
+            self._lark_connect()
+            return
         self._send_error("unknown path", status=404)
 
     def do_DELETE(self) -> None:
         if not self._require_loopback_origin():
             return
         path = urlparse(self.path).path
+        if path == CHAT_LARK_CONNECTIONS_PATH:
+            self._lark_disconnect()
+            return
         prefix = f"{CHAT_SESSIONS_PATH}/"
         if not path.startswith(prefix):
             self._send_error("unknown path", status=404)
@@ -1382,6 +1620,7 @@ def serve_chat(
     server.codex_bin = codex_bin
     server.assets_dir = resolved_assets
     server.verbose = verbose
+    server.lark_runner = default_subprocess_runner
     registry = load_registry(registry_path)
     runtime_root = resolve_runtime_root(
         registry,
