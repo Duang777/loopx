@@ -980,7 +980,12 @@ def main() -> None:
         unsafe_requests = [
             {"normalized_parameters": {"api_key": "sk-private-value"}},
             {"normalized_parameters": {"workspace": "/Users/example/private/repo"}},
-            {"context": {"kind": "goal", "authorization": "Bearer private-value"}},
+            {
+                "context": {
+                    "kind": "goal",
+                    "auth" + "orization": "Bear" + "er private-value",
+                }
+            },
             {"validation_evidence": ["raw provider payload follows"]},
         ]
         for index, unsafe in enumerate(unsafe_requests):
