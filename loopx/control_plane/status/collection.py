@@ -155,9 +155,14 @@ def collect_status(
         )
     except Exception:
         goal_channel_notification_projection = None
-    if (
-        isinstance(goal_channel_notification_projection, dict)
-        and goal_channel_notification_projection.get("goals")
+    notification_rows = (
+        goal_channel_notification_projection.get("goals")
+        if isinstance(goal_channel_notification_projection, dict)
+        else None
+    )
+    if isinstance(notification_rows, list) and any(
+        isinstance(row, dict) and row.get("configured") is True
+        for row in notification_rows
     ):
         payload["goal_channel_notification_projection"] = (
             goal_channel_notification_projection
