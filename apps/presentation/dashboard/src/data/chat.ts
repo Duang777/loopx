@@ -843,3 +843,137 @@ export async function configureGoalChannelAutoNotify(options: { autoNotify: bool
     }),
   );
 }
+
+export type GoalRepositoryContext = {
+  branch: string;
+  identity: string;
+  label: string;
+  read_only: true;
+};
+
+const goalContextsSchema = z.object({
+  ok: z.literal(true),
+  goals: z.array(z.object({
+    goal_id: z.string(),
+    repository: z.object({
+      branch: z.string(),
+      identity: z.string(),
+      label: z.string(),
+      read_only: z.literal(true),
+    }),
+  })),
+});
+
+export async function fetchGoalContexts() {
+  return goalContextsSchema.parse(
+    await requestJson<unknown>("/api/chat/goals/contexts"),
+  ).goals;
+}
+
+export type LarkApp = {
+  active: boolean;
+  app_ref: string;
+  brand: string;
+  label: string;
+  ready: boolean;
+};
+
+const larkAppsSchema = z.object({
+  ok: z.literal(true),
+  apps: z.array(z.object({
+    active: z.boolean(),
+    app_ref: z.string(),
+    brand: z.string(),
+    label: z.string(),
+    ready: z.boolean(),
+  })),
+});
+
+export async function fetchLarkApps() {
+  return larkAppsSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/apps"),
+  ).apps;
+}
+
+export type LarkGroupChat = { chat_id: string; chat_name: string };
+
+const larkGroupChatsSchema = z.object({
+  ok: z.literal(true),
+  chats: z.array(z.object({ chat_id: z.string(), chat_name: z.string() })),
+});
+
+export async function fetchLarkGroupChats(appRef: string, query?: string) {
+  const params = new URLSearchParams({ app_ref: appRef });
+  if (query) params.set("query", query);
+  return larkGroupChatsSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/chats?${params.toString()}`),
+  ).chats;
+}
+
+export type LarkGoalConnection = {
+  app_label: string;
+  app_ref: string;
+  chat_name: string;
+  enabled: boolean;
+  goal_id: string;
+  goal_title: string;
+  incoming_mode: "mentions" | "all";
+  reply_mode: "topic_reply";
+  target_ref: string;
+  topic_name: string;
+  topic_setup_required: boolean;
+};
+
+const larkConnectionsSchema = z.object({
+  ok: z.literal(true),
+  connections: z.array(z.object({
+    app_label: z.string(),
+    app_ref: z.string(),
+    chat_name: z.string(),
+    enabled: z.boolean(),
+    goal_id: z.string(),
+    goal_title: z.string(),
+    incoming_mode: z.enum(["mentions", "all"]),
+    reply_mode: z.literal("topic_reply"),
+    target_ref: z.string(),
+    topic_name: z.string(),
+    topic_setup_required: z.boolean(),
+  })),
+});
+
+export async function fetchLarkConnections() {
+  return larkConnectionsSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/connections"),
+  ).connections;
+}
+
+export async function connectLarkGoalTopic(options: {
+  appRef: string;
+  chatId: string;
+  chatName: string;
+  execute: boolean;
+  goalId: string;
+  incomingMode: "mentions" | "all";
+}) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/connections", {
+      method: "POST",
+      body: JSON.stringify({
+        app_ref: options.appRef,
+        chat_id: options.chatId,
+        chat_name: options.chatName,
+        execute: options.execute,
+        goal_id: options.goalId,
+        incoming_mode: options.incomingMode,
+      }),
+    }),
+  );
+}
+
+export async function disconnectLarkGoalTopic(goalId: string) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/connections?goal_id=${encodeURIComponent(goalId)}`, {
+      method: "DELETE",
+    }),
+  );
+}

@@ -6,11 +6,15 @@ import {
   cancelTypedAction,
   ChatApiError,
   configureGoalChannelAutoNotify,
+  fetchGoalContexts,
   fetchGoalChannelTargets,
+  fetchLarkConnections,
   listTypedActions,
   previewTypedAction,
   setupGoalChannel,
   transitionTypedAction,
+  type GoalRepositoryContext,
+  type LarkGoalConnection,
   type TypedActionProposal,
 } from "../../data/chat";
 
@@ -19,6 +23,7 @@ import { ChannelTimeline } from "./channel-timeline";
 import { ContextDrawer } from "./context-drawer";
 import { GoalSidebar } from "./goal-sidebar";
 import { GoalTasksView } from "./goal-tasks-view";
+import { LarkSettingsPage } from "./lark-settings-page";
 import type {
   PersonalWorkspaceCallbacks,
   WorkspaceAgentOption,
@@ -272,6 +277,8 @@ export function PersonalWorkspacePage({
   });
   const [sending, setSending] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [goalContexts, setGoalContexts] = useState<Record<string, GoalRepositoryContext>>({});
+  const [larkConnections, setLarkConnections] = useState<LarkGoalConnection[]>([]);
   const [pwTheme, setPwTheme] = useState<"brutal" | "paper">(() => {
     try {
       return window.localStorage.getItem("loopx-personal-workspace-theme") === "brutal" ? "brutal" : "paper";
@@ -323,7 +330,20 @@ export function PersonalWorkspacePage({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [composer]);
-  const selectedGoal = model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
+  const workspaceGoals = useMemo(() => model.goals.map((goal) => {
+    const repository = goalContexts[goal.goalId];
+    return repository ? {
+      ...goal,
+      repository: {
+        branch: repository.branch,
+        identity: repository.identity,
+        label: repository.label,
+        readOnly: true as const,
+      },
+    } : goal;
+  }), [goalContexts, model.goals]);
+  const selectedGoal = workspaceGoals.find((goal) => goal.goalId === selectedGoalId) ?? null;
+  const notificationSettingsOpen = selection?.kind === "notifications";
   const managerProjectionId = selectedGoalId ?? (selectedChannel === "manager" ? null : "__manager_channel__");
   const items = useMemo(() => {
     const heartbeatSchedules: WorkspaceTimelineItem[] = Object.values(proposals)
@@ -369,12 +389,27 @@ export function PersonalWorkspacePage({
     });
   }, [managerProjectionId, model, proposals, selectedAgentId, selectedChannel, selectedGoalId]);
   const drawerSelection = useMemo<WorkspaceDrawerSelection | null>(() => {
+    if (selection?.kind === "notifications") return null;
     if (selection?.kind !== "run") return selection;
     const currentRun = items.find((item): item is Extract<WorkspaceTimelineItem, { kind: "run" }> =>
       item.kind === "run" && item.run.runId === selection.item.runId
     );
     return currentRun ? { item: currentRun.run, kind: "run" } : selection;
   }, [items, selection]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([fetchGoalContexts(), fetchLarkConnections()])
+      .then(([contexts, connections]) => {
+        if (cancelled) return;
+        setGoalContexts(Object.fromEntries(contexts.map((row) => [row.goal_id, row.repository])));
+        setLarkConnections(connections);
+      })
+      .catch(() => {
+        // Local context is optional; the Goal workspace stays usable without it.
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!mobileSidebarOpen) return;
@@ -788,9 +823,14 @@ export function PersonalWorkspacePage({
   const selectedAgentLabel = agents.find((agent) => agent.agentId === selectedAgentId)?.label ?? selectedAgentId;
   const goalRunningCount = items.filter((item) => item.kind === "run" && (item.run.status === "running" || item.run.status === "queued")).length;
 
+  async function refreshLarkState() {
+    const connections = await fetchLarkConnections();
+    setLarkConnections(connections);
+  }
+
   return (
     <WorkspaceShell
-      drawer={drawerSelection ? <ContextDrawer agents={agents} callbacks={drawerCallbacks} goalNotifications={model.goalNotifications ?? []} goals={model.goals} onClose={() => {
+      drawer={drawerSelection ? <ContextDrawer agents={agents} callbacks={drawerCallbacks} goalNotifications={model.goalNotifications ?? []} goals={workspaceGoals} larkConnections={larkConnections} onClose={() => {
         if (drawerSelection.kind === "proposal" && ["applied", "rejected"].includes(drawerSelection.item.status)) {
           setProposals((current) => {
             const next = { ...current };
@@ -804,7 +844,14 @@ export function PersonalWorkspacePage({
       mobileSidebarOpen={mobileSidebarOpen}
       onCloseMobileSidebar={() => setMobileSidebarOpen(false)}
       theme={pwTheme}
-      main={(
+      main={notificationSettingsOpen ? (
+        <LarkSettingsPage
+          goals={workspaceGoals}
+          initialGoalId={selectedGoalId}
+          onChanged={() => void refreshLarkState()}
+          onClose={() => setSelection(null)}
+        />
+      ) : (
         <div className="personal-channel">
           <ChannelHeader
             agents={agents}
@@ -898,7 +945,7 @@ export function PersonalWorkspacePage({
         <GoalSidebar
           activeRunCount={model.goals.filter((goal) => goal.state === "推进中").length}
           attentionCount={model.openUserTodoCount}
-          goals={model.goals}
+          goals={workspaceGoals}
           onRequestGoalCreate={() => void requestGoalCreate()}
           onOpenNotifications={() => setSelection({ kind: "notifications" })}
           onOpenSettings={() => {

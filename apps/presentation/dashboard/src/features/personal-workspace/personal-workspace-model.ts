@@ -34,6 +34,13 @@ export type WorkspaceGoalUsage = {
   tokens24h: number;
 };
 
+export type WorkspaceRepositoryContext = {
+  branch: string;
+  identity: string;
+  label: string;
+  readOnly: true;
+};
+
 export type WorkspaceGoal = {
   agentId: string;
   agentLabel?: string;
@@ -44,6 +51,7 @@ export type WorkspaceGoal = {
   needsYou?: string | null;
   needsYouBlocking?: boolean;
   nextSentence: string;
+  repository?: WorkspaceRepositoryContext;
   state: WorkspaceGoalState;
   title: string;
   usage?: WorkspaceGoalUsage | null;

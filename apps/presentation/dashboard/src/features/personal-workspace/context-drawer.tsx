@@ -6,8 +6,10 @@ import {
   CalendarClock,
   Check,
   ChevronDown,
+  Copy,
   Download,
   ExternalLink,
+  GitBranch,
   MessageCircleQuestion,
   MoreHorizontal,
   Pause,
@@ -28,6 +30,7 @@ import type {
   WorkspaceGoalNotification,
   WorkspaceTodo,
 } from "./personal-workspace-model";
+import type { LarkGoalConnection } from "../../data/chat";
 import { attentionAgeLabel, formatCostUsd, formatDurationMs, formatTokenCount, hasGoalUsage } from "./personal-workspace-model";
 import { NotificationSettingsPanel } from "./notification-settings-panel";
 
@@ -53,11 +56,12 @@ const decisionTransitions = [
   { label: "稍后决定", resolution: "defer" },
 ] as const;
 
-export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals = [], onClose, selection }: {
+export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals = [], larkConnections = [], onClose, selection }: {
   agents: WorkspaceAgentOption[];
   callbacks: PersonalWorkspaceCallbacks;
   goalNotifications?: WorkspaceGoalNotification[];
   goals?: WorkspaceGoal[];
+  larkConnections?: LarkGoalConnection[];
   onClose: () => void;
   selection: WorkspaceDrawerSelection;
 }) {
@@ -269,16 +273,32 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
             </section>
             {(() => {
               const notification = goalNotifications.find((row) => row.goalId === selection.item.goalId);
+              const connection = larkConnections.find((row) => row.goal_id === selection.item.goalId);
               return (
-                <section className="personal-detail-card personal-goal-notification">
-                  <small>飞书通知</small>
-                  {notification?.configured ? (
-                    <>
-                      <h3>{notification.enabled ? "已启用" : "已停用"}</h3>
+                <>
+                  {selection.item.repository ? (
+                    <section className="personal-detail-card personal-goal-repository">
+                      <div className="personal-detail-card-title"><small>Repository</small><em>Read only</em></div>
+                      <h3><GitBranch size={16} />{selection.item.repository.label}</h3>
                       <dl>
-                        <div><dt>Human-gate 自动通知</dt><dd>{notification.humanGateAutoNotifyEnabled ? "开" : "关"}</dd></div>
-                        <div><dt>已发送通知</dt><dd>{notification.receiptCount} 条</dd></div>
-                        {notification.lastNotifiedAt ? (
+                        <div><dt>Branch</dt><dd>{selection.item.repository.branch || "detached"}</dd></div>
+                        <div><dt>Role</dt><dd>Execution workspace</dd></div>
+                      </dl>
+                      <button className="personal-secondary-action" onClick={() => void navigator.clipboard?.writeText(selection.item.repository?.identity ?? "")} type="button"><Copy size={15} />复制仓库标识</button>
+                    </section>
+                  ) : null}
+                  <section className="personal-detail-card personal-goal-notification">
+                  <small>Lark connection</small>
+                  {connection ? (
+                    <>
+                      <h3>{connection.app_label}<span className="personal-connection-status">Connected</span></h3>
+                      <dl>
+                        <div><dt>Group</dt><dd>{connection.chat_name}</dd></div>
+                        <div><dt>Topic</dt><dd># {connection.topic_name}</dd></div>
+                        <div><dt>Trigger</dt><dd>{connection.incoming_mode === "mentions" ? "Someone mentions the Agent" : "All messages"}</dd></div>
+                        <div><dt>Reply mode</dt><dd>Topic reply</dd></div>
+                        <div><dt>Human-gate 自动通知</dt><dd>{notification?.humanGateAutoNotifyEnabled ? "开" : "关"}</dd></div>
+                        {notification?.lastNotifiedAt ? (
                           <div><dt>最近通知</dt><dd>{notification.lastNotifiedAt}</dd></div>
                         ) : null}
                       </dl>
@@ -289,8 +309,9 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                       <p>配置后，当这个 Goal 出现需要你确认的变更时，会自动发飞书通知。</p>
                     </>
                   )}
-                  <button className="personal-secondary-action" onClick={() => callbacks.onOpenNotificationSettings?.()} type="button"><Bell size={16} />管理通知设置</button>
-                </section>
+                  <button className="personal-secondary-action" onClick={() => callbacks.onOpenNotificationSettings?.()} type="button"><Bell size={16} />{connection ? "管理 Lark connection" : "Connect Lark App"}</button>
+                  </section>
+                </>
               );
             })()}
             <div className="personal-drawer-action-grid">

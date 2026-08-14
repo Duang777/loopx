@@ -173,6 +173,69 @@
 .personal-agent-health.is-off { background: #f2f1ed; color: var(--pw-muted); }
 .personal-agent-persona dl { margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--pw-line); }
 
+/* Goal context and Lark configuration */
+.personal-detail-card-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.personal-detail-card-title em { padding: 2px 8px; border-radius: 99px; background: #f1f1ee; color: var(--pw-muted); font-size: 10px; font-style: normal; font-weight: 650; }
+.personal-goal-repository h3 { display: flex; align-items: center; gap: 8px; }
+.personal-goal-notification h3 { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.personal-connection-status { padding: 2px 8px; border-radius: 99px; background: var(--pw-green-bg); color: var(--pw-green); font-size: 10px; font-weight: 650; }
+
+.personal-lark-settings { position: relative; min-height: 100vh; padding: 30px clamp(24px, 5vw, 72px); background: var(--pw-bg); color: var(--pw-text); }
+.personal-lark-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; max-width: 1180px; margin: 0 auto; }
+.personal-lark-header small { color: var(--pw-blue); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.personal-lark-header h1 { margin: 4px 0 2px; font-size: 28px; letter-spacing: -.035em; }
+.personal-lark-header p { margin: 0; color: var(--pw-muted); font-size: 13px; }
+.personal-lark-tabs { display: flex; gap: 24px; max-width: 1180px; margin: 28px auto 20px; border-bottom: 1px solid var(--pw-line); }
+.personal-lark-tabs button { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--pw-muted); cursor: pointer; font-weight: 650; }
+.personal-lark-tabs button[aria-current="page"] { border-color: var(--pw-blue); color: var(--pw-text); }
+.personal-lark-tabs span { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 99px; background: #efeee9; color: var(--pw-muted); font-size: 10px; }
+.personal-lark-loading, .personal-lark-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 130px; color: var(--pw-muted); font-size: 13px; }
+.personal-lark-app-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; max-width: 1180px; margin: 0 auto; }
+.personal-lark-app-card { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 18px; border: 1px solid var(--pw-line); border-radius: 15px; background: var(--pw-card); }
+.personal-lark-app-avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: var(--pw-blue-soft); color: var(--pw-blue); }
+.personal-lark-app-card div { display: grid; gap: 3px; }
+.personal-lark-app-card small, .personal-lark-app-card p { color: var(--pw-muted); font-size: 11px; }
+.personal-lark-app-card em { padding: 3px 9px; border-radius: 99px; font-size: 10px; font-style: normal; font-weight: 650; }
+.personal-lark-app-card em.is-ready { background: var(--pw-green-bg); color: var(--pw-green); }
+.personal-lark-app-card em.is-off { background: #f1f1ee; color: var(--pw-muted); }
+.personal-lark-app-card p { grid-column: 2 / -1; margin: 0; }
+.personal-lark-connections { max-width: 1180px; margin: 0 auto; }
+.personal-lark-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.personal-lark-toolbar > label { display: flex; align-items: center; flex: 1; gap: 8px; max-width: 680px; height: 40px; padding: 0 12px; border: 1px solid var(--pw-line); border-radius: 10px; background: #fff; color: var(--pw-faint); }
+.personal-lark-toolbar input { width: 100%; border: 0; outline: 0; background: transparent; font: inherit; }
+.personal-lark-toolbar .personal-primary-action { flex: 0 0 auto; width: auto; min-height: 40px; margin-top: 0; padding: 0 16px; }
+.personal-lark-table { overflow: hidden; border: 1px solid var(--pw-line); border-radius: 14px; background: var(--pw-card); }
+.personal-lark-table-head, .personal-lark-table-row { display: grid; grid-template-columns: 1.35fr 1.35fr .72fr .72fr 100px; align-items: center; gap: 16px; padding: 12px 16px; }
+.personal-lark-table-head { min-height: 42px; border-bottom: 1px solid var(--pw-line); color: var(--pw-faint); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.personal-lark-table-row { min-height: 70px; border-bottom: 1px solid var(--pw-line); font-size: 12px; }
+.personal-lark-table-row:last-of-type { border-bottom: 0; }
+.personal-lark-table-row > span { display: grid; gap: 3px; min-width: 0; }
+.personal-lark-table-row strong, .personal-lark-table-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.personal-lark-table-row small { color: var(--pw-muted); font-size: 10px; }
+.personal-lark-row-actions { display: flex !important; justify-content: flex-end; }
+.personal-lark-row-actions button, .personal-lark-modal header button { display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 0 8px; border: 1px solid var(--pw-line); border-radius: 8px; background: #fff; color: var(--pw-muted); cursor: pointer; font-size: 10px; }
+.personal-lark-row-actions button.is-confirm { border-color: #e6b0aa; background: var(--pw-red-bg); color: var(--pw-red); }
+
+.personal-lark-modal-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: rgb(30 31 35 / 38%); backdrop-filter: blur(3px); }
+.personal-lark-modal { display: grid; gap: 14px; width: min(560px, 100%); max-height: calc(100vh - 48px); padding: 22px; overflow: auto; border: 1px solid var(--pw-line); border-radius: 18px; background: #fff; box-shadow: 0 24px 70px rgb(20 24 35 / 25%); }
+.personal-lark-modal header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.personal-lark-modal header small { color: var(--pw-muted); font-size: 10px; }
+.personal-lark-modal h2 { margin: 3px 0 0; font-size: 20px; letter-spacing: -.02em; }
+.personal-lark-modal > label { display: grid; gap: 7px; color: var(--pw-muted); font-size: 11px; font-weight: 650; }
+.personal-lark-modal input[type="search"], .personal-lark-modal select { width: 100%; min-height: 40px; padding: 0 11px; border: 1px solid var(--pw-line-strong); border-radius: 9px; background: #fff; color: var(--pw-text); font: inherit; }
+.personal-lark-modal label:has(input[type="search"]) { grid-template-columns: 1fr; }
+.personal-lark-modal label:has(input[type="search"]) input { margin-bottom: 2px; }
+.personal-lark-check { display: flex !important; align-items: flex-start; gap: 10px !important; padding: 12px; border: 1px solid var(--pw-line); border-radius: 10px; background: #fafaf8; }
+.personal-lark-check input { margin-top: 2px; accent-color: var(--pw-blue); }
+.personal-lark-check span { display: grid; gap: 2px; }
+.personal-lark-check strong { color: var(--pw-text); }
+.personal-lark-check small { font-weight: 400; }
+.personal-lark-topic-preview { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 11px; border: 1px solid var(--pw-line); border-radius: 9px; background: #f7f7f4; color: var(--pw-text); font-size: 12px; font-weight: 500; }
+.personal-lark-topic-preview.is-locked { color: var(--pw-muted); }
+.personal-lark-cardinality { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; border-radius: 9px; background: var(--pw-blue-soft); color: var(--pw-blue-ink); font-size: 11px; }
+.personal-lark-modal footer { display: flex; justify-content: flex-end; gap: 9px; padding-top: 4px; }
+.personal-lark-modal footer button { width: auto; min-width: 96px; margin-top: 0; padding: 0 16px; }
+
 /* Status chip semantics */
 .personal-row-status.is-blocking { background: var(--pw-red-bg); color: var(--pw-red); }
 .personal-row-status.is-pending { background: var(--pw-amber-bg); color: var(--pw-amber); }

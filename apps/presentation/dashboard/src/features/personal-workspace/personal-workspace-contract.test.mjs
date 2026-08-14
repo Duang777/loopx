@@ -6,6 +6,7 @@ const model = source("./personal-workspace-model.ts");
 const drawer = source("./context-drawer.tsx");
 const page = source("./personal-workspace-page.tsx");
 const timeline = source("./channel-timeline.tsx");
+const larkSettings = source("./lark-settings-page.tsx");
 const styles = source("./personal-workspace.css");
 
 assert.match(model, /kind: "todo"/, "Todo has its own drawer selection");
@@ -54,5 +55,21 @@ assert.match(timeline, /className="personal-live-region"/, "Timeline has a dedic
 assert.match(drawer, /aria-label=\{`输入纠偏信息：Goal/, "Correction label includes its scoped context");
 assert.match(styles, /env\(safe-area-inset-bottom\)/, "Mobile composers respect the safe area");
 assert.match(styles, /\.personal-mobile-back/, "Mobile drawer exposes a context back affordance");
+
+assert.match(model, /repository\??:\s*WorkspaceRepositoryContext/, "Goal exposes one repository context");
+assert.match(drawer, /Repository/, "Goal settings display the repository");
+assert.match(drawer, /Read only/, "Repository is visibly read-only");
+assert.doesNotMatch(drawer, /Add repository/, "Goal settings do not imply repository binding controls");
+
+assert.match(page, /notificationSettingsOpen\s*\?\s*\(/, "Notification settings replace the center workspace");
+assert.match(page, /<LarkSettingsPage/, "Pure configuration mode renders the Lark management page");
+assert.match(larkSettings, /Lark Apps/, "Lark management exposes reusable Apps");
+assert.match(larkSettings, /Connections/, "Lark management exposes Goal Topic connections");
+for (const label of ["Connect Lark App", "Group chat", "Bind to Goal", "Create Goal topic automatically", "Topic reply"]) {
+  assert.match(larkSettings, new RegExp(label), `Connect flow contains ${label}`);
+}
+assert.match(larkSettings, /One Lark App · many Goals · one topic per Goal/, "Connection cardinality is explicit");
+assert.match(larkSettings, /connectLarkGoalTopic\([^)]*execute:\s*false/s, "Connect flow previews before execution");
+assert.match(larkSettings, /connectLarkGoalTopic\([^)]*execute:\s*true/s, "Connect flow performs the approved external write");
 
 console.log("personal workspace drawer contract smoke passed");
