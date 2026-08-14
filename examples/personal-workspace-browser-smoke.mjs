@@ -48,7 +48,7 @@ async function waitFor(url) {
 }
 
 async function installApi(page) {
-  const runtime = page.__loopxRuntime ??= { actionProposals: new Map(), messages: new Map(), sessions: new Map(), turnMessages: new Map() };
+  const runtime = page.__loopxRuntime ??= { actionProposals: new Map(), larkConnections: [], messages: new Map(), sessions: new Map(), turnMessages: new Map() };
   const actionProposals = runtime.actionProposals;
   const sessions = runtime.sessions;
   const messages = runtime.messages;
@@ -61,6 +61,7 @@ async function installApi(page) {
     durableResources: new Set(),
     durableWriteCount: 0,
     interrupts: [],
+    larkWrites: [],
     actionTransitions: [],
     turnRequests: [],
   };
@@ -81,6 +82,69 @@ async function installApi(page) {
   await page.route("**/api/chat/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.pathname === "/api/chat/goals/contexts") {
+      const fixture = require(resolve(repoRoot, "examples/status.example.json"));
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true,
+        schema_version: "loopx_chat_goal_contexts_v0",
+        goals: (fixture.run_history?.goals ?? []).map((goal) => ({
+          goal_id: goal.id,
+          repository: { branch: "codex/lark-goal-topic-binding", identity: "git:github.com/loopx-ai/loopx", label: "loopx-ai/loopx", read_only: true },
+        })),
+      }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/lark/apps") {
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true,
+        schema_version: "loopx_lark_apps_v0",
+        apps: [{ active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true }],
+      }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/lark/chats") {
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true,
+        schema_version: "loopx_lark_group_chats_v0",
+        chats: [{ chat_id: "oc_browser_fixture", chat_name: "Product group" }],
+      }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/lark/connections" && request.method() === "GET") {
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true,
+        schema_version: "loopx_lark_goal_topic_connections_v0",
+        connections: runtime.larkConnections,
+      }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/lark/connections" && request.method() === "POST") {
+      const body = request.postDataJSON();
+      if (body.execute) {
+        const fixture = require(resolve(repoRoot, "examples/status.example.json"));
+        const goal = (fixture.run_history?.goals ?? []).find((item) => item.id === body.goal_id);
+        runtime.larkConnections = runtime.larkConnections.filter((item) => item.goal_id !== body.goal_id);
+        runtime.larkConnections.push({
+          app_label: "LoopX Mew", app_ref: body.app_ref, chat_name: body.chat_name, enabled: true,
+          goal_id: body.goal_id, goal_title: goal?.id ?? body.goal_id, incoming_mode: body.incoming_mode,
+          reply_mode: "topic_reply", target_ref: "product-group", topic_name: goal?.id ?? body.goal_id,
+          topic_setup_required: false,
+        });
+        state.larkWrites.push({ ...body });
+      }
+      await route.fulfill({ contentType: "application/json", json: {
+        ok: true,
+        status: body.execute ? "connected" : "preview_ready",
+        public_summary: body.execute ? "connected" : "previewed",
+      }, status: 200 });
+      return;
+    }
+    if (url.pathname === "/api/chat/lark/connections" && request.method() === "DELETE") {
+      const goalId = url.searchParams.get("goal_id");
+      runtime.larkConnections = runtime.larkConnections.filter((item) => item.goal_id !== goalId);
+      await route.fulfill({ contentType: "application/json", json: { ok: true, status: "disconnected" }, status: 200 });
+      return;
+    }
     if (url.pathname === "/api/chat/capabilities") {
       await route.fulfill({ contentType: "application/json", json: {
         ok: true, schema_version: "loopx_chat_capabilities_v1", agent_backend: "multi_adapter",
@@ -326,6 +390,34 @@ async function main() {
 
     const goalButton = page.locator(".personal-goal-link").first();
     await goalButton.click();
+    await page.getByRole("button", { name: "Goal 详情" }).click();
+    await page.getByText("Repository", { exact: true }).waitFor({ state: "visible" });
+    await page.getByText("Read only", { exact: true }).waitFor({ state: "visible" });
+    if (!(await page.getByText("loopx-ai/loopx", { exact: true }).isVisible())) throw new Error("Goal drawer did not show the read-only repository context");
+    await page.getByRole("button", { name: /关闭详情/ }).click();
+
+    await page.getByRole("button", { name: "通知设置", exact: true }).click();
+    await page.getByRole("heading", { name: "Lark", exact: true }).waitFor({ state: "visible" });
+    if (await page.locator(".personal-channel-composer").count()) throw new Error("Pure Lark configuration mode left the chat composer visible");
+    if (await page.locator("[data-context-drawer]").count()) throw new Error("Pure Lark configuration mode left the context drawer visible");
+    await page.getByRole("button", { name: /Connect Lark App/ }).click();
+    const connectDialog = page.getByRole("dialog", { name: "Connect Lark App" });
+    await connectDialog.waitFor({ state: "visible" });
+    await connectDialog.getByRole("option", { name: "Product group" }).waitFor({ state: "attached" });
+    await connectDialog.getByRole("button", { name: "Connect", exact: true }).click();
+    await connectDialog.waitFor({ state: "hidden" });
+    const connectionReadback = await page.evaluate(async () => (await fetch("/api/chat/lark/connections")).json());
+    if (connectionReadback.connections?.length !== 1) throw new Error(`Lark connection API readback mismatch: ${JSON.stringify(connectionReadback)}`);
+    try {
+      await page.locator(".personal-lark-table-row", { hasText: "Product group" }).waitFor({ state: "visible", timeout: 10_000 });
+    } catch (error) {
+      await page.screenshot({ path: resolve(outputDir, "lark-connection-refresh-failed.png"), fullPage: true, animations: "disabled" });
+      throw new Error(`${error.message}; body=${(await page.locator("body").innerText()).slice(0, 4000)}`);
+    }
+    if (api.larkWrites.length !== 1 || api.larkWrites[0].execute !== true) throw new Error("Lark connect did not perform exactly one approved external write");
+    await page.screenshot({ path: resolve(outputDir, "lark-goal-connections.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("button", { name: "关闭 Lark 设置" }).click();
+    await page.getByRole("button", { name: "Tasks" }).waitFor({ state: "visible" });
     await page.getByRole("button", { name: "Tasks" }).click();
     await page.locator(".personal-object-list").first().waitFor({ state: "visible" });
     await page.getByRole("button", { name: "Files" }).click();
