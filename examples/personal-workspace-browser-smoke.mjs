@@ -717,10 +717,28 @@ async function main() {
     const mobileComposer = mobile.getByLabel("向 LoopX 发送消息");
     const composerBox = await mobileComposer.boundingBox();
     if (!composerBox || composerBox.y + composerBox.height > 844) throw new Error("Mobile composer is outside the visible safe area");
-    await mobile.getByRole("button", { name: "打开 Goal 导航" }).click();
-    await mobile.getByRole("button", { name: "打开 Goal 导航" }).waitFor({ state: "visible" });
-    if (await mobile.getByRole("button", { name: "打开 Goal 导航" }).getAttribute("aria-expanded") !== "true") {
+    const mobileNavigationTrigger = mobile.locator(".personal-mobile-menu");
+    await mobileNavigationTrigger.click();
+    if (await mobileNavigationTrigger.getAttribute("aria-expanded") !== "true") {
       throw new Error(`Mobile navigation state did not open: ${await mobile.locator(".personal-workspace-shell").getAttribute("class")}`);
+    }
+    const mobileNavigationDialog = mobile.getByRole("dialog", { name: "Goal 导航" });
+    await mobileNavigationDialog.waitFor({ state: "visible" });
+    const mobileNavigationClose = mobile.getByRole("button", { name: "关闭 Goal 导航" });
+    if (!(await mobileNavigationClose.evaluate((element) => element === document.activeElement))) {
+      throw new Error("Mobile navigation did not move focus into its close control");
+    }
+    const mobileMain = mobile.locator(".personal-workspace-main");
+    if (await mobileMain.getAttribute("aria-hidden") !== "true" || !(await mobileMain.evaluate((element) => element.inert))) {
+      throw new Error("Mobile navigation left the background workspace exposed to assistive navigation");
+    }
+    await mobile.keyboard.press("Shift+Tab");
+    if (!(await mobileNavigationDialog.evaluate((element) => element.contains(document.activeElement)))) {
+      throw new Error("Mobile navigation focus escaped its modal boundary");
+    }
+    await mobile.keyboard.press("Tab");
+    if (!(await mobileNavigationClose.evaluate((element) => element === document.activeElement))) {
+      throw new Error("Mobile navigation focus did not wrap to its first control");
     }
     const mobileSidebarProbe = await mobile.locator(".personal-workspace-sidebar").evaluate((element) => {
       const style = getComputedStyle(element);
@@ -731,10 +749,13 @@ async function main() {
       throw new Error(`Mobile sidebar did not become visible: ${JSON.stringify(mobileSidebarProbe)}`);
     }
     await mobile.keyboard.press("Escape");
-    if (await mobile.getByRole("button", { name: "打开 Goal 导航" }).getAttribute("aria-expanded") !== "false") {
+    if (await mobileNavigationTrigger.getAttribute("aria-expanded") !== "false") {
       throw new Error("Mobile navigation did not close on Escape");
     }
-    await mobile.getByRole("button", { name: "打开 Goal 导航" }).click();
+    if (!(await mobileNavigationTrigger.evaluate((element) => element === document.activeElement))) {
+      throw new Error("Mobile navigation did not restore focus to its trigger");
+    }
+    await mobileNavigationTrigger.click();
     const mobileManagerLink = mobile.locator(".personal-manager-link");
     try {
       await mobileManagerLink.waitFor({ state: "visible", timeout: 1500 });

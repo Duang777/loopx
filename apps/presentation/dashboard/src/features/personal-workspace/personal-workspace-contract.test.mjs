@@ -6,6 +6,7 @@ const model = source("./personal-workspace-model.ts");
 const drawer = source("./context-drawer.tsx");
 const header = source("./channel-header.tsx");
 const page = source("./personal-workspace-page.tsx");
+const shell = source("./workspace-shell.tsx");
 const timeline = source("./channel-timeline.tsx");
 const larkSettings = source("./lark-settings-page.tsx");
 const styles = source("./personal-workspace.css");
@@ -86,6 +87,10 @@ assert.match(page, /const heartbeat = schedule\.scheduleKind === "heartbeat"/, "
 assert.match(page, /actionKind: heartbeat \? "heartbeat\.bind" : "monitor\.update"/, "Schedule previews preserve heartbeat lifecycle type");
 
 assert.match(drawer, /event\.key === "Tab"/, "Drawer traps keyboard focus");
+assert.match(shell, /event\.key !== "Tab"/, "Mobile Goal navigation traps keyboard focus");
+assert.match(shell, /restoreFocusRef\.current\?\.focus\(\)/, "Mobile Goal navigation restores focus on close");
+assert.match(shell, /aria-modal=\{mobileSidebarOpen \? true : undefined\}/, "Mobile Goal navigation exposes modal semantics");
+assert.match(shell, /inert=\{mobileSidebarOpen \|\| undefined\}/, "Mobile Goal navigation removes background content from keyboard navigation");
 assert.doesNotMatch(timeline, /<div aria-live="polite" className="personal-channel-timeline">/, "The full timeline is not a live region");
 assert.match(timeline, /className="personal-live-region"/, "Timeline has a dedicated live region");
 assert.match(drawer, /aria-label=\{`输入纠偏信息：Goal/, "Correction label includes its scoped context");
