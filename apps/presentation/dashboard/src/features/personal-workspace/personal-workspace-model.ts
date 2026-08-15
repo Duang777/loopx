@@ -81,6 +81,7 @@ export type WorkspaceRun = {
   runId: string;
   sessionId?: string;
   sessionStatus?: string;
+  todoId?: string;
   status: "queued" | "running" | "waiting" | "completed" | "failed" | "interrupted";
   title: string;
   totalSteps: number;
@@ -179,11 +180,20 @@ export type WorkspaceActionPreview = {
 
 export type WorkspaceMessage = {
   agentLabel?: string;
+  attachments?: WorkspaceImageAttachment[];
   id: string;
   pending?: boolean;
   role: "assistant" | "user" | "system";
   text: string;
   time?: string;
+};
+
+export type WorkspaceImageAttachment = {
+  dataUrl: string;
+  id: string;
+  mimeType: string;
+  name: string;
+  size: number;
 };
 
 export type WorkspaceTimelineItem =
@@ -273,6 +283,7 @@ export type PersonalWorkspaceCallbacks = {
   onExportOutput?: (output: WorkspaceOutput) => void | Promise<void>;
   onInterruptRun?: (run: WorkspaceRun) => void | Promise<void>;
   onOpenGoal?: (goalId: string) => void;
+  onOpenRunSession?: (run: WorkspaceRun) => void | Promise<void>;
   onOpenOutput?: (output: WorkspaceOutput) => void;
   onRefresh?: () => void;
   onPreviewAction?: (request: WorkspaceActionPreviewRequest) => WorkspaceActionPreview | Promise<WorkspaceActionPreview>;
@@ -281,7 +292,7 @@ export type PersonalWorkspaceCallbacks = {
   onRetryResumeRun?: (run: WorkspaceRun) => void | Promise<void>;
   onStartNewRunSession?: (run: WorkspaceRun) => void | Promise<void>;
   onUpdateSchedule?: (schedule: WorkspaceSchedule, operation: "edit" | "pause" | "resume" | "run_now" | "stop") => void | Promise<void>;
-  onSendMessage?: (message: string, agentId: string, goalId: string | null) => void | Promise<void>;
+  onSendMessage?: (message: string, agentId: string, goalId: string | null, attachments?: WorkspaceImageAttachment[]) => void | Promise<void>;
   onSelectAgent?: (agentId: string) => void;
   onSelectChannel?: (channel: WorkspaceChannel) => void;
   onSelectGoal?: (goalId: string | null) => void;

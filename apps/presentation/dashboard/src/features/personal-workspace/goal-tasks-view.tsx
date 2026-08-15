@@ -1,4 +1,4 @@
-import { Check, MoreHorizontal } from "lucide-react";
+import { Check, ExternalLink, MoreHorizontal } from "lucide-react";
 
 import type {
   WorkspaceDrawerSelection,
@@ -37,6 +37,8 @@ export function GoalTasksView({
     .sort((left, right) => priorityRank(left) - priorityRank(right));
   const doneAgentTodos = goal.agentTodos.filter((todo) => todo.taskClass !== "continuous_monitor" && todo.done);
   const scheduleItems = items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "schedule" }> => item.kind === "schedule");
+  const executionRuns = items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "run" }> =>
+    item.kind === "run" && Boolean(item.run.todoId));
   const isEmpty = !attentionItems.length && !openAgentTodos.length && !doneAgentTodos.length && !scheduleItems.length;
 
   return (
@@ -68,17 +70,20 @@ export function GoalTasksView({
         </header>
         {openAgentTodos.map((todo) => {
           const enriched = { ...todo, goalId: goal.goalId, goalTitle: goal.title, ownerLabel: todo.claimedBy ?? goal.agentLabel ?? goal.agentId };
+          const execution = executionRuns.find((item) => item.run.todoId === todo.todoId)?.run;
           return (
-            <div className="personal-task-card" key={todo.todoId}>
+            <div className={`personal-task-card${execution ? " has-session" : ""}`} key={todo.todoId}>
               <button onClick={() => onSelect({ item: enriched, kind: "todo" })} type="button">
                 <span>○</span><strong>{todo.text}</strong>
                 <small>
                   {todo.priority ? <span className={`personal-priority-badge is-${todo.priority.toLowerCase()}`}>{todo.priority}</span> : null}
                   {todo.status === "blocked" ? <span className="personal-priority-badge is-blocked">受阻</span> : null}
+                  {execution ? <span className="personal-task-session-status">{execution.status === "running" || execution.status === "queued" ? "执行中" : execution.status === "failed" ? "Session 异常" : "等待继续"}</span> : null}
                   {todo.claimedBy ?? goal.agentLabel ?? goal.agentId}
                 </small>
               </button>
               <div className="personal-task-card-actions">
+                {execution ? <button className="personal-task-session-link" aria-label={`查看 Session：${todo.text}`} onClick={() => onSelect({ item: execution, kind: "run" })} title="查看 Session" type="button"><ExternalLink size={14} /><span>查看 Session</span></button> : null}
                 <button aria-label={`标记完成：${todo.text}`} onClick={() => onQuickComplete?.(enriched)} title="标记完成" type="button"><Check size={14} /></button>
                 <button aria-label={`更多操作：${todo.text}`} onClick={() => onSelect({ item: enriched, kind: "todo" })} title="更多操作" type="button"><MoreHorizontal size={14} /></button>
               </div>

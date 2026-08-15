@@ -8,6 +8,8 @@ const page = source("./personal-workspace-page.tsx");
 const timeline = source("./channel-timeline.tsx");
 const larkSettings = source("./lark-settings-page.tsx");
 const styles = source("./personal-workspace.css");
+const dashboard = source("../../views/dashboard-page.tsx");
+const tasks = source("./goal-tasks-view.tsx");
 
 assert.match(model, /kind: "todo"/, "Todo has its own drawer selection");
 for (const field of ["dependencies", "nextTransition", "ownerLabel", "todoId", "taskClass"]) {
@@ -35,6 +37,28 @@ for (const callback of ["onRetryResumeRun", "onStartNewRunSession", "onCloseRunS
 assert.match(drawer, /resume_failed/, "Run recovery presents resume failure explicitly");
 assert.match(drawer, /personal-run-more/, "Run secondary actions live in a compact menu");
 assert.match(page, /item\.run\.runId === selection\.item\.runId/, "Run drawer refresh keeps the selected run identity");
+assert.match(model, /todoId\??:/, "An execution Run keeps its Task identity");
+assert.match(tasks, /查看 Session/, "A running Task exposes a visible execution Session link");
+assert.match(drawer, /进入执行 Session/, "Run details expose an explicit Session entry");
+assert.match(dashboard, /actionKind:\s*"run\.correct"/, "Run correction uses the scoped typed action");
+assert.doesNotMatch(
+  dashboard,
+  /onCorrectRun:[\s\S]{0,240}sendManagerQuestion/,
+  "Run correction does not fall back to the read-only manager Chat",
+);
+assert.match(page, /function isExecutionIntent/, "Execution routing is centralized in one intent classifier");
+for (const phrase of ["用 bytedcli codebase 解决一下，push 一下", "帮我修复 MR 3960 的冲突，跑测试，然后 push"]) {
+  assert.match(page, new RegExp(JSON.stringify(phrase).slice(1, -1)), `Execution routing keeps a regression example for: ${phrase}`);
+}
+assert.match(timeline, /待你确认/, "Historical gated proposals are grouped into a compact summary");
+assert.match(timeline, /gatedItems\.length/, "The compact Gate summary exposes the pending count");
+assert.match(page, /Boolean\(item\.run\.sessionId\)/, "Running count requires a discovered execution Session");
+assert.match(page, /Boolean\(item\.run\.canInterrupt\)/, "Running count requires an active interruptible turn");
+assert.match(page, /accept="image\/png,image\/jpeg,image\/webp,image\/gif"/, "Composer accepts bounded image types");
+assert.match(page, /maxImageAttachmentCount = 4/, "Composer limits image count");
+assert.match(page, /maxImageAttachmentBytes = 5 \* 1024 \* 1024/, "Composer limits image size");
+assert.match(timeline, /personal-message-images/, "Sent images remain visible in the conversation");
+assert.match(dashboard, /attachments: route\?\.attachments/, "Image attachments enter the selected Agent Session");
 
 for (const field of ["agentId", "todoId", "runId", "safePreview"]) {
   assert.match(model, new RegExp(`${field}\\??:`), `Output exposes ${field}`);
@@ -71,5 +95,11 @@ for (const label of ["Connect Lark App", "Group chat", "Bind to Goal", "Create G
 assert.match(larkSettings, /One Lark App · many Goals · one topic per Goal/, "Connection cardinality is explicit");
 assert.match(larkSettings, /connectLarkGoalTopic\([^)]*execute:\s*false/s, "Connect flow previews before execution");
 assert.match(larkSettings, /connectLarkGoalTopic\([^)]*execute:\s*true/s, "Connect flow performs the approved external write");
+assert.match(larkSettings, /Register another Lark App/, "App chooser exposes Feishu registration");
+assert.match(larkSettings, /startLarkAppSetup/, "Registration starts through the local setup API");
+assert.match(larkSettings, /fetchLarkAppSetup/, "Registration polls the local setup session");
+assert.match(larkSettings, /window\.open\(/, "Registration opens the provider flow from a user gesture");
+assert.match(larkSettings, /window\.open\(window\.location\.href,\s*"_blank"\)/, "Registration never leaves a blank waiting tab");
+assert.match(larkSettings, /setAppRef\(snapshot\.app_ref\)/, "Completed registration selects the new App");
 
 console.log("personal workspace drawer contract smoke passed");

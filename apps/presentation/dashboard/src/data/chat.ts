@@ -426,11 +426,28 @@ export type ChatSessionSummary = {
 };
 
 export type ChatVisibleMessage = {
+  attachments?: ChatImageAttachment[];
   message_id: string;
   turn_id: string | null;
   role: string;
   text: string;
   created_at: string;
+};
+
+export type ChatImageAttachment = {
+  data_url: string;
+  id: string;
+  mime_type: string;
+  name: string;
+  size: number;
+};
+
+export type ChatImageAttachmentInput = {
+  dataUrl: string;
+  id: string;
+  mimeType: string;
+  name: string;
+  size: number;
 };
 
 export type ChatSessionSnapshot = {
@@ -446,13 +463,13 @@ export async function fetchChatSession(sessionId: string) {
 }
 
 export async function fetchChatSessions(options: {
-  agentId: string;
-  channelId: string;
+  agentId?: string;
+  channelId?: string;
   goalId?: string;
 }) {
   const query = new URLSearchParams();
-  query.set("agent_id", options.agentId);
-  query.set("channel_id", options.channelId);
+  if (options.agentId) query.set("agent_id", options.agentId);
+  if (options.channelId) query.set("channel_id", options.channelId);
   if (options.goalId) query.set("goal_id", options.goalId);
   return requestJson<{
     ok: true;
@@ -490,7 +507,12 @@ export async function fetchChatHistory(options: {
   };
 }
 
-export async function acceptChatTurn(sessionId: string, message: string, clientTurnId: string) {
+export async function acceptChatTurn(
+  sessionId: string,
+  message: string,
+  clientTurnId: string,
+  attachments: ChatImageAttachmentInput[] = [],
+) {
   return requestJson<{
     ok: true;
     session_id: string;
@@ -500,7 +522,17 @@ export async function acceptChatTurn(sessionId: string, message: string, clientT
     events_url: string;
   }>(`/api/chat/sessions/${sessionId}/turns`, {
     method: "POST",
-    body: JSON.stringify({ message, client_turn_id: clientTurnId }),
+    body: JSON.stringify({
+      message,
+      client_turn_id: clientTurnId,
+      ...(attachments.length ? { attachments: attachments.map((attachment) => ({
+        data_url: attachment.dataUrl,
+        id: attachment.id,
+        mime_type: attachment.mimeType,
+        name: attachment.name,
+        size: attachment.size,
+      })) } : {}),
+    }),
   });
 }
 
@@ -591,6 +623,7 @@ export async function sendChatTurnStreaming(
   sessionId: string,
   message: string,
   options: {
+    attachments?: ChatImageAttachmentInput[];
     clientTurnId?: string;
     onDelta?: (text: string) => void;
     onActivity?: (label: string) => void;
@@ -602,6 +635,7 @@ export async function sendChatTurnStreaming(
     sessionId,
     message,
     options.clientTurnId ?? crypto.randomUUID(),
+    options.attachments,
   );
   options.onPhase?.("turn.accepted", accepted.turn_id);
   return receiveChatTurnStreaming(
@@ -893,6 +927,46 @@ export async function fetchLarkApps() {
   return larkAppsSchema.parse(
     await requestJson<unknown>("/api/chat/lark/apps"),
   ).apps;
+}
+
+export type LarkAppSetup = {
+  app_ref: string;
+  error: string | null;
+  setup_id: string;
+  status: "starting" | "waiting_for_feishu" | "ready" | "failed" | "cancelled";
+  verification_url: string | null;
+};
+
+const larkAppSetupSchema = z.object({
+  ok: z.literal(true),
+  app_ref: z.string(),
+  error: z.string().nullable(),
+  setup_id: z.string(),
+  status: z.enum(["starting", "waiting_for_feishu", "ready", "failed", "cancelled"]),
+  verification_url: z.string().url().nullable(),
+});
+
+export async function startLarkAppSetup(options: { appRef: string; brand: "feishu" | "lark" }) {
+  return larkAppSetupSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/app-setups", {
+      method: "POST",
+      body: JSON.stringify({ app_ref: options.appRef, brand: options.brand }),
+    }),
+  );
+}
+
+export async function fetchLarkAppSetup(setupId: string) {
+  return larkAppSetupSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/app-setups/${encodeURIComponent(setupId)}`),
+  );
+}
+
+export async function cancelLarkAppSetup(setupId: string) {
+  return larkAppSetupSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/app-setups/${encodeURIComponent(setupId)}`, {
+      method: "DELETE",
+    }),
+  );
 }
 
 export type LarkGroupChat = { chat_id: string; chat_name: string };

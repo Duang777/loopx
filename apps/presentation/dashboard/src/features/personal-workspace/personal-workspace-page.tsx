@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Send } from "lucide-react";
+import { Bot, Paperclip, Send, X } from "lucide-react";
 
 import {
   applyTypedAction,
@@ -32,6 +32,7 @@ import type {
   WorkspaceChannel,
   WorkspaceDrawerSelection,
   WorkspaceGoalTab,
+  WorkspaceImageAttachment,
   WorkspaceModel,
   WorkspaceTimelineItem,
 } from "./personal-workspace-model";
@@ -106,17 +107,21 @@ function defaultTimeline(model: WorkspaceModel, selectedGoalId: string | null): 
       totalSteps: goal.agentTodos.length || 1,
     },
   });
-  const activeRun = model.timeline?.find((item): item is Extract<WorkspaceTimelineItem, { kind: "run" }> =>
-    item.kind === "run" && item.run.goalId === goal.goalId && Boolean(item.run.sessionId));
-  goal.agentTodos.filter((todo) => todo.taskClass === "continuous_monitor").forEach((todo) => items.push({
+  goal.agentTodos.filter((todo) => todo.taskClass === "continuous_monitor").forEach((todo) => {
+    const monitorRun = model.timeline?.find((item): item is Extract<WorkspaceTimelineItem, { kind: "run" }> =>
+      item.kind === "run"
+      && item.run.goalId === goal.goalId
+      && item.run.todoId === todo.todoId
+      && Boolean(item.run.sessionId));
+    items.push({
     id: `schedule:${goal.goalId}:${todo.todoId}`,
     kind: "schedule",
     schedule: {
       agentId: goal.agentId,
-      executionHistory: activeRun ? [{
-        label: activeRun.run.latestActivity || activeRun.run.title,
-        runId: activeRun.run.runId,
-        status: activeRun.run.status === "waiting" || activeRun.run.status === "queued" ? "running" : activeRun.run.status,
+      executionHistory: monitorRun ? [{
+        label: monitorRun.run.latestActivity || monitorRun.run.title,
+        runId: monitorRun.run.runId,
+        status: monitorRun.run.status === "waiting" || monitorRun.run.status === "queued" ? "running" : monitorRun.run.status,
         timestamp: goal.latestActivity || "最近活动",
       }] : [],
       goalId: goal.goalId,
@@ -124,13 +129,14 @@ function defaultTimeline(model: WorkspaceModel, selectedGoalId: string | null): 
       schedule: todo.evidence ?? "由 LoopX continuous_monitor Todo 驱动",
       scheduleId: todo.todoId,
       scheduleKind: "monitor",
-      sessionId: activeRun?.run.sessionId,
+      sessionId: monitorRun?.run.sessionId,
       status: todo.done || todo.status === "paused" ? "paused" : "active",
       stopCondition: "Goal 完成或 owner 停止",
       target: todo.text,
       timezone: "Asia/Shanghai",
     },
-  }));
+    });
+  });
   const heartbeatProposal = model.timeline?.find((item): item is Extract<WorkspaceTimelineItem, { kind: "proposal" }> =>
     item.kind === "proposal" && item.proposal.actionKind === "heartbeat.bind" && item.proposal.goalId === goal.goalId);
   if (heartbeatProposal) {
@@ -187,7 +193,10 @@ function workspaceProposal(proposal: TypedActionProposal): WorkspaceActionPrevie
       nextAction: typeof proposal.gate.next_action === "string" ? proposal.gate.next_action : undefined,
       summary: String(proposal.gate.summary ?? "需要宿主确认"),
     } : undefined,
-    primaryLabel: proposal.action_kind === "goal.create" ? "创建并启动" : "确认并应用",
+    primaryLabel: proposal.action_kind === "goal.create" ? "创建并启动"
+      : proposal.action_kind === "todo.create" && proposal.normalized_parameters.start_execution === true
+        ? "创建任务并开始执行"
+        : "确认并应用",
     status: proposalStatus(proposal.status),
     title: proposal.summary,
   };
@@ -243,6 +252,39 @@ function todoTextFromMessage(message: string) {
     .slice(0, 400) || "推进当前 Goal 的下一项工作";
 }
 
+function isExecutionIntent(message: string) {
+  const normalized = message.replace(/\s+/gu, " ").trim();
+  const regressionExamples = [
+    "用 bytedcli codebase 解决一下，push 一下",
+    "帮我修复 MR 3960 的冲突，跑测试，然后 push",
+  ];
+  if (regressionExamples.some((example) => normalized.includes(example))) return true;
+  const requestsAction = /(帮我|请|给我|直接|现在|开始|用\s*(?:bytedcli|codebase|git)|让\s*\S+).{0,40}(解决|修复|处理|实现|执行|rebase|push|提交|推送)/iu.test(normalized);
+  const namesExecutionTool = /(bytedcli|codebase|git|rebase|cherry-pick|push)/iu.test(normalized);
+  const asksForMutation = /(解决一下|修复一下|处理一下|执行一下|改一下|跑(?:一下)?测试|rebase|push|提交|推送)/iu.test(normalized);
+  const adviceOnly = /(怎么|如何|能不能|可以吗|是否可以|给.*建议)/u.test(normalized) && !asksForMutation;
+  return !adviceOnly && asksForMutation && (requestsAction || namesExecutionTool);
+}
+
+const acceptedImageTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const maxImageAttachmentBytes = 5 * 1024 * 1024;
+const maxImageAttachmentCount = 4;
+
+function readImageAttachment(file: File): Promise<WorkspaceImageAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`无法读取图片 ${file.name}`));
+    reader.onload = () => resolve({
+      dataUrl: String(reader.result ?? ""),
+      id: crypto.randomUUID(),
+      mimeType: file.type,
+      name: file.name,
+      size: file.size,
+    });
+    reader.readAsDataURL(file);
+  });
+}
+
 export function PersonalWorkspacePage({
   agents = [{ agentId: "codex", available: true, capability: "代码与项目执行", label: "Codex" }],
   callbacks = {},
@@ -276,6 +318,8 @@ export function PersonalWorkspacePage({
     }
   });
   const [sending, setSending] = useState(false);
+  const [imageAttachments, setImageAttachments] = useState<WorkspaceImageAttachment[]>([]);
+  const [imageAttachmentError, setImageAttachmentError] = useState<string | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [goalContexts, setGoalContexts] = useState<Record<string, GoalRepositoryContext>>({});
   const [larkConnections, setLarkConnections] = useState<LarkGoalConnection[]>([]);
@@ -299,11 +343,16 @@ export function PersonalWorkspacePage({
   }
   const digestInitRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [digest, setDigest] = useState<{ attention: number; done: number; failed: number } | null>(null);
   const selectedGoalId = controlledGoalId === undefined ? localGoalId : controlledGoalId;
   const selectedAgentId = controlledAgentId ?? localAgentId;
   const composerDraftKey = `${selectedGoalId ?? "manager"}:${selectedAgentId}`;
   const composer = drafts[composerDraftKey] ?? "";
+  useEffect(() => {
+    setImageAttachments([]);
+    setImageAttachmentError(null);
+  }, [composerDraftKey]);
   function setComposer(value: string) {
     setDrafts((current) => {
       const next = { ...current };
@@ -571,6 +620,12 @@ export function PersonalWorkspacePage({
 
   const drawerCallbacks: PersonalWorkspaceCallbacks = {
     ...callbacks,
+    onOpenRunSession: async (run) => {
+      if (run.goalId !== selectedGoalId) selectGoal(run.goalId);
+      setSelectedGoalTab("chat");
+      await callbacks.onOpenRunSession?.(run);
+      setSelection(null);
+    },
     onOpenOutput: (output) => {
       if (output.goalId !== selectedGoalId) selectGoal(output.goalId);
       setSelectedGoalTab("files");
@@ -595,6 +650,7 @@ export function PersonalWorkspacePage({
           callbacks.onRefresh?.();
           selectGoal(applied.goalId);
         }
+        if (applied.actionKind === "todo.create") callbacks.onRefresh?.();
       } catch (error) {
         if (error instanceof ChatApiError && error.payload.error_code === "protected_action") {
           const rawGate = error.payload.gate;
@@ -674,6 +730,7 @@ export function PersonalWorkspacePage({
         idempotencyKey: `workspace-monitor-${schedule.scheduleId}-${operation}-${timestamp}`,
         normalizedParameters: {
           agent_id: schedule.agentId ?? selectedAgentId,
+          ...(!heartbeat && operation === "run_now" ? { endpoint_id: selectedAgentId } : {}),
           ...(operation === "edit" ? { cadence: "2h", ...(heartbeat ? { timezone: schedule.timezone ?? "Asia/Shanghai" } : {}) } : {}),
           goal_id: schedule.goalId,
           operation,
@@ -713,11 +770,18 @@ export function PersonalWorkspacePage({
   }
 
   async function sendMessage() {
-    const message = composer.trim();
+    const pendingImages = imageAttachments;
+    const message = composer.trim() || (pendingImages.length ? "请结合这些图片分析当前 Goal，并告诉我下一步。" : "");
     if (!message || sending) return;
     setComposer("");
+    setImageAttachments([]);
+    setImageAttachmentError(null);
     setSending(true);
     try {
+      if (pendingImages.length) {
+        await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId, pendingImages);
+        return;
+      }
       if (!selectedGoalId && /(创建|新建|设置).{0,8}(goal|目标)/iu.test(message)) {
         const title = goalTitleFromMessage(message);
         const goalId = compactGoalSlug(title);
@@ -777,6 +841,21 @@ export function PersonalWorkspacePage({
         });
         return;
       }
+      if (selectedGoalId && isExecutionIntent(message)) {
+        await createPreview({
+          actionKind: "todo.create",
+          context: { kind: "goal", goal_id: selectedGoalId, natural_language: message },
+          idempotencyKey: `workspace-task-start-${selectedGoalId}-${Date.now().toString(36)}`,
+          normalizedParameters: {
+            endpoint_id: requestedAgent?.agentId ?? selectedAgentId,
+            goal_id: selectedGoalId,
+            start_execution: true,
+            text: message,
+          },
+          summary: `交给 Agent 执行：${message.slice(0, 120)}`,
+        });
+        return;
+      }
       const matchedTodo = selectedGoal?.agentTodos.find((todo) =>
         message.includes(todo.todoId) || message.includes(todo.text));
       const todoOperation = /完成|做完|关闭/u.test(message) ? "complete"
@@ -814,6 +893,7 @@ export function PersonalWorkspacePage({
       await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId);
     } catch (error) {
       setComposer(message);
+      setImageAttachments(pendingImages);
       throw error;
     } finally {
       setSending(false);
@@ -821,7 +901,41 @@ export function PersonalWorkspacePage({
   }
 
   const selectedAgentLabel = agents.find((agent) => agent.agentId === selectedAgentId)?.label ?? selectedAgentId;
-  const goalRunningCount = items.filter((item) => item.kind === "run" && (item.run.status === "running" || item.run.status === "queued")).length;
+  const goalRunningCount = items.filter((item) =>
+    item.kind === "run"
+    && Boolean(item.run.sessionId)
+    && Boolean(item.run.canInterrupt)
+    && (item.run.status === "running" || item.run.status === "queued")
+  ).length;
+
+  async function selectImages(files: FileList | null) {
+    if (!files?.length) return;
+    const available = maxImageAttachmentCount - imageAttachments.length;
+    const selected = Array.from(files).slice(0, Math.max(0, available));
+    const invalid = selected.find((file) => !acceptedImageTypes.has(file.type));
+    const oversized = selected.find((file) => file.size > maxImageAttachmentBytes);
+    if (available <= 0) {
+      setImageAttachmentError(`最多添加 ${maxImageAttachmentCount} 张图片。`);
+      return;
+    }
+    if (invalid) {
+      setImageAttachmentError("支持 PNG、JPEG、WebP 和 GIF 图片。");
+      return;
+    }
+    if (oversized) {
+      setImageAttachmentError(`单张图片不能超过 ${maxImageAttachmentBytes / 1024 / 1024}MB。`);
+      return;
+    }
+    try {
+      const loaded = await Promise.all(selected.map(readImageAttachment));
+      setImageAttachments((current) => [...current, ...loaded].slice(0, maxImageAttachmentCount));
+      setImageAttachmentError(files.length > selected.length ? `最多添加 ${maxImageAttachmentCount} 张图片。` : null);
+    } catch (error) {
+      setImageAttachmentError(error instanceof Error ? error.message : "图片读取失败。");
+    } finally {
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    }
+  }
 
   async function refreshLarkState() {
     const connections = await fetchLarkConnections();
@@ -920,8 +1034,17 @@ export function PersonalWorkspacePage({
               <button onClick={() => fillQuickPrompt("总结今天的进展")} type="button">总结今天进展</button>
               <button onClick={() => void requestSchedule("monitor", selectedGoalId)} type="button">创建定时检查</button>
             </div>
+            {imageAttachments.length ? <div className="personal-composer-images" aria-label="待发送图片">{imageAttachments.map((attachment) => (
+              <figure key={attachment.id}>
+                <img alt={attachment.name} src={attachment.dataUrl} />
+                <button aria-label={`移除图片 ${attachment.name}`} onClick={() => setImageAttachments((current) => current.filter((item) => item.id !== attachment.id))} type="button"><X size={13} /></button>
+              </figure>
+            ))}</div> : null}
+            {imageAttachmentError ? <p className="personal-composer-error" role="alert">{imageAttachmentError}</p> : null}
             <div className="personal-channel-composer">
               <span><Bot size={17} />{agents.find((agent) => agent.agentId === selectedAgentId)?.label ?? selectedAgentId}</span>
+              <input accept="image/png,image/jpeg,image/webp,image/gif" aria-label="添加图片" hidden multiple onChange={(event) => void selectImages(event.target.files)} ref={imageInputRef} type="file" />
+              <button aria-label="添加图片" className="personal-composer-attach" disabled={sending || imageAttachments.length >= maxImageAttachmentCount} onClick={() => imageInputRef.current?.click()} title="添加图片" type="button"><Paperclip size={17} /></button>
               <textarea
                 aria-label="向 LoopX 发送消息"
                 onChange={(event) => setComposer(event.target.value)}
@@ -936,14 +1059,14 @@ export function PersonalWorkspacePage({
                 rows={1}
                 value={composer}
               />
-              <button aria-label="发送" disabled={!composer.trim() || sending} onClick={() => void sendMessage()} type="button"><Send size={18} /></button>
+              <button aria-label="发送" disabled={(!composer.trim() && imageAttachments.length === 0) || sending} onClick={() => void sendMessage()} type="button"><Send size={18} /></button>
             </div>
           </div>
         </div>
       )}
       sidebar={(
         <GoalSidebar
-          activeRunCount={model.goals.filter((goal) => goal.state === "推进中").length}
+          activeRunCount={goalRunningCount}
           attentionCount={model.openUserTodoCount}
           goals={workspaceGoals}
           onRequestGoalCreate={() => void requestGoalCreate()}

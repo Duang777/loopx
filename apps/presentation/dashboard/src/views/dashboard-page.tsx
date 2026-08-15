@@ -86,14 +86,17 @@ import {
 } from "../data/status";
 import {
   ChatApiError,
+  applyTypedAction,
   applyTodo,
   closeChatSession,
   createChatSession,
   fetchChatCapabilities,
   fetchChatHistory,
+  fetchChatSession,
   fetchChatSessions,
   interruptChatTurn,
   previewTodo,
+  previewTypedAction,
   recordProjectionExchange,
   resumeChatSession,
   resumeChatTurnStreaming,
@@ -102,6 +105,8 @@ import {
   sessionInvalidatedByPayload,
   todoNoWriteReceiptFromPayload,
   todoReceiptLabel,
+  type ChatSessionSummary,
+  type ChatImageAttachment,
   type TodoProposal,
 } from "../data/chat";
 import {
@@ -129,6 +134,7 @@ import { cn } from "../lib/utils";
 import { PersonalWorkspacePage } from "../features/personal-workspace/personal-workspace-page";
 import {
   normalizePersonalHomeModel,
+  type WorkspaceImageAttachment,
   type WorkspaceTimelineItem,
 } from "../features/personal-workspace/personal-workspace-model";
 
@@ -4608,6 +4614,7 @@ type PersonalHomeModel = {
 type PersonalManagerMessage = {
   activity?: string[];
   agentLabel?: string;
+  attachments?: WorkspaceImageAttachment[];
   id: number;
   lines: string[];
   pending?: boolean;
@@ -4616,6 +4623,16 @@ type PersonalManagerMessage = {
   sourceLabel?: string;
   text: string;
 };
+
+function workspaceImageAttachments(attachments?: ChatImageAttachment[]): WorkspaceImageAttachment[] | undefined {
+  return attachments?.map((attachment) => ({
+    dataUrl: attachment.data_url,
+    id: attachment.id,
+    mimeType: attachment.mime_type,
+    name: attachment.name,
+    size: attachment.size,
+  }));
+}
 
 type PersonalProposalState =
   | "candidate"
@@ -5280,6 +5297,7 @@ function PersonalGoalHome({
   const [proposalsByContext, setProposalsByContext] = useState<Record<string, PersonalProposalCard[]>>({});
   const [sendingContextId, setSendingContextId] = useState<string | null>(null);
   const [runtimeBindings, setRuntimeBindings] = useState<Record<string, PersonalRuntimeBinding>>({});
+  const [executionSessions, setExecutionSessions] = useState<ChatSessionSummary[]>([]);
   const managerMessageId = useRef(1);
   const proposalId = useRef(1);
   const sessionIds = useRef(new Map<string, string>());
@@ -5373,6 +5391,7 @@ function PersonalGoalHome({
             ...current,
             [targetContextId]: history.messages.map((message) => ({
               agentLabel: message.role === "user" ? undefined : selectedAgent.label,
+              attachments: workspaceImageAttachments(message.attachments),
               id: managerMessageId.current++,
               lines: [],
               role: message.role === "user" ? "user" : "assistant",
@@ -5578,6 +5597,31 @@ function PersonalGoalHome({
   }, [sessionDiscoveryKey, selectedGoal?.goalId]);
 
   useEffect(() => {
+    if (!selectedGoal) {
+      setExecutionSessions([]);
+      return;
+    }
+    let cancelled = false;
+    let timer = 0;
+    const discover = async () => {
+      try {
+        const listed = await fetchChatSessions({ goalId: selectedGoal.goalId });
+        if (!cancelled) {
+          setExecutionSessions(listed.sessions.filter((session) => session.channel_id?.startsWith("task.")));
+        }
+      } catch {
+        // Durable Todos remain visible while the local execution runtime reconnects.
+      }
+      if (!cancelled) timer = window.setTimeout(() => void discover(), 2_000);
+    };
+    void discover();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [selectedGoal?.goalId]);
+
+  useEffect(() => {
     if (!agentMenuOpen) {
       return;
     }
@@ -5656,7 +5700,7 @@ function PersonalGoalHome({
     }));
   }
 
-  async function sendManagerQuestion(rawQuestion: string, route?: { agentId?: string; goalId?: string | null }) {
+  async function sendManagerQuestion(rawQuestion: string, route?: { agentId?: string; goalId?: string | null; attachments?: WorkspaceImageAttachment[] }) {
     const question = rawQuestion.trim();
     if (!question) {
       return;
@@ -5685,7 +5729,7 @@ function PersonalGoalHome({
       ...messages,
       [targetContextId]: [
         ...(messages[targetContextId] ?? []),
-        { id: userMessageId, lines: [], role: "user", text: question },
+        { attachments: route?.attachments, id: userMessageId, lines: [], role: "user", text: question },
       ],
     }));
     setManagerInput("");
@@ -5747,6 +5791,7 @@ function PersonalGoalHome({
         text: "",
       });
       const streamed = await sendChatTurnStreaming(sessionId, question, {
+        attachments: route?.attachments,
         signal: (() => {
           const controller = new AbortController();
           streamControllers.current.set(targetContextId, controller);
@@ -6089,6 +6134,33 @@ function PersonalGoalHome({
         outputs: [],
       },
     }] : []),
+    ...(selectedGoal ? executionSessions.map((session): WorkspaceTimelineItem => {
+      const todoId = session.channel_id?.startsWith("task.") ? session.channel_id.slice(5) : undefined;
+      const todo = selectedGoal.agentTodos.find((candidate) => candidate.todoId === todoId);
+      const running = Boolean(session.active_turn_id);
+      return {
+        id: `run:task:${session.session_id}`,
+        kind: "run",
+        run: {
+          agentId: session.agent_id,
+          agentLabel: personalAgentLabel(session.agent_id),
+          canInterrupt: running,
+          completedSteps: todo?.done ? 1 : 0,
+          goalId: selectedGoal.goalId,
+          goalTitle: selectedGoal.title,
+          latestActivity: running ? "Agent 正在执行，可进入 Session 查看过程或发送纠偏。" : "执行 Session 已保留，可继续纠偏或恢复。",
+          resumable: session.resumable,
+          runId: session.session_id,
+          sessionId: session.session_id,
+          sessionStatus: session.status,
+          status: todo?.done ? "completed" : running ? "running" : session.status === "resume_failed" ? "failed" : "waiting",
+          title: todo?.text ?? "Agent 执行任务",
+          todoId,
+          totalSteps: 1,
+          turnId: session.active_turn_id ?? undefined,
+        },
+      };
+    }) : []),
     ...(selectedGoal ? [{
       id: `run:${selectedGoal.goalId}`,
       kind: "run" as const,
@@ -6123,8 +6195,9 @@ function PersonalGoalHome({
     ...contextMessages.map((message): WorkspaceTimelineItem => ({
       id: `message:${message.id}`,
       kind: "message",
-      message: {
-        agentLabel: message.agentLabel,
+        message: {
+          agentLabel: message.agentLabel,
+          attachments: message.attachments,
         id: String(message.id),
         pending: message.pending,
         role: message.role,
@@ -6174,12 +6247,95 @@ function PersonalGoalHome({
         callbacks={{
           onApplyAttention: (attention) => openGoalChat(attention.goalId),
           onCorrectRun: async (run, message) => {
-            if (selectedGoal?.goalId !== run.goalId) openGoalChat(run.goalId);
-            await sendManagerQuestion(message, { agentId: run.agentId, goalId: run.goalId });
+            if (!run.sessionId) throw new Error("这个 Run 还没有可纠偏的执行 Session。");
+            const proposal = await previewTypedAction({
+              actionKind: "run.correct",
+              context: { kind: "run", goal_id: run.goalId, todo_id: run.todoId },
+              idempotencyKey: `workspace-run-correct-${run.sessionId}-${Date.now().toString(36)}`,
+              normalizedParameters: { goal_id: run.goalId, message, session_id: run.sessionId },
+              summary: `纠偏执行任务：${run.title}`,
+            });
+            const applied = await applyTypedAction(proposal.proposal_id);
+            const turnId = typeof applied.turn?.turn_id === "string" ? applied.turn.turn_id : undefined;
+            recordRuntimeBinding(run.goalId, {
+              agentId: run.agentId,
+              resumable: true,
+              sessionId: run.sessionId,
+              status: turnId ? "running" : "ready",
+              turnId,
+            });
+            if (turnId) {
+              activeTurnIds.current.set(run.goalId, turnId);
+              const controller = new AbortController();
+              streamControllers.current.set(run.goalId, controller);
+              let streamedText = "";
+              const messageId = appendManagerAssistantMessage(run.goalId, {
+                activity: ["正在把纠偏送入原执行 Session"],
+                agentLabel: run.agentLabel,
+                lines: [],
+                pending: true,
+                sourceLabel: `${run.agentLabel} · 执行 Session`,
+                text: "",
+              });
+              try {
+                const streamed = await resumeChatTurnStreaming(run.sessionId, turnId, {
+                  signal: controller.signal,
+                  onDelta: (delta) => {
+                    streamedText += delta;
+                    updateManagerAssistantMessage(run.goalId, messageId, { text: streamedText });
+                  },
+                });
+                updateManagerAssistantMessage(run.goalId, messageId, {
+                  activity: [],
+                  pending: false,
+                  text: streamed.response.message || streamedText.trim() || `${run.agentLabel} 已完成纠偏。`,
+                });
+              } catch (error) {
+                const interrupted = interruptedContexts.current.delete(run.goalId);
+                updateManagerAssistantMessage(run.goalId, messageId, {
+                  activity: [],
+                  pending: false,
+                  text: interrupted ? "已中断。你可以在当前会话继续发送消息。" : error instanceof Error ? error.message : "纠偏回合失败。",
+                });
+              } finally {
+                activeTurnIds.current.delete(run.goalId);
+                streamControllers.current.delete(run.goalId);
+                recordRuntimeBinding(run.goalId, {
+                  agentId: run.agentId,
+                  resumable: true,
+                  sessionId: run.sessionId,
+                  status: "ready",
+                });
+              }
+            }
           },
           onCloseRunSession: closeManagerSession,
           onInterruptRun: async (run) => interruptManagerTurn(run),
           onOpenGoal: openGoalChat,
+          onOpenRunSession: async (run) => {
+            if (!run.sessionId) return;
+            const snapshot = await fetchChatSession(run.sessionId);
+            openGoalChat(run.goalId);
+            setMessagesByContext((current) => ({
+              ...current,
+              [run.goalId]: snapshot.messages.map((message) => ({
+                agentLabel: message.role === "user" ? undefined : run.agentLabel,
+                attachments: workspaceImageAttachments(message.attachments),
+                id: managerMessageId.current++,
+                lines: [],
+                role: message.role === "user" ? "user" : "assistant",
+                sourceLabel: message.role === "user" ? undefined : `${run.agentLabel} · 执行 Session`,
+                text: message.text,
+              })),
+            }));
+            recordRuntimeBinding(run.goalId, {
+              agentId: run.agentId,
+              resumable: snapshot.session.resumable,
+              sessionId: run.sessionId,
+              status: snapshot.session.active_turn_id ? "running" : snapshot.session.status,
+              turnId: snapshot.session.active_turn_id ?? undefined,
+            });
+          },
           onOpenOutput: (output) => openGoalChat(output.goalId),
           onExportOutput: async (output) => {
             const contents = [
@@ -6204,7 +6360,7 @@ function PersonalGoalHome({
           onRetryResumeRun: retryManagerSession,
           onSelectAgent: chooseAgent,
           onSelectGoal: (goalId) => goalId ? openGoalChat(goalId) : openManagerChat(),
-          onSendMessage: async (message, agentId, goalId) => sendManagerQuestion(message, { agentId, goalId }),
+          onSendMessage: async (message, agentId, goalId, attachments) => sendManagerQuestion(message, { agentId, goalId, attachments }),
           onStartNewRunSession: startNewManagerSession,
         }}
         model={workspaceModel}

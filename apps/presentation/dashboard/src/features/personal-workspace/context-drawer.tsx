@@ -335,6 +335,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 <div><dt>可恢复</dt><dd>{selection.item.resumable === false ? "否" : "是"}</dd></div>
               </dl>
             </section>
+            {selection.item.sessionId ? <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selection.item)} type="button"><ExternalLink size={16} />进入执行 Session</button> : null}
             {selection.item.outputs?.length ? (
               <section className="personal-execution-history" aria-labelledby="personal-run-outputs-title">
                 <h3 id="personal-run-outputs-title">本次运行产出</h3>

@@ -269,6 +269,18 @@ async function installApi(page) {
         return;
       }
       const actionKind = actionKinds.get(apply[1]) ?? "goal.create";
+      const preview = state.actionPreviews.find((item) => item.proposalId === apply[1]);
+      let acceptedTurn = null;
+      if (actionKind === "run.correct" && preview) {
+        const sessionId = preview.normalized_parameters.session_id;
+        const turnId = `turn-${++turnCounter}`;
+        acceptedTurn = { session_id: sessionId, turn_id: turnId, status: "queued", created: true };
+        turnMessages.set(turnId, preview.normalized_parameters.message);
+        state.turnRequests.push({ message: preview.normalized_parameters.message, sessionId, turnId });
+        const active = sessions.get(sessionId);
+        if (active) sessions.set(sessionId, { ...active, active_turn_id: turnId, status: "busy" });
+        messages.get(sessionId)?.push({ message_id: `${turnId}-user`, turn_id: turnId, role: "user", text: preview.normalized_parameters.message, created_at: "2026-08-13T01:00:01Z" });
+      }
       const resourceKey = `${actionKind}:${apply[1]}`;
       if (!state.durableResources.has(resourceKey)) {
         state.durableResources.add(resourceKey);
@@ -276,12 +288,12 @@ async function installApi(page) {
       }
       const proposal = {
         schema_version: "loopx_chat_action_proposal_v1", proposal_id: apply[1], action_kind: actionKind,
-        summary: "已应用", normalized_parameters: {}, context: {}, expected_state_fingerprint: "fixture-r1",
+        summary: "已应用", normalized_parameters: preview?.normalized_parameters ?? {}, context: preview?.context ?? {}, expected_state_fingerprint: "fixture-r1",
         permission_classification: "durable_write", validation_evidence: [], available_transitions: ["apply", "cancel"],
         status: "applied", receipt: { receipt_id: "fixture-receipt" }, stale: null, created_at: "2026-08-13T01:00:00Z", updated_at: "2026-08-13T01:00:01Z",
       };
       actionProposals.set(apply[1], proposal);
-      await route.fulfill({ contentType: "application/json", json: { ok: true, proposal, turn: null }, status: 200 });
+      await route.fulfill({ contentType: "application/json", json: { ok: true, proposal, turn: acceptedTurn }, status: acceptedTurn ? 202 : 200 });
       return;
     }
     const cancel = url.pathname.match(/^\/api\/actions\/(.+)\/cancel$/);

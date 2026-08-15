@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   Check,
+  ExternalLink,
   Link2,
   Loader2,
   MessageSquareText,
@@ -13,12 +14,16 @@ import {
 } from "lucide-react";
 
 import {
+  cancelLarkAppSetup,
   connectLarkGoalTopic,
   disconnectLarkGoalTopic,
+  fetchLarkAppSetup,
   fetchLarkApps,
   fetchLarkConnections,
   fetchLarkGroupChats,
+  startLarkAppSetup,
   type LarkApp,
+  type LarkAppSetup,
   type LarkGoalConnection,
   type LarkGroupChat,
 } from "../../data/chat";
@@ -53,6 +58,14 @@ export function LarkSettingsPage({
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [disconnectGoalId, setDisconnectGoalId] = useState<string | null>(null);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [setupAppRef, setSetupAppRef] = useState("loopx-workspace-bot");
+  const [setupBrand, setSetupBrand] = useState<"feishu" | "lark">("feishu");
+  const [setupSnapshot, setSetupSnapshot] = useState<LarkAppSetup | null>(null);
+  const [setupStarting, setSetupStarting] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const setupPopup = useRef<Window | null>(null);
+  const openedSetupUrl = useRef<string | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -100,6 +113,39 @@ export function LarkSettingsPage({
     };
   }, [appRef, chatQuery, modalOpen]);
 
+  useEffect(() => {
+    if (!setupOpen || !setupSnapshot || ["ready", "failed", "cancelled"].includes(setupSnapshot.status)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetchLarkAppSetup(setupSnapshot.setup_id)
+        .then(async (snapshot) => {
+          if (cancelled) return;
+          setSetupSnapshot(snapshot);
+          if (snapshot.verification_url && openedSetupUrl.current !== snapshot.verification_url) {
+            openedSetupUrl.current = snapshot.verification_url;
+            if (setupPopup.current && !setupPopup.current.closed) {
+              setupPopup.current.location.href = snapshot.verification_url;
+            }
+          }
+          if (snapshot.status === "ready") {
+            await refresh();
+            setAppRef(snapshot.app_ref);
+            setSetupOpen(false);
+          }
+          if (snapshot.status === "failed") {
+            setSetupError(snapshot.error ?? "Lark App 创建失败");
+          }
+        })
+        .catch((cause: unknown) => {
+          if (!cancelled) setSetupError(cause instanceof Error ? cause.message : "创建状态查询失败");
+        });
+    }, 650);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [setupOpen, setupSnapshot]);
+
   const selectedGoal = goals.find((goal) => goal.goalId === goalId);
   const selectedChat = chats.find((chat) => chat.chat_id === chatId);
   const filteredConnections = useMemo(() => {
@@ -117,6 +163,43 @@ export function LarkSettingsPage({
     setGoalId(goal?.goalId ?? initialGoalId ?? goals[0]?.goalId ?? "");
     setConnectError(null);
     setModalOpen(true);
+  }
+
+  function openSetup() {
+    setSetupSnapshot(null);
+    setSetupError(null);
+    openedSetupUrl.current = null;
+    setSetupOpen(true);
+  }
+
+  async function startSetup() {
+    if (setupStarting || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(setupAppRef)) return;
+    setSetupStarting(true);
+    setSetupError(null);
+    openedSetupUrl.current = null;
+    setupPopup.current = window.open(window.location.href, "_blank");
+    try {
+      const snapshot = await startLarkAppSetup({ appRef: setupAppRef, brand: setupBrand });
+      setSetupSnapshot(snapshot);
+    } catch (cause) {
+      setupPopup.current?.close();
+      setSetupError(cause instanceof Error ? cause.message : "无法启动 Lark App 创建流程");
+    } finally {
+      setSetupStarting(false);
+    }
+  }
+
+  async function closeSetup() {
+    const snapshot = setupSnapshot;
+    setSetupOpen(false);
+    setupPopup.current?.close();
+    if (snapshot && !["ready", "failed", "cancelled"].includes(snapshot.status)) {
+      try {
+        await cancelLarkAppSetup(snapshot.setup_id);
+      } catch {
+        // The local setup process may already have completed while the modal closed.
+      }
+    }
   }
 
   async function connect() {
@@ -180,16 +263,19 @@ export function LarkSettingsPage({
       {loading ? <div className="personal-lark-loading"><Loader2 className="is-spinning" size={18} />加载 Lark 配置…</div> : null}
 
       {!loading && tab === "apps" ? (
-        <div className="personal-lark-app-grid">
-          {apps.map((app) => (
-            <article className="personal-lark-app-card" key={app.app_ref}>
-              <span className="personal-lark-app-avatar"><Bot size={19} /></span>
-              <div><strong>{app.label}</strong><small>{app.brand} · lark-cli profile</small></div>
-              <em className={app.ready ? "is-ready" : "is-off"}>{app.ready ? "Ready" : "Needs setup"}</em>
-              <p>{connections.filter((connection) => connection.app_ref === app.app_ref).length} Goal connections</p>
-            </article>
-          ))}
-          {apps.length === 0 ? <p className="personal-lark-empty">还没有可用的 lark-cli App profile。</p> : null}
+        <div className="personal-lark-apps">
+          <div className="personal-lark-app-toolbar"><span>{apps.length} reusable Apps</span><button className="personal-primary-action" onClick={openSetup} type="button"><Plus size={16} />New Lark App</button></div>
+          <div className="personal-lark-app-grid">
+            {apps.map((app) => (
+              <article className="personal-lark-app-card" key={app.app_ref}>
+                <span className="personal-lark-app-avatar"><Bot size={19} /></span>
+                <div><strong>{app.label}</strong><small>{app.brand} · lark-cli profile</small></div>
+                <em className={app.ready ? "is-ready" : "is-off"}>{app.ready ? "Ready" : "Needs setup"}</em>
+                <p>{connections.filter((connection) => connection.app_ref === app.app_ref).length} Goal connections</p>
+              </article>
+            ))}
+            {apps.length === 0 ? <p className="personal-lark-empty">还没有可用的 lark-cli App profile。</p> : null}
+          </div>
         </div>
       ) : null}
 
@@ -222,7 +308,7 @@ export function LarkSettingsPage({
         <div className="personal-lark-modal-backdrop" role="presentation">
           <section aria-labelledby="connect-lark-title" aria-modal="true" className="personal-lark-modal" role="dialog">
             <header><div><small>Goal Topic connection</small><h2 id="connect-lark-title">Connect Lark App</h2></div><button aria-label="关闭连接弹窗" onClick={() => setModalOpen(false)} type="button"><X size={18} /></button></header>
-            <label><span>Lark App</span><select aria-label="Lark App" onChange={(event) => setAppRef(event.target.value)} value={appRef}>{apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.ready ? "" : " · Needs setup"}</option>)}</select></label>
+            <label><span>Lark App</span><select aria-label="Lark App" onChange={(event) => { if (event.target.value === "__register__") openSetup(); else setAppRef(event.target.value); }} value={appRef}>{apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.ready ? "" : " · Needs setup"}</option>)}<option value="__register__">＋ Register another Lark App — Create through Feishu</option></select></label>
             <label><span>Group chat</span><input aria-label="搜索飞书群" onChange={(event) => setChatQuery(event.target.value)} placeholder="搜索群名称" type="search" value={chatQuery} /><select aria-label="Group chat" onChange={(event) => setChatId(event.target.value)} value={chatId}>{chats.map((chat) => <option key={chat.chat_id} value={chat.chat_id}>{chat.chat_name}</option>)}</select></label>
             <label><span>Bind to Goal</span><select aria-label="Bind to Goal" onChange={(event) => setGoalId(event.target.value)} value={goalId}>{goals.map((goal) => <option key={goal.goalId} value={goal.goalId}>{goal.title}</option>)}</select></label>
             <label className="personal-lark-check"><input checked readOnly type="checkbox" /><span><strong>Create Goal topic automatically</strong><small>A dedicated topic will be created for this Goal.</small></span></label>
@@ -232,6 +318,30 @@ export function LarkSettingsPage({
             <p className="personal-lark-cardinality"><Check size={15} />One Lark App · many Goals · one topic per Goal</p>
             {connectError ? <p className="personal-notification-error">{connectError}</p> : null}
             <footer><button className="personal-secondary-action" onClick={() => setModalOpen(false)} type="button">Cancel</button><button className="personal-primary-action" disabled={!appRef || !goalId || !chatId || connecting} onClick={() => void connect()} type="button">{connecting ? <Loader2 className="is-spinning" size={15} /> : null}Connect</button></footer>
+          </section>
+        </div>
+      ) : null}
+
+      {setupOpen ? (
+        <div className="personal-lark-modal-backdrop is-setup" role="presentation">
+          <section aria-labelledby="new-lark-app-title" aria-modal="true" className="personal-lark-modal personal-lark-setup-modal" role="dialog">
+            <header><div><small>Reusable workspace App</small><h2 id="new-lark-app-title">New Lark App</h2></div><button aria-label="关闭创建弹窗" onClick={() => void closeSetup()} type="button"><X size={18} /></button></header>
+            {!setupSnapshot ? (
+              <>
+                <p className="personal-lark-setup-copy">LoopX 将通过 lark-cli 打开飞书官方创建页面。应用凭证保存在系统 Keychain，LoopX 只保留 profile 引用。</p>
+                <label><span>Profile name</span><input aria-label="Profile name" autoComplete="off" onChange={(event) => setSetupAppRef(event.target.value)} placeholder="loopx-workspace-bot" value={setupAppRef} /></label>
+                <label><span>Region</span><select aria-label="Region" onChange={(event) => setSetupBrand(event.target.value as "feishu" | "lark")} value={setupBrand}><option value="feishu">Feishu</option><option value="lark">Lark</option></select></label>
+                {setupAppRef && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(setupAppRef) ? <p className="personal-notification-error">Profile 只能包含字母、数字、点、下划线和连字符。</p> : null}
+              </>
+            ) : (
+              <div className="personal-lark-setup-progress">
+                <span className={`personal-lark-setup-icon is-${setupSnapshot.status}`}>{setupSnapshot.status === "ready" ? <Check size={22} /> : <Loader2 className={setupSnapshot.status === "failed" ? "" : "is-spinning"} size={22} />}</span>
+                <div><strong>{setupSnapshot.status === "ready" ? "App 已创建" : setupSnapshot.status === "failed" ? "创建失败" : "等待飞书完成创建"}</strong><p>{setupSnapshot.status === "waiting_for_feishu" ? "请在新窗口中完成飞书授权，完成后会自动回到这里。" : setupSnapshot.status === "starting" ? "正在生成飞书官方创建链接…" : setupSnapshot.error}</p></div>
+                {setupSnapshot.verification_url ? <a href={setupSnapshot.verification_url} rel="noreferrer" target="_blank"><ExternalLink size={15} />重新打开飞书</a> : null}
+              </div>
+            )}
+            {setupError ? <p className="personal-notification-error">{setupError}</p> : null}
+            <footer><button className="personal-secondary-action" onClick={() => void closeSetup()} type="button">Cancel</button>{!setupSnapshot ? <button className="personal-primary-action" disabled={setupStarting || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(setupAppRef)} onClick={() => void startSetup()} type="button">{setupStarting ? <Loader2 className="is-spinning" size={15} /> : <ExternalLink size={15} />}Continue in Feishu</button> : null}</footer>
           </section>
         </div>
       ) : null}
