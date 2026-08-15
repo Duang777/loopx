@@ -4958,11 +4958,11 @@ function personalGoalState(payload: StatusPayload, row: GoalDirectoryRow): Perso
   const agentTodos = getShareTodos(row, "agent");
   const hasOpenUserTodo = Boolean(firstOpenTodo(userTodos));
   const hasOpenAgentTodo = Boolean(firstOpenTodo(agentTodos));
-  if (personalGoalNeedsRepair(payload, row)) {
-    return "需修复";
-  }
   if (["user_or_controller", "controller"].includes(row.waitingOn) || hasOpenUserTodo) {
     return "等你";
+  }
+  if (personalGoalNeedsRepair(payload, row)) {
+    return "需修复";
   }
   if (row.waitingOn === "external_evidence") {
     return "等待条件";

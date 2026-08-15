@@ -377,7 +377,7 @@ async function installApi(page) {
 async function main() {
   const { chromium } = loadPlaywright();
   await mkdir(outputDir, { recursive: true });
-  const results = new Map(Array.from({ length: 15 }, (_, index) => [index + 1, { status: "UNTESTED", note: "" }]));
+  const results = new Map(Array.from({ length: 18 }, (_, index) => [index + 1, { status: "UNTESTED", note: "" }]));
   const observations = [];
   const pass = (criterion, note) => results.set(criterion, { status: "PASS", note });
   const fail = (criterion, note) => results.set(criterion, { status: "FAIL", note });
@@ -410,6 +410,11 @@ async function main() {
     if (await page.locator(".personal-home-lane").count() !== 4) throw new Error("Manager home did not render four active lanes");
     if (body.includes("接下来")) throw new Error("Manager home still exposes the ambiguous 接下来 label");
     if (!(await page.locator(".personal-home-history").isVisible())) throw new Error("Completed Goals are not available through the collapsed history section");
+    const needsYouCount = await page.getByTestId("personal-home-lane-needs_you").locator(".personal-home-goal-card").count();
+    const greeting = await page.locator(".personal-manager-greeting").innerText();
+    if (!greeting.includes(`你有 ${needsYouCount} 项需要处理`)) {
+      throw new Error(`Manager greeting count disagrees with the needs-you lane: count=${needsYouCount}; greeting=${greeting}`);
+    }
     if (await page.locator(".personal-global-rail").count()) throw new Error("Old icon rail is visible");
     pass(1, "Single Goal sidebar is visible and the old icon rail is absent.");
     if (await page.locator(".personal-timeline-row").filter({ hasText: /查看|纠偏/u }).count()) throw new Error("Browse rows expose repeated action buttons");
@@ -417,6 +422,16 @@ async function main() {
     await page.screenshot({ path: resolve(outputDir, "desktop-first-screen.png"), fullPage: false, animations: "disabled" });
     pass(4, "First viewport exposes needs-you, running, observing, and scheduled Goal lanes with collapsed history.");
     pass(15, "Desktop viewport matches the approved single-sidebar/channel/drawer composition.");
+
+    await page.locator('input[aria-label="添加图片"]').setInputFiles({
+      buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8WQAAAAASUVORK5CYII=", "base64"),
+      mimeType: "image/png",
+      name: "loopx-smoke.png",
+    });
+    await page.getByRole("img", { name: "loopx-smoke.png" }).waitFor({ state: "visible" });
+    if (await page.getByRole("button", { name: "发送" }).isDisabled()) throw new Error("A valid image attachment did not enable the composer send action");
+    await page.getByRole("button", { name: "移除图片 loopx-smoke.png" }).click();
+    pass(18, "A valid PNG attaches without the native file picker, renders a preview, and enables send.");
 
     await page.getByRole("button", { name: "创建 Goal" }).click();
     await page.getByText("变更预览").waitFor({ state: "visible" });

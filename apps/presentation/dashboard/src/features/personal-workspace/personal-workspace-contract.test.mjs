@@ -101,12 +101,18 @@ for (const lane of ["needs_you", "running", "observing", "scheduled", "history"]
   assert.match(model, new RegExp(`"${lane}"`), `Manager home models the ${lane} lane`);
 }
 assert.match(model, /function workspaceHomeLaneForGoal/, "Manager lane projection is centralized and testable");
+assert.match(model, /goal\.state === "推进中" \|\| goal\.state === "需修复"/, "Agent-owned repair work stays in the running lane");
 for (const label of ["需要你", "执行中", "观察中", "已安排", "历史"]) {
   assert.match(page, new RegExp(label), `Manager home renders ${label}`);
 }
 assert.match(page, /personal-home-board/, "Manager home uses the four-lane workspace board");
 assert.match(page, /<details className="personal-home-history"/, "Completed work is collapsed into history");
 assert.doesNotMatch(page, />接下来</, "The ambiguous 接下来 lane is not rendered");
+assert.match(page, /managerNeedsYouCount[\s\S]*workspaceHomeLaneForGoal\(goal\) === "needs_you"/, "Manager greeting derives attention from the same lane projection");
+assert.match(page, /你有 \{managerNeedsYouCount\} 项需要处理/, "Manager greeting shows the projected needs-you count");
+assert.match(page, /managerBlockingCount[\s\S]*goal\.needsYouBlocking \|\| goal\.state === "等你"/, "Manager blocking count includes projected user waits without a parsed Todo");
+assert.match(page, /其中 \{managerBlockingCount\} 项正在阻塞 Agent/, "Manager greeting shows the projected blocking count");
+assert.match(dashboard, /function personalGoalState[\s\S]*hasOpenUserTodo[\s\S]*if \(\["user_or_controller", "controller"\][\s\S]*if \(personalGoalNeedsRepair/, "User gates outrank agent-owned health repair in Goal state projection");
 assert.match(drawer, />进入 Goal</, "Applied Goal creation offers an explicit navigation action");
 
 assert.match(page, /notificationSettingsOpen\s*\?\s*\(/, "Notification settings replace the center workspace");

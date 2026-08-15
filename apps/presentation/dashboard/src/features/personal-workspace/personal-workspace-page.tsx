@@ -463,6 +463,17 @@ export function PersonalWorkspacePage({
       },
     } : goal;
   }), [goalContexts, model.goals]);
+  const managerNeedsYouCount = useMemo(
+    () => workspaceGoals.filter((goal) => workspaceHomeLaneForGoal(goal) === "needs_you").length,
+    [workspaceGoals],
+  );
+  const managerBlockingCount = useMemo(
+    () => workspaceGoals.filter((goal) =>
+      workspaceHomeLaneForGoal(goal) === "needs_you"
+      && (goal.needsYouBlocking || goal.state === "等你")
+    ).length,
+    [workspaceGoals],
+  );
   const selectedGoal = workspaceGoals.find((goal) => goal.goalId === selectedGoalId) ?? null;
   const notificationSettingsOpen = selection?.kind === "notifications";
   const managerProjectionId = selectedGoalId ?? (selectedChannel === "manager" ? null : "__manager_channel__");
@@ -558,11 +569,11 @@ export function PersonalWorkspacePage({
       return !Number.isNaN(since) && !Number.isNaN(parsed) && parsed > since;
     };
     setDigest({
-      attention: model.openUserTodoCount,
+      attention: managerNeedsYouCount,
       done: runs.filter((run) => run.status === "completed" && isFresh(run.latestActivity)).length,
       failed: runs.filter((run) => (run.status === "failed" || run.status === "interrupted") && isFresh(run.latestActivity)).length,
     });
-  }, [items, model.openUserTodoCount, selectedChannel, selectedGoalId]);
+  }, [items, managerNeedsYouCount, selectedChannel, selectedGoalId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1085,7 +1096,7 @@ export function PersonalWorkspacePage({
             {!selectedGoal ? (
               <section className="personal-manager-greeting">
                 <span><Bot size={20} /></span>
-                <div><strong>你好，我是 LoopX 管家</strong><p>你有 {model.openUserTodoCount} 项需要处理，其中 {model.blockingTodoCount} 项正在阻塞 Agent。</p></div>
+                <div><strong>你好，我是 LoopX 管家</strong><p>你有 {managerNeedsYouCount} 项需要处理，其中 {managerBlockingCount} 项正在阻塞 Agent。</p></div>
               </section>
             ) : null}
             {selectedGoal && selectedGoalTab === "tasks" ? (
@@ -1159,7 +1170,7 @@ export function PersonalWorkspacePage({
       sidebar={(
         <GoalSidebar
           activeRunCount={goalRunningCount}
-          attentionCount={model.openUserTodoCount}
+          attentionCount={managerNeedsYouCount}
           goals={workspaceGoals}
           onRequestGoalCreate={() => void requestGoalCreate()}
           onOpenNotifications={() => setSelection({ kind: "notifications" })}

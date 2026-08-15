@@ -353,8 +353,8 @@ export function workspaceSessionStatusLabel(status?: string): string {
  */
 export function workspaceHomeLaneForGoal(goal: WorkspaceGoal): WorkspaceHomeLane {
   if (goal.state === "已完成") return "history";
-  if (goal.needsYou || goal.state === "等你" || goal.state === "需修复") return "needs_you";
-  if (goal.state === "推进中") return "running";
+  if (goal.needsYou || goal.state === "等你") return "needs_you";
+  if (goal.state === "推进中" || goal.state === "需修复") return "running";
   if (goal.state === "安静运行") return "observing";
   return "scheduled";
 }
