@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 const source = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
 const model = source("./personal-workspace-model.ts");
 const drawer = source("./context-drawer.tsx");
+const header = source("./channel-header.tsx");
 const page = source("./personal-workspace-page.tsx");
 const timeline = source("./channel-timeline.tsx");
 const larkSettings = source("./lark-settings-page.tsx");
@@ -39,7 +40,18 @@ assert.match(drawer, /personal-run-more/, "Run secondary actions live in a compa
 assert.match(page, /item\.run\.runId === selection\.item\.runId/, "Run drawer refresh keeps the selected run identity");
 assert.match(model, /todoId\??:/, "An execution Run keeps its Task identity");
 assert.match(tasks, /查看 Session/, "A running Task exposes a visible execution Session link");
-assert.match(drawer, /进入执行 Session/, "Run details expose an explicit Session entry");
+assert.match(drawer, />查看运行记录</, "Run details expose an explicit run-record entry");
+assert.doesNotMatch(drawer, /agentLabel\} · \{selection\.item\.status\}/, "Run details do not expose raw status codes in the heading");
+assert.match(page, /activeSessionRun/, "Opening a Session preserves the selected run in Goal state");
+assert.match(page, /personal-session-record/, "Goal chat visibly identifies the loaded Session record");
+assert.doesNotMatch(header, /personal-goal-tabs/, "Goal Tasks and Files no longer compete with the main timeline in the header");
+for (const view of ["Goal 动态", "Tasks", "Files"]) {
+  assert.match(drawer, new RegExp(`>${view}<`), `Goal detail exposes ${view}`);
+}
+assert.match(model, /onOpenGoalView\??:/, "Goal detail can switch the center workspace view");
+for (const label of ["执行中", "已安排", "等待条件", "可继续"]) {
+  assert.match(model + drawer + page, new RegExp(label), `Session and Run status language includes ${label}`);
+}
 assert.match(dashboard, /actionKind:\s*"run\.correct"/, "Run correction uses the scoped typed action");
 assert.doesNotMatch(
   dashboard,
@@ -84,6 +96,18 @@ assert.match(model, /repository\??:\s*WorkspaceRepositoryContext/, "Goal exposes
 assert.match(drawer, /Repository/, "Goal settings display the repository");
 assert.match(drawer, /Read only/, "Repository is visibly read-only");
 assert.doesNotMatch(drawer, /Add repository/, "Goal settings do not imply repository binding controls");
+
+for (const lane of ["needs_you", "running", "observing", "scheduled", "history"]) {
+  assert.match(model, new RegExp(`"${lane}"`), `Manager home models the ${lane} lane`);
+}
+assert.match(model, /function workspaceHomeLaneForGoal/, "Manager lane projection is centralized and testable");
+for (const label of ["需要你", "执行中", "观察中", "已安排", "历史"]) {
+  assert.match(page, new RegExp(label), `Manager home renders ${label}`);
+}
+assert.match(page, /personal-home-board/, "Manager home uses the four-lane workspace board");
+assert.match(page, /<details className="personal-home-history"/, "Completed work is collapsed into history");
+assert.doesNotMatch(page, />接下来</, "The ambiguous 接下来 lane is not rendered");
+assert.match(drawer, />进入 Goal</, "Applied Goal creation offers an explicit navigation action");
 
 assert.match(page, /notificationSettingsOpen\s*\?\s*\(/, "Notification settings replace the center workspace");
 assert.match(page, /<LarkSettingsPage/, "Pure configuration mode renders the Lark management page");
