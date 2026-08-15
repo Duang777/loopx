@@ -204,6 +204,62 @@ def test_routes_mentions_by_topic_and_replies_in_thread(tmp_path: Path) -> None:
         "topic_root_message_id": "om_topic_alpha",
     }
 
+    reply_route = route_lark_topic_event(
+        target_payload=read_goal_channel_targets(target_path),
+        binding_payloads={"goal-alpha": read_goal_channel_binding(binding_path)},
+        event={
+            "chat_id": CHAT_ID,
+            "root_id": "om_topic_alpha",
+            "message_id": "om_reply_to_bot",
+            "mentioned": False,
+            "reply_context_verified": True,
+            "reply_to_bot": True,
+        },
+    )
+    assert reply_route is not None
+    assert reply_route["goal_id"] == "goal-alpha"
+    assert reply_route["message_id"] == "om_reply_to_bot"
+
+    provider_mention_route = route_lark_topic_event(
+        target_payload=read_goal_channel_targets(target_path),
+        binding_payloads={"goal-alpha": read_goal_channel_binding(binding_path)},
+        event={
+            "chat_id": CHAT_ID,
+            "root_id": "om_topic_alpha",
+            "message_id": "om_provider_mention",
+            "content": "@LoopX Mew 当前版本是什么？",
+            "mentions": [{"name": "LoopX Mew"}],
+        },
+    )
+    assert provider_mention_route is not None
+    assert provider_mention_route["goal_id"] == "goal-alpha"
+
+    rendered_mention_route = route_lark_topic_event(
+        target_payload=read_goal_channel_targets(target_path),
+        binding_payloads={"goal-alpha": read_goal_channel_binding(binding_path)},
+        event={
+            "chat_id": CHAT_ID,
+            "root_id": "om_topic_alpha",
+            "message_id": "om_rendered_mention",
+            "content": "@LoopX Mew 当前版本是什么？",
+        },
+    )
+    assert rendered_mention_route is not None
+    assert rendered_mention_route["goal_id"] == "goal-alpha"
+
+    self_message_route = route_lark_topic_event(
+        target_payload=read_goal_channel_targets(target_path),
+        binding_payloads={"goal-alpha": read_goal_channel_binding(binding_path)},
+        event={
+            "chat_id": CHAT_ID,
+            "root_id": "om_topic_alpha",
+            "message_id": "om_self_message",
+            "sender_id": APP_ID,
+            "content": "@LoopX Mew 当前运行的是 LoopX 开发版。",
+        },
+    )
+    assert self_message_route is None
+
     reply = reply_lark_goal_topic(
         route=route,
         text="Handled",

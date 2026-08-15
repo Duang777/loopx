@@ -293,7 +293,8 @@ class ChatActionService:
     def _normalize(self, action_kind: str, parameters: Mapping[str, Any]) -> dict[str, Any]:
         if action_kind == "todo.create":
             values = self._allowed_parameters(
-                parameters, allowed={"goal_id", "text", "agent_id", "endpoint_id"}
+                parameters,
+                allowed={"goal_id", "text", "agent_id", "endpoint_id", "start_execution"},
             )
             goal_id = _opaque(values.get("goal_id"), field="goal_id")
             self._goal(goal_id)
@@ -319,6 +320,12 @@ class ChatActionService:
                         },
                     )
                 result["agent_id"] = agent_id
+            if values.get("start_execution") is not None:
+                if not isinstance(values["start_execution"], bool):
+                    raise ValueError("start_execution must be true or false")
+                result["start_execution"] = values["start_execution"]
+            if result.get("start_execution") and not result.get("agent_id"):
+                raise ValueError("start_execution requires an assigned Agent")
             return result
         if action_kind == "todo.update":
             values = self._allowed_parameters(
@@ -585,6 +592,7 @@ class ChatActionService:
                     "cadence",
                     "stop_condition",
                     "session_id",
+                    "endpoint_id",
                 },
             )
             goal_id = _opaque(values.get("goal_id"), field="goal_id")
@@ -598,6 +606,10 @@ class ChatActionService:
                 "agent_id": _opaque(values.get("agent_id"), field="agent_id"),
                 "operation": operation,
             }
+            if values.get("endpoint_id"):
+                endpoint_id = _opaque(values["endpoint_id"], field="endpoint_id")
+                result["endpoint_id"] = endpoint_id
+                result["agent_id"] = self._resolve_goal_agent(goal_id, endpoint_id)
             if values.get("target"):
                 result["target"] = _text(values["target"], field="target", limit=400)
             if values.get("target_key"):
@@ -612,8 +624,6 @@ class ChatActionService:
                 result["session_id"] = _opaque(values["session_id"], field="session_id")
             if operation == "edit" and len(result) == 4:
                 raise ValueError("monitor edit requires target, target_key, cadence, or stop_condition")
-            if operation == "run_now" and not result.get("session_id"):
-                raise ValueError("monitor run_now requires session_id")
             return result
         if action_kind == "gate.resolve":
             values = self._allowed_parameters(
@@ -1212,10 +1222,12 @@ class ChatActionService:
                         "next_action": "Open the Goal channel, establish a Session, and regenerate the preview.",
                     },
                 )
-            session_id = str(parameters["session_id"])
-            session_fingerprint = self._session_fingerprint(session_id, goal_id)
             expected = str(proposal.get("expected_state_fingerprint") or "")
-            composite = _digest({"goal": current_fingerprint, "session": session_fingerprint})
+            session_id = str(parameters.get("session_id") or "")
+            composite = current_fingerprint
+            if session_id:
+                session_fingerprint = self._session_fingerprint(session_id, goal_id)
+                composite = _digest({"goal": current_fingerprint, "session": session_fingerprint})
             if composite != expected:
                 stale = self.store.apply(
                     proposal_id, current_state_fingerprint=composite, receipt={}
@@ -1223,6 +1235,19 @@ class ChatActionService:
                 return {"proposal": stale, "turn": None}
             goal = self._goal(goal_id)
             project = Path(str(goal.get("repo") or "")).expanduser().resolve()
+            if not session_id:
+                execution_agent_id = str(parameters.get("endpoint_id") or parameters["agent_id"])
+                self._agent_eligibility(execution_agent_id, project=project)
+                session, _resumed = self.runtime_controller.open_session(
+                    goal_id=goal_id,
+                    agent_id=execution_agent_id,
+                    work_dir=project,
+                    objective=str(parameters.get("target") or f"Run monitor {parameters['todo_id']}"),
+                    mode="resume_latest",
+                    channel_id=f"task.{parameters['todo_id']}",
+                    agent_goal_id=goal_id,
+                )
+                session_id = _opaque(session.get("session_id"), field="session_id")
             turn, created = self.runtime_controller.submit_turn(
                 session_id=session_id,
                 client_turn_id=f"action-{proposal_id}",
@@ -1352,13 +1377,18 @@ class ChatActionService:
         elif action_kind in {"todo.update", "monitor.update"}:
             goal_fingerprint = self._goal_state_fingerprint(normalized["goal_id"])
             if action_kind == "monitor.update" and normalized.get("operation") == "run_now":
-                fingerprint = _digest(
-                    {
-                        "goal": goal_fingerprint,
-                        "session": self._session_fingerprint(
-                            normalized["session_id"], normalized["goal_id"]
-                        ),
-                    }
+                session_id = normalized.get("session_id")
+                fingerprint = (
+                    _digest(
+                        {
+                            "goal": goal_fingerprint,
+                            "session": self._session_fingerprint(
+                                session_id, normalized["goal_id"]
+                            ),
+                        }
+                    )
+                    if session_id
+                    else goal_fingerprint
                 )
             else:
                 fingerprint = goal_fingerprint
@@ -1521,12 +1551,63 @@ class ChatActionService:
                 },
                 "canonical_receipt": canonical_receipt,
             }
+            turn_result = None
+            if parameters.get("start_execution"):
+                if self.runtime_controller is None:
+                    raise ValueError("Chat Runtime Controller is unavailable")
+                execution_agent_id = str(
+                    parameters.get("endpoint_id") or parameters["agent_id"]
+                )
+                execution_step = steps.get("execution_started")
+                if isinstance(execution_step, dict) and execution_step.get("session_id"):
+                    session_id = _opaque(execution_step.get("session_id"), field="session_id")
+                    turn_id = _opaque(execution_step.get("turn_id"), field="turn_id")
+                    created = False
+                else:
+                    goal = self._goal(str(parameters["goal_id"]))
+                    project = Path(str(goal.get("repo") or ".")).expanduser().resolve()
+                    if not project.is_dir():
+                        raise ValueError("the Goal project root is unavailable")
+                    self._agent_eligibility(execution_agent_id, project=project)
+                    session, _resumed = self.runtime_controller.open_session(
+                        goal_id=str(parameters["goal_id"]),
+                        agent_id=execution_agent_id,
+                        work_dir=project,
+                        objective=str(parameters["text"]),
+                        mode="resume_latest",
+                        channel_id=f"task.{todo_id}",
+                        agent_goal_id=str(parameters["goal_id"]),
+                    )
+                    session_id = _opaque(session.get("session_id"), field="session_id")
+                    turn, created = self.runtime_controller.submit_turn(
+                        session_id=session_id,
+                        client_turn_id=f"task-start-{proposal_id}",
+                        message=str(parameters["text"]),
+                        work_dir=project,
+                        objective=str(parameters["text"]),
+                    )
+                    turn_id = _opaque(turn.get("turn_id"), field="turn_id")
+                    self.store.save_checkpoint(
+                        proposal_id,
+                        step="execution_started",
+                        receipt={"session_id": session_id, "turn_id": turn_id},
+                    )
+                receipt["resource_ids"].update(
+                    {"session_id": session_id, "turn_id": turn_id}
+                )
+                receipt["outcome"] = "task_execution_started"
+                turn_result = {
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "status": "queued",
+                    "created": created,
+                }
             stored = self.store.apply(
                 proposal_id,
                 current_state_fingerprint=current_fingerprint,
                 receipt=receipt,
             )
-            return {"proposal": stored, "turn": None}
+            return {"proposal": stored, "turn": turn_result}
         if action_kind == "run.correct":
             if self.runtime_controller is None or self.chat_store is None:
                 raise ValueError("Chat Runtime Controller is unavailable")
@@ -1584,7 +1665,8 @@ class ChatActionService:
         if not resource_ids.get("turn_id"):
             return None
         return {
+            "session_id": str(resource_ids["session_id"]) if resource_ids.get("session_id") else None,
             "turn_id": str(resource_ids["turn_id"]),
             "status": "accepted",
-            "created": receipt.get("outcome") == "turn_created",
+            "created": receipt.get("outcome") in {"turn_created", "task_execution_started"},
         }

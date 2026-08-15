@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
+import re
 import time
 import uuid
 import webbrowser
@@ -24,8 +27,10 @@ from .chat_store import ChatSessionStore
 from .chat_lark_api import (
     LarkChatRequestMixin,
     build_goal_repository_contexts as build_goal_repository_contexts,
+    build_lark_goal_topic_runtime_snapshot,
 )
 from .extensions.lark import LARK_EXTENSION_ID, LARK_GOAL_CHANNEL_PERMISSION
+from .extensions.lark.app_setup import LarkAppSetupManager
 from .extensions.lark.goal_channel import (
     configure_lark_goal_channel_automation,
     goal_channel_target_for_name,
@@ -33,6 +38,8 @@ from .extensions.lark.goal_channel import (
     read_goal_channel_targets,
     setup_lark_goal_channel,
 )
+from .extensions.lark.goal_topic_connections import list_lark_apps
+from .extensions.lark.goal_topic_runtime import LarkGoalTopicRuntimeService
 from .extensions.lark.presentation.kanban import (
     CommandRunner,
     default_subprocess_runner,
@@ -73,6 +80,7 @@ CHAT_GOAL_CHANNEL_SETUP_PATH = "/api/chat/goal-channel/setup"
 CHAT_GOAL_CHANNEL_CONFIGURE_PATH = "/api/chat/goal-channel/configure"
 CHAT_GOAL_CONTEXTS_PATH = "/api/chat/goals/contexts"
 CHAT_LARK_APPS_PATH = "/api/chat/lark/apps"
+CHAT_LARK_APP_SETUPS_PATH = "/api/chat/lark/app-setups"
 CHAT_LARK_CHATS_PATH = "/api/chat/lark/chats"
 CHAT_LARK_CONNECTIONS_PATH = "/api/chat/lark/connections"
 CHAT_ACTIONS_PATH = "/api/actions"
@@ -85,6 +93,64 @@ def default_chat_assets_dir() -> Path:
 
 def _compact_text(value: Any, *, limit: int = 600) -> str:
     return " ".join(str(value or "").split())[:limit].strip()
+
+
+CHAT_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
+CHAT_IMAGE_MAX_COUNT = 4
+CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+CHAT_IMAGE_MAX_TOTAL_BYTES = 12 * 1024 * 1024
+_CHAT_IMAGE_DATA_URL = re.compile(
+    r"^data:(image/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$"
+)
+
+
+def normalize_chat_image_attachments(value: Any) -> list[dict[str, Any]]:
+    if value is None or value == "":
+        return []
+    if not isinstance(value, list):
+        raise ValueError("attachments must be an array")
+    if len(value) > CHAT_IMAGE_MAX_COUNT:
+        raise ValueError(f"at most {CHAT_IMAGE_MAX_COUNT} image attachments are allowed")
+    normalized: list[dict[str, Any]] = []
+    total_bytes = 0
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError("each attachment must be an object")
+        unknown = set(raw) - {"data_url", "id", "mime_type", "name", "size"}
+        if unknown:
+            raise ValueError("unknown image attachment field")
+        data_url = str(raw.get("data_url") or "")
+        match = _CHAT_IMAGE_DATA_URL.fullmatch(data_url)
+        if match is None:
+            raise ValueError("image attachment must be a supported base64 data URL")
+        mime_type = str(raw.get("mime_type") or match.group(1)).lower()
+        if mime_type not in CHAT_IMAGE_TYPES or mime_type != match.group(1):
+            raise ValueError("unsupported image attachment type")
+        encoded = match.group(2)
+        if len(encoded) > ((CHAT_IMAGE_MAX_BYTES + 2) // 3) * 4 + 4:
+            raise ValueError("image attachment exceeds the 5MB limit")
+        try:
+            decoded_size = len(base64.b64decode(encoded, validate=True))
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("image attachment contains invalid base64 data") from exc
+        if decoded_size > CHAT_IMAGE_MAX_BYTES:
+            raise ValueError("image attachment exceeds the 5MB limit")
+        declared_size = raw.get("size")
+        if declared_size is not None and int(declared_size) != decoded_size:
+            raise ValueError("image attachment size does not match its data")
+        total_bytes += decoded_size
+        if total_bytes > CHAT_IMAGE_MAX_TOTAL_BYTES:
+            raise ValueError("image attachments exceed the 12MB total limit")
+        normalized.append(
+            {
+                "data_url": data_url,
+                "id": _compact_text(raw.get("id"), limit=160) or uuid.uuid4().hex,
+                "mime_type": mime_type,
+                "name": _compact_text(raw.get("name"), limit=180) or f"image-{len(normalized) + 1}",
+                "size": decoded_size,
+            }
+        )
+    return normalized
 
 
 def _active_state_section(state_text: str, heading: str) -> str:
@@ -344,11 +410,17 @@ class ChatHTTPServer(ThreadingHTTPServer):
     action_service: ChatActionService
     runtime_controller: ChatRuntimeController
     lark_runner: CommandRunner
+    lark_app_setup_manager: LarkAppSetupManager
+    lark_goal_topic_runtime: LarkGoalTopicRuntimeService
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
 
     def server_close(self) -> None:
+        if hasattr(self, "lark_app_setup_manager"):
+            self.lark_app_setup_manager.close()
+        if hasattr(self, "lark_goal_topic_runtime"):
+            self.lark_goal_topic_runtime.close()
         if hasattr(self, "runtime_controller"):
             self.runtime_controller.close()
         super().server_close()
@@ -590,11 +662,12 @@ class ChatRequestHandler(LarkChatRequestMixin, BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json()
-            if set(body) - {"message", "client_turn_id"}:
+            if set(body) - {"message", "client_turn_id", "attachments"}:
                 raise ValueError("unknown turn field")
             message = str(body.get("message") or "").strip()
             if not message:
                 raise ValueError("message is required")
+            attachments = normalize_chat_image_attachments(body.get("attachments"))
             client_turn_id = _compact_text(body.get("client_turn_id"), limit=160) or uuid.uuid4().hex
             registry, goal = self._registry_and_goal(str(session["goal_id"]))
             context = _goal_public_context(registry, goal)
@@ -607,6 +680,7 @@ class ChatRequestHandler(LarkChatRequestMixin, BaseHTTPRequestHandler):
                 session_id=session_id,
                 client_turn_id=client_turn_id,
                 message=message,
+                attachments=attachments,
                 work_dir=context["project"],
                 objective=runtime_objective,
             )
@@ -1225,6 +1299,10 @@ class ChatRequestHandler(LarkChatRequestMixin, BaseHTTPRequestHandler):
         if path == CHAT_LARK_APPS_PATH:
             self._lark_apps()
             return
+        setup_parts = path.strip("/").split("/")
+        if len(setup_parts) == 5 and setup_parts[:4] == ["api", "chat", "lark", "app-setups"]:
+            self._lark_setup_snapshot(setup_parts[4])
+            return
         if path == CHAT_LARK_CHATS_PATH:
             self._lark_chats()
             return
@@ -1323,6 +1401,9 @@ class ChatRequestHandler(LarkChatRequestMixin, BaseHTTPRequestHandler):
         if path == CHAT_GOAL_CHANNEL_CONFIGURE_PATH:
             self._goal_channel_configure()
             return
+        if path == CHAT_LARK_APP_SETUPS_PATH:
+            self._lark_setup_start()
+            return
         if path == CHAT_LARK_CONNECTIONS_PATH:
             self._lark_connect()
             return
@@ -1332,6 +1413,10 @@ class ChatRequestHandler(LarkChatRequestMixin, BaseHTTPRequestHandler):
         if not self._require_loopback_origin():
             return
         path = urlparse(self.path).path
+        setup_parts = path.strip("/").split("/")
+        if len(setup_parts) == 5 and setup_parts[:4] == ["api", "chat", "lark", "app-setups"]:
+            self._lark_setup_cancel(setup_parts[4])
+            return
         if path == CHAT_LARK_CONNECTIONS_PATH:
             self._lark_disconnect()
             return
@@ -1383,6 +1468,12 @@ def serve_chat(
     server.assets_dir = resolved_assets
     server.verbose = verbose
     server.lark_runner = default_subprocess_runner
+    server.lark_app_setup_manager = LarkAppSetupManager(
+        profile_verifier=lambda app_ref: any(
+            app.get("app_ref") == app_ref and app.get("ready") is True
+            for app in list_lark_apps(runner=server.lark_runner)
+        )
+    )
     registry = load_registry(registry_path)
     runtime_root = resolve_runtime_root(
         registry,
@@ -1406,6 +1497,15 @@ def serve_chat(
         runtime_controller=server.runtime_controller,
         workspace_roots=scan_roots,
     )
+    server.lark_goal_topic_runtime = LarkGoalTopicRuntimeService(
+        snapshot_provider=lambda: build_lark_goal_topic_runtime_snapshot(
+            registry_path=server.registry_path,
+            runtime_root_override=server.runtime_root_override,
+        ),
+        runtime_root=runtime_root,
+        runtime_controller=server.runtime_controller,
+    )
+    server.lark_goal_topic_runtime.refresh()
     url = f"http://{host}:{port}{DEFAULT_CHAT_PATH}"
     print(f"Serving LoopX Chat at {url}", flush=True)
     print("Agent boundary: local adapters, read-only sandbox, approval policy never", flush=True)

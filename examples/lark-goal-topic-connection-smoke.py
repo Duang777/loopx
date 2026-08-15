@@ -26,6 +26,35 @@ APP_ID = "cli_public_fixture"
 CHAT_ID = "oc_public_fixture"
 
 
+class FakeLarkAppSetupManager:
+    def __init__(self) -> None:
+        self.snapshots: dict[str, dict[str, Any]] = {}
+
+    def start(self, *, app_ref: str, brand: str) -> dict[str, Any]:
+        setup_id = f"lark_setup_{len(self.snapshots) + 1}"
+        snapshot = {
+            "setup_id": setup_id,
+            "status": "waiting_for_feishu",
+            "app_ref": app_ref,
+            "verification_url": f"https://open.feishu.cn/page/cli?user_code={setup_id}",
+            "error": None,
+        }
+        self.snapshots[setup_id] = snapshot
+        return dict(snapshot)
+
+    def snapshot(self, setup_id: str) -> dict[str, Any]:
+        snapshot = dict(self.snapshots[setup_id])
+        snapshot["status"] = "ready"
+        return snapshot
+
+    def cancel(self, setup_id: str) -> dict[str, Any]:
+        self.snapshots[setup_id]["status"] = "cancelled"
+        return dict(self.snapshots[setup_id])
+
+    def close(self) -> None:
+        return
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -138,6 +167,7 @@ def main() -> None:
         server.registry_path = registry_path
         server.runtime_root_override = str(runtime)
         server.lark_runner = fake_lark_runner(state)
+        server.lark_app_setup_manager = FakeLarkAppSetupManager()
         server.verbose = False
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -151,6 +181,30 @@ def main() -> None:
             assert apps["apps"] == [
                 {"app_ref": "mew", "label": "LoopX Mew", "brand": "feishu", "active": True, "ready": True}
             ], apps
+
+            setup = request(
+                base,
+                "/api/chat/lark/app-setups",
+                method="POST",
+                body={"app_ref": "loopx-workspace-bot", "brand": "feishu"},
+            )
+            assert setup["status"] == "waiting_for_feishu", setup
+            assert setup["verification_url"].startswith("https://open.feishu.cn/page/cli?"), setup
+            setup_readback = request(base, f"/api/chat/lark/app-setups/{setup['setup_id']}")
+            assert setup_readback["status"] == "ready", setup_readback
+
+            cancelled_setup = request(
+                base,
+                "/api/chat/lark/app-setups",
+                method="POST",
+                body={"app_ref": "loopx-cancelled-bot", "brand": "feishu"},
+            )
+            cancelled = request(
+                base,
+                f"/api/chat/lark/app-setups/{cancelled_setup['setup_id']}",
+                method="DELETE",
+            )
+            assert cancelled["status"] == "cancelled", cancelled
 
             chats = request(base, "/api/chat/lark/chats?app_ref=mew&query=product")
             assert chats["chats"] == [{"chat_id": CHAT_ID, "chat_name": "Product group"}], chats

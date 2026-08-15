@@ -9,7 +9,10 @@ from .control_plane.runtime.runtime_projection_route import resolve_goal_source_
 from .extensions.lark.goal_channel import (
     default_goal_channel_binding_path,
     default_goal_channel_target_path,
+    read_goal_channel_binding,
+    read_goal_channel_targets,
 )
+from .extensions.lark.app_setup import LarkAppSetupManager
 from .extensions.lark.goal_topic_connections import (
     connect_lark_goal_topic,
     disconnect_lark_goal_topic,
@@ -83,6 +86,54 @@ def build_goal_repository_contexts(
     return rows
 
 
+def build_lark_goal_topic_runtime_snapshot(
+    *,
+    registry_path: Path,
+    runtime_root_override: str | None,
+) -> dict[str, Any]:
+    """Load local-private App targets, per-Goal bindings, and execution context."""
+
+    registry = load_registry(registry_path)
+    runtime_root = resolve_runtime_root(
+        registry,
+        runtime_root_override,
+        registry_path=registry_path,
+    )
+    target_payload = read_goal_channel_targets(
+        default_goal_channel_target_path(runtime_root)
+    )
+    binding_payloads: dict[str, dict[str, Any]] = {}
+    goal_contexts: dict[str, dict[str, str]] = {}
+    for goal in registry_goals(registry):
+        goal_id = str(goal.get("id") or "").strip()
+        repo = str(goal.get("repo") or "").strip()
+        if not goal_id or not repo:
+            continue
+        goal_contexts[goal_id] = {
+            "work_dir": str(Path(repo).expanduser().resolve()),
+            "objective": _compact_text(goal.get("objective") or goal_id, limit=600),
+        }
+        try:
+            route = resolve_goal_source_runtime_route(
+                registry_path=registry_path,
+                goal_id=goal_id,
+                registry=registry,
+            )
+            source_registry_path = Path(str(route["source_registry"]))
+            if source_registry_path.parent.name != ".loopx":
+                continue
+            binding_payloads[goal_id] = read_goal_channel_binding(
+                default_goal_channel_binding_path(source_registry_path)
+            )
+        except (KeyError, OSError, ValueError):
+            continue
+    return {
+        "target_payload": target_payload,
+        "binding_payloads": binding_payloads,
+        "goal_contexts": goal_contexts,
+    }
+
+
 class LarkChatRequestMixin:
     """Loopback HTTP handlers for Goal repository and Lark topic connections."""
 
@@ -116,6 +167,14 @@ class LarkChatRequestMixin:
 
     def _lark_runner(self) -> CommandRunner:
         return getattr(self.server, "lark_runner", default_subprocess_runner)
+
+    def _lark_setup_manager(self) -> LarkAppSetupManager:
+        return self.server.lark_app_setup_manager
+
+    def _refresh_lark_goal_topic_runtime(self) -> None:
+        runtime = getattr(self.server, "lark_goal_topic_runtime", None)
+        if runtime is not None:
+            runtime.refresh()
 
     def _lark_binding_paths(self, registry: dict[str, Any]) -> dict[str, Path]:
         paths: dict[str, Path] = {}
@@ -154,6 +213,36 @@ class LarkChatRequestMixin:
                 "apps": list_lark_apps(runner=self._lark_runner()),
             }
         )
+
+    def _lark_setup_start(self) -> None:
+        try:
+            body = self._read_json()
+            if set(body) - {"app_ref", "brand"}:
+                raise ValueError("unknown Lark App setup field")
+            snapshot = self._lark_setup_manager().start(
+                app_ref=_compact_text(body.get("app_ref"), limit=100),
+                brand=_compact_text(body.get("brand"), limit=20) or "feishu",
+            )
+        except ValueError as exc:
+            self._send_error(str(exc), status=400, error_code="invalid_lark_app_setup")
+            return
+        self._send_json({"ok": True, **snapshot}, status=202)
+
+    def _lark_setup_snapshot(self, setup_id: str) -> None:
+        try:
+            snapshot = self._lark_setup_manager().snapshot(setup_id)
+        except KeyError:
+            self._send_error("Lark App setup was not found", status=404, error_code="lark_app_setup_not_found")
+            return
+        self._send_json({"ok": True, **snapshot})
+
+    def _lark_setup_cancel(self, setup_id: str) -> None:
+        try:
+            snapshot = self._lark_setup_manager().cancel(setup_id)
+        except KeyError:
+            self._send_error("Lark App setup was not found", status=404, error_code="lark_app_setup_not_found")
+            return
+        self._send_json({"ok": True, **snapshot})
 
     def _lark_chats(self) -> None:
         query = parse_qs(urlparse(self.path).query)
@@ -233,6 +322,8 @@ class LarkChatRequestMixin:
             packet["error"] = _compact_text(
                 packet.get("public_summary") or packet.get("blocker") or "Lark connection failed"
             )
+        elif body.get("execute") is True:
+            self._refresh_lark_goal_topic_runtime()
         self._send_json(packet, status=200 if packet.get("ok") else 400)
 
     def _lark_disconnect(self) -> None:
@@ -247,4 +338,5 @@ class LarkChatRequestMixin:
         except (OSError, ValueError) as exc:
             self._send_error(str(exc), status=400, error_code="invalid_lark_connection")
             return
+        self._refresh_lark_goal_topic_runtime()
         self._send_json(packet)

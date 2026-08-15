@@ -253,7 +253,15 @@ class ChatSessionStore:
             rows.append(self.public_session(payload))
         return sorted(rows, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
-    def append_message(self, session_id: str, *, role: str, text: str, turn_id: str | None = None) -> dict[str, Any]:
+    def append_message(
+        self,
+        session_id: str,
+        *,
+        role: str,
+        text: str,
+        turn_id: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         session_dir = self._session_dir(session_id)
         path = session_dir / "messages.jsonl"
         payload = {
@@ -262,6 +270,7 @@ class ChatSessionStore:
             "turn_id": _opaque_id(turn_id, field="turn_id") if turn_id else None,
             "role": role,
             "text": str(text),
+            **({"attachments": attachments} if attachments else {}),
             "created_at": utc_now(),
         }
         with exclusive_file_lock(path, agent_id="loopx-chat", operation="append_chat_message"):
@@ -271,7 +280,14 @@ class ChatSessionStore:
     def messages(self, session_id: str) -> list[dict[str, Any]]:
         return _read_jsonl(self._session_dir(session_id) / "messages.jsonl")
 
-    def create_turn(self, session_id: str, *, client_turn_id: str, message: str) -> tuple[dict[str, Any], bool]:
+    def create_turn(
+        self,
+        session_id: str,
+        *,
+        client_turn_id: str,
+        message: str,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         client_id = _opaque_id(client_turn_id, field="client_turn_id")
         existing = self.turn_for_client(session_id, client_id)
         if existing is not None:
@@ -309,7 +325,13 @@ class ChatSessionStore:
         _atomic_write_json(path, payload)
         os.chmod(path, 0o600)
         self.update_session(session_id, status="busy", active_turn_id=turn_id, last_activity_at=now)
-        self.append_message(session_id, role="user", text=message, turn_id=turn_id)
+        self.append_message(
+            session_id,
+            role="user",
+            text=message,
+            turn_id=turn_id,
+            attachments=attachments,
+        )
         self.append_event(session_id, turn_id, kind="turn.queued", payload={})
         return payload, True
 

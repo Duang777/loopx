@@ -509,7 +509,36 @@ def route_lark_topic_event(
         incoming_mode = str(routing.get("incoming_mode") or "mentions")
         if str(channel.get("chat_id") or "") != chat_id or topic_root != root_id:
             continue
-        if incoming_mode == "mentions" and event.get("mentioned") is not True:
+        if str(event.get("sender_id") or "") == str(identity.get("bot_app_id") or ""):
+            return None
+        bot_display_name = " ".join(str(identity.get("bot_display_name") or "").split())
+        provider_mentions = event.get("mentions")
+        provider_mentioned = bool(
+            bot_display_name
+            and isinstance(provider_mentions, list)
+            and any(
+                isinstance(mention, Mapping)
+                and " ".join(str(mention.get("name") or "").split()).casefold()
+                == bot_display_name.casefold()
+                for mention in provider_mentions
+            )
+        )
+        rendered_content = " ".join(str(event.get("content") or "").split())
+        rendered_mentioned = bool(
+            bot_display_name
+            and "@" in rendered_content
+            and bot_display_name.casefold() in rendered_content.casefold()
+        )
+        addressed = bool(
+            event.get("mentioned") is True
+            or provider_mentioned
+            or rendered_mentioned
+            or (
+                event.get("reply_context_verified") is True
+                and event.get("reply_to_bot") is True
+            )
+        )
+        if incoming_mode == "mentions" and not addressed:
             return None
         return {
             "app_ref": str(identity.get("sender_profile") or "default"),
