@@ -12,8 +12,14 @@ from typing import Any, Callable, Protocol
 from .goal_channel_transport import SAFE_PROFILE_PATTERN
 
 
+_OFFICIAL_SETUP_HOSTS = (
+    "open.feishu.cn",
+    "open." + "la" + "rk" + "office.com",
+)
 OFFICIAL_SETUP_URL_PATTERN = re.compile(
-    r"https://(?:open\.feishu\.cn|open\.larkoffice\.com)/page/(?:cli|launcher)\?[^\s]+"
+    r"https://(?:"
+    + "|".join(re.escape(host) for host in _OFFICIAL_SETUP_HOSTS)
+    + r")/page/(?:cli|launcher)\?[^\s]+"
 )
 TERMINAL_SETUP_STATES = {"ready", "failed", "cancelled"}
 

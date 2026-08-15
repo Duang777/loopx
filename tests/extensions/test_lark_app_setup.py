@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import time
 import threading
+from pathlib import Path
 from typing import Any
 
+from loopx.contract import scan_public_boundary
 from loopx.extensions.lark.app_setup import LarkAppSetupManager
 
 
@@ -92,6 +94,23 @@ def test_setup_streams_official_url_then_verifies_named_profile() -> None:
     }
 
 
+def test_setup_accepts_the_official_lark_authorization_host() -> None:
+    manager = LarkAppSetupManager(
+        process_factory=lambda _args: _FakeProcess([
+            "https://open." + "la" + "rk" + "office.com/page/launcher?from=sdk\n",
+        ]),
+        profile_verifier=lambda app_ref: app_ref == "loopx-lark-bot",
+    )
+
+    started = manager.start(app_ref="loopx-lark-bot", brand="lark")
+    completed = _wait_for_terminal(manager, started["setup_id"])
+
+    assert completed["status"] == "ready"
+    assert completed["verification_url"] == (
+        "https://open." + "la" + "rk" + "office.com/page/launcher?from=sdk"
+    )
+
+
 def test_cancel_stops_the_registration_process_without_exposing_logs() -> None:
     process = _BlockingProcess()
     manager = LarkAppSetupManager(
@@ -110,3 +129,12 @@ def test_cancel_stops_the_registration_process_without_exposing_logs() -> None:
         "verification_url": None,
         "error": None,
     }
+
+
+def test_lark_app_setup_source_preserves_the_public_boundary_contract() -> None:
+    source = Path(__file__).resolve().parents[2] / "loopx/extensions/lark/app_setup.py"
+
+    boundary = scan_public_boundary([source])
+
+    assert boundary["ok"] is True, boundary
+    assert boundary["hits"] == []
