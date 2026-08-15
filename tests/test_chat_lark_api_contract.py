@@ -13,7 +13,6 @@ from loopx.chat_server import (
     CHAT_LARK_CHATS_PATH,
     CHAT_LARK_CONNECTIONS_PATH,
     ChatHTTPServer,
-    ChatRequestHandler,
     build_goal_repository_contexts,
 )
 from loopx.chat_lark_api import LarkChatRequestMixin
