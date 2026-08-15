@@ -6,9 +6,9 @@ const runStatusLabel: Record<WorkspaceRun["status"], string> = {
   completed: "已完成",
   failed: "需检查",
   interrupted: "已中断",
-  queued: "排队中",
-  running: "运行中",
-  waiting: "等待中",
+  queued: "已安排",
+  running: "执行中",
+  waiting: "等待条件",
 };
 
 export function RunRow({ onSelect, run }: { onSelect: () => void; run: WorkspaceRun }) {

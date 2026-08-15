@@ -31,12 +31,14 @@ import type {
   WorkspaceActionPreviewRequest,
   WorkspaceChannel,
   WorkspaceDrawerSelection,
+  WorkspaceGoal,
   WorkspaceGoalTab,
   WorkspaceImageAttachment,
   WorkspaceModel,
+  WorkspaceRun,
   WorkspaceTimelineItem,
 } from "./personal-workspace-model";
-import { goalTitleFor, workerStateLabel } from "./personal-workspace-model";
+import { goalTitleFor, workerStateLabel, workspaceHomeLaneForGoal, workspaceSessionStatusLabel } from "./personal-workspace-model";
 import { WorkspaceShell } from "./workspace-shell";
 import "./personal-workspace.css";
 
@@ -49,6 +51,75 @@ function dedupeProposals(proposals: WorkspaceActionPreview[]): WorkspaceActionPr
     seen.add(key);
     return true;
   });
+}
+
+const activeHomeLanes = [
+  { description: "等待你的决定、授权或补充信息", key: "needs_you", label: "需要你" },
+  { description: "Agent 正在推进并持续回传进展", key: "running", label: "执行中" },
+  { description: "持续监控，出现变化时再提醒你", key: "observing", label: "观察中" },
+  { description: "已经安排，等待时间或前置条件", key: "scheduled", label: "已安排" },
+] as const;
+
+function ManagerHomeBoard({ goals, onSelectGoal }: { goals: WorkspaceGoal[]; onSelectGoal: (goalId: string) => void }) {
+  const active = Object.fromEntries(activeHomeLanes.map((lane) => [lane.key, [] as WorkspaceGoal[]])) as Record<(typeof activeHomeLanes)[number]["key"], WorkspaceGoal[]>;
+  const history: WorkspaceGoal[] = [];
+  goals.forEach((goal) => {
+    const lane = workspaceHomeLaneForGoal(goal);
+    if (lane === "history") history.push(goal);
+    else active[lane].push(goal);
+  });
+  const goalCard = (goal: WorkspaceGoal) => (
+    <button className="personal-home-goal-card" data-goal-state={goal.state} key={goal.goalId} onClick={() => onSelectGoal(goal.goalId)} type="button">
+      <span className="personal-home-goal-meta"><i />{goal.agentLabel ?? goal.agentId}</span>
+      <strong>{goal.title}</strong>
+      <p>{goal.needsYou ?? goal.nextSentence}</p>
+      <footer><span>{goal.state}</span><small>{goal.latestActivity ?? "等待首次活动"}</small></footer>
+    </button>
+  );
+  return (
+    <section aria-label="Goal 工作区" className="personal-home-board">
+      <div className="personal-home-lanes">
+        {activeHomeLanes.map((lane) => (
+          <section className={`personal-home-lane is-${lane.key}`} data-testid={`personal-home-lane-${lane.key}`} key={lane.key}>
+            <header><span><i />{lane.label}</span><b>{active[lane.key].length}</b></header>
+            <p>{lane.description}</p>
+            <div className="personal-home-lane-list">
+              {active[lane.key].length ? active[lane.key].map(goalCard) : <span className="personal-home-empty">当前没有</span>}
+            </div>
+          </section>
+        ))}
+      </div>
+      <details className="personal-home-history">
+        <summary><span>历史</span><b>{history.length}</b><small>已完成的 Goal</small></summary>
+        <div>{history.length ? history.map(goalCard) : <span className="personal-home-empty">还没有已完成的 Goal</span>}</div>
+      </details>
+    </section>
+  );
+}
+
+function SessionRecordHeader({ onClose, onOpenDetails, run }: {
+  onClose: () => void;
+  onOpenDetails: () => void;
+  run: WorkspaceRun;
+}) {
+  return (
+    <section aria-label="执行 Session 运行记录" className="personal-session-record">
+      <header>
+        <span><Bot size={17} />执行 Session · 运行记录</span>
+        <button aria-label="退出运行记录" onClick={onClose} type="button"><X size={15} /></button>
+      </header>
+      <div>
+        <strong>{run.title}</strong>
+        <p>当前时间线已切换到这次 Session 的消息与 Turn 记录。</p>
+      </div>
+      <dl>
+        <div><dt>Agent</dt><dd>{run.agentLabel}</dd></div>
+        <div><dt>状态</dt><dd>{workspaceSessionStatusLabel(run.sessionStatus ?? run.status)}</dd></div>
+        <div><dt>Session</dt><dd title={run.sessionId}>{run.sessionId}</dd></div>
+      </dl>
+      <button className="personal-secondary-action" onClick={onOpenDetails} type="button">Session 详情</button>
+    </section>
+  );
 }
 
 function defaultTimeline(model: WorkspaceModel, selectedGoalId: string | null): WorkspaceTimelineItem[] {  const items: WorkspaceTimelineItem[] = [];
@@ -303,6 +374,7 @@ export function PersonalWorkspacePage({
   const [localGoalId, setLocalGoalId] = useState<string | null>(controlledGoalId ?? null);
   const [localAgentId, setLocalAgentId] = useState(controlledAgentId ?? agents.find((agent) => agent.available)?.agentId ?? "codex");
   const [selection, setSelection] = useState<WorkspaceDrawerSelection | null>(null);
+  const [activeSessionRun, setActiveSessionRun] = useState<WorkspaceRun | null>(null);
   const [proposals, setProposals] = useState<Record<string, WorkspaceActionPreview>>({});
   const [selectedChannel, setSelectedChannel] = useState<WorkspaceChannel>("manager");
   const [selectedGoalTab, setSelectedGoalTab] = useState<WorkspaceGoalTab>("chat");
@@ -624,6 +696,15 @@ export function PersonalWorkspacePage({
       if (run.goalId !== selectedGoalId) selectGoal(run.goalId);
       setSelectedGoalTab("chat");
       await callbacks.onOpenRunSession?.(run);
+      setActiveSessionRun(run);
+      setSelection(null);
+    },
+    onOpenGoal: (goalId) => {
+      callbacks.onRefresh?.();
+      selectGoal(goalId);
+    },
+    onOpenGoalView: (tab) => {
+      setSelectedGoalTab(tab);
       setSelection(null);
     },
     onOpenOutput: (output) => {
@@ -646,10 +727,8 @@ export function PersonalWorkspacePage({
         const applied = workspaceProposal(result.proposal);
         setProposals((current) => ({ ...current, [proposal.previewId]: applied }));
         setSelection({ item: applied, kind: "proposal" });
-        if (applied.actionKind === "goal.create" && applied.goalId) {
-          callbacks.onRefresh?.();
-          selectGoal(applied.goalId);
-        }
+        // Keep the success receipt visible. Refresh and navigation happen when
+        // the user chooses the explicit "进入 Goal" action in the drawer.
         if (applied.actionKind === "todo.create") callbacks.onRefresh?.();
       } catch (error) {
         if (error instanceof ChatApiError && error.payload.error_code === "protected_action") {
@@ -749,6 +828,7 @@ export function PersonalWorkspacePage({
   function selectGoal(goalId: string | null) {
     setLocalGoalId(goalId);
     if (goalId === null) setSelectedChannel("manager");
+    setActiveSessionRun(null);
     setSelection(null);
     setSelectedGoalTab("chat");
     setMobileSidebarOpen(false);
@@ -758,6 +838,7 @@ export function PersonalWorkspacePage({
   function selectChannel(channel: WorkspaceChannel) {
     setLocalGoalId(null);
     setSelectedChannel(channel);
+    setActiveSessionRun(null);
     setSelection(null);
     setMobileSidebarOpen(false);
     callbacks.onSelectGoal?.(null);
@@ -974,10 +1055,8 @@ export function PersonalWorkspacePage({
             onRefresh={callbacks.onRefresh}
             onOpenNavigation={() => setMobileSidebarOpen(true)}
             onSelectAgent={selectAgent}
-            onSelectGoalTab={setSelectedGoalTab}
             selectedAgentId={selectedAgentId}
             selectedGoal={selectedGoal}
-            selectedGoalTab={selectedGoalTab}
           />
           <div className="personal-channel-scroll">
             {!selectedGoal && digest && (digest.done + digest.failed + digest.attention) > 0 ? (
@@ -1019,7 +1098,20 @@ export function PersonalWorkspacePage({
               })} onSelect={setSelection} userTodos={model.userTodos} />
             ) : selectedGoal && selectedGoalTab === "files" ? (
               <section className="personal-object-list"><header><strong>Files & Outputs</strong><span>{items.filter((item) => item.kind === "output").length}</span></header>{items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "output" }> => item.kind === "output").map((item) => <button key={item.id} onClick={() => setSelection({ item: item.output, kind: "output" })} type="button"><span>↗</span><strong>{item.output.title}</strong><small>{item.output.createdAt ?? "最近产出"}</small></button>)}</section>
-            ) : <ChannelTimeline items={items} onSelect={setSelection} selectedGoal={selectedGoal} />}
+            ) : !selectedGoal && selectedChannel === "manager" ? (
+              <ManagerHomeBoard goals={workspaceGoals} onSelectGoal={selectGoal} />
+            ) : (
+              <>
+                {selectedGoal && activeSessionRun?.goalId === selectedGoal.goalId ? (
+                  <SessionRecordHeader
+                    onClose={() => setActiveSessionRun(null)}
+                    onOpenDetails={() => setSelection({ item: activeSessionRun, kind: "run" })}
+                    run={activeSessionRun}
+                  />
+                ) : null}
+                <ChannelTimeline items={items} onSelect={setSelection} selectedGoal={selectedGoal} />
+              </>
+            )}
           </div>
           <div className="personal-composer-wrap">
             {selectedGoal ? (

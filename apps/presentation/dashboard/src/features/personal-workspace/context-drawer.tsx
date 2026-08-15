@@ -9,8 +9,10 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Files,
   GitBranch,
   MessageCircleQuestion,
+  ListChecks,
   MoreHorizontal,
   Pause,
   Play,
@@ -31,7 +33,7 @@ import type {
   WorkspaceTodo,
 } from "./personal-workspace-model";
 import type { LarkGoalConnection } from "../../data/chat";
-import { attentionAgeLabel, formatCostUsd, formatDurationMs, formatTokenCount, hasGoalUsage } from "./personal-workspace-model";
+import { attentionAgeLabel, formatCostUsd, formatDurationMs, formatTokenCount, hasGoalUsage, workspaceSessionStatusLabel } from "./personal-workspace-model";
 import { NotificationSettingsPanel } from "./notification-settings-panel";
 
 const focusableSelector = [
@@ -271,6 +273,14 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 </dl>
               ) : null}
             </section>
+            <section className="personal-detail-card personal-goal-views" aria-label="Goal 工作区">
+              <small>Goal 工作区</small>
+              <div className="personal-drawer-action-grid">
+                <button className="personal-secondary-action" onClick={() => { callbacks.onOpenGoalView?.("chat"); onClose(); }} type="button"><MessageCircleQuestion size={16} />Goal 动态</button>
+                <button className="personal-secondary-action" onClick={() => { callbacks.onOpenGoalView?.("tasks"); onClose(); }} type="button"><ListChecks size={16} />Tasks</button>
+                <button className="personal-secondary-action" onClick={() => { callbacks.onOpenGoalView?.("files"); onClose(); }} type="button"><Files size={16} />Files</button>
+              </div>
+            </section>
             {(() => {
               const notification = goalNotifications.find((row) => row.goalId === selection.item.goalId);
               const connection = larkConnections.find((row) => row.goal_id === selection.item.goalId);
@@ -325,17 +335,17 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
         {selection.kind === "run" ? (
           <>
             <section className="personal-detail-card">
-              <small>{selection.item.agentLabel} · {selection.item.status}</small>
+              <small>{selection.item.agentLabel} · {workspaceSessionStatusLabel(selection.item.status)}</small>
               <h3>{selection.item.title}</h3>
               <p>{selection.item.latestActivity}</p>
               <dl>
                 <div><dt>Goal</dt><dd>{selection.item.goalTitle}</dd></div>
                 <div><dt>进度</dt><dd>{selection.item.completedSteps}/{selection.item.totalSteps}</dd></div>
-                <div><dt>会话状态</dt><dd>{selection.item.sessionStatus ?? selection.item.status}</dd></div>
+                <div><dt>会话状态</dt><dd>{workspaceSessionStatusLabel(selection.item.sessionStatus ?? selection.item.status)}</dd></div>
                 <div><dt>可恢复</dt><dd>{selection.item.resumable === false ? "否" : "是"}</dd></div>
               </dl>
             </section>
-            {selection.item.sessionId ? <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selection.item)} type="button"><ExternalLink size={16} />进入执行 Session</button> : null}
+            {selection.item.sessionId ? <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selection.item)} type="button"><ExternalLink size={16} />查看运行记录</button> : null}
             {selection.item.outputs?.length ? (
               <section className="personal-execution-history" aria-labelledby="personal-run-outputs-title">
                 <h3 id="personal-run-outputs-title">本次运行产出</h3>
@@ -406,6 +416,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
               <dl>{selection.item.fields.map((field) => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
             </section>
             {selection.item.status === "applied" ? <p className="personal-proposal-state is-applied"><Check size={16} />已应用，LoopX 状态将刷新。</p> : null}
+            {selection.item.status === "applied" && selection.item.goalId ? <button className="personal-primary-action" onClick={() => { callbacks.onOpenGoal?.(selection.item.goalId!); onClose(); }} type="button"><ExternalLink size={16} />进入 Goal</button> : null}
             {selection.item.status === "stale" ? <p className="personal-proposal-state is-stale">来源状态已变化，请重新生成预览。</p> : null}
             {selection.item.status === "error" ? <div className="personal-proposal-state is-error"><span>应用失败，当前预览没有继续写入。</span>{selection.item.errorMessage ? <small>{selection.item.errorMessage}</small> : null}</div> : null}
             {selection.item.status === "rejected" ? <p className="personal-proposal-state is-error">已拒绝，这项变更不会写入。</p> : null}

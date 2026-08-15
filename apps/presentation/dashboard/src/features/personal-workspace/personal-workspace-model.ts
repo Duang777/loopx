@@ -6,6 +6,13 @@ export type WorkspaceGoalState =
   | "安静运行"
   | "已完成";
 
+export type WorkspaceHomeLane =
+  | "needs_you"
+  | "running"
+  | "observing"
+  | "scheduled"
+  | "history";
+
 export type WorkspaceAgentTodo = {
   claimedBy?: string | null;
   dependencies?: string[];
@@ -283,6 +290,7 @@ export type PersonalWorkspaceCallbacks = {
   onExportOutput?: (output: WorkspaceOutput) => void | Promise<void>;
   onInterruptRun?: (run: WorkspaceRun) => void | Promise<void>;
   onOpenGoal?: (goalId: string) => void;
+  onOpenGoalView?: (tab: WorkspaceGoalTab) => void;
   onOpenRunSession?: (run: WorkspaceRun) => void | Promise<void>;
   onOpenOutput?: (output: WorkspaceOutput) => void;
   onRefresh?: () => void;
@@ -323,6 +331,32 @@ export function normalizePersonalHomeModel(model: PersonalHomeCompatibleModel): 
 
 export function goalTitleFor(model: WorkspaceModel, goalId: string) {
   return model.goals.find((goal) => goal.goalId === goalId)?.title ?? goalId;
+}
+
+export function workspaceSessionStatusLabel(status?: string): string {
+  if (!status) return "状态未知";
+  return ({
+    busy: "执行中",
+    completed: "已完成",
+    failed: "需检查",
+    queued: "已安排",
+    ready: "可继续",
+    resume_failed: "恢复失败",
+    running: "执行中",
+    waiting: "等待条件",
+  } as Record<string, string>)[status] ?? status;
+}
+
+/**
+ * Project the detailed Goal lifecycle onto the five manager-home buckets.
+ * The home keeps four active lanes visible and collapses terminal work into history.
+ */
+export function workspaceHomeLaneForGoal(goal: WorkspaceGoal): WorkspaceHomeLane {
+  if (goal.state === "已完成") return "history";
+  if (goal.needsYou || goal.state === "等你" || goal.state === "需修复") return "needs_you";
+  if (goal.state === "推进中") return "running";
+  if (goal.state === "安静运行") return "observing";
+  return "scheduled";
 }
 
 /** Human-readable waiting time for an open attention item; null when under an hour or unknown. */

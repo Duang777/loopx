@@ -99,7 +99,7 @@ export function GoalTasksView({
         </header>
         {scheduleItems.map((item) => (
           <button key={item.id} onClick={() => onSelect({ item: item.schedule, kind: "schedule" })} type="button">
-            <span>◷</span><strong>{item.schedule.label}</strong><small>{item.schedule.status === "paused" ? "已暂停" : "运行中"}</small>
+            <span>◷</span><strong>{item.schedule.label}</strong><small>{item.schedule.status === "paused" ? "已暂停" : "执行中"}</small>
           </button>
         ))}
         {!scheduleItems.length ? <p className="personal-task-empty">没有定时任务。</p> : null}

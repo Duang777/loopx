@@ -20,7 +20,7 @@ export function ScheduleRow({ onSelect, schedule }: {
         <strong>{schedule.label}</strong>
         <p>{schedule.schedule ?? "按 LoopX 调度约束持续检查"}</p>
       </span>
-      <span className={`personal-schedule-status is-${schedule.status ?? "active"}`}>{schedule.status === "paused" ? "已暂停" : "运行中"}</span>
+      <span className={`personal-schedule-status is-${schedule.status ?? "active"}`}>{schedule.status === "paused" ? "已暂停" : "执行中"}</span>
       <ChevronRight size={16} />
     </button>
   );

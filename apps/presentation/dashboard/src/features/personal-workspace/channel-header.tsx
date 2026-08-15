@@ -1,6 +1,6 @@
 import { Bot, ChevronDown, Info, Menu, RefreshCw } from "lucide-react";
 
-import type { WorkspaceAgentOption, WorkspaceGoal, WorkspaceGoalTab } from "./personal-workspace-model";
+import type { WorkspaceAgentOption, WorkspaceGoal } from "./personal-workspace-model";
 import { goalUsageLabel } from "./personal-workspace-model";
 
 export function ChannelHeader({
@@ -9,22 +9,18 @@ export function ChannelHeader({
   onOpenGoalDetail,
   onRefresh,
   onOpenNavigation,
-  onSelectGoalTab,
   onSelectAgent,
   selectedAgentId,
   selectedGoal,
-  selectedGoalTab,
 }: {
   agents: WorkspaceAgentOption[];
   mobileNavigationOpen?: boolean;
   onOpenGoalDetail?: () => void;
   onRefresh?: () => void;
   onOpenNavigation?: () => void;
-  onSelectGoalTab: (tab: WorkspaceGoalTab) => void;
   onSelectAgent: (agentId: string) => void;
   selectedAgentId: string;
   selectedGoal: WorkspaceGoal | null;
-  selectedGoalTab: WorkspaceGoalTab;
 }) {
   return (
     <header className="personal-channel-header">
@@ -35,7 +31,6 @@ export function ChannelHeader({
           ? `${selectedGoal.agentLabel ?? selectedGoal.agentId} · ${selectedGoal.state}${goalUsageLabel(selectedGoal.usage) ? ` · ${goalUsageLabel(selectedGoal.usage)}` : ""} · ${selectedGoal.nextSentence}`
           : "跨 Goal 的个人工作入口"}</p>
       </div>
-      {selectedGoal ? <nav aria-label="Goal 视图" className="personal-goal-tabs">{(["chat", "tasks", "files"] as const).map((tab) => <button aria-current={selectedGoalTab === tab ? "page" : undefined} key={tab} onClick={() => onSelectGoalTab(tab)} type="button">{tab === "chat" ? "Chat" : tab === "tasks" ? "Tasks" : "Files"}</button>)}</nav> : null}
       {selectedGoal && onOpenGoalDetail ? (
         <button aria-label="Goal 详情" className="personal-icon-button" onClick={onOpenGoalDetail} title="Goal 详情" type="button">
           <Info size={17} />

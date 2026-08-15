@@ -67,10 +67,10 @@ export function GoalSidebar({
             <ListChecks size={16} /><span>需要你</span><small>{attentionCount}</small>
           </button>
           <button aria-current={selectedGoalId === null && selectedChannel === "running" ? "page" : undefined} onClick={() => onSelectChannel("running")} type="button">
-            <Clock3 size={16} /><span>运行中</span><small>{activeRunCount}</small>
+            <Clock3 size={16} /><span>执行中</span><small>{activeRunCount}</small>
           </button>
           <button aria-current={selectedGoalId === null && selectedChannel === "outputs" ? "page" : undefined} onClick={() => onSelectChannel("outputs")} type="button">
-            <FileCheck2 size={16} /><span>最近产出</span><small>{recentOutputCount}</small>
+            <FileCheck2 size={16} /><span>产出</span><small>{recentOutputCount}</small>
           </button>
         </div>
 
