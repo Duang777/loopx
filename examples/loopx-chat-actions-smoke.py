@@ -22,6 +22,7 @@ from loopx.chat_action_store import ActionConflictError, ChatActionStore  # noqa
 from loopx.chat_actions import ChatActionService  # noqa: E402
 from loopx.chat_server import ChatHTTPServer, ChatRequestHandler  # noqa: E402
 from loopx.chat_store import ChatSessionStore  # noqa: E402
+from loopx.history import collect_history  # noqa: E402
 
 
 def preview_request(
@@ -380,12 +381,23 @@ def assert_http_action_api(root: Path) -> None:
         assert goal_resources["turn_id"], goal_resources
         assert runtime_controller.opened_sessions[-1]["goal_id"] == "new-goal"
         assert runtime_controller.submissions[-1]["session_id"] == goal_resources["session_id"]
+        assert "Verify the new Goal projection" in runtime_controller.submissions[-1]["message"]
         registry_after_goal = json.loads(registry_path.read_text(encoding="utf-8"))
         new_goal = next(item for item in registry_after_goal["goals"] if item["id"] == "new-goal")
+        assert new_goal["display_name"] == "New Goal", new_goal
+        history_after_goal = collect_history(
+            registry_path=registry_path,
+            runtime_root=runtime_root,
+            goal_id="new-goal",
+            limit=5,
+        )
+        assert history_after_goal["goals"][0]["display_name"] == "New Goal", history_after_goal
         assert new_goal["coordination"]["registered_agents"] == ["codex"], new_goal
         new_state = state_path.parent.parent / "new-goal" / "ACTIVE_GOAL_STATE.md"
         assert new_state.exists(), new_state
-        assert new_state.read_text(encoding="utf-8").count("Verify the new Goal projection") == 1
+        new_state_text = new_state.read_text(encoding="utf-8")
+        assert new_state_text.count("Verify the new Goal projection") == 1
+        assert "Run `loopx check` against the project registry" not in new_state_text
         code, goal_repeated = request_json(
             f"{base_url}/api/actions/{goal_proposal['proposal_id']}/apply",
             method="POST",

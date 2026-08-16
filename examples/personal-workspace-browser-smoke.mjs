@@ -68,6 +68,13 @@ async function installApi(page) {
   };
   await page.route(`http://127.0.0.1:${port}/status.json`, async (route) => {
     const fixture = require(resolve(repoRoot, "examples/status.example.json"));
+    if (!fixture.run_history.goals.some((goal) => goal.id === "stale-browser-goal")) {
+      fixture.run_history.goals.push({
+        id: "stale-browser-goal", status: "monitoring", registry_member: false,
+        legacy_runtime_goal: false, adapter_kind: null, adapter_status: null,
+        index_exists: false, raw_index_records: 0, unique_runs: 0, latest_runs: [],
+      });
+    }
     const first = fixture.attention_queue?.items?.[0];
     if (first) {
       first.waiting_on = "user_or_controller";
@@ -377,7 +384,7 @@ async function installApi(page) {
 async function main() {
   const { chromium } = loadPlaywright();
   await mkdir(outputDir, { recursive: true });
-  const results = new Map(Array.from({ length: 18 }, (_, index) => [index + 1, { status: "UNTESTED", note: "" }]));
+  const results = new Map(Array.from({ length: 19 }, (_, index) => [index + 1, { status: "UNTESTED", note: "" }]));
   const observations = [];
   const pass = (criterion, note) => results.set(criterion, { status: "PASS", note });
   const fail = (criterion, note) => results.set(criterion, { status: "FAIL", note });
@@ -409,12 +416,17 @@ async function main() {
     }
     if (await page.locator(".personal-home-lane").count() !== 4) throw new Error("Manager home did not render four active lanes");
     if (body.includes("接下来")) throw new Error("Manager home still exposes the ambiguous 接下来 label");
+    if (body.includes("stale-browser-goal")) throw new Error("An unregistered historical Goal remained interactive");
     if (!(await page.locator(".personal-home-history").isVisible())) throw new Error("Completed Goals are not available through the collapsed history section");
     const needsYouCount = await page.getByTestId("personal-home-lane-needs_you").locator(".personal-home-goal-card").count();
+    const runningCount = await page.getByTestId("personal-home-lane-running").locator(".personal-home-goal-card").count();
     const greeting = await page.locator(".personal-manager-greeting").innerText();
     if (!greeting.includes(`你有 ${needsYouCount} 项需要处理`)) {
       throw new Error(`Manager greeting count disagrees with the needs-you lane: count=${needsYouCount}; greeting=${greeting}`);
     }
+    const sidebarRunningCount = await page.locator(".personal-manager-channels button", { hasText: "执行中" }).locator("small").innerText();
+    if (sidebarRunningCount !== String(runningCount)) throw new Error(`Sidebar running count disagrees with the running lane: sidebar=${sidebarRunningCount}; lane=${runningCount}`);
+    if (body.includes("Agent 设置")) throw new Error("Sidebar still exposes the read-only Agent settings dead end");
     if (await page.locator(".personal-global-rail").count()) throw new Error("Old icon rail is visible");
     pass(1, "Single Goal sidebar is visible and the old icon rail is absent.");
     if (await page.locator(".personal-timeline-row").filter({ hasText: /查看|纠偏/u }).count()) throw new Error("Browse rows expose repeated action buttons");
@@ -423,7 +435,19 @@ async function main() {
     pass(4, "First viewport exposes needs-you, running, observing, and scheduled Goal lanes with collapsed history.");
     pass(15, "Desktop viewport matches the approved single-sidebar/channel/drawer composition.");
 
-    await page.locator('input[aria-label="添加图片"]').setInputFiles({
+    await page.getByRole("button", { name: "向 Agent 获取进度报告" }).click();
+    const reportDeadline = Date.now() + 5_000;
+    while (!api.turnRequests.some((turn) => turn.message.includes("已完成、执行中、阻塞和下一步")) && Date.now() < reportDeadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    if (!api.turnRequests.some((turn) => turn.message.includes("已完成、执行中、阻塞和下一步"))) throw new Error("Progress report shortcut did not send a useful scoped request");
+    while (await page.getByRole("button", { name: "向 Agent 获取进度报告" }).isDisabled()) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.getByRole("button", { name: "添加图片" }).click(),
+    ]);
+    await fileChooser.setFiles({
       buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8WQAAAAASUVORK5CYII=", "base64"),
       mimeType: "image/png",
       name: "loopx-smoke.png",
@@ -431,17 +455,48 @@ async function main() {
     await page.getByRole("img", { name: "loopx-smoke.png" }).waitFor({ state: "visible" });
     if (await page.getByRole("button", { name: "发送" }).isDisabled()) throw new Error("A valid image attachment did not enable the composer send action");
     await page.getByRole("button", { name: "移除图片 loopx-smoke.png" }).click();
-    pass(18, "A valid PNG attaches without the native file picker, renders a preview, and enables send.");
+    pass(18, "The visible attachment button opens a file chooser; a valid PNG renders a preview and enables send.");
+
+    await page.getByLabel("向 LoopX 发送消息").evaluate((target) => {
+      const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8WQAAAAASUVORK5CYII="), (char) => char.charCodeAt(0));
+      const file = new File([png], "loopx-pasted.png", { type: "image/png" });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      target.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+    });
+    await page.getByRole("img", { name: "loopx-pasted.png" }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "移除图片 loopx-pasted.png" }).click();
+    pass(19, "Pasting a clipboard PNG attaches through the same validated composer path.");
 
     await page.getByRole("button", { name: "创建 Goal" }).click();
-    await page.getByText("变更预览").waitFor({ state: "visible" });
+    const goalDraft = await page.getByLabel("向 LoopX 发送消息").inputValue();
+    for (const field of ["目标：", "完成标准：", "执行边界（可选）：", "关联仓库（可选）：", "通知方式（可选）："]) {
+      if (!goalDraft.includes(field)) throw new Error(`Create Goal draft missing ${field}`);
+    }
+    await page.getByLabel("向 LoopX 发送消息").fill([
+      "我想创建一个长期 Goal：",
+      "目标：整理我的每周工作复盘",
+      "完成标准：列出已完成、阻塞、下周计划",
+      "执行边界（可选）：不调用外部工具，不修改仓库",
+      "关联仓库（可选）：",
+      "通知方式（可选）：",
+    ].join("\n"));
+    await page.getByRole("button", { name: "检查并创建 Goal", exact: true }).click();
+    await page.getByText("确认执行").waitFor({ state: "visible" });
     const goalPreview = api.actionPreviews.at(-1);
     for (const field of ["agent_id", "goal_id", "heartbeat", "initial_todos", "permission", "stop_condition", "workspace_ref"]) {
       if (!(field in (goalPreview?.normalized_parameters ?? {}))) throw new Error(`Goal preview missing ${field}`);
     }
+    if (goalPreview?.normalized_parameters.title !== "整理我的每周工作复盘") throw new Error(`Structured Goal title drifted: ${JSON.stringify(goalPreview?.normalized_parameters)}`);
+    if (goalPreview?.normalized_parameters.goal_id === "loopx" || !String(goalPreview?.normalized_parameters.goal_id).startsWith("goal-")) throw new Error(`Structured Goal id was derived from template chrome: ${JSON.stringify(goalPreview?.normalized_parameters)}`);
+    if (!String(goalPreview?.normalized_parameters.objective).includes("列出已完成、阻塞、下周计划")) throw new Error(`Goal completion standard was lost: ${JSON.stringify(goalPreview?.normalized_parameters)}`);
+    if (goalPreview?.normalized_parameters.completion_criteria !== "列出已完成、阻塞、下周计划") throw new Error(`Goal completion criteria were not preserved structurally: ${JSON.stringify(goalPreview?.normalized_parameters)}`);
+    if (goalPreview?.normalized_parameters.execution_boundary !== "不调用外部工具，不修改仓库") throw new Error(`Goal execution boundary was not preserved structurally: ${JSON.stringify(goalPreview?.normalized_parameters)}`);
+    if (goalPreview?.normalized_parameters.permission !== "read_only") throw new Error(`Goal execution boundary did not remain read-only: ${JSON.stringify(goalPreview?.normalized_parameters)}`);
+    if (JSON.stringify(goalPreview?.normalized_parameters.initial_todos).includes("推进首个可验证结果")) throw new Error(`Goal preview kept unrelated generic Todos: ${JSON.stringify(goalPreview?.normalized_parameters)}`);
     if (api.durableWriteCount !== 0) throw new Error("Goal preview wrote durable state before confirmation");
     pass(7, "Goal preview includes Goal, Agent, workspace, permissions, Todos, heartbeat, and stop condition fields.");
-    await page.getByRole("button", { name: "创建并启动", exact: true }).click();
+    await page.getByRole("button", { name: "创建 Goal 并开始首轮", exact: true }).click();
     try {
       await page.getByText(/已应用/).first().waitFor({ state: "visible" });
     } catch (error) {
@@ -460,6 +515,7 @@ async function main() {
     await goalButton.click();
     await page.getByRole("button", { name: "Goal 详情" }).click();
     await page.getByText("Repository", { exact: true }).waitFor({ state: "visible" });
+    await page.getByText("Execution Session", { exact: true }).waitFor({ state: "visible" });
     await page.getByText("Read only", { exact: true }).waitFor({ state: "visible" });
     if (!(await page.getByText("loopx-ai/loopx", { exact: true }).isVisible())) throw new Error("Goal drawer did not show the read-only repository context");
     await page.getByRole("button", { name: /关闭详情/ }).click();
@@ -483,63 +539,70 @@ async function main() {
       throw new Error(`${error.message}; body=${(await page.locator("body").innerText()).slice(0, 4000)}`);
     }
     if (api.larkWrites.length !== 1 || api.larkWrites[0].execute !== true) throw new Error("Lark connect did not perform exactly one approved external write");
+    await page.locator(".personal-lark-table-row", { hasText: "Product group" }).getByRole("button", { name: /配置/ }).click();
+    await page.getByRole("dialog", { name: "Edit Lark Connection" }).waitFor({ state: "visible" });
+    await page.getByRole("dialog", { name: "Edit Lark Connection" }).getByRole("button", { name: "Cancel" }).click();
     await page.screenshot({ path: resolve(outputDir, "lark-goal-connections.png"), fullPage: false, animations: "disabled" });
     await page.getByRole("button", { name: "关闭 Lark 设置" }).click();
-    await page.getByRole("button", { name: "Goal 详情" }).click();
-    await page.getByRole("button", { name: "Tasks" }).click();
+    await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Tasks" }).click();
     await page.locator(".personal-object-list").first().waitFor({ state: "visible" });
-    await page.getByRole("button", { name: "Goal 详情" }).click();
-    await page.getByRole("button", { name: "Files" }).click();
-    await page.getByRole("button", { name: "Goal 详情" }).click();
-    await page.getByRole("button", { name: "Goal 动态" }).click();
+    await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Files" }).click();
+    await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Chat" }).click();
 
     const composer = page.getByLabel("向 LoopX 发送消息");
-    await composer.fill("添加一个「补充回归测试」Todo，并交给 Codex");
+    await composer.fill("添加一个「补充回归测试」普通 Todo，并交给 Codex。不要设置 Heartbeat，也不要创建定时检查");
     await page.getByRole("button", { name: "发送", exact: true }).click();
-    await page.getByText("变更预览").waitFor({ state: "visible" });
+    await page.getByText("确认执行").waitFor({ state: "visible" });
     const naturalTodo = api.actionPreviews.find((preview) => preview.action_kind === "todo.create" && preview.normalized_parameters.text === "补充回归测试");
-    if (naturalTodo?.normalized_parameters.endpoint_id !== "codex") throw new Error("Natural-language Todo creation lost the selected Endpoint");
-    await page.getByRole("button", { name: "取消", exact: true }).click();
+    if (naturalTodo?.normalized_parameters.endpoint_id !== "codex") throw new Error(`Natural-language Todo creation lost the selected Endpoint: ${JSON.stringify(api.actionPreviews.at(-1))}`);
+    if (api.actionPreviews.findLast((preview) => preview.summary.includes("补充回归测试"))?.action_kind !== "todo.create") throw new Error("A negated Heartbeat mention overrode explicit Todo creation");
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
+
+    const previewCountBeforeAnalysis = api.actionPreviews.length;
+    const turnCountBeforeAnalysis = api.turnRequests.length;
+    await composer.fill("做一次只读分析：判断刚刚新增的 Todo 是否与当前 Goal 一致，并在当前 Chat 返回两点理由。不要修改状态。");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByText("已沿用当前 Goal 与 Agent Session。接下来会先核对状态，再继续推进。", { exact: true }).last().waitFor({ state: "visible", timeout: 10_000 });
+    if (api.actionPreviews.length !== previewCountBeforeAnalysis) throw new Error("A read-only reference to an existing Todo created another Todo preview");
+    if (api.turnRequests.length <= turnCountBeforeAnalysis) throw new Error("Read-only Todo analysis did not reach the Goal Chat Session");
 
     await composer.fill("让 Claude Code 负责管理这个 Goal");
     await page.getByRole("button", { name: "发送", exact: true }).click();
-    await page.getByText("变更预览").waitFor({ state: "visible" });
+    await page.getByText("确认执行").waitFor({ state: "visible" });
     const naturalBinding = api.actionPreviews.find((preview) => preview.action_kind === "agent.bind" && preview.normalized_parameters.agent_id === "claude-code");
     if (!naturalBinding) throw new Error("Natural-language Agent binding did not create a typed preview");
-    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
 
     const run = page.locator(".personal-run-row").first();
     await run.click();
     await page.getByText("运行详情").waitFor({ state: "visible" });
-    await page.getByRole("button", { name: "查看运行记录" }).click();
+    await page.getByRole("button", { name: "查看执行过程与结果" }).click();
     await page.getByRole("region", { name: "执行 Session 运行记录" }).waitFor({ state: "visible" });
     if (!(await page.getByText(/当前时间线已切换到这次 Session/).isVisible())) throw new Error("Session entry did not expose the loaded run record");
     await page.getByRole("button", { name: "Session 详情" }).click();
     const correction = page.getByLabel("输入纠偏信息");
+    const turnCountBeforeCorrection = api.turnRequests.length;
     await correction.fill("先核对权限边界，再继续推进。");
     await page.getByRole("button", { name: "发送纠偏" }).click();
     try {
+      const correctionDeadline = Date.now() + 10_000;
+      while (api.turnRequests.length <= turnCountBeforeCorrection && Date.now() < correctionDeadline) {
+        await page.waitForTimeout(100);
+      }
       await page.getByText(/已沿用当前 Goal/).last().waitFor({ state: "visible", timeout: 10_000 });
     } catch (error) {
       await page.screenshot({ path: resolve(outputDir, "run-correction-failed.png"), fullPage: true, animations: "disabled" });
       throw new Error(`${error.message}; turns=${JSON.stringify(api.turnRequests)}; errors=${pageErrors.join(" | ")}; body=${(await page.locator("body").innerText()).slice(0, 4000)}`);
     }
-    const firstCorrection = api.turnRequests.find((turn) => turn.message === "先核对权限边界，再继续推进。");
-    if (!firstCorrection?.sessionId.startsWith("session-goal-")) throw new Error("Run correction did not use a Goal-scoped Session");
+    const firstCorrection = api.turnRequests.slice(turnCountBeforeCorrection).find((turn) => turn.message === "先核对权限边界，再继续推进。");
+    if (!firstCorrection?.sessionId || firstCorrection.sessionId.includes("manager")) throw new Error(`Run correction did not use the selected Goal's execution Session: ${JSON.stringify(firstCorrection)}`);
     pass(5, "Run-detail correction used a recoverable Goal-scoped Agent Session.");
     await page.getByRole("button", { name: /关闭详情/ }).click();
-
-    await page.getByRole("button", { name: "Agent 设置" }).click();
-    await page.getByText("Agent 设置").last().waitFor({ state: "visible" });
-    await page.getByRole("button", { name: /关闭详情/ }).click();
-
-    await page.getByRole("button", { name: "创建 Goal" }).click();
-    await page.getByRole("button", { name: "取消", exact: true }).click();
 
     const writesBeforeHeartbeat = api.durableWriteCount;
     await composer.fill("每天推进这个 Goal，设置 heartbeat");
     await page.getByRole("button", { name: "发送", exact: true }).click();
-    await page.getByText("变更预览").waitFor({ state: "visible" });
+    await page.getByText("确认执行").waitFor({ state: "visible" });
     await page.getByRole("button", { name: "确认并应用", exact: true }).click();
     await page.getByText("需要宿主确认").waitFor({ state: "visible" });
     if (api.durableWriteCount !== writesBeforeHeartbeat) throw new Error("Protected heartbeat gate wrote durable state");
@@ -547,17 +610,17 @@ async function main() {
     pass(11, "Heartbeat apply surfaced an explicit host-activation gate.");
     const heartbeatPreview = api.actionPreviews.find((preview) => preview.action_kind === "heartbeat.bind");
     if (!heartbeatPreview) throw new Error("Continuation intent did not map to heartbeat.bind");
-    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
 
     await page.getByRole("button", { name: "Goal 详情" }).click();
     await page.getByRole("button", { name: "Tasks" }).click();
     const taskRow = page.locator(".personal-object-list", { hasText: "进行中" }).locator("button").first();
     await taskRow.click();
     await page.getByText("Todo 详情").waitFor({ state: "visible" });
-    await page.getByRole("button", { name: "生成预览" }).click();
-    await page.getByText("变更预览").waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "检查变更" }).click();
+    await page.getByText("确认执行").waitFor({ state: "visible" });
     if (!api.actionPreviews.some((preview) => preview.action_kind === "todo.update" && preview.normalized_parameters.operation === "reassign")) throw new Error("Todo reassign did not create a typed preview");
-    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
     for (const [label, actionKind, operation] of [
       ["标记阻塞", "todo.update", "block"],
       ["暂缓", "todo.update", "defer"],
@@ -568,19 +631,28 @@ async function main() {
       const moreMenu = page.locator("details.personal-compact-menu", { hasText: "更多操作" });
       if (!(await moreMenu.getAttribute("open"))) await moreMenu.locator("summary").click();
       await page.getByRole("button", { name: label, exact: true }).click();
-      await page.getByText("变更预览").waitFor({ state: "visible" });
+      await page.getByText("确认执行").waitFor({ state: "visible" });
       if (!api.actionPreviews.some((preview) => preview.action_kind === actionKind && (operation === null || preview.normalized_parameters.operation === operation))) throw new Error(`Todo ${label} did not create the expected typed preview`);
-      await page.getByRole("button", { name: "取消", exact: true }).click();
+      await page.getByRole("button", { name: "关闭", exact: true }).click();
     }
-    await page.getByRole("button", { name: "Goal 详情" }).click();
-    await page.getByRole("button", { name: "Goal 动态" }).click();
-    await page.getByRole("dialog").filter({ hasText: "变更预览" }).waitFor({ state: "hidden" });
+    await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Chat" }).click();
+    await page.getByRole("dialog").filter({ hasText: "确认执行" }).waitFor({ state: "hidden" });
 
-    await page.getByRole("button", { name: "创建定时检查" }).click();
-    await page.getByText("变更预览").waitFor({ state: "visible" });
-    const monitorCreate = api.actionPreviews.find((preview) => preview.action_kind === "monitor.create");
+    await page.getByRole("button", { name: "配置定时检查" }).click();
+    await page.getByLabel("向 LoopX 发送消息").fill("为当前 Goal 添加定时检查：\n检查内容：复盘是否包含已完成、阻塞、下周计划\n频率：每周五 17:00\n停止条件：Goal 完成");
+    const previewsBeforeUnsupportedSchedule = api.actionPreviews.length;
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByText(/不支持精确到星期或时刻的日历计划/).waitFor({ state: "visible" });
+    if (api.actionPreviews.length !== previewsBeforeUnsupportedSchedule) throw new Error("Unsupported weekly schedule created a misleading preview");
+    if (!(await page.getByLabel("向 LoopX 发送消息").inputValue()).includes("每周五 17:00")) throw new Error("Unsupported schedule draft was discarded");
+    await page.getByLabel("向 LoopX 发送消息").fill("为当前 Goal 添加定时检查：\n检查内容：复盘是否包含已完成、阻塞、下周计划\n频率：每 2 小时\n停止条件：Goal 完成");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByText("确认执行").waitFor({ state: "visible" });
+    const monitorCreate = api.actionPreviews.findLast((preview) => preview.action_kind === "monitor.create");
     if (!monitorCreate) throw new Error("Bounded monitor configuration did not map to monitor.create");
-    await page.getByRole("button", { name: "取消", exact: true }).click();
+    if (monitorCreate.normalized_parameters.cadence !== "2h") throw new Error(`Monitor cadence drifted: ${JSON.stringify(monitorCreate.normalized_parameters)}`);
+    if (monitorCreate.normalized_parameters.target !== "复盘是否包含已完成、阻塞、下周计划") throw new Error(`Monitor target drifted: ${JSON.stringify(monitorCreate.normalized_parameters)}`);
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
 
     await goalButton.click();
     const schedule = page.locator(".personal-schedule-row").first();
@@ -588,10 +660,20 @@ async function main() {
       await schedule.click();
       await page.getByText("定时检查", { exact: true }).last().waitFor({ state: "visible" });
       await page.getByRole("button", { name: label, exact: true }).click();
-      await page.getByText("变更预览").waitFor({ state: "visible" });
+      await page.getByText("确认执行").waitFor({ state: "visible" });
       const monitorUpdate = api.actionPreviews.find((preview) => preview.action_kind === "monitor.update" && preview.normalized_parameters.operation === operation);
       if (!monitorUpdate) throw new Error(`Monitor ${operation} did not map to monitor.update`);
-      await page.getByRole("button", { name: "取消", exact: true }).click();
+      if (operation === "pause") {
+        const writesBeforeApply = api.durableWriteCount;
+        await page.getByRole("button", { name: "确认并应用", exact: true }).click();
+        await page.getByText("执行结果", { exact: true }).waitFor({ state: "visible" });
+        await page.getByText("已应用，LoopX 状态将刷新。").waitFor({ state: "visible" });
+        if (api.durableWriteCount !== writesBeforeApply + 1) throw new Error("Monitor confirmation did not produce exactly one durable write");
+        if (!api.actionApplies.includes(monitorUpdate.proposalId)) throw new Error("Monitor confirmation did not apply the previewed proposal");
+        await page.getByRole("button", { name: "查看更新后的 Goal", exact: true }).click();
+      } else {
+        await page.getByRole("button", { name: "关闭", exact: true }).click();
+      }
     }
     pass(10, "Continuation mapped to heartbeat.bind and bounded monitoring mapped to monitor.create/continuous_monitor UI.");
 
@@ -643,13 +725,13 @@ async function main() {
     await page.getByText("需要你", { exact: true }).last().waitFor({ state: "visible" });
     await page.getByText("更多决定").click();
     await page.getByRole("button", { name: "稍后决定", exact: true }).click();
-    await page.getByText("变更预览").waitFor({ state: "visible" });
+    await page.getByText("确认执行").waitFor({ state: "visible" });
     const deferredDecision = api.actionPreviews.find((preview) => preview.action_kind === "gate.resolve" && preview.normalized_parameters.decision === "defer");
     if (!deferredDecision) throw new Error("Decision defer did not create a Gate preview");
     await page.getByRole("button", { name: "稍后", exact: true }).click();
     await page.getByText(/已暂缓/).waitFor({ state: "visible" });
     if (!api.actionTransitions.some((transition) => transition.transition === "defer")) throw new Error("Proposal defer transition was not sent");
-    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
     const runningChannel = page.getByRole("button", { name: /执行中/ }).first();
     const projectedRunCount = Number.parseInt((await runningChannel.locator("small").textContent()) ?? "0", 10) || 0;
     await runningChannel.click();
@@ -765,14 +847,9 @@ async function main() {
     await mobile.getByRole("button", { name: /执行中/ }).first().click();
     await mobile.locator(".personal-channel").waitFor({ state: "visible" });
     await mobile.close();
-    await page.getByRole("button", { name: "野兽主题" }).click();
-    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "brutal") throw new Error("Theme toggle did not switch the shell to the brutal theme");
-    await page.reload({ waitUntil: "networkidle" });
-    await page.waitForTimeout(1500);
-    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "brutal") throw new Error("Brutal theme did not persist across reload");
-    await page.getByRole("button", { name: "默认主题" }).click();
-    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Theme toggle did not switch back to the paper theme");
-    pass(16, "Theme toggle switched to the brutal theme, persisted across reload, and switched back.");
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Personal workspace did not keep the owner-reviewed paper theme");
+    if (await page.getByRole("button", { name: /野兽主题|默认主题/ }).count()) throw new Error("Personal workspace still exposes the novelty theme toggle");
+    pass(16, "The control plane keeps one consistent owner-reviewed visual theme.");
     await page.locator(".personal-manager-link").first().click();
     await page.waitForTimeout(600);
     const workerCards = await page.locator(".personal-worker-strip > button").count();
