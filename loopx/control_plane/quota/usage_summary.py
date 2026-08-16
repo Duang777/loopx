@@ -13,6 +13,13 @@ USAGE_PROXY_NOTE = (
 )
 
 ParseTimestamp = Callable[[Any], Any]
+USAGE_METRIC_NAMES = (
+    "input_tokens",
+    "output_tokens",
+    "cache_tokens",
+    "cost_usd",
+    "duration_ms",
+)
 
 
 def quota_spend_slots(run: dict[str, Any]) -> int:
@@ -87,6 +94,17 @@ def _round_cost(bucket: dict[str, Any]) -> None:
             bucket[key] = round(float(bucket[key]), 6)
 
 
+def _strip_unobserved_usage_windows(
+    bucket: dict[str, Any],
+    observed_windows: set[str],
+) -> None:
+    for suffix in ("24h", "7d"):
+        if suffix in observed_windows:
+            continue
+        for metric_name in USAGE_METRIC_NAMES:
+            bucket.pop(f"{metric_name}_{suffix}", None)
+
+
 def build_usage_summary(
     history: dict[str, Any],
     *,
@@ -116,6 +134,8 @@ def build_usage_summary(
         "duration_ms_7d": 0,
     }
     goals: dict[str, dict[str, Any]] = {}
+    observed_usage_windows: set[str] = set()
+    goal_usage_windows: dict[str, set[str]] = {}
     sample_count = 0
 
     for run in history.get("runs") or []:
@@ -146,6 +166,8 @@ def build_usage_summary(
             if usage_sample is not None:
                 _accumulate_usage(totals, usage_sample, "7d")
                 _accumulate_usage(goal, usage_sample, "7d")
+                observed_usage_windows.add("7d")
+                goal_usage_windows.setdefault(goal_id, set()).add("7d")
         if generated_at >= cutoff_24h:
             totals["runs_24h"] += 1
             goal["runs_24h"] += 1
@@ -160,6 +182,8 @@ def build_usage_summary(
             if usage_sample is not None:
                 _accumulate_usage(totals, usage_sample, "24h")
                 _accumulate_usage(goal, usage_sample, "24h")
+                observed_usage_windows.add("24h")
+                goal_usage_windows.setdefault(goal_id, set()).add("24h")
 
     if totals["runs_24h"]:
         for goal in goals.values():
@@ -181,6 +205,12 @@ def build_usage_summary(
         ),
         reverse=True,
     )
+    _strip_unobserved_usage_windows(totals, observed_usage_windows)
+    for goal in goal_rows:
+        _strip_unobserved_usage_windows(
+            goal,
+            goal_usage_windows.get(str(goal.get("goal_id") or ""), set()),
+        )
     return {
         "available": True,
         "source": "run_history",

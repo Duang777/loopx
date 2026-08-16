@@ -113,10 +113,38 @@ def test_build_usage_summary_degrades_when_runs_report_no_usage() -> None:
     now = datetime.now(timezone.utc)
     history = {"runs": [_run("g1", generated_at=now)]}
     summary = build_usage_summary(history, parse_timestamp=_identity_parse)
-    assert summary["totals"]["input_tokens_24h"] == 0
-    assert summary["totals"]["cost_usd_24h"] == 0.0
+    for bucket in (summary["totals"], summary["goals"][0]):
+        assert "input_tokens_24h" not in bucket
+        assert "cost_usd_24h" not in bucket
+        assert "duration_ms_24h" not in bucket
+        assert "input_tokens_7d" not in bucket
+        assert "cost_usd_7d" not in bucket
+        assert "duration_ms_7d" not in bucket
     # existing run accounting still works alongside the new fields
     assert summary["totals"]["runs_24h"] == 1
+
+
+def test_build_usage_summary_only_emits_windows_with_usage_samples() -> None:
+    now = datetime.now(timezone.utc)
+    history = {
+        "runs": [
+            _run(
+                "g1",
+                generated_at=now - timedelta(days=2),
+                usage={
+                    "input_tokens": 25,
+                    "output_tokens": 5,
+                    "provider": "codex",
+                    "model": "codex",
+                },
+            )
+        ]
+    }
+    summary = build_usage_summary(history, parse_timestamp=_identity_parse)
+    for bucket in (summary["totals"], summary["goals"][0]):
+        assert "input_tokens_24h" not in bucket
+        assert bucket["input_tokens_7d"] == 25
+        assert bucket["output_tokens_7d"] == 5
 
 
 def test_build_usage_summary_keeps_old_runs_out_of_usage_windows() -> None:
