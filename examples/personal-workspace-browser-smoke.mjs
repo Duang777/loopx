@@ -429,11 +429,15 @@ async function main() {
     if (body.includes("Agent 设置")) throw new Error("Sidebar still exposes the read-only Agent settings dead end");
     if (await page.locator(".personal-global-rail").count()) throw new Error("Old icon rail is visible");
     pass(1, "Single Goal sidebar is visible and the old icon rail is absent.");
-    if (await page.locator(".personal-timeline-row").filter({ hasText: /查看|纠偏/u }).count()) throw new Error("Browse rows expose repeated action buttons");
-    pass(2, "Browse rows are full-row click targets without repeated action columns.");
+    if (await page.locator(".personal-timeline-row").filter({ hasText: /纠偏/u }).count()) throw new Error("Browse rows expose repeated correction actions");
+    pass(2, "Browse rows are full-row click targets and Session rows state that they open execution progress and results.");
     await page.screenshot({ path: resolve(outputDir, "desktop-first-screen.png"), fullPage: false, animations: "disabled" });
     pass(4, "First viewport exposes needs-you, running, observing, and scheduled Goal lanes with collapsed history.");
     pass(15, "Desktop viewport matches the approved single-sidebar/channel/drawer composition.");
+
+    if (await page.locator(".personal-manager-conversation-tray").count()) {
+      throw new Error("Historical manager messages kept a conversation receipt permanently visible before a new send");
+    }
 
     await page.getByRole("button", { name: "向 Agent 获取进度报告" }).click();
     const reportDeadline = Date.now() + 5_000;
@@ -442,6 +446,27 @@ async function main() {
     }
     if (!api.turnRequests.some((turn) => turn.message.includes("已完成、执行中、阻塞和下一步"))) throw new Error("Progress report shortcut did not send a useful scoped request");
     while (await page.getByRole("button", { name: "向 Agent 获取进度报告" }).isDisabled()) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    await page.locator(".personal-manager-conversation-tray").waitFor({ state: "visible" });
+    if (!(await page.getByTestId("personal-home-lane-running").isVisible())) throw new Error("Manager send replaced the four-lane home overview");
+    const managerUrlBefore = page.url();
+    await page.getByRole("button", { name: "将“我现在该做什么”填入编辑框" }).click();
+    await page.getByLabel("向 LoopX 发送消息").fill("我现在该做什么？只读回答，不要创建或修改任何状态。");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await page.getByText(/^先处理「.+」：.+/u).waitFor({ state: "visible" });
+    await page.getByText("查看完整对话", { exact: true }).waitFor({ state: "visible" });
+    if (page.url() !== managerUrlBefore) throw new Error(`Manager send navigated away from the overview: ${managerUrlBefore} -> ${page.url()}`);
+    await page.screenshot({ path: resolve(outputDir, "manager-conversation-tray-compact.png"), fullPage: false, animations: "disabled" });
+    await page.locator(".personal-manager-conversation-tray").click({ position: { x: 48, y: 32 } });
+    await page.getByRole("navigation", { name: "管家视图" }).waitFor({ state: "visible" });
+    if (await page.locator(".personal-home-board").isVisible()) throw new Error("Full manager Chat left the Goal overview visible behind the conversation");
+    if (await page.locator(".personal-manager-conversation-tray").count()) throw new Error("Full manager Chat kept the compact home tray visible");
+    if (await page.locator(".personal-channel-timeline .personal-message").count() < 4) throw new Error("Manager Chat did not show the complete conversation history");
+    await page.screenshot({ path: resolve(outputDir, "manager-chat.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("button", { name: "总览", exact: true }).click();
+    await page.locator(".personal-home-board").waitFor({ state: "visible" });
+    if (await page.locator(".personal-manager-conversation-tray").count()) {
+      throw new Error("Manager conversation receipt stayed permanently visible after returning to the overview");
+    }
 
     const [fileChooser] = await Promise.all([
       page.waitForEvent("filechooser"),
@@ -560,11 +585,23 @@ async function main() {
 
     const previewCountBeforeAnalysis = api.actionPreviews.length;
     const turnCountBeforeAnalysis = api.turnRequests.length;
+    await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Tasks" }).click();
     await composer.fill("做一次只读分析：判断刚刚新增的 Todo 是否与当前 Goal 一致，并在当前 Chat 返回两点理由。不要修改状态。");
     await page.getByRole("button", { name: "发送", exact: true }).click();
-    await page.getByText("已沿用当前 Goal 与 Agent Session。接下来会先核对状态，再继续推进。", { exact: true }).last().waitFor({ state: "visible", timeout: 10_000 });
+    const taskConversationReceipt = page.getByRole("region", { name: "最近对话与 Task 状态" });
+    await taskConversationReceipt.getByText("Agent 已回复", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await taskConversationReceipt.getByText("本次对话没有直接修改 Tasks。需要执行时，可先转成 Task 草稿并确认。", { exact: true }).waitFor({ state: "visible" });
     if (api.actionPreviews.length !== previewCountBeforeAnalysis) throw new Error("A read-only reference to an existing Todo created another Todo preview");
     if (api.turnRequests.length <= turnCountBeforeAnalysis) throw new Error("Read-only Todo analysis did not reach the Goal Chat Session");
+    await page.screenshot({ path: resolve(outputDir, "task-chat-receipt.png"), fullPage: false, animations: "disabled" });
+    await taskConversationReceipt.getByRole("button", { name: "查看回复" }).click();
+    await page.getByText("已沿用当前 Goal 与 Agent Session。接下来会先核对状态，再继续推进。", { exact: true }).last().waitFor({ state: "visible", timeout: 10_000 });
+    await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Tasks" }).click();
+    await page.getByRole("region", { name: "最近对话与 Task 状态" }).getByRole("button", { name: "转为 Task" }).click();
+    if (!(await composer.inputValue()).startsWith("创建一个 Task：")) throw new Error("Converting the latest reply did not create an editable Task draft");
+    await page.getByText("已根据回复生成 Task 草稿。编辑后发送，LoopX 会先展示确认预览。", { exact: true }).waitFor({ state: "visible" });
+    await composer.fill("");
+    await page.getByRole("navigation", { name: "Goal 视图" }).getByRole("button", { name: "Chat" }).click();
 
     await composer.fill("让 Claude Code 负责管理这个 Goal");
     await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -573,13 +610,13 @@ async function main() {
     if (!naturalBinding) throw new Error("Natural-language Agent binding did not create a typed preview");
     await page.getByRole("button", { name: "关闭", exact: true }).click();
 
-    const run = page.locator(".personal-run-row").first();
+    const run = page.getByRole("button", { name: /查看执行过程与结果/ }).first();
     await run.click();
-    await page.getByText("运行详情").waitFor({ state: "visible" });
-    await page.getByRole("button", { name: "查看执行过程与结果" }).click();
-    await page.getByRole("region", { name: "执行 Session 运行记录" }).waitFor({ state: "visible" });
-    if (!(await page.getByText(/当前时间线已切换到这次 Session/).isVisible())) throw new Error("Session entry did not expose the loaded run record");
-    await page.getByRole("button", { name: "Session 详情" }).click();
+    await page.getByText("执行 Session", { exact: true }).waitFor({ state: "visible" });
+    if (await page.getByRole("tab", { name: "执行过程与结果" }).getAttribute("aria-selected") !== "true") throw new Error("Session drawer did not open on the execution record");
+    await page.getByText("运行记录", { exact: true }).waitFor({ state: "visible" });
+    await page.screenshot({ path: resolve(outputDir, "session-execution-record.png"), fullPage: false, animations: "disabled" });
+    await page.getByRole("tab", { name: "详情与操作" }).click();
     const correction = page.getByLabel("输入纠偏信息");
     const turnCountBeforeCorrection = api.turnRequests.length;
     await correction.fill("先核对权限边界，再继续推进。");
@@ -691,6 +728,7 @@ async function main() {
     await page.getByRole("button", { name: "刷新状态" }).click();
 
     await page.locator(".personal-run-row").first().click();
+    await page.getByRole("tab", { name: "详情与操作" }).click();
     const runningCorrection = page.getByLabel("输入纠偏信息");
     await runningCorrection.fill("保持运行，等我检查中断控制。 ");
     await page.getByRole("button", { name: "发送纠偏" }).click();
@@ -763,6 +801,7 @@ async function main() {
 
     await page.locator(".personal-goal-link").first().click();
     await page.locator(".personal-run-row").first().click();
+    await page.getByRole("tab", { name: "详情与操作" }).click();
     await page.getByLabel("输入纠偏信息").fill("保持运行，用于验证刷新恢复。 ");
     await page.getByRole("button", { name: "发送纠偏" }).click();
     let recoveryTurn;
@@ -847,15 +886,18 @@ async function main() {
     await mobile.getByRole("button", { name: /执行中/ }).first().click();
     await mobile.locator(".personal-channel").waitFor({ state: "visible" });
     await mobile.close();
-    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Personal workspace did not keep the owner-reviewed paper theme");
-    if (await page.getByRole("button", { name: /野兽主题|默认主题/ }).count()) throw new Error("Personal workspace still exposes the novelty theme toggle");
-    pass(16, "The control plane keeps one consistent owner-reviewed visual theme.");
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Personal workspace did not start with the default theme");
+    const themeToggle = page.getByRole("button", { name: "切换到野兽主题" });
+    await themeToggle.click();
+    if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "brutal") throw new Error("Theme switch did not enable the beast theme");
+    await page.getByRole("button", { name: "切换到默认主题" }).click();
+    pass(16, "The header theme switch toggles the beast theme and returns to the default theme.");
     await page.locator(".personal-manager-link").first().click();
     await page.waitForTimeout(600);
     const workerCards = await page.locator(".personal-worker-strip > button").count();
-    if (workerCards !== 4) throw new Error(`Agent worker strip expected 4 cards, got ${workerCards}`);
+    if (workerCards !== 0) throw new Error(`Redundant Agent worker strip is still visible: ${workerCards}`);
     if (!(await page.locator(".personal-digest-card").isVisible().catch(() => false))) throw new Error("Morning digest card did not render on the manager home");
-    pass(17, "Manager home surfaces the morning digest card and the agent worker strip.");
+    pass(17, "Manager home keeps the morning digest while omitting the redundant Agent worker strip.");
     const report = { criteria: Object.fromEntries(results), observations };
     await writeFile(resolve(outputDir, "acceptance-results.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
     console.log(`personal-workspace-browser-smoke: ok\npreview=${url}\nscreenshot=${resolve(outputDir, "desktop-first-screen.png")}`);
