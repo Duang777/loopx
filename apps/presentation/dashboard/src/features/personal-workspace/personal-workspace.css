@@ -177,7 +177,8 @@
 .personal-row-copy small, .personal-run-identity small, .personal-row-copy span { color: var(--pw-muted); font-size: 11px; }
 .personal-row-status { display: inline-flex; align-items: center; gap: 5px; padding: 2.5px 10px; border-radius: 99px; background: #f2f1ed; color: var(--pw-muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .personal-row-status.is-running { background: var(--pw-green-bg); color: var(--pw-green); }
-.personal-run-row { grid-template-columns: 38px minmax(90px, .65fr) minmax(160px, 1.4fr) 90px auto 16px; }
+.personal-run-row { grid-template-columns: 38px minmax(90px, .65fr) minmax(160px, 1.4fr) 90px auto auto 16px; }
+.personal-run-open-label { color: var(--pw-blue-ink); font-size: 10.5px; font-weight: 650; white-space: nowrap; }
 .personal-run-identity strong { font-size: 12px; }
 .personal-run-progress { display: grid; gap: 5px; }
 .personal-run-progress small { color: var(--pw-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
@@ -354,6 +355,19 @@
 
 /* Kanban layout for the goal Tasks tab: columns are task states. */
 .personal-task-kanban { display: grid; grid-template-columns: repeat(auto-fit, minmax(172px, 1fr)); gap: 12px; align-items: start; }
+.personal-task-chat-receipt { grid-column: 1 / -1; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid #c9d6f5; border-radius: 12px; background: #f6f8fe; box-shadow: 0 1px 4px rgb(47 102 233 / 7%); }
+.personal-task-chat-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--pw-blue-soft); color: var(--pw-blue-ink); }
+.personal-task-chat-receipt > div { min-width: 0; }
+.personal-task-chat-receipt header { display: flex; align-items: center; gap: 8px; }
+.personal-task-chat-receipt header strong { font-size: 12.5px; }
+.personal-task-chat-receipt header small { color: var(--pw-faint); font-size: 10.5px; }
+.personal-task-chat-receipt p { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 5px; margin: 4px 0; overflow: hidden; color: var(--pw-text); font-size: 12.5px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.personal-task-chat-receipt p b { color: var(--pw-faint); font-size: 10.5px; font-weight: 650; }
+.personal-task-chat-receipt p.is-assistant { max-height: 2.9em; color: var(--pw-muted); white-space: normal; }
+.personal-task-chat-receipt > div > small { color: var(--pw-muted); font-size: 11px; line-height: 1.45; }
+.personal-task-chat-receipt footer { display: flex; gap: 7px; }
+.personal-task-chat-receipt footer button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 10px; border: 1px solid #b9c9ee; border-radius: 9px; background: #fff; color: var(--pw-blue-ink); cursor: pointer; font-size: 11px; font-weight: 650; white-space: nowrap; }
+.personal-task-chat-receipt footer button:hover { border-color: var(--pw-blue); background: var(--pw-blue-soft); }
 .personal-task-kanban .personal-object-list { display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #f6f4ee; }
 .personal-task-kanban .personal-object-list > header { display: flex; align-items: center; gap: 8px; min-height: 0; padding: 6px 8px 2px; border-bottom: 0; }
 .personal-task-kanban .personal-object-list > header > strong { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; }
@@ -380,8 +394,24 @@
 .personal-task-session-status { color: var(--pw-blue-ink); font-weight: 650; }
 .personal-task-kanban .personal-task-empty { margin: 2px 0 4px; padding: 16px 10px; border: 1px dashed var(--pw-line-strong); border-radius: 10px; text-align: center; font-size: 12px; }
 .personal-workspace-shell.has-drawer .personal-task-kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-task-chat-receipt { border: 2px solid #141414; border-radius: 4px; background: #fff; box-shadow: 3px 3px 0 #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-task-chat-icon { border: 2px solid #141414; border-radius: 4px; background: #ffe23f; color: #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-task-chat-receipt footer button { border: 2px solid #141414; border-radius: 4px; color: #141414; box-shadow: 2px 2px 0 #141414; }
 
 .personal-composer-wrap { padding: 10px max(26px, calc((100% - 820px) / 2)) 20px; background: linear-gradient(transparent, var(--pw-bg) 22%); }
+.personal-manager-conversation-tray { display: grid; width: 100%; gap: 9px; max-height: 300px; padding: 12px; margin-bottom: 10px; overflow: hidden; border: 1px solid #bfcdf1; border-radius: 14px; background: rgb(255 255 255 / 96%); box-shadow: 0 5px 20px rgb(34 62 120 / 10%); color: inherit; cursor: pointer; font: inherit; text-align: left; }
+.personal-manager-conversation-tray:hover { border-color: #8fa9ee; box-shadow: 0 7px 24px rgb(34 62 120 / 14%); }
+.personal-manager-conversation-tray:focus-visible { outline: 3px solid rgb(47 104 238 / 24%); outline-offset: 2px; }
+.personal-manager-conversation-tray > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.personal-manager-conversation-tray > header > span { display: flex; align-items: center; gap: 7px; color: var(--pw-blue-ink); }
+.personal-manager-conversation-tray > header small { color: var(--pw-faint); font-size: 10px; font-weight: 500; }
+.personal-manager-conversation-link { padding: 3px 7px; color: var(--pw-blue); font-size: 11px; font-weight: 650; }
+.personal-manager-conversation-messages { display: grid; gap: 7px; overflow-y: auto; }
+.personal-manager-conversation-messages article { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 9px; padding: 8px 10px; border-radius: 10px; background: #f5f7fc; font-size: 12px; line-height: 1.55; }
+.personal-manager-conversation-messages article.is-user { background: #edf3ff; }
+.personal-manager-conversation-messages article strong { color: var(--pw-muted); font-size: 10.5px; }
+.personal-manager-conversation-messages article p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.personal-manager-conversation-messages article small { grid-column: 2; color: var(--pw-blue); }
 .personal-quick-prompts { display: flex; gap: 8px; margin-bottom: 9px; }
 .personal-quick-prompts button { min-height: 32px; padding: 5px 14px; border: 1px solid var(--pw-line-strong); border-radius: 99px; background: #fff; color: var(--pw-muted); font-size: 12.5px; cursor: pointer; }
 .personal-quick-prompts button:hover { border-color: var(--pw-blue); color: var(--pw-blue-ink); }
@@ -435,6 +465,29 @@
 .personal-detail-card dl div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; font-size: 12px; }
 .personal-detail-card dt { color: var(--pw-faint); }
 .personal-detail-card dd { margin: 0; overflow-wrap: anywhere; }
+.personal-run-drawer-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 11px; background: #efefec; }
+.personal-run-drawer-tabs button { min-height: 36px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--pw-muted); cursor: pointer; font-size: 12px; font-weight: 650; }
+.personal-run-drawer-tabs button[aria-selected="true"] { background: #fff; color: var(--pw-text); box-shadow: 0 1px 4px rgb(30 28 20 / 12%); }
+.personal-session-summary { margin-top: 12px; }
+.personal-session-message-record { margin-top: 14px; }
+.personal-session-message-record > h3 { margin: 0 0 10px; color: var(--pw-faint); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.personal-session-message-record ol { display: grid; gap: 0; padding: 0; margin: 0; list-style: none; }
+.personal-session-message-record li { display: grid; grid-template-columns: 13px minmax(0, 1fr); gap: 9px; padding-bottom: 15px; }
+.personal-session-message-record li > i, .personal-session-active-step > i { width: 9px; height: 9px; margin-top: 5px; border-radius: 50%; background: var(--pw-green); box-shadow: 0 0 0 3px var(--pw-green-bg); }
+.personal-session-message-record li.is-user > i { background: var(--pw-blue); box-shadow: 0 0 0 3px var(--pw-blue-soft); }
+.personal-session-message-record li.is-error > i { background: var(--pw-red); box-shadow: 0 0 0 3px var(--pw-red-bg); }
+.personal-session-message-record li > div { display: grid; gap: 5px; min-width: 0; padding: 0 0 15px; border-bottom: 1px solid var(--pw-line); }
+.personal-session-message-record li header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.personal-session-message-record li strong { font-size: 12px; }
+.personal-session-message-record time { color: var(--pw-faint); font-size: 10px; }
+.personal-session-message-record li p { max-height: 180px; margin: 0; overflow: auto; color: var(--pw-muted); font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; }
+.personal-session-empty { padding: 18px 12px; margin: 0; border: 1px dashed var(--pw-line-strong); border-radius: 10px; color: var(--pw-muted); text-align: center; font-size: 11.5px; }
+.personal-session-active-step { display: grid; grid-template-columns: 13px minmax(0, 1fr); gap: 9px; align-items: start; padding-top: 4px; }
+.personal-session-active-step > i { background: var(--pw-blue); box-shadow: 0 0 0 3px var(--pw-blue-soft); animation: personal-session-pulse 1.4s ease-in-out infinite; }
+.personal-session-active-step > span { display: grid; gap: 3px; }
+.personal-session-active-step strong { font-size: 12px; }
+.personal-session-active-step small { color: var(--pw-muted); font-size: 10.5px; }
+@keyframes personal-session-pulse { 50% { opacity: .35; } }
 .personal-todo-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
 .personal-todo-actions > button { margin-top: 0; }
 .personal-todo-actions-title { grid-column: 1 / -1; color: var(--pw-faint); font-size: 11px; font-weight: 650; letter-spacing: .06em; }
@@ -577,6 +630,9 @@
   .personal-timeline-row > time, .personal-timeline-row > .personal-row-status { display: none; }
   .personal-timeline-row .personal-priority-dot { display: none; }
   .personal-channel-composer { grid-template-columns: 40px 36px minmax(0, 1fr) 40px; }
+  .personal-task-chat-receipt { grid-template-columns: 32px minmax(0, 1fr); padding: 11px; }
+  .personal-task-chat-icon { width: 32px; height: 32px; }
+  .personal-task-chat-receipt footer { grid-column: 1 / -1; justify-content: flex-end; }
   .personal-channel-composer > span { min-width: 0; font-size: 0; padding: 0; justify-content: center; }
   .personal-composer-wrap { max-width: 100vw; }
   .personal-workspace-drawer { width: 100vw; }
@@ -702,16 +758,6 @@
 .personal-digest-stats button:hover { border-color: var(--pw-blue); color: var(--pw-blue-ink); }
 .personal-digest-stats b { color: var(--pw-text); font-size: 14px; }
 
-.personal-worker-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-bottom: 12px; }
-.personal-worker-strip > button { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 13px; border: 1px solid var(--pw-line); border-radius: 12px; background: #fff; color: inherit; cursor: pointer; text-align: left; box-shadow: 0 1px 3px rgb(30 28 20 / 6%); }
-.personal-worker-strip > button:hover { border-color: var(--pw-line-strong); }
-.personal-worker-state { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--pw-faint); }
-.personal-worker-state.is-running { background: #3fbf82; }
-.personal-worker-state.is-monitoring { background: var(--pw-blue); }
-.personal-worker-state.is-blocked { background: var(--pw-red); }
-.personal-worker-copy { display: grid; min-width: 0; gap: 1px; }
-.personal-worker-copy strong { overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
-.personal-worker-copy small { overflow: hidden; color: var(--pw-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
 .personal-composer-hint { margin: 0 0 8px; color: var(--pw-faint); font-size: 11.5px; }
 
@@ -723,10 +769,6 @@
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-card { border: 2px solid #141414; border-radius: 4px; background: #fff; box-shadow: 3px 3px 0 #141414; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-stats button { border: 2px solid #141414; border-radius: 99px; color: #141414; box-shadow: 2px 2px 0 #141414; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-stats button:hover { background: #ffe23f; border-color: #141414; color: #141414; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-strip > button { border: 2px solid #141414; border-radius: 4px; box-shadow: 2px 2px 0 #141414; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-state { border: 1.5px solid #141414; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-state.is-running { background: #7ddb8a; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-worker-state.is-monitoring { background: #35c5f0; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-priority-badge { border: 1.5px solid #141414; border-radius: 3px; }
 
 .personal-goal-notification code { padding: 1px 5px; border: 1px solid var(--pw-line); border-radius: 5px; background: var(--pw-bg, #f7f6f2); font-size: 11px; word-break: break-all; }

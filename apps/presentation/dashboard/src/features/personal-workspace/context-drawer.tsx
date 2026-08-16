@@ -70,14 +70,24 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
   const [correction, setCorrection] = useState("");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [repositoryCopyState, setRepositoryCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [runDrawerTab, setRunDrawerTab] = useState<"record" | "details">("record");
   const [todoAgentId, setTodoAgentId] = useState(agents.find((agent) => agent.available)?.agentId ?? "codex");
   const closeRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
+  const selectionIdentity = selection.kind === "run" ? `run:${selection.item.runId}`
+    : selection.kind === "proposal" ? `proposal:${selection.item.previewId}`
+      : selection.kind === "todo" ? `todo:${selection.item.todoId}`
+        : selection.kind === "attention" ? `attention:${selection.item.todoId}`
+          : selection.kind === "output" ? `output:${selection.item.outputId}`
+            : selection.kind === "schedule" ? `schedule:${selection.item.scheduleId}`
+              : selection.kind === "notifications" ? `notifications:${selection.goalId ?? "workspace"}`
+                : `goal:${selection.item.goalId}`;
 
   useEffect(() => {
     setRepositoryCopyState("idle");
     setDiagnosticsOpen(false);
-  }, [selection]);
+    setRunDrawerTab("record");
+  }, [selectionIdentity]);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -112,7 +122,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
 
   const title = selection.kind === "attention" ? "需要你"
     : selection.kind === "todo" ? "Todo 详情"
-      : selection.kind === "run" ? "运行详情"
+      : selection.kind === "run" ? "执行 Session"
         : selection.kind === "output" ? "产出详情"
           : selection.kind === "proposal" ? (selection.item.status === "applied" ? "执行结果" : "确认执行")
             : selection.kind === "schedule" ? (selection.item.scheduleKind === "heartbeat" ? "Heartbeat" : "定时检查")
@@ -208,10 +218,10 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 <div><dt>优先级</dt><dd>{selection.item.priority ?? "medium"}</dd></div>
                 {attentionAgeLabel(selection.item.updatedAt) ? <div><dt>等待</dt><dd>已等待 {attentionAgeLabel(selection.item.updatedAt)}</dd></div> : null}
                 <div><dt>原因</dt><dd>{selection.item.explanation ?? "该决定会影响当前 Todo 的下一步执行。"}</dd></div>
-                <div><dt>证据</dt><dd>{selection.item.evidence ?? "暂无更多公开安全证据。"}</dd></div>
+                <div><dt>证据</dt><dd>{selection.item.evidence ?? "当前状态没有附加公开安全证据；下一步仍会先展示 Preview。"}</dd></div>
               </dl>
             </section>
-            <button className="personal-primary-action" onClick={() => void previewDecision(selection.item, "approve", "确认处理")} type="button"><Check size={17} />确认处理</button>
+            <button className="personal-primary-action" onClick={() => void previewDecision(selection.item, "approve", "确认处理")} type="button"><Check size={17} />查看影响并决定</button>
             <details className="personal-compact-menu">
               <summary><MoreHorizontal size={17} />更多决定</summary>
               <div>
@@ -338,7 +348,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 <>
                   <h3>{workspaceSessionStatusLabel(selectedGoalRun.sessionStatus ?? selectedGoalRun.status)}</h3>
                   <p>{selectedGoalRun.title}</p>
-                  <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selectedGoalRun)} type="button"><Play size={16} />查看最近 Session</button>
+                  <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selectedGoalRun)} type="button"><Play size={16} />查看最近执行过程</button>
                 </>
               ) : (
                 <>
@@ -356,55 +366,91 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
 
         {selection.kind === "run" ? (
           <>
-            <section className="personal-detail-card">
-              <small>{selection.item.agentLabel} · {workspaceSessionStatusLabel(selection.item.status)}</small>
-              <h3>{selection.item.title}</h3>
-              <p>{selection.item.latestActivity}</p>
-              <dl>
-                <div><dt>Goal</dt><dd>{selection.item.goalTitle}</dd></div>
-                <div><dt>进度</dt><dd>{selection.item.completedSteps}/{selection.item.totalSteps}</dd></div>
-                <div><dt>会话状态</dt><dd>{workspaceSessionStatusLabel(selection.item.sessionStatus ?? selection.item.status)}</dd></div>
-                <div><dt>可恢复</dt><dd>{selection.item.resumable === false ? "否" : "是"}</dd></div>
-              </dl>
-            </section>
-            {selection.item.sessionId ? <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selection.item)} type="button"><ExternalLink size={16} />查看执行过程与结果</button> : null}
-            {selection.item.outputs?.length ? (
-              <section className="personal-execution-history" aria-labelledby="personal-run-outputs-title">
-                <h3 id="personal-run-outputs-title">本次运行产出</h3>
-                <ol>{selection.item.outputs.map((output) => <li key={output.outputId}><span><strong>{output.title}</strong><small>{output.createdAt ?? output.kind ?? "公开安全产出"}</small></span></li>)}</ol>
-              </section>
-            ) : null}
-            {selection.item.sessionStatus === "resume_failed" ? (
-              <section className="personal-recovery-panel" aria-label="Session 恢复失败">
-                <strong>上游 Session 恢复失败</strong>
-                <p>本地历史已经保留，请选择恢复路径。</p>
-                <button className="personal-primary-action" onClick={() => void callbacks.onRetryResumeRun?.(selection.item)} type="button"><RotateCcw size={16} />重试恢复</button>
-                <button className="personal-secondary-action" onClick={() => void callbacks.onStartNewRunSession?.(selection.item)} type="button"><Play size={16} />携带上下文开始新 Session</button>
-              </section>
-            ) : null}
-            <section className="personal-correction-panel">
-              <header><span><Bot size={16} />与 {selection.item.agentLabel} 纠偏</span></header>
-              <p>消息会沿用当前 Goal、Todo 与 Agent Session 上下文。</p>
-              <div className="personal-correction-composer">
-                <textarea
-                  aria-label={`输入纠偏信息：Goal ${selection.item.goalTitle}，Agent ${selection.item.agentLabel}，Run ${selection.item.title}`}
-                  onChange={(event) => setCorrection(event.target.value)}
-                  placeholder="例如：先关注权限风险，暂时不要提交…"
-                  rows={3}
-                  value={correction}
-                />
-                <button aria-label="发送纠偏" disabled={!correction.trim()} onClick={() => void sendCorrection()} type="button"><Send size={16} /></button>
-              </div>
-            </section>
-            <details className="personal-compact-menu personal-run-more">
-              <summary><MoreHorizontal size={17} />更多运行操作</summary>
-              <div>
-                <button disabled={!selection.item.canInterrupt} onClick={() => void callbacks.onInterruptRun?.(selection.item)} type="button"><Pause size={16} />中断本次运行</button>
-                <button disabled={selection.item.resumable === false} onClick={() => void callbacks.onRetryResumeRun?.(selection.item)} type="button"><RotateCcw size={16} />重试恢复</button>
-                <button onClick={() => void callbacks.onStartNewRunSession?.(selection.item)} type="button"><Play size={16} />开始新 Session</button>
-                <button onClick={() => void callbacks.onCloseRunSession?.(selection.item)} type="button"><Square size={16} />关闭 Session</button>
-              </div>
-            </details>
+            <div aria-label="Session 视图" className="personal-run-drawer-tabs" role="tablist">
+              <button aria-selected={runDrawerTab === "record"} onClick={() => setRunDrawerTab("record")} role="tab" type="button">执行过程与结果</button>
+              <button aria-selected={runDrawerTab === "details"} onClick={() => setRunDrawerTab("details")} role="tab" type="button">详情与操作</button>
+            </div>
+            {runDrawerTab === "record" ? (
+              <>
+                <section className="personal-detail-card personal-session-summary">
+                  <small>{selection.item.agentLabel} · {workspaceSessionStatusLabel(selection.item.sessionStatus ?? selection.item.status)}</small>
+                  <h3>{selection.item.title}</h3>
+                  <p>{selection.item.latestActivity}</p>
+                  <dl>
+                    <div><dt>Goal</dt><dd>{selection.item.goalTitle}</dd></div>
+                    <div><dt>进度</dt><dd>{selection.item.completedSteps}/{selection.item.totalSteps}</dd></div>
+                  </dl>
+                </section>
+                <section aria-label="执行记录" className="personal-session-message-record">
+                  <h3>运行记录</h3>
+                  {selection.item.sessionMessages?.length ? (
+                    <ol>{selection.item.sessionMessages.map((message) => (
+                      <li className={`is-${message.role}`} key={message.messageId}>
+                        <i />
+                        <div>
+                          <header><strong>{message.role === "user" ? "收到任务" : message.role === "assistant" ? "已完成" : "需检查"}</strong>{message.createdAt ? <time>{new Date(message.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}</time> : null}</header>
+                          <p>{message.text}</p>
+                        </div>
+                      </li>
+                    ))}</ol>
+                  ) : (
+                    <p className="personal-session-empty">还没有运行记录。Agent 尚未开始这次执行；请在“详情与操作”查看等待条件或恢复 Session。</p>
+                  )}
+                  {selection.item.status === "running" ? <div className="personal-session-active-step"><i /><span><strong>正在分析</strong><small>Agent 正在继续执行，记录会自动更新。</small></span></div> : null}
+                </section>
+                {selection.item.outputs?.length ? (
+                  <section className="personal-execution-history" aria-labelledby="personal-run-outputs-title">
+                    <h3 id="personal-run-outputs-title">本次运行产出</h3>
+                    <ol>{selection.item.outputs.map((output) => <li key={output.outputId}><span><strong>{output.title}</strong><small>{output.createdAt ?? output.kind ?? "公开安全产出"}</small></span></li>)}</ol>
+                  </section>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <section className="personal-detail-card">
+                  <small>{selection.item.agentLabel} · {workspaceSessionStatusLabel(selection.item.status)}</small>
+                  <h3>{selection.item.title}</h3>
+                  <p>{selection.item.latestActivity}</p>
+                  <dl>
+                    <div><dt>Goal</dt><dd>{selection.item.goalTitle}</dd></div>
+                    <div><dt>进度</dt><dd>{selection.item.completedSteps}/{selection.item.totalSteps}</dd></div>
+                    <div><dt>会话状态</dt><dd>{workspaceSessionStatusLabel(selection.item.sessionStatus ?? selection.item.status)}</dd></div>
+                    <div><dt>可恢复</dt><dd>{selection.item.resumable === false ? "否" : "是"}</dd></div>
+                  </dl>
+                </section>
+                {selection.item.sessionStatus === "resume_failed" ? (
+                  <section className="personal-recovery-panel" aria-label="Session 恢复失败">
+                    <strong>上游 Session 恢复失败</strong>
+                    <p>本地历史已经保留，请选择恢复路径。</p>
+                    <button className="personal-primary-action" onClick={() => void callbacks.onRetryResumeRun?.(selection.item)} type="button"><RotateCcw size={16} />重试恢复</button>
+                    <button className="personal-secondary-action" onClick={() => void callbacks.onStartNewRunSession?.(selection.item)} type="button"><Play size={16} />携带上下文开始新 Session</button>
+                  </section>
+                ) : null}
+                <section className="personal-correction-panel">
+                  <header><span><Bot size={16} />与 {selection.item.agentLabel} 纠偏</span></header>
+                  <p>消息会沿用当前 Goal、Todo 与 Agent Session 上下文。</p>
+                  <div className="personal-correction-composer">
+                    <textarea
+                      aria-label={`输入纠偏信息：Goal ${selection.item.goalTitle}，Agent ${selection.item.agentLabel}，Run ${selection.item.title}`}
+                      onChange={(event) => setCorrection(event.target.value)}
+                      placeholder="例如：先关注权限风险，暂时不要提交…"
+                      rows={3}
+                      value={correction}
+                    />
+                    <button aria-label="发送纠偏" disabled={!correction.trim()} onClick={() => void sendCorrection()} type="button"><Send size={16} /></button>
+                  </div>
+                </section>
+                <details className="personal-compact-menu personal-run-more">
+                  <summary><MoreHorizontal size={17} />更多运行操作</summary>
+                  <div>
+                    <button disabled={!selection.item.canInterrupt} onClick={() => void callbacks.onInterruptRun?.(selection.item)} type="button"><Pause size={16} />中断本次运行</button>
+                    <button disabled={selection.item.resumable === false} onClick={() => void callbacks.onRetryResumeRun?.(selection.item)} type="button"><RotateCcw size={16} />重试恢复</button>
+                    <button onClick={() => void callbacks.onStartNewRunSession?.(selection.item)} type="button"><Play size={16} />开始新 Session</button>
+                    <button onClick={() => void callbacks.onCloseRunSession?.(selection.item)} type="button"><Square size={16} />关闭 Session</button>
+                  </div>
+                </details>
+              </>
+            )}
           </>
         ) : null}
 

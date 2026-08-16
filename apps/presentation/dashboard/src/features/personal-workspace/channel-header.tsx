@@ -1,32 +1,40 @@
-import { Bot, ChevronDown, Info, Menu, RefreshCw } from "lucide-react";
+import { Bot, ChevronDown, Info, Menu, Palette, RefreshCw } from "lucide-react";
 
 import type { WorkspaceAgentOption, WorkspaceGoal, WorkspaceGoalTab } from "./personal-workspace-model";
 import { goalUsageLabel } from "./personal-workspace-model";
 
 export function ChannelHeader({
   agents,
+  managerChatOpen,
   mobileNavigationOpen,
   onOpenGoalDetail,
   onRefresh,
   onOpenNavigation,
   onSelectGoalTab,
   onSelectAgent,
+  onReturnManagerHome,
+  onToggleTheme,
   refreshState,
   selectedAgentId,
   selectedGoal,
   selectedGoalTab,
+  theme,
 }: {
   agents: WorkspaceAgentOption[];
+  managerChatOpen?: boolean;
   mobileNavigationOpen?: boolean;
   onOpenGoalDetail?: () => void;
   onRefresh?: () => void;
   onOpenNavigation?: () => void;
   onSelectGoalTab: (tab: WorkspaceGoalTab) => void;
   onSelectAgent: (agentId: string) => void;
+  onReturnManagerHome?: () => void;
+  onToggleTheme: () => void;
   refreshState?: "idle" | "loading" | "done" | "error";
   selectedAgentId: string;
   selectedGoal: WorkspaceGoal | null;
   selectedGoalTab: WorkspaceGoalTab;
+  theme: "brutal" | "paper";
 }) {
   return (
     <header className="personal-channel-header">
@@ -42,6 +50,11 @@ export function ChannelHeader({
           <button aria-current={selectedGoalTab === "chat" ? "page" : undefined} onClick={() => onSelectGoalTab("chat")} type="button">Chat</button>
           <button aria-current={selectedGoalTab === "tasks" ? "page" : undefined} onClick={() => onSelectGoalTab("tasks")} type="button">Tasks</button>
           <button aria-current={selectedGoalTab === "files" ? "page" : undefined} onClick={() => onSelectGoalTab("files")} type="button">Files</button>
+        </nav>
+      ) : managerChatOpen ? (
+        <nav aria-label="管家视图" className="personal-goal-tabs">
+          <button onClick={onReturnManagerHome} type="button">总览</button>
+          <button aria-current="page" type="button">Chat</button>
         </nav>
       ) : null}
       {selectedGoal && onOpenGoalDetail ? (
@@ -66,6 +79,13 @@ export function ChannelHeader({
           <ChevronDown aria-hidden size={14} />
         </label>
         <span className="personal-live-indicator"><i />实时</span>
+        <button
+          aria-label={theme === "paper" ? "切换到野兽主题" : "切换到默认主题"}
+          className="personal-icon-button"
+          onClick={onToggleTheme}
+          title={theme === "paper" ? "切换到野兽主题" : "切换到默认主题"}
+          type="button"
+        ><Palette size={17} /></button>
         {onRefresh ? (
           <span className={`personal-refresh-control is-${refreshState ?? "idle"}`}>
             {refreshState === "loading" ? <small>刷新中</small> : refreshState === "done" ? <small>刚刚更新</small> : refreshState === "error" ? <small>刷新失败</small> : null}

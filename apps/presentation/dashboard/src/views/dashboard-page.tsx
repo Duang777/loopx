@@ -105,6 +105,7 @@ import {
   sessionInvalidatedByPayload,
   todoNoWriteReceiptFromPayload,
   todoReceiptLabel,
+  type ChatSessionSnapshot,
   type ChatSessionSummary,
   type ChatImageAttachment,
   type TodoProposal,
@@ -5050,6 +5051,15 @@ function personalManagerMatches(question: string, keywords: string[]) {
   return keywords.some((keyword) => question.includes(keyword));
 }
 
+function isManagerProjectionQuestion(question: string) {
+  return personalManagerMatches(question, [
+    "我现在该做什么",
+    "哪些 Goal 在等我",
+    "Agent 在做什么",
+    "哪些 Goal 需要我",
+  ]);
+}
+
 function answerPersonalManagerQuestion(
   payload: StatusPayload,
   model: PersonalHomeModel,
@@ -5081,6 +5091,34 @@ function answerPersonalManagerQuestion(
     };
   }
 
+  const asksForNextAction = personalManagerMatches(question, ["现在", "下一步", "我该", "该做什么"]);
+  if (asksForNextAction) {
+    const nextTodo = model.userTodos[0];
+    if (nextTodo) {
+      return {
+        text: nextTodo.blocking
+          ? `先处理「${personalGoalTitle(nextTodo.goalId)}」：${nextTodo.text}`
+          : `当前最先处理「${personalGoalTitle(nextTodo.goalId)}」：${nextTodo.text}`,
+        lines: [],
+      };
+    }
+    const repairGoal = model.goals.find((goal) => goal.state === "需修复");
+    if (repairGoal) {
+      return {
+        text: "没有待办，但这个 Goal 需要先修复。",
+        lines: [`${repairGoal.title} · ${repairGoal.agentSentence}`],
+      };
+    }
+    const progressingGoal = model.goals.find((goal) => goal.state === "推进中");
+    if (progressingGoal) {
+      return {
+        text: "目前不需要你介入，Agent 正在推进。",
+        lines: [`${progressingGoal.title} · ${progressingGoal.agentSentence}`],
+      };
+    }
+    return { text: "当前系统很安静，没有需要你立即处理的事项。", lines: [] };
+  }
+
   if (personalManagerMatches(question, ["状态", "异常", "修复", "健康"])) {
     const globalHealthFailed = !payload.ok
       || !payload.contract.ok
@@ -5099,31 +5137,6 @@ function answerPersonalManagerQuestion(
       text: repairGoals.length > 0 ? "当前需要关注这些健康问题：" : "Goal 状态正常，但全局健康需要检查：",
       lines,
     };
-  }
-
-  if (personalManagerMatches(question, ["现在", "下一步", "我该", "该做什么"])) {
-    const nextTodo = model.userTodos[0];
-    if (nextTodo) {
-      return {
-        text: nextTodo.blocking ? "先处理这项阻塞事项。" : "当前最先需要你处理的是：",
-        lines: [`${personalGoalTitle(nextTodo.goalId)} · ${nextTodo.text}`],
-      };
-    }
-    const repairGoal = model.goals.find((goal) => goal.state === "需修复");
-    if (repairGoal) {
-      return {
-        text: "没有待办，但这个 Goal 需要先修复。",
-        lines: [`${repairGoal.title} · ${repairGoal.agentSentence}`],
-      };
-    }
-    const progressingGoal = model.goals.find((goal) => goal.state === "推进中");
-    if (progressingGoal) {
-      return {
-        text: "目前不需要你介入，Agent 正在推进。",
-        lines: [`${progressingGoal.title} · ${progressingGoal.agentSentence}`],
-      };
-    }
-    return { text: "当前系统很安静，没有需要你立即处理的事项。", lines: [] };
   }
 
   return {
@@ -5360,7 +5373,7 @@ function PersonalGoalHome({
   const [sendingContextId, setSendingContextId] = useState<string | null>(null);
   const [runtimeBindings, setRuntimeBindings] = useState<Record<string, PersonalRuntimeBinding>>({});
   const [executionSessions, setExecutionSessions] = useState<ChatSessionSummary[]>([]);
-  const [executionSessionResults, setExecutionSessionResults] = useState<Record<string, boolean>>({});
+  const [executionSessionSnapshots, setExecutionSessionSnapshots] = useState<Record<string, ChatSessionSnapshot>>({});
   const managerMessageId = useRef(1);
   const proposalId = useRef(1);
   const sessionIds = useRef(new Map<string, string>());
@@ -5662,7 +5675,7 @@ function PersonalGoalHome({
   useEffect(() => {
     if (!selectedGoal) {
       setExecutionSessions([]);
-      setExecutionSessionResults({});
+      setExecutionSessionSnapshots({});
       return;
     }
     let cancelled = false;
@@ -5675,10 +5688,9 @@ function PersonalGoalHome({
           setExecutionSessions(taskSessions);
           const snapshots = await Promise.allSettled(taskSessions.map((session) => fetchChatSession(session.session_id)));
           if (!cancelled) {
-            setExecutionSessionResults(Object.fromEntries(snapshots.flatMap((result, index) => {
+            setExecutionSessionSnapshots(Object.fromEntries(snapshots.flatMap((result, index) => {
               if (result.status !== "fulfilled") return [];
-              const hasAnswer = result.value.messages.some((message) => message.role === "assistant" && message.text.trim().length > 0);
-              return [[taskSessions[index].session_id, hasAnswer]];
+              return [[taskSessions[index].session_id, result.value]];
             })));
           }
         }
@@ -5787,7 +5799,9 @@ function PersonalGoalHome({
     const selectedRoute = route?.agentId
       ? selectAvailableChatAgent(agentOptions, route.agentId, defaultAgentId)
       : selectedAgent;
-    const targetQuestionModel = targetGoal
+    const targetQuestionModel = targetContextId === "manager"
+      ? model
+      : targetGoal
       ? {
           ...model,
           blockingTodoCount: model.userTodos.filter((todo) => todo.goalId === targetGoal.goalId && todo.blocking).length,
@@ -5808,7 +5822,7 @@ function PersonalGoalHome({
     setManagerInput("");
     setSendingContextId(targetContextId);
 
-  const isProjectionQuickQuestion = managerQuickPrompts.includes(question);
+    const isProjectionQuickQuestion = targetContextId === "manager" && isManagerProjectionQuestion(question);
     if (isProjectionQuickQuestion || selectedRoute.agentId === "status-only" || !targetGoal) {
       const answer = answerPersonalManagerQuestion(payload, targetQuestionModel, question);
       const usesStatusOnlyRoute = selectedRoute.agentId === "status-only";
@@ -6211,7 +6225,8 @@ function PersonalGoalHome({
       const todoId = session.channel_id?.startsWith("task.") ? session.channel_id.slice(5) : undefined;
       const todo = selectedGoal.agentTodos.find((candidate) => candidate.todoId === todoId);
       const running = Boolean(session.active_turn_id);
-      const hasResult = executionSessionResults[session.session_id] === true;
+      const snapshot = executionSessionSnapshots[session.session_id];
+      const hasResult = snapshot?.messages.some((message) => message.role === "assistant" && message.text.trim().length > 0) === true;
       return {
         id: `run:task:${session.session_id}`,
         kind: "run",
@@ -6230,6 +6245,12 @@ function PersonalGoalHome({
           resumable: session.resumable,
           runId: session.session_id,
           sessionId: session.session_id,
+          sessionMessages: snapshot?.messages.map((message) => ({
+            createdAt: message.created_at,
+            messageId: message.message_id,
+            role: message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : "error",
+            text: message.role === "user" ? message.text : visibleAgentMessage(message.text),
+          })),
           sessionStatus: hasResult ? "completed" : session.status,
           status: todo?.done || hasResult ? "completed" : running ? "running" : session.status === "resume_failed" ? "failed" : "waiting",
           title: todo?.text ?? "Agent 执行任务",

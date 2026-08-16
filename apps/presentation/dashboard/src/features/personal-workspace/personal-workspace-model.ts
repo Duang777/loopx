@@ -76,6 +76,13 @@ export type WorkspaceAttention = {
   updatedAt?: string | null;
 };
 
+export type WorkspaceSessionMessage = {
+  createdAt?: string;
+  messageId: string;
+  role: "user" | "assistant" | "error";
+  text: string;
+};
+
 export type WorkspaceRun = {
   agentId: string;
   agentLabel: string;
@@ -87,6 +94,7 @@ export type WorkspaceRun = {
   resumable?: boolean;
   runId: string;
   sessionId?: string;
+  sessionMessages?: WorkspaceSessionMessage[];
   sessionStatus?: string;
   todoId?: string;
   status: "queued" | "running" | "waiting" | "completed" | "failed" | "interrupted";

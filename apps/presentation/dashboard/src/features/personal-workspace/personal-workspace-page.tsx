@@ -38,7 +38,7 @@ import type {
   WorkspaceRun,
   WorkspaceTimelineItem,
 } from "./personal-workspace-model";
-import { goalTitleFor, workerStateLabel, workspaceHomeLaneForGoal, workspaceSessionStatusLabel } from "./personal-workspace-model";
+import { goalTitleFor, workspaceHomeLaneForGoal, workspaceSessionStatusLabel } from "./personal-workspace-model";
 import { WorkspaceShell } from "./workspace-shell";
 import "./personal-workspace.css";
 
@@ -104,6 +104,36 @@ function ManagerHomeBoard({ goals, onSelectGoal }: { goals: WorkspaceGoal[]; onS
         <div>{history.length ? history.map(goalCard) : <span className="personal-home-empty">还没有已完成的 Goal</span>}</div>
       </details>
     </section>
+  );
+}
+
+function ManagerConversationTray({ messages, onOpenConversation }: {
+  messages: Array<Extract<WorkspaceTimelineItem, { kind: "message" }>['message']>;
+  onOpenConversation: () => void;
+}) {
+  const latestUserIndex = messages.reduce((latest, message, index) => message.role === "user" ? index : latest, 0);
+  const latestExchange = messages.slice(Math.max(0, latestUserIndex));
+  const visibleMessages = latestExchange.slice(-3);
+  return (
+    <button aria-label="查看完整对话" className="personal-manager-conversation-tray" onClick={onOpenConversation} type="button">
+      <header>
+        <span>
+          <Bot size={16} />
+          <strong>管家对话</strong>
+          <small>{messages.at(-1)?.pending ? "正在回复" : "刚刚"}</small>
+        </span>
+        <span className="personal-manager-conversation-link">查看完整对话</span>
+      </header>
+      <div aria-live="polite" className="personal-manager-conversation-messages">
+        {visibleMessages.map((message) => (
+          <article className={`is-${message.role}`} key={message.id}>
+            <strong>{message.role === "user" ? "你" : message.agentLabel ?? "LoopX 管家"}</strong>
+            <p>{message.text}</p>
+            {message.pending ? <small>正在整理…</small> : null}
+          </article>
+        ))}
+      </div>
+    </button>
   );
 }
 
@@ -492,6 +522,8 @@ export function PersonalWorkspacePage({
   const [proposals, setProposals] = useState<Record<string, WorkspaceActionPreview>>({});
   const [selectedChannel, setSelectedChannel] = useState<WorkspaceChannel>("manager");
   const [selectedGoalTab, setSelectedGoalTab] = useState<WorkspaceGoalTab>("chat");
+  const [managerChatOpen, setManagerChatOpen] = useState(false);
+  const [managerConversationReceiptVisible, setManagerConversationReceiptVisible] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
     try {
       const raw = window.sessionStorage.getItem("loopx-pw-composer-drafts");
@@ -509,10 +541,18 @@ export function PersonalWorkspacePage({
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [refreshState, setRefreshState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [theme, setTheme] = useState<"brutal" | "paper">(() => {
+    try {
+      return window.localStorage.getItem("loopx-pw-theme") === "brutal" ? "brutal" : "paper";
+    } catch {
+      return "paper";
+    }
+  });
   const [goalContexts, setGoalContexts] = useState<Record<string, GoalRepositoryContext>>({});
   const [larkConnections, setLarkConnections] = useState<LarkGoalConnection[]>([]);
   const digestInitRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const channelScrollRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [digest, setDigest] = useState<{ attention: number; done: number; failed: number } | null>(null);
   const selectedGoalId = controlledGoalId === undefined ? localGoalId : controlledGoalId;
@@ -639,6 +679,21 @@ export function PersonalWorkspacePage({
       return false;
     });
   }, [activeSessionRun, items]);
+  const managerMessages = useMemo(
+    () => items.flatMap((item) => item.kind === "message" ? [item.message] : []),
+    [items],
+  );
+  const managerChatItems = useMemo(
+    () => items.filter((item) => item.kind === "message" || item.kind === "proposal"),
+    [items],
+  );
+  useEffect(() => {
+    if (!managerChatOpen || !channelScrollRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (channelScrollRef.current) channelScrollRef.current.scrollTop = channelScrollRef.current.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [managerChatItems.length, managerChatOpen]);
   const drawerSelection = useMemo<WorkspaceDrawerSelection | null>(() => {
     if (selection?.kind === "notifications") return null;
     if (selection?.kind !== "run") return selection;
@@ -962,6 +1017,8 @@ export function PersonalWorkspacePage({
   function selectGoal(goalId: string | null) {
     setLocalGoalId(goalId);
     if (goalId === null) setSelectedChannel("manager");
+    setManagerChatOpen(false);
+    setManagerConversationReceiptVisible(false);
     setActiveSessionRun(null);
     setSelection(null);
     setSelectedGoalTab("chat");
@@ -972,6 +1029,8 @@ export function PersonalWorkspacePage({
   function selectChannel(channel: WorkspaceChannel) {
     setLocalGoalId(null);
     setSelectedChannel(channel);
+    setManagerChatOpen(false);
+    setManagerConversationReceiptVisible(false);
     setActiveSessionRun(null);
     setSelection(null);
     setMobileSidebarOpen(false);
@@ -996,6 +1055,7 @@ export function PersonalWorkspacePage({
     setSending(true);
     try {
       if (pendingImages.length) {
+        if (!selectedGoalId) setManagerConversationReceiptVisible(true);
         await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId, pendingImages);
         return;
       }
@@ -1117,6 +1177,7 @@ export function PersonalWorkspacePage({
         });
         return;
       }
+      if (!selectedGoalId) setManagerConversationReceiptVisible(true);
       await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId);
     } catch (error) {
       if (!messageOverride) {
@@ -1211,6 +1272,7 @@ export function PersonalWorkspacePage({
       drawerOpen={drawerSelection !== null}
       mobileSidebarOpen={mobileSidebarOpen}
       onCloseMobileSidebar={() => setMobileSidebarOpen(false)}
+      theme={theme}
       main={notificationSettingsOpen ? (
         <LarkSettingsPage
           focusGoalConnection={Boolean(selection?.kind === "notifications" && selection.goalId)}
@@ -1223,6 +1285,7 @@ export function PersonalWorkspacePage({
         <div className="personal-channel">
           <ChannelHeader
             agents={agents}
+            managerChatOpen={managerChatOpen}
             mobileNavigationOpen={mobileSidebarOpen}
             onOpenGoalDetail={selectedGoal ? () => setSelection({ item: selectedGoal, kind: "goal" }) : undefined}
             onRefresh={callbacks.onRefresh ? () => void refreshWorkspace() : undefined}
@@ -1232,13 +1295,23 @@ export function PersonalWorkspacePage({
               if (tab === "chat") setActiveSessionRun(null);
             }}
             onSelectAgent={selectAgent}
+            onReturnManagerHome={() => {
+              setManagerChatOpen(false);
+              setManagerConversationReceiptVisible(false);
+            }}
+            onToggleTheme={() => setTheme((current) => {
+              const next = current === "paper" ? "brutal" : "paper";
+              try { window.localStorage.setItem("loopx-pw-theme", next); } catch { /* Keep the in-memory preference. */ }
+              return next;
+            })}
             selectedAgentId={selectedAgentId}
             refreshState={refreshState}
             selectedGoal={selectedGoal}
             selectedGoalTab={selectedGoalTab}
+            theme={theme}
           />
-          <div className="personal-channel-scroll">
-            {!selectedGoal && digest && (digest.done + digest.failed + digest.attention) > 0 ? (
+          <div className="personal-channel-scroll" ref={channelScrollRef}>
+            {!selectedGoal && !managerChatOpen && digest && (digest.done + digest.failed + digest.attention) > 0 ? (
               <section className="personal-digest-card" aria-label="你不在的时候">
                 <strong>你不在的时候</strong>
                 <div className="personal-digest-stats">
@@ -1248,37 +1321,39 @@ export function PersonalWorkspacePage({
                 </div>
               </section>
             ) : null}
-            {!selectedGoal && (model.workers ?? []).length ? (
-              <section className="personal-worker-strip" aria-label="Agent 全景">
-                {(model.workers ?? []).map((worker) => (
-                  <button key={worker.agentId} onClick={() => { if (worker.currentTodoGoalId) selectGoal(worker.currentTodoGoalId); }} type="button">
-                    <i className={`personal-worker-state is-${worker.state ?? "idle"}`} />
-                    <span className="personal-worker-copy">
-                      <strong>{worker.agentId}</strong>
-                      <small>{workerStateLabel(worker.state)}{worker.currentTodoText ? ` · ${worker.currentTodoText}` : ""}</small>
-                    </span>
-                  </button>
-                ))}
-              </section>
-            ) : null}
-            {!selectedGoal ? (
+            {!selectedGoal && !managerChatOpen ? (
               <section className="personal-manager-greeting">
                 <span><Bot size={20} /></span>
                 <div><strong>你好，我是 LoopX 管家</strong><p>你有 {managerNeedsYouCount} 项需要处理，其中 {managerBlockingCount} 项正在阻塞 Agent。</p></div>
               </section>
             ) : null}
             {selectedGoal && selectedGoalTab === "tasks" ? (
-              <GoalTasksView goal={selectedGoal} items={items} onQuickComplete={(todo) => void createPreview({
-                actionKind: "todo.update",
-                context: { goal_id: todo.goalId, kind: "todo", todo_id: todo.todoId },
-                idempotencyKey: `workspace-todo-${todo.todoId}-complete-${Date.now().toString(36)}`,
-                normalizedParameters: { goal_id: todo.goalId, operation: "complete", todo_id: todo.todoId },
-                summary: `标记完成：${todo.text}`,
-              })} onSelect={setSelection} userTodos={model.userTodos} />
+              <GoalTasksView
+                goal={selectedGoal}
+                items={items}
+                onDraftTaskFromMessage={(reply) => {
+                  const taskDraft = reply.replace(/\s+/gu, " ").trim().slice(0, 240);
+                  setComposer(`创建一个 Task：${taskDraft}`);
+                  setActionFeedback("已根据回复生成 Task 草稿。编辑后发送，LoopX 会先展示确认预览。");
+                  window.requestAnimationFrame(() => composerRef.current?.focus());
+                }}
+                onOpenChat={() => setSelectedGoalTab("chat")}
+                onQuickComplete={(todo) => void createPreview({
+                  actionKind: "todo.update",
+                  context: { goal_id: todo.goalId, kind: "todo", todo_id: todo.todoId },
+                  idempotencyKey: `workspace-todo-${todo.todoId}-complete-${Date.now().toString(36)}`,
+                  normalizedParameters: { goal_id: todo.goalId, operation: "complete", todo_id: todo.todoId },
+                  summary: `标记完成：${todo.text}`,
+                })}
+                onSelect={setSelection}
+                userTodos={model.userTodos}
+              />
             ) : selectedGoal && selectedGoalTab === "files" ? (
               <section className="personal-object-list"><header><strong>Files & Outputs</strong><span>{items.filter((item) => item.kind === "output").length}</span></header>{items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "output" }> => item.kind === "output").map((item) => <button key={item.id} onClick={() => setSelection({ item: item.output, kind: "output" })} type="button"><span>↗</span><strong>{item.output.title}</strong><small title={item.output.createdAt}>{activityTimeLabel(item.output.createdAt)}</small></button>)}</section>
-            ) : !selectedGoal && selectedChannel === "manager" ? (
+            ) : !selectedGoal && selectedChannel === "manager" && !managerChatOpen ? (
               <ManagerHomeBoard goals={workspaceGoals} onSelectGoal={selectGoal} />
+            ) : !selectedGoal && selectedChannel === "manager" ? (
+              <ChannelTimeline items={managerChatItems} onSelect={setSelection} selectedGoal={null} />
             ) : (
               <>
                 {selectedGoal && activeSessionRun?.goalId === selectedGoal.goalId ? (
@@ -1293,6 +1368,12 @@ export function PersonalWorkspacePage({
             )}
           </div>
           <div className="personal-composer-wrap">
+            {!selectedGoal && selectedChannel === "manager" && !managerChatOpen && managerConversationReceiptVisible && managerMessages.length ? (
+              <ManagerConversationTray messages={managerMessages} onOpenConversation={() => {
+                setManagerConversationReceiptVisible(false);
+                setManagerChatOpen(true);
+              }} />
+            ) : null}
             {actionFeedback ? (
               <div className="personal-action-feedback" role="status">
                 <span>{actionFeedback}</span>
