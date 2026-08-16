@@ -62,7 +62,7 @@ export function ChannelTimeline({
         <button className={`personal-proposal-row is-${item.proposal.status}`} key={item.id} onClick={() => onSelect({ item: item.proposal, kind: "proposal" })} type="button">
           <span><Sparkles size={17} /></span>
           <span><small>{item.proposal.actionKind} · {item.proposal.status}</small><strong>{item.proposal.title}</strong><p>{item.proposal.impact}</p></span>
-          <b>{item.proposal.status === "gated" ? "查看处理方式" : item.proposal.primaryLabel ?? "查看预览"}</b>
+          <b>{item.proposal.status === "gated" ? "查看处理方式" : item.proposal.primaryLabel ?? "查看并确认"}</b>
         </button>
       );
     }

@@ -114,22 +114,6 @@ export type WorkspaceOutput = {
 export type WorkspaceChannel = "manager" | "attention" | "running" | "outputs";
 export type WorkspaceGoalTab = "chat" | "tasks" | "files";
 
-export type WorkspaceAgentSettings = {
-  adapterKind?: string;
-  agentId: string;
-  available: boolean;
-  capability?: string;
-  interrupt?: boolean;
-  label: string;
-  location?: string;
-  resume?: boolean;
-  source?: string;
-  streaming?: boolean;
-  toolCalls?: boolean;
-  trustScope?: string;
-  workspaceCompatibility?: string;
-};
-
 export type WorkspaceScheduleKind = "heartbeat" | "monitor";
 
 export type WorkspaceSchedule = {
@@ -262,8 +246,7 @@ export type WorkspaceDrawerSelection =
   | { item: WorkspaceRun; kind: "run" }
   | { item: WorkspaceOutput; kind: "output" }
   | { item: WorkspaceActionPreview; kind: "proposal" }
-  | { item: WorkspaceAgentSettings; kind: "agent" }
-  | { kind: "notifications" }
+  | { goalId?: string; kind: "notifications" }
   | {
       item: WorkspaceSchedule;
       kind: "schedule";
@@ -289,11 +272,11 @@ export type PersonalWorkspaceCallbacks = {
   onExplainDecision?: (attention: WorkspaceAttention) => void | Promise<void>;
   onExportOutput?: (output: WorkspaceOutput) => void | Promise<void>;
   onInterruptRun?: (run: WorkspaceRun) => void | Promise<void>;
-  onOpenGoal?: (goalId: string) => void;
+  onOpenGoal?: (goalId: string) => void | Promise<void>;
   onOpenGoalView?: (tab: WorkspaceGoalTab) => void;
   onOpenRunSession?: (run: WorkspaceRun) => void | Promise<void>;
   onOpenOutput?: (output: WorkspaceOutput) => void;
-  onRefresh?: () => void;
+  onRefresh?: () => void | Promise<void>;
   onPreviewAction?: (request: WorkspaceActionPreviewRequest) => WorkspaceActionPreview | Promise<WorkspaceActionPreview>;
   onRequestGoalCreate?: () => WorkspaceActionPreview | Promise<WorkspaceActionPreview | void> | void;
   onRequestScheduleConfig?: (kind: WorkspaceScheduleKind, goalId: string | null) => WorkspaceActionPreview | Promise<WorkspaceActionPreview | void> | void;
@@ -304,7 +287,7 @@ export type PersonalWorkspaceCallbacks = {
   onSelectAgent?: (agentId: string) => void;
   onSelectChannel?: (channel: WorkspaceChannel) => void;
   onSelectGoal?: (goalId: string | null) => void;
-  onOpenNotificationSettings?: () => void;
+  onOpenNotificationSettings?: (goalId?: string) => void;
   onFetchNotificationTargets?: () => Promise<Array<{ enabled: boolean; provider: string; target_name: string }>>;
   onSetupGoalChannel?: (options: { execute: boolean; goalId: string; target: string }) => Promise<{ ok: boolean; blocker?: string; public_summary?: string; status?: string }>;
   onToggleGoalAutoNotify?: (options: { autoNotify: boolean; goalId: string }) => Promise<{ ok: boolean; blocker?: string; public_summary?: string; status?: string }>;

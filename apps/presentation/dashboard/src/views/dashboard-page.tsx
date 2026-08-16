@@ -4723,13 +4723,30 @@ function personalOpsHref(goalId?: string) {
   return `/?${params.toString()}`;
 }
 
-function personalGoalTitle(goalId: string) {
+function personalGoalTitle(goalId: string, displayName?: string | null) {
+  const registeredDisplayName = cleanShareText(displayName);
+  if (registeredDisplayName) {
+    return registeredDisplayName;
+  }
   return goalId
     .replace(/^loopx[-_]/i, "LoopX ")
     .split(/[-_]+/)
     .filter(Boolean)
     .map((part, index) => index === 0 ? `${part.slice(0, 1).toUpperCase()}${part.slice(1)}` : part)
     .join(" ");
+}
+
+function visibleAgentMessage(value: string) {
+  return value
+    .split(/\r?\n/u)
+    .filter((line) => !/^\s*GOAL_(STATUS|PROGRESS)\s*:/u.test(line))
+    .map((line) => {
+      if (/^\s*GOAL_EVIDENCE\s*:/u.test(line)) return line.replace(/^\s*GOAL_EVIDENCE\s*:/u, "验证依据：");
+      if (/^\s*NEXT_ACTION\s*:/u.test(line)) return line.replace(/^\s*NEXT_ACTION\s*:/u, "下一步：");
+      return line;
+    })
+    .join("\n")
+    .trim();
 }
 
 function personalProjectionSentence(value: string | null | undefined, fallback = "") {
@@ -4953,12 +4970,38 @@ function personalRepairText(payload: StatusPayload, row: GoalDirectoryRow) {
     ?? "LoopX 状态异常，请进入管理页检查";
 }
 
+function personalGoalHasPendingOperatorGate(row: GoalDirectoryRow) {
+  const gate = row.latestRun?.operator_gate;
+  const decision = gate?.decision?.trim().toLowerCase() ?? "";
+  const terminalDecisions = new Set(["approve", "approved", "reject", "rejected", "defer", "deferred", "cancel", "cancelled"]);
+  const projectedAction = [row.queueItem?.recommended_action, row.latestRun?.recommended_action]
+    .filter(Boolean)
+    .join(" ");
+  const explicitUserWait = /(?:等待|需要)(?:用户|你|owner).{0,24}(?:批准|确认|授权|补充|选择|决定)|(?:批准|确认|授权).{0,16}(?:后|才能|方可)/i
+    .test(projectedAction);
+  return Boolean(gate && !terminalDecisions.has(decision))
+    || (row.lifecyclePhase === "operator_gated" && !terminalDecisions.has(decision))
+    || explicitUserWait;
+}
+
+function personalPendingOperatorGateText(row: GoalDirectoryRow) {
+  const gate = row.latestRun?.operator_gate;
+  return personalProjectionSentence(
+    gate?.operator_question
+      ?? gate?.reason_summary
+      ?? gate?.follow_up
+      ?? row.queueItem?.recommended_action
+      ?? row.latestRun?.recommended_action,
+    "请确认 Agent 下一步需要的权限或决策",
+  );
+}
+
 function personalGoalState(payload: StatusPayload, row: GoalDirectoryRow): PersonalGoalState {
   const userTodos = getShareTodos(row, "user");
   const agentTodos = getShareTodos(row, "agent");
   const hasOpenUserTodo = Boolean(firstOpenTodo(userTodos));
   const hasOpenAgentTodo = Boolean(firstOpenTodo(agentTodos));
-  if (["user_or_controller", "controller"].includes(row.waitingOn) || hasOpenUserTodo) {
+  if (["user_or_controller", "controller"].includes(row.waitingOn) || hasOpenUserTodo || personalGoalHasPendingOperatorGate(row)) {
     return "等你";
   }
   if (personalGoalNeedsRepair(payload, row)) {
@@ -5097,7 +5140,7 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
   const rowById = new Map(rows.map((row) => [row.goal.id, row]));
   const usageById = shareUsageById(payload.usage_summary);
   const agentRows = buildAgentManagementRows(rows, payload.todo_index, payload.agent_management_projection);
-  const allUserTodos = payload.attention_queue.items.flatMap((item, sourceOrder) => {
+  const projectedUserTodos = payload.attention_queue.items.flatMap((item, sourceOrder) => {
     const blocking = ["user_or_controller", "controller"].includes(item.waiting_on);
     return (personalTodosForQueueItem(item, "user")?.items ?? [])
       .filter((todo) => !todo.done)
@@ -5112,12 +5155,31 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
         todoOrder,
         updatedAt: todo.updated_at ?? null,
       }));
-  }).sort((left, right) =>
+  });
+  const projectedGoalIds = new Set(projectedUserTodos.map((todo) => todo.goalId));
+  const pendingOperatorGates = rows.flatMap((row, rowOrder) => {
+    if (projectedGoalIds.has(row.goal.id) || !personalGoalHasPendingOperatorGate(row)) return [];
+    return [{
+      actionKind: "gate.resolve",
+      blocking: true,
+      goalId: row.goal.id,
+      sourceOrder: payload.attention_queue.items.length + rowOrder,
+      taskClass: "user_gate",
+      text: personalPendingOperatorGateText(row),
+      todoId: `${row.goal.id}:operator-gate`,
+      todoOrder: 0,
+      updatedAt: row.latestRun?.operator_gate?.recorded_at ?? row.latestRun?.generated_at ?? null,
+    } satisfies PersonalNeedsYouItem & { sourceOrder: number; todoOrder: number }];
+  });
+  const allUserTodos = [...projectedUserTodos, ...pendingOperatorGates].sort((left, right) =>
     Number(right.blocking) - Number(left.blocking)
     || left.sourceOrder - right.sourceOrder
     || left.todoOrder - right.todoOrder
   );
   const goals = payload.run_history.goals.flatMap((goal) => {
+    if (goal.registry_member === false) {
+      return [];
+    }
     const row = rowById.get(goal.id);
     if (!row) {
       return [];
@@ -5159,7 +5221,7 @@ function buildPersonalHomeModel(payload: StatusPayload, rows: GoalDirectoryRow[]
       nextSentence,
       runEvidence: personalRunEvidence(payload, row),
       state,
-      title: personalGoalTitle(goal.id),
+      title: personalGoalTitle(goal.id, goal.display_name),
       usage: (() => {
         const goalUsage = usageById.get(goal.id);
         return goalUsage ? {
@@ -5211,7 +5273,7 @@ function PersonalGoalHome({
 }: {
   isLoading: boolean;
   onSelectGoal: (goalId: string) => void;
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
   payload: StatusPayload;
   rows: GoalDirectoryRow[];
   selectedGoalId: string;
@@ -5298,6 +5360,7 @@ function PersonalGoalHome({
   const [sendingContextId, setSendingContextId] = useState<string | null>(null);
   const [runtimeBindings, setRuntimeBindings] = useState<Record<string, PersonalRuntimeBinding>>({});
   const [executionSessions, setExecutionSessions] = useState<ChatSessionSummary[]>([]);
+  const [executionSessionResults, setExecutionSessionResults] = useState<Record<string, boolean>>({});
   const managerMessageId = useRef(1);
   const proposalId = useRef(1);
   const sessionIds = useRef(new Map<string, string>());
@@ -5400,7 +5463,7 @@ function PersonalGoalHome({
                 : message.role === "error"
                   ? "本地会话记录"
                   : `恢复的 ${selectedAgent.label} 会话`,
-              text: message.text,
+              text: message.role === "user" ? message.text : visibleAgentMessage(message.text),
             })),
           };
         });
@@ -5599,6 +5662,7 @@ function PersonalGoalHome({
   useEffect(() => {
     if (!selectedGoal) {
       setExecutionSessions([]);
+      setExecutionSessionResults({});
       return;
     }
     let cancelled = false;
@@ -5607,7 +5671,16 @@ function PersonalGoalHome({
       try {
         const listed = await fetchChatSessions({ goalId: selectedGoal.goalId });
         if (!cancelled) {
-          setExecutionSessions(listed.sessions.filter((session) => session.channel_id?.startsWith("task.")));
+          const taskSessions = listed.sessions.filter((session) => session.channel_id?.startsWith("task."));
+          setExecutionSessions(taskSessions);
+          const snapshots = await Promise.allSettled(taskSessions.map((session) => fetchChatSession(session.session_id)));
+          if (!cancelled) {
+            setExecutionSessionResults(Object.fromEntries(snapshots.flatMap((result, index) => {
+              if (result.status !== "fulfilled") return [];
+              const hasAnswer = result.value.messages.some((message) => message.role === "assistant" && message.text.trim().length > 0);
+              return [[taskSessions[index].session_id, hasAnswer]];
+            })));
+          }
         }
       } catch {
         // Durable Todos remain visible while the local execution runtime reconnects.
@@ -5834,7 +5907,7 @@ function PersonalGoalHome({
       updateManagerAssistantMessage(targetContextId, streamingMessageId, {
         lines: response.gate ? [response.gate.summary, response.gate.next_action].filter(Boolean).slice(0, 2) : [],
         pending: false,
-        text: response.message || streamedText.trim() || `${selectedRoute.label} 已完成分析。`,
+        text: visibleAgentMessage(response.message || streamedText.trim()) || `${selectedRoute.label} 已完成分析。`,
       });
       if (response.proposals.length > 0) {
         const cards = response.proposals.map((proposal) => ({
@@ -6138,6 +6211,7 @@ function PersonalGoalHome({
       const todoId = session.channel_id?.startsWith("task.") ? session.channel_id.slice(5) : undefined;
       const todo = selectedGoal.agentTodos.find((candidate) => candidate.todoId === todoId);
       const running = Boolean(session.active_turn_id);
+      const hasResult = executionSessionResults[session.session_id] === true;
       return {
         id: `run:task:${session.session_id}`,
         kind: "run",
@@ -6145,15 +6219,19 @@ function PersonalGoalHome({
           agentId: session.agent_id,
           agentLabel: personalAgentLabel(session.agent_id),
           canInterrupt: running,
-          completedSteps: todo?.done ? 1 : 0,
+          completedSteps: todo?.done || hasResult ? 1 : 0,
           goalId: selectedGoal.goalId,
           goalTitle: selectedGoal.title,
-          latestActivity: running ? "Agent 正在执行，可进入 Session 查看过程或发送纠偏。" : "执行 Session 已保留，可继续纠偏或恢复。",
+          latestActivity: running
+            ? "Agent 正在执行，可进入 Session 查看过程或发送纠偏。"
+            : hasResult
+              ? "Agent 已返回结果，点击查看结果与完整运行记录。"
+              : "执行 Session 已保留，可继续纠偏或恢复。",
           resumable: session.resumable,
           runId: session.session_id,
           sessionId: session.session_id,
-          sessionStatus: session.status,
-          status: todo?.done ? "completed" : running ? "running" : session.status === "resume_failed" ? "failed" : "waiting",
+          sessionStatus: hasResult ? "completed" : session.status,
+          status: todo?.done || hasResult ? "completed" : running ? "running" : session.status === "resume_failed" ? "failed" : "waiting",
           title: todo?.text ?? "Agent 执行任务",
           todoId,
           totalSteps: 1,
@@ -6288,7 +6366,7 @@ function PersonalGoalHome({
                 updateManagerAssistantMessage(run.goalId, messageId, {
                   activity: [],
                   pending: false,
-                  text: streamed.response.message || streamedText.trim() || `${run.agentLabel} 已完成纠偏。`,
+                  text: visibleAgentMessage(streamed.response.message || streamedText.trim()) || `${run.agentLabel} 已完成纠偏。`,
                 });
               } catch (error) {
                 const interrupted = interruptedContexts.current.delete(run.goalId);
@@ -6325,7 +6403,7 @@ function PersonalGoalHome({
                 lines: [],
                 role: message.role === "user" ? "user" : "assistant",
                 sourceLabel: message.role === "user" ? undefined : `${run.agentLabel} · 执行 Session`,
-                text: message.text,
+                text: message.role === "user" ? message.text : visibleAgentMessage(message.text),
               })),
             }));
             recordRuntimeBinding(run.goalId, {
@@ -8600,7 +8678,9 @@ export function DashboardPage() {
     ? search.statusUrl.trim()
     : "";
   const activeStatusRequestUrl = requestedStatusUrl ?? routeStatusRequestUrl;
-  const statusRequestActive = Boolean(activeStatusRequestUrl);
+  // The personal workspace keeps its own shell visible through initial load and
+  // refresh. The legacy request surface remains available only for ops mode.
+  const statusRequestActive = Boolean(activeStatusRequestUrl) && search.view === "ops";
   const queue = payload.attention_queue;
   const runHistory = payload.run_history;
   const goalRows = useMemo(
@@ -8900,7 +8980,7 @@ export function DashboardPage() {
       <PersonalGoalHome
         isLoading={isLoading}
         onSelectGoal={selectGoal}
-        onRefresh={() => void loadFromUrl(source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl))}
+        onRefresh={() => loadFromUrl(source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl))}
         payload={payload}
         rows={goalRows}
         selectedGoalId={search.goalId}

@@ -65,7 +65,7 @@ export function GoalTasksView({
       </section>
       <section className="personal-object-list">
         <header>
-          <strong><i className="personal-kanban-dot tone-progress" />进行中</strong>
+          <strong><i className="personal-kanban-dot tone-progress" />待执行 / 进行中</strong>
           <span>{openAgentTodos.length}</span>
         </header>
         {openAgentTodos.map((todo) => {
@@ -79,18 +79,19 @@ export function GoalTasksView({
                   {todo.priority ? <span className={`personal-priority-badge is-${todo.priority.toLowerCase()}`}>{todo.priority}</span> : null}
                   {todo.status === "blocked" ? <span className="personal-priority-badge is-blocked">受阻</span> : null}
                   {execution ? <span className="personal-task-session-status">{execution.status === "running" || execution.status === "queued" ? "执行中" : execution.status === "failed" ? "Session 异常" : "等待继续"}</span> : null}
+                  {!execution ? <span className="personal-task-session-status">待执行</span> : null}
                   {todo.claimedBy ?? goal.agentLabel ?? goal.agentId}
                 </small>
               </button>
               <div className="personal-task-card-actions">
-                {execution ? <button className="personal-task-session-link" aria-label={`查看 Session：${todo.text}`} onClick={() => onSelect({ item: execution, kind: "run" })} title="查看 Session" type="button"><ExternalLink size={14} /><span>查看 Session</span></button> : null}
+                {execution ? <button className="personal-task-session-link" aria-label={`查看 Session：${todo.text}`} onClick={() => onSelect({ item: execution, kind: "run" })} title={execution.status === "completed" ? "查看结果" : "查看 Session"} type="button"><ExternalLink size={14} /><span>{execution.status === "completed" ? "查看结果" : "查看 Session"}</span></button> : null}
                 <button aria-label={`标记完成：${todo.text}`} onClick={() => onQuickComplete?.(enriched)} title="标记完成" type="button"><Check size={14} /></button>
                 <button aria-label={`更多操作：${todo.text}`} onClick={() => onSelect({ item: enriched, kind: "todo" })} title="更多操作" type="button"><MoreHorizontal size={14} /></button>
               </div>
             </div>
           );
         })}
-        {!openAgentTodos.length ? <p className="personal-task-empty">没有进行中的任务。</p> : null}
+        {!openAgentTodos.length ? <p className="personal-task-empty">没有待执行或进行中的任务。</p> : null}
       </section>
       <section className="personal-object-list">
         <header>
@@ -118,7 +119,7 @@ export function GoalTasksView({
       </section>
       {isEmpty ? (
         <p className="personal-task-empty" style={{ gridColumn: "1 / -1", border: 0, textAlign: "left" }}>
-          这个 Goal 还没有任务。用下面的输入框描述下一步，LoopX 会生成预览。
+          这个 Goal 还没有任务。用下面的输入框描述下一步，LoopX 会先展示待确认操作。
         </p>
       ) : null}
     </div>

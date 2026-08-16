@@ -9,10 +9,8 @@ import {
   Copy,
   Download,
   ExternalLink,
-  Files,
   GitBranch,
   MessageCircleQuestion,
-  ListChecks,
   MoreHorizontal,
   Pause,
   Play,
@@ -30,6 +28,7 @@ import type {
   WorkspaceDrawerSelection,
   WorkspaceGoal,
   WorkspaceGoalNotification,
+  WorkspaceRun,
   WorkspaceTodo,
 } from "./personal-workspace-model";
 import type { LarkGoalConnection } from "../../data/chat";
@@ -58,20 +57,27 @@ const decisionTransitions = [
   { label: "稍后决定", resolution: "defer" },
 ] as const;
 
-export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals = [], larkConnections = [], onClose, selection }: {
+export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals = [], larkConnections = [], onClose, runs = [], selection }: {
   agents: WorkspaceAgentOption[];
   callbacks: PersonalWorkspaceCallbacks;
   goalNotifications?: WorkspaceGoalNotification[];
   goals?: WorkspaceGoal[];
   larkConnections?: LarkGoalConnection[];
   onClose: () => void;
+  runs?: WorkspaceRun[];
   selection: WorkspaceDrawerSelection;
 }) {
   const [correction, setCorrection] = useState("");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [repositoryCopyState, setRepositoryCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [todoAgentId, setTodoAgentId] = useState(agents.find((agent) => agent.available)?.agentId ?? "codex");
   const closeRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setRepositoryCopyState("idle");
+    setDiagnosticsOpen(false);
+  }, [selection]);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -108,13 +114,12 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
     : selection.kind === "todo" ? "Todo 详情"
       : selection.kind === "run" ? "运行详情"
         : selection.kind === "output" ? "产出详情"
-          : selection.kind === "proposal" ? "变更预览"
+          : selection.kind === "proposal" ? (selection.item.status === "applied" ? "执行结果" : "确认执行")
             : selection.kind === "schedule" ? (selection.item.scheduleKind === "heartbeat" ? "Heartbeat" : "定时检查")
-              : selection.kind === "agent" ? "Agent 设置"
-                : selection.kind === "notifications" ? "通知设置"
+              : selection.kind === "notifications" ? "通知设置"
                   : "Goal 详情";
   const goalId = selection.kind === "proposal" ? selection.item.goalId ?? "manager"
-    : selection.kind === "agent" || selection.kind === "notifications" ? "workspace"
+    : selection.kind === "notifications" ? "workspace"
       : selection.item.goalId;
   const contextLabel = selection.kind === "attention" ? selection.item.goalTitle ?? "当前 Goal"
     : selection.kind === "todo" ? selection.item.goalTitle
@@ -122,9 +127,12 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
         : selection.kind === "output" ? selection.item.goalTitle ?? "当前 Goal"
           : selection.kind === "goal" ? selection.item.title
             : selection.kind === "schedule" ? "当前 Goal 的自动运行"
-              : selection.kind === "agent" ? "本地 Agent Endpoint"
-                : selection.kind === "notifications" ? "飞书群通知绑定"
+              : selection.kind === "notifications" ? "飞书群通知绑定"
                   : selection.item.goalId ? "当前 Goal 的待确认变更" : "管家待确认变更";
+  const selectedGoalRun = selection.kind === "goal"
+    ? runs.find((run) => run.goalId === selection.item.goalId && Boolean(run.sessionId))
+      ?? runs.find((run) => run.goalId === selection.item.goalId)
+    : null;
 
   async function sendCorrection() {
     if (selection.kind !== "run" || !correction.trim()) return;
@@ -230,7 +238,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 <div><dt>下一转换</dt><dd>{selection.item.nextTransition ?? (selection.item.done ? "可创建后续 Todo" : "推进或更新状态")}</dd></div>
               </dl>
             </section>
-            <div className="personal-todo-actions" aria-label="Todo 变更预览">
+            <div className="personal-todo-actions" aria-label="Todo 待确认操作">
               <strong className="personal-todo-actions-title">操作</strong>
               {selection.item.done ? null : (
                 <button className="personal-primary-action" onClick={() => void previewTodoTransition(selection.item, "complete", "标记完成")} type="button"><Check size={17} />标记完成</button>
@@ -245,7 +253,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                   idempotencyKey: `workspace-todo-${selection.item.todoId}-reassign-${todoAgentId}-${Date.now().toString(36)}`,
                   normalizedParameters: { agent_id: todoAgentId, goal_id: selection.item.goalId, operation: "reassign", todo_id: selection.item.todoId },
                   summary: `重新分配：${selection.item.text}`,
-                })} type="button">生成预览</button>
+                })} type="button">检查变更</button>
               </label>
               <details className="personal-compact-menu">
                 <summary><MoreHorizontal size={17} />更多操作</summary>
@@ -273,14 +281,6 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 </dl>
               ) : null}
             </section>
-            <section className="personal-detail-card personal-goal-views" aria-label="Goal 工作区">
-              <small>Goal 工作区</small>
-              <div className="personal-drawer-action-grid">
-                <button className="personal-secondary-action" onClick={() => { callbacks.onOpenGoalView?.("chat"); onClose(); }} type="button"><MessageCircleQuestion size={16} />Goal 动态</button>
-                <button className="personal-secondary-action" onClick={() => { callbacks.onOpenGoalView?.("tasks"); onClose(); }} type="button"><ListChecks size={16} />Tasks</button>
-                <button className="personal-secondary-action" onClick={() => { callbacks.onOpenGoalView?.("files"); onClose(); }} type="button"><Files size={16} />Files</button>
-              </div>
-            </section>
             {(() => {
               const notification = goalNotifications.find((row) => row.goalId === selection.item.goalId);
               const connection = larkConnections.find((row) => row.goal_id === selection.item.goalId);
@@ -294,7 +294,15 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                         <div><dt>Branch</dt><dd>{selection.item.repository.branch || "detached"}</dd></div>
                         <div><dt>Role</dt><dd>Execution workspace</dd></div>
                       </dl>
-                      <button className="personal-secondary-action" onClick={() => void navigator.clipboard?.writeText(selection.item.repository?.identity ?? "")} type="button"><Copy size={15} />复制仓库标识</button>
+                      <button className="personal-secondary-action" onClick={() => {
+                        const write = navigator.clipboard?.writeText(selection.item.repository?.identity ?? "");
+                        if (!write) {
+                          setRepositoryCopyState("error");
+                          return;
+                        }
+                        void write.then(() => setRepositoryCopyState("copied")).catch(() => setRepositoryCopyState("error"));
+                      }} type="button"><Copy size={15} />{repositoryCopyState === "copied" ? "已复制仓库标识" : "复制仓库标识"}</button>
+                      {repositoryCopyState === "error" ? <p className="personal-copy-feedback is-error" role="status">复制失败，请检查浏览器剪贴板权限。</p> : repositoryCopyState === "copied" ? <p className="personal-copy-feedback" role="status">已复制，可粘贴到其他工具。</p> : null}
                     </section>
                   ) : null}
                   <section className="personal-detail-card personal-goal-notification">
@@ -319,16 +327,30 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                       <p>配置后，当这个 Goal 出现需要你确认的变更时，会自动发飞书通知。</p>
                     </>
                   )}
-                  <button className="personal-secondary-action" onClick={() => callbacks.onOpenNotificationSettings?.()} type="button"><Bell size={16} />{connection ? "管理 Lark connection" : "Connect Lark App"}</button>
+                  <button className="personal-secondary-action" onClick={() => callbacks.onOpenNotificationSettings?.(selection.item.goalId)} type="button"><Bell size={16} />{connection ? "管理 Lark connection" : "Connect Lark App"}</button>
                   </section>
                 </>
               );
             })()}
+            <section className="personal-detail-card personal-goal-session">
+              <small>Execution Session</small>
+              {selectedGoalRun?.sessionId ? (
+                <>
+                  <h3>{workspaceSessionStatusLabel(selectedGoalRun.sessionStatus ?? selectedGoalRun.status)}</h3>
+                  <p>{selectedGoalRun.title}</p>
+                  <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selectedGoalRun)} type="button"><Play size={16} />查看最近 Session</button>
+                </>
+              ) : (
+                <>
+                  <h3>尚未启动执行 Session</h3>
+                  <p>Agent 开始执行后，运行记录会稳定显示在这里。</p>
+                </>
+              )}
+            </section>
             <div className="personal-drawer-action-grid">
               <button className="personal-secondary-action" onClick={() => callbacks.onRequestScheduleConfig?.("heartbeat", selection.item.goalId)} type="button"><Radio size={16} />设置 Heartbeat</button>
               <button className="personal-secondary-action" onClick={() => callbacks.onRequestScheduleConfig?.("monitor", selection.item.goalId)} type="button"><CalendarClock size={16} />添加定时检查</button>
             </div>
-            <button className="personal-secondary-action" onClick={() => callbacks.onOpenGoal?.(selection.item.goalId)} type="button"><ExternalLink size={16} />打开 Goal</button>
           </>
         ) : null}
 
@@ -345,7 +367,7 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                 <div><dt>可恢复</dt><dd>{selection.item.resumable === false ? "否" : "是"}</dd></div>
               </dl>
             </section>
-            {selection.item.sessionId ? <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selection.item)} type="button"><ExternalLink size={16} />查看运行记录</button> : null}
+            {selection.item.sessionId ? <button className="personal-primary-action" onClick={() => void callbacks.onOpenRunSession?.(selection.item)} type="button"><ExternalLink size={16} />查看执行过程与结果</button> : null}
             {selection.item.outputs?.length ? (
               <section className="personal-execution-history" aria-labelledby="personal-run-outputs-title">
                 <h3 id="personal-run-outputs-title">本次运行产出</h3>
@@ -413,12 +435,13 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
               <small>{selection.item.actionKind} · {selection.item.status}</small>
               <h3>{selection.item.title}</h3>
               <p>{selection.item.impact}</p>
+              {selection.item.status === "ready" ? <p className="personal-proposal-explainer">确认后，LoopX 会执行这项变更并显示写入结果。关闭或取消不会修改任何状态。</p> : null}
               <dl>{selection.item.fields.map((field) => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
             </section>
             {selection.item.status === "applied" ? <p className="personal-proposal-state is-applied"><Check size={16} />已应用，LoopX 状态将刷新。</p> : null}
-            {selection.item.status === "applied" && selection.item.goalId ? <button className="personal-primary-action" onClick={() => { callbacks.onOpenGoal?.(selection.item.goalId!); onClose(); }} type="button"><ExternalLink size={16} />进入 Goal</button> : null}
-            {selection.item.status === "stale" ? <p className="personal-proposal-state is-stale">来源状态已变化，请重新生成预览。</p> : null}
-            {selection.item.status === "error" ? <div className="personal-proposal-state is-error"><span>应用失败，当前预览没有继续写入。</span>{selection.item.errorMessage ? <small>{selection.item.errorMessage}</small> : null}</div> : null}
+            {selection.item.status === "applied" && selection.item.goalId ? <button className="personal-primary-action" onClick={() => void (async () => { await callbacks.onOpenGoal?.(selection.item.goalId!); onClose(); })()} type="button"><ExternalLink size={16} />{selection.item.actionKind === "goal.create" ? "进入新 Goal" : "查看更新后的 Goal"}</button> : null}
+            {selection.item.status === "stale" ? <p className="personal-proposal-state is-stale">来源状态已变化，请按最新状态重新检查。</p> : null}
+            {selection.item.status === "error" ? <div className="personal-proposal-state is-error"><span>应用失败，没有写入任何变更。</span>{selection.item.errorMessage ? <small>{selection.item.errorMessage}</small> : null}<small>请刷新 Goal 状态后重新生成；若仍失败，可保留此页并查看高级诊断。</small></div> : null}
             {selection.item.status === "rejected" ? <p className="personal-proposal-state is-error">已拒绝，这项变更不会写入。</p> : null}
             {selection.item.status === "deferred" ? <p className="personal-proposal-state is-gated">已暂缓，可稍后继续应用或重新生成。</p> : null}
             {selection.item.status === "gated" ? <div className="personal-proposal-state is-gated"><span><strong>需要宿主确认</strong>页面无权直接批准这类权限变更，你的点击没有写入任何内容。</span>{selection.item.gate?.nextAction ? <small>{selection.item.gate.nextAction}</small> : null}</div> : null}
@@ -436,10 +459,10 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
               );
             })() : null}
             {selection.item.workspaceCandidates?.length ? <div className="personal-workspace-candidates" aria-label="可选择的工作区">{selection.item.workspaceCandidates.map((candidate) => <button key={candidate.workspaceRef} onClick={() => void callbacks.onSelectWorkspaceCandidate?.(selection.item, candidate.workspaceRef)} type="button"><strong>{candidate.label}</strong><small>{candidate.workspaceRef}</small></button>)}</div> : null}
-            {selection.item.status !== "gated" ? <button className="personal-primary-action" disabled={!['ready', 'error', 'deferred'].includes(selection.item.status)} onClick={() => void callbacks.onApplyProposal?.(selection.item)} type="button"><Check size={17} />{selection.item.status === "applying" ? "正在应用…" : selection.item.status === "error" ? "安全重试" : selection.item.primaryLabel ?? "确认并应用"}</button> : null}
-            {["stale", "error", "gated", "rejected"].includes(selection.item.status) ? <button className="personal-secondary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "regenerate")} type="button"><RotateCcw size={16} />重新生成预览</button> : null}
+            {selection.item.status === "error" ? <button className="personal-primary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "regenerate")} type="button"><RotateCcw size={17} />基于最新状态重试</button> : selection.item.status !== "gated" ? <button className="personal-primary-action" disabled={!['ready', 'deferred'].includes(selection.item.status)} onClick={() => void callbacks.onApplyProposal?.(selection.item)} type="button"><Check size={17} />{selection.item.status === "applying" ? "正在应用…" : selection.item.primaryLabel ?? "确认并应用"}</button> : null}
+            {["stale", "gated", "rejected"].includes(selection.item.status) ? <button className="personal-secondary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "regenerate")} type="button"><RotateCcw size={16} />按最新状态重新检查</button> : null}
             {["ready", "gated"].includes(selection.item.status) ? <div className="personal-drawer-action-grid"><button className="personal-secondary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "defer")} type="button">稍后</button><button className="personal-secondary-action" onClick={() => void callbacks.onTransitionProposal?.(selection.item, "reject")} type="button">拒绝</button></div> : null}
-            {!["applied", "applying"].includes(selection.item.status) ? <button className="personal-secondary-action" onClick={() => callbacks.onCancelProposal?.(selection.item)} type="button">取消</button> : null}
+            {!["applied", "applying"].includes(selection.item.status) ? <button className="personal-secondary-action" onClick={onClose} type="button">关闭</button> : null}
           </>
         ) : null}
 
@@ -472,27 +495,6 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
           </>
         ) : null}
 
-        {selection.kind === "agent" ? (
-          <section className="personal-detail-card personal-agent-persona">
-            <div className="personal-agent-persona-head">
-              <span aria-hidden className="personal-agent-avatar">{selection.item.label.slice(0, 1)}</span>
-              <div className="personal-agent-persona-id">
-                <h3>{selection.item.label}</h3>
-                <p>{selection.item.capability ?? "LoopX Agent Endpoint"}</p>
-              </div>
-              <span className={`personal-agent-health ${selection.item.available ? "is-ok" : "is-off"}`}>{selection.item.available ? "健康" : "不可用"}</span>
-            </div>
-            <dl>
-              <div><dt>适配器</dt><dd>{selection.item.adapterKind ?? "内置"}</dd></div>
-              <div><dt>工具调用</dt><dd>{selection.item.toolCalls ? "支持" : "仅模型回复"}</dd></div>
-              <div><dt>流式 / 恢复</dt><dd>{selection.item.streaming ? "流式" : "非流式"} · {selection.item.resume ? "可恢复" : "不可恢复"}</dd></div>
-              <div><dt>信任范围</dt><dd>{selection.item.trustScope ?? "read_only"}</dd></div>
-              <div><dt>位置</dt><dd>{selection.item.location ?? selection.item.source ?? "本地内置"}</dd></div>
-              <div><dt>工作区兼容性</dt><dd>{selection.item.workspaceCompatibility ?? "写入前由 LoopX 验证"}</dd></div>
-            </dl>
-          </section>
-        ) : null}
-
         {selection.kind === "notifications" ? (
           <NotificationSettingsPanel
             callbacks={callbacks}
@@ -502,14 +504,18 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
           />
         ) : null}
 
-        <button aria-expanded={diagnosticsOpen} className="personal-diagnostics-trigger" onClick={() => setDiagnosticsOpen((value) => !value)} type="button">
-          <span>高级诊断</span><ChevronDown className={diagnosticsOpen ? "is-open" : ""} size={16} />
-        </button>
-        {diagnosticsOpen ? (
-          <div className="personal-diagnostics">
-            <code>goal_id: {goalId}</code><code>kind: {selection.kind}</code>
-            {selection.kind === "run" ? <><code>session_id: {selection.item.sessionId ?? "未绑定"}</code><code>turn_id: {selection.item.turnId ?? "空闲"}</code><code>adapter: {selection.item.agentId}</code><code>status: {selection.item.sessionStatus ?? selection.item.status}</code></> : <code>status: projected</code>}
-          </div>
+        {selection.kind === "run" || selection.kind === "proposal" || selection.kind === "schedule" ? (
+          <>
+            <button aria-expanded={diagnosticsOpen} className="personal-diagnostics-trigger" onClick={() => setDiagnosticsOpen((value) => !value)} type="button">
+              <span>高级诊断</span><ChevronDown className={diagnosticsOpen ? "is-open" : ""} size={16} />
+            </button>
+            {diagnosticsOpen ? (
+              <div className="personal-diagnostics">
+                <code>goal_id: {goalId}</code><code>kind: {selection.kind}</code>
+                {selection.kind === "run" ? <><code>session_id: {selection.item.sessionId ?? "未绑定"}</code><code>turn_id: {selection.item.turnId ?? "空闲"}</code><code>adapter: {selection.item.agentId}</code><code>status: {selection.item.sessionStatus ?? selection.item.status}</code></> : selection.kind === "proposal" ? <><code>action: {selection.item.actionKind}</code><code>status: {selection.item.status}</code></> : <><code>schedule_id: {selection.item.scheduleId}</code><code>status: {selection.item.status ?? "active"}</code></>}
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
     </div>

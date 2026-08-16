@@ -32,11 +32,13 @@ import type { WorkspaceGoal } from "./personal-workspace-model";
 type Tab = "apps" | "connections";
 
 export function LarkSettingsPage({
+  focusGoalConnection = false,
   goals,
   initialGoalId,
   onChanged,
   onClose,
 }: {
+  focusGoalConnection?: boolean;
   goals: WorkspaceGoal[];
   initialGoalId?: string | null;
   onChanged?: () => void;
@@ -48,7 +50,7 @@ export function LarkSettingsPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(focusGoalConnection);
   const [appRef, setAppRef] = useState("");
   const [goalId, setGoalId] = useState(initialGoalId ?? goals[0]?.goalId ?? "");
   const [chatQuery, setChatQuery] = useState("");
@@ -57,6 +59,7 @@ export function LarkSettingsPage({
   const [incomingMode, setIncomingMode] = useState<"mentions" | "all">("mentions");
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [disconnectGoalId, setDisconnectGoalId] = useState<string | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupAppRef, setSetupAppRef] = useState("loopx-workspace-bot");
@@ -66,6 +69,7 @@ export function LarkSettingsPage({
   const [setupError, setSetupError] = useState<string | null>(null);
   const setupPopup = useRef<Window | null>(null);
   const openedSetupUrl = useRef<string | null>(null);
+  const focusedGoalOpened = useRef(false);
 
   async function refresh() {
     setLoading(true);
@@ -88,6 +92,14 @@ export function LarkSettingsPage({
   useEffect(() => {
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (!focusGoalConnection || loading || focusedGoalOpened.current || !initialGoalId) return;
+    focusedGoalOpened.current = true;
+    const connection = connections.find((item) => item.goal_id === initialGoalId);
+    if (connection) openConnectionEditor(connection);
+    else openConnect(goals.find((goal) => goal.goalId === initialGoalId));
+  }, [connections, focusGoalConnection, goals, initialGoalId, loading]);
 
   useEffect(() => {
     if (!modalOpen || !appRef) {
@@ -160,7 +172,19 @@ export function LarkSettingsPage({
   }, [connections, query]);
 
   function openConnect(goal?: WorkspaceGoal) {
+    setEditingGoalId(null);
     setGoalId(goal?.goalId ?? initialGoalId ?? goals[0]?.goalId ?? "");
+    setChatQuery("");
+    setConnectError(null);
+    setModalOpen(true);
+  }
+
+  function openConnectionEditor(connection: LarkGoalConnection) {
+    setEditingGoalId(connection.goal_id);
+    setAppRef(connection.app_ref);
+    setGoalId(connection.goal_id);
+    setIncomingMode(connection.incoming_mode);
+    setChatQuery(connection.chat_name);
     setConnectError(null);
     setModalOpen(true);
   }
@@ -255,8 +279,8 @@ export function LarkSettingsPage({
       </header>
 
       <nav className="personal-lark-tabs" aria-label="Lark management sections">
-        <button aria-current={tab === "apps" ? "page" : undefined} onClick={() => setTab("apps")} type="button">Lark Apps <span>{apps.length}</span></button>
-        <button aria-current={tab === "connections" ? "page" : undefined} onClick={() => setTab("connections")} type="button">Connections <span>{connections.length}</span></button>
+        <button aria-current={tab === "apps" ? "page" : undefined} onClick={() => setTab("apps")} type="button">Lark Apps <span>{loading ? "…" : apps.length}</span></button>
+        <button aria-current={tab === "connections" ? "page" : undefined} onClick={() => setTab("connections")} type="button">Connections <span>{loading ? "…" : connections.length}</span></button>
       </nav>
 
       {error ? <p className="personal-notification-error">{error}</p> : null}
@@ -294,7 +318,7 @@ export function LarkSettingsPage({
                 <span>{connection.incoming_mode === "mentions" ? "Mentions" : "All messages"}</span>
                 <span>Topic reply</span>
                 <span className="personal-lark-row-actions">
-                  <button aria-label={`配置 ${connection.goal_title}`} type="button"><Settings2 size={15} /></button>
+                  <button aria-label={`配置 ${connection.goal_title}`} onClick={() => openConnectionEditor(connection)} type="button"><Settings2 size={15} /></button>
                   <button aria-label={`解绑 ${connection.goal_title}`} className={disconnectGoalId === connection.goal_id ? "is-confirm" : ""} onClick={() => void disconnect(connection.goal_id)} type="button"><Unlink size={15} />{disconnectGoalId === connection.goal_id ? "确认" : null}</button>
                 </span>
               </div>
@@ -307,8 +331,8 @@ export function LarkSettingsPage({
       {modalOpen ? (
         <div className="personal-lark-modal-backdrop" role="presentation">
           <section aria-labelledby="connect-lark-title" aria-modal="true" className="personal-lark-modal" role="dialog">
-            <header><div><small>Goal Topic connection</small><h2 id="connect-lark-title">Connect Lark App</h2></div><button aria-label="关闭连接弹窗" onClick={() => setModalOpen(false)} type="button"><X size={18} /></button></header>
-            <label><span>Lark App</span><select aria-label="Lark App" onChange={(event) => { if (event.target.value === "__register__") openSetup(); else setAppRef(event.target.value); }} value={appRef}>{apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.ready ? "" : " · Needs setup"}</option>)}<option value="__register__">＋ Register another Lark App — Create through Feishu</option></select></label>
+            <header><div><small>Goal Topic connection</small><h2 id="connect-lark-title">{editingGoalId ? "Edit Lark Connection" : "Connect Lark App"}</h2></div><button aria-label="关闭连接弹窗" onClick={() => setModalOpen(false)} type="button"><X size={18} /></button></header>
+            <label><span>Lark App</span><select aria-label="Lark App" disabled={loading} onChange={(event) => { if (event.target.value === "__register__") openSetup(); else setAppRef(event.target.value); }} value={appRef}>{loading ? <option value="">正在加载可用的 Lark Apps…</option> : <>{apps.map((app) => <option disabled={!app.ready} key={app.app_ref} value={app.app_ref}>{app.label}{app.ready ? "" : " · Needs setup"}</option>)}<option value="__register__">＋ Register another Lark App — Create through Feishu</option></>}</select></label>
             <label><span>Group chat</span><input aria-label="搜索飞书群" onChange={(event) => setChatQuery(event.target.value)} placeholder="搜索群名称" type="search" value={chatQuery} /><select aria-label="Group chat" onChange={(event) => setChatId(event.target.value)} value={chatId}>{chats.map((chat) => <option key={chat.chat_id} value={chat.chat_id}>{chat.chat_name}</option>)}</select></label>
             <label><span>Bind to Goal</span><select aria-label="Bind to Goal" onChange={(event) => setGoalId(event.target.value)} value={goalId}>{goals.map((goal) => <option key={goal.goalId} value={goal.goalId}>{goal.title}</option>)}</select></label>
             <label className="personal-lark-check"><input checked readOnly type="checkbox" /><span><strong>Create Goal topic automatically</strong><small>A dedicated topic will be created for this Goal.</small></span></label>
@@ -317,7 +341,7 @@ export function LarkSettingsPage({
             <label><span>Reply mode</span><div className="personal-lark-topic-preview is-locked"><Link2 size={15} />Topic reply</div></label>
             <p className="personal-lark-cardinality"><Check size={15} />One Lark App · many Goals · one topic per Goal</p>
             {connectError ? <p className="personal-notification-error">{connectError}</p> : null}
-            <footer><button className="personal-secondary-action" onClick={() => setModalOpen(false)} type="button">Cancel</button><button className="personal-primary-action" disabled={!appRef || !goalId || !chatId || connecting} onClick={() => void connect()} type="button">{connecting ? <Loader2 className="is-spinning" size={15} /> : null}Connect</button></footer>
+            <footer><button className="personal-secondary-action" onClick={() => setModalOpen(false)} type="button">Cancel</button><button className="personal-primary-action" disabled={loading || !appRef || !goalId || !chatId || connecting} onClick={() => void connect()} type="button">{connecting ? <Loader2 className="is-spinning" size={15} /> : null}{editingGoalId ? "Save connection" : "Connect"}</button></footer>
           </section>
         </div>
       ) : null}

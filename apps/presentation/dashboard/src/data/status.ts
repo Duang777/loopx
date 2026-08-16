@@ -473,6 +473,7 @@ export const runRecordSchema = z.object({
 
 export const runGoalSchema = z.object({
   id: z.string(),
+  display_name: z.string().optional().nullable(),
   domain: z.string().optional().nullable(),
   status: z.string().optional().nullable(),
   lifecycle_phase: z.string().optional().nullable(),
