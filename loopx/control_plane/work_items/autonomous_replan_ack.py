@@ -4,18 +4,33 @@ from typing import Any
 
 from ..runtime.time import parse_timestamp
 
-
 AUTONOMOUS_REPLAN_ACK_MATERIAL_RUN_WINDOW = 20
+
+
+def normalize_projected_autonomous_replan_ack(
+    ack: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return only ACKs already carrying the current semantic contract."""
+
+    if not isinstance(ack, dict) or ack.get("recorded") is not True:
+        return None
+    normalized = dict(ack)
+    semantic_delta = normalized.get("semantic_delta")
+    if not isinstance(semantic_delta, dict) or semantic_delta.get("accepted") is not True:
+        return None
+    return normalized
 
 
 def autonomous_replan_ack_recorded(run: dict[str, Any]) -> bool:
     ack = run.get("autonomous_replan_ack")
     if not isinstance(ack, dict) or ack.get("recorded") is not True:
         return False
-    delta_contract = ack.get("delta_contract")
-    if not isinstance(delta_contract, dict):
-        return False
-    return delta_contract.get("delta_present") is True
+    normalized = normalize_projected_autonomous_replan_ack(ack)
+    return bool(
+        isinstance(normalized, dict)
+        and isinstance(normalized.get("semantic_delta"), dict)
+        and normalized["semantic_delta"].get("accepted") is True
+    )
 
 
 def watch_lane_continuation_todo_ids(
@@ -42,35 +57,45 @@ def compact_autonomous_replan_ack(run: dict[str, Any] | None) -> dict[str, Any] 
     ack = run.get("autonomous_replan_ack")
     if not isinstance(ack, dict):
         return None
-    delta_contract = ack.get("delta_contract") if isinstance(ack, dict) else {}
-    if not isinstance(delta_contract, dict):
+    normalized_ack = normalize_projected_autonomous_replan_ack(ack)
+    if normalized_ack is None:
         return None
-    compact_delta: dict[str, Any] = {
-        "schema_version": delta_contract.get("schema_version"),
-        "delta_present": bool(delta_contract.get("delta_present")),
-        "delta_kinds": [
-            str(item)
-            for item in (delta_contract.get("delta_kinds") or [])
-            if str(item or "").strip()
-        ],
-    }
-    watch_evidence: list[dict[str, Any]] = []
-    todo_ids = watch_lane_continuation_todo_ids(delta_contract)[:4]
-    if todo_ids:
-        watch_evidence.append(
-            {
-                "kind": "watch_lane_continuation",
-                "todo_ids": todo_ids,
-            }
-        )
-    if watch_evidence:
-        compact_delta["auto_evidence"] = watch_evidence
+    semantic_delta = normalized_ack["semantic_delta"]
     result = {
         "schema_version": ack.get("schema_version"),
         "recorded": True,
         "source": ack.get("source"),
-        "delta_contract": compact_delta,
+        "semantic_delta": {
+            field: semantic_delta.get(field)
+            for field in (
+                "schema_version",
+                "accepted",
+                "outcomes",
+                "satisfying_outcomes",
+                "required_any_of",
+                "obligation_id",
+                "observation_fingerprint",
+                "reason",
+            )
+            if semantic_delta.get(field) is not None
+        },
     }
+    delta_contract = ack.get("delta_contract")
+    if isinstance(delta_contract, dict):
+        result["delta_contract"] = {
+            "schema_version": delta_contract.get("schema_version"),
+            "delta_present": bool(delta_contract.get("delta_present")),
+            "delta_kinds": [
+                str(item)
+                for item in (delta_contract.get("delta_kinds") or [])
+                if str(item or "").strip()
+            ],
+            "auto_evidence": [
+                dict(item)
+                for item in (delta_contract.get("auto_evidence") or [])
+                if isinstance(item, dict)
+            ][:6],
+        }
     agent_id = str(run.get("agent_id") or "").strip()
     if agent_id:
         result["agent_id"] = agent_id

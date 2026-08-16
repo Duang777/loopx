@@ -11,6 +11,7 @@ TODO_OPTION_FIELDS = (
     ("--follow-up", "followups"),
     ("--todo-id", "todo_id"),
     ("--turn-instance-id", "turn_instance_id"),
+    ("--replan-obligation-id", "replan_obligation_id"),
     ("--status", "status"),
     ("--note", "note"),
     ("--evidence", "evidence"),
@@ -45,11 +46,16 @@ TODO_OPTION_FIELDS = (
     ("--unblocks-todo-id", "unblocks_todo_id"),
     ("--successor-todo-id", "successor_todo_ids"),
     ("--resume-when", "resume_when"),
+    ("--validation-command", "validation_command"),
+    ("--validation-command-json", "validation_command_json"),
+    ("--validation-label", "validation_label"),
+    ("--validation-timeout-seconds", "validation_timeout_seconds"),
     ("--clear-resume-when", "clear_resume_when"),
     ("--target-key", "monitor_target_key"),
     ("--cadence", "cadence"),
     ("--next-due-at", "next_due_at"),
     ("--expires-at", "expires_at"),
+    ("--watch-only", "watch_only"),
     ("--clear-claim", "clear_claim"),
     ("--no-follow-up", "no_follow_up"),
     ("--next-agent-todo", "next_agent_todo"),
@@ -80,7 +86,7 @@ _TODO_UPDATE_MUTABLE_FIELDS = (
     "blocks_agent", "clear_blocks_agent", "excluded_agents", "clear_excluded_agents",
     "global_gate", "clear_global_gate", "unblocks_todo_id", "successor_todo_ids",
     "resume_when", "clear_resume_when", "no_follow_up", "monitor_target_key",
-    "cadence", "next_due_at", "expires_at", "clear_claim",
+    "cadence", "next_due_at", "expires_at", "watch_only", "clear_claim",
 )
 
 _TODO_UPDATE_UNSUPPORTED_FIELDS = (
@@ -452,6 +458,13 @@ def validate_shared_todo_options(args: argparse.Namespace) -> None:
     if getattr(args, "turn_instance_id", None) and args.todo_command != "complete":
         raise ValueError(
             "--turn-instance-id is supported only by todo complete settlement"
+        )
+    if (
+        getattr(args, "replan_obligation_id", None)
+        and args.todo_command != "add"
+    ):
+        raise ValueError(
+            "--replan-obligation-id is supported only by todo add"
         )
     if (
         args.todo_command != "complete"

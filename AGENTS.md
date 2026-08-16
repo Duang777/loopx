@@ -146,6 +146,14 @@ the first viewport. Do not move the review gate into a PR comment, todo note, or
 final summary after the fact. It must happen before the public first-screen
 change is finalized.
 
+## UI Design Standard
+
+Before changing or reproducing any LoopX UI, read and follow the repository-root
+`DESIGN.md`. This includes websites, dashboards, desktop applications,
+documentation, prototypes, screenshots, and framework migrations. When an
+approved design source is provided, match it and use `DESIGN.md` for unspecified
+details.
+
 ## Public And Private Boundary
 
 Do not commit internal department, team, customer, meeting, reporting,
@@ -177,6 +185,14 @@ private/security-sensitive material that must not be posted publicly.
 
 Do not leave actionable PR blockers only in chat memory. The final user report
 should include the PR comment URL and a compact summary of the posted findings.
+
+Before publishing a review, run the capability-owned review lenses for typed
+state rules, domain neutrality, behavior-change disclosure, and
+guidance-vs-obligation (defined in `pull_request_review_execution_contract_v1`).
+Flag substring denylists or prose-only classification rules with the concrete
+misclassification risk, product- or benchmark-specific wording in generic
+control-plane contracts, silent default-behavior changes, and text that calls a
+machine-enforced obligation "guidance".
 
 ## Engineering Quality And Right-Sized Scope
 
@@ -260,6 +276,18 @@ section, or abstraction, pass a scope-fit review:
 - Make illegal states hard to express. For status, quota, scheduler, monitor,
   todo, and handoff flows, prefer explicit enums, schemas, and transition
   helpers over scattered booleans and prose-only assumptions.
+- State-classification and delivery-semantics rules belong in typed enums,
+  schemas, or transition helpers. Substring denylists and prose heuristics must
+  carry a documented reason and a typed follow-up; PR review must flag them
+  with the concrete false-positive/negative risk.
+- Core control-plane obligations and error text must stay domain-neutral. Do
+  not put product- or benchmark-specific wording (for example "product
+  advancement") into generic work-lane, quota, todo, or settlement contracts;
+  prefer goal-agnostic phrasing.
+- Default behavior changes must be disclosed: rename the smoke that encoded the
+  old default, update docs/release notes, and name the affected lanes.
+  "Guidance" versus machine-enforced obligations (such as `must_attempt_work`)
+  must be explicit in the contract, not inferred from prose.
 - Fail fast with actionable context at input, config, permission, and state
   boundaries, but do not replace clear control flow with broad exception
   plumbing or silent fallback.

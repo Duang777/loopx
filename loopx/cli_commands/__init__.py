@@ -94,6 +94,7 @@ from .first_run_report import (
 from .dreaming import handle_dreaming_command, register_dreaming_commands
 from .evidence_log import handle_evidence_log_command, register_evidence_log_command
 from .explore import handle_explore_command, register_explore_commands
+from .handoff_mode import handle_handoff_mode_command, register_handoff_mode_command
 from .history import handle_history_command, register_history_command
 from .goal_channel import handle_goal_channel_command, register_goal_channel_commands
 from .lark_inbox import (
@@ -108,6 +109,7 @@ from .project_lifecycle import (
     handle_project_lifecycle_command,
     register_project_lifecycle_commands,
 )
+from .project import handle_project_command, register_project_commands
 from .preset import handle_preset_command, register_preset_commands
 from .presentation import handle_presentation_command, register_presentation_commands
 from .dash import handle_dash_command, register_dash_commands
@@ -236,6 +238,7 @@ __all__ = [
     "handle_dreaming_command",
     "handle_evidence_log_command",
     "handle_explore_command",
+    "handle_handoff_mode_command",
     "handle_history_command",
     "handle_goal_channel_command",
     "build_lark_issue_fix_reviewer_provider_hooks",
@@ -248,6 +251,7 @@ __all__ = [
     "handle_presentation_command",
     "handle_dash_command",
     "handle_project_lifecycle_command",
+    "handle_project_command",
     "handle_pr_review_command",
     "handle_quota_command",
     "handle_ready_score_command",
@@ -297,6 +301,7 @@ __all__ = [
     "register_dreaming_commands",
     "register_evidence_log_command",
     "register_explore_commands",
+    "register_handoff_mode_command",
     "register_history_command",
     "register_goal_channel_commands",
     "register_lark_inbox_commands",
@@ -304,6 +309,7 @@ __all__ = [
     "register_ml_experiment_commands",
     "register_multi_agent_commands",
     "register_project_lifecycle_commands",
+    "register_project_commands",
     "register_pr_review_command",
     "register_preset_commands",
     "register_presentation_commands",

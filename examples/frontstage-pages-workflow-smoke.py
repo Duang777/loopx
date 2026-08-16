@@ -88,11 +88,17 @@ def main() -> int:
         "Missing star-history credential",
         "fine-grained PAT limited to this repository with Metadata: read",
         "gh api graphql --paginate --slurp",
-        "stargazerCount",
+        "stargazers { totalCount }",
+        ".data.repository.stargazers.totalCount",
         "edges { starredAt }",
         "pageInfo { hasNextPage endCursor }",
         "{starred_at: .starredAt}",
         'jq \'length\'',
+        "has_next_page",
+        '\"$has_next_page\" == \"false\"',
+        '\"$fetched_count\" -le \"$count_after\"',
+        "Aggregate-only stargazers omitted",
+        "enumerable stargazer events",
         "--expected-count",
         "output/frontstage-pages/site/site-assets/star-history.svg",
         "python3 examples/dev-book-publication-smoke.py",
@@ -100,8 +106,8 @@ def main() -> int:
         "npm run smoke:frontstage-share-bundle",
         "npm run export:frontstage-share -- --base /loopx/ --out-dir ../../../output/frontstage-pages",
         "mkdocs build --strict --site-dir output/frontstage-pages/site/docs",
-        "mkdocs build --strict --config-file mkdocs.book.zh.yaml --site-dir output/frontstage-pages/site/docs/book",
-        "mkdocs build --strict --config-file mkdocs.book.en.yaml --site-dir output/frontstage-pages/site/docs/book/en",
+        "mkdocs build --strict --config-file docs/book/mkdocs.zh.yaml --site-dir ../../output/frontstage-pages/site/docs/book",
+        "mkdocs build --strict --config-file docs/book/mkdocs.en.yaml --site-dir ../../output/frontstage-pages/site/docs/book/en",
         "actions/configure-pages@v6",
         "enablement: true",
         "actions/upload-pages-artifact@v5",
@@ -121,13 +127,14 @@ def main() -> int:
         "npm run dev",
         "npm run preview",
         "GH_TOKEN: ${{ github.token }}",
+        "stargazerCount",
         '"/stargazers?per_page=100"',
     ]:
         assert_absent(text, forbidden)
 
     for path in [
-        "mkdocs.book.zh.yaml",
-        "mkdocs.book.en.yaml",
+        "docs/book/mkdocs.zh.yaml",
+        "docs/book/mkdocs.en.yaml",
         "examples/dev-book-publication-smoke.py",
     ]:
         assert_pr_and_push_trigger(trigger_text, path)

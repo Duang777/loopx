@@ -5,10 +5,7 @@ import typing
 from collections.abc import Mapping
 from typing import Any
 
-from ..agents.agent_scope_frontier import (
-    AgentScopeFrontierAction,
-    agent_scope_frontier_action as _agent_scope_frontier_action,
-)
+from ..agents.agent_scope_frontier import AgentScopeFrontierAction, agent_scope_frontier_action as _agent_scope_frontier_action
 from ..agents.capability_gate import runtime_capabilities_for_cli_projection
 from ..goals.goal_frontier import AUTONOMOUS_REPLAN_REQUIRED_MODE
 from ..goals.goal_vision_wait import exact_blocked_successor_wait_state
@@ -38,8 +35,6 @@ from .primary_action import (
     protocol_action_text,
     protocol_first_candidate_action as _protocol_first_candidate_action,
     protocol_monitor_action as _protocol_monitor_action,
-    protocol_replan_requires_runnable_todo as _protocol_replan_requires_runnable_todo,
-    protocol_strict_replan_action as _protocol_strict_replan_action,
 )
 from .runtime_capability_reentry import build_runtime_capability_reentry_packet
 
@@ -140,9 +135,55 @@ def user_channel_action_required(payload: dict[str, Any]) -> bool:
         return False
     if _user_gate_notification_suppressed(payload):
         return False
+    obligation = payload.get("autonomous_replan_obligation")
+    if isinstance(obligation, dict) and obligation.get("required") is True:
+        # An active replan obligation owns the frontier; a non-blocking user
+        # action must not mask the agent-side work it obligates.
+        return False
     return bool(payload.get("requires_user_action")) or bool(
         user_channel_action_todo_actions(payload.get("user_todo_summary"))
+    ) or _user_action_owns_empty_agent_lane(payload)
+
+
+def _user_action_owns_empty_agent_lane(payload: dict[str, Any]) -> bool:
+    """Return true when an open user-action todo is the lane's only remaining work.
+
+    A user_action todo is a notice by default, but when the agent lane has no
+    executable work it owns the frontier: the loop must wait quietly for the
+    user instead of re-running the same steering-audit turn forever.
+    """
+
+    return _user_action_owns_empty_agent_lane_from_summaries(
+        payload.get("user_todo_summary"),
+        payload.get("agent_todo_summary"),
     )
+
+
+def _user_action_owns_empty_agent_lane_from_summaries(
+    user_summary: Any,
+    agent_summary: Any,
+) -> bool:
+    if not isinstance(user_summary, dict) or not isinstance(agent_summary, dict):
+        return False
+    user_items = user_summary.get("user_action_items")
+    if not isinstance(user_items, list):
+        user_items = user_summary.get("first_open_items")
+    if not isinstance(user_items, list):
+        return False
+    has_open_user_action = any(
+        isinstance(item, dict)
+        and not item.get("done")
+        and str(item.get("status") or "open").strip().lower()
+        in {"", "open", "todo", "active", "pending"}
+        and todo_item_task_class(item) == TODO_TASK_CLASS_USER_ACTION
+        for item in user_items
+    )
+    if not has_open_user_action:
+        return False
+    first_executable = agent_summary.get("first_executable_items")
+    if isinstance(first_executable, list) and first_executable:
+        return False
+    return True
 
 
 def _user_gate_notification_suppressed(payload: dict[str, Any]) -> bool:
@@ -442,6 +483,8 @@ def _interaction_mode(payload: dict[str, Any]) -> str:
         return "monitor_due"
     if effective_action == "terminal_no_followup" or state == "terminal_no_followup":
         return "terminal_no_followup"
+    if effective_action == "peer_coordination_blocked":
+        return effective_action
     if payload.get("scoped_user_gate_fallback"):
         return "scoped_user_gate_fallback"
     if _user_gate_notification_suppressed(payload):
@@ -587,6 +630,56 @@ def _quota_spend_action(
     )
 
 
+def _terminal_cli_actions(
+    *,
+    mode: str,
+    goal_id: str,
+    scoped_cli_args: str,
+    payload: dict[str, Any],
+    settlement_plan: Mapping[str, Any] | None,
+    capability_resolution_actions: list[str],
+    capability_reentry_actions: list[str],
+) -> list[str]:
+    if mode == "capability_bridge_repair":
+        return capability_reentry_actions or [
+            "perform the projected real task-facing capability check, then rerun "
+            "quota in this same turn"
+        ]
+    resolution_actions = [
+        *capability_resolution_actions,
+        *capability_reentry_actions,
+    ]
+    if mode in {
+        "bounded_delivery",
+        "outcome_floor_recovery",
+        "control_plane_self_repair",
+        "boundary_projection_repair",
+        "scoped_user_gate_fallback",
+        "bounded_delivery_with_user_notice",
+    }:
+        typed_writeback = settlement_step_command(
+            settlement_plan,
+            SettlementStepKind.DURABLE_WRITEBACK,
+        )
+        return [
+            *resolution_actions,
+            typed_writeback
+            or f"loopx refresh-state --goal-id {goal_id} --classification <validated_progress>{scoped_cli_args}",
+            _quota_spend_action(
+                goal_id,
+                scoped_cli_args=scoped_cli_args,
+                payload=payload,
+                settlement_plan=settlement_plan,
+            ),
+        ]
+    if mode in {"user_gate", "user_todo_blocker_push", "user_action_required"}:
+        return [
+            *resolution_actions,
+            "no quota spend for blocker-push/gate-notification",
+        ]
+    return ["no quota spend without validated transition/blocker writeback"]
+
+
 def interaction_next_cli_actions(
     payload: dict[str, Any],
     *,
@@ -668,14 +761,11 @@ def interaction_next_cli_actions(
             available_capabilities=available_capabilities,
             scheduler_execution_context=scheduler_execution_context,
         )
-    if capability_reentry is not None:
-        capability_resolution_actions.extend(
-            (
-                "after real-callsite verification of "
-                f"{candidate['capability']}: {candidate['command']}"
-            )
-            for candidate in capability_reentry["candidates"]
-        )
+    capability_reentry_actions = (
+        [str(candidate["command"]) for candidate in capability_reentry["candidates"]]
+        if capability_reentry is not None
+        else []
+    )
     if mode == "terminal_no_followup":
         return ["no quota spend until explicit goal resume or newly projected work"]
     if mode == "agent_monitor_only":
@@ -829,83 +919,60 @@ def interaction_next_cli_actions(
             typed_quota_guard,
         ]
     if mode == "autonomous_replan":
-        runnable_todo_writeback_required = (
-            _protocol_replan_requires_runnable_todo(payload)
+        packet = (
+            payload.get("replan_action_packet")
+            if isinstance(payload.get("replan_action_packet"), dict)
+            else {}
         )
-        strict_replan_action = _protocol_strict_replan_action(payload)
-        lane_action = _protocol_first_candidate_action(payload)
-        if strict_replan_action:
-            first_action = strict_replan_action
-        elif lane_action:
-            first_action = (
-                "run one bounded autonomous replan slice around "
-                f"{lane_action}; write back the selected todo/frontier changes"
-            )
-        else:
-            first_action = (
-                "run one bounded autonomous replan slice and write back the "
-                "selected next action/todo changes"
-            )
-        actions = [
-            first_action,
-        ]
-        if runnable_todo_writeback_required:
-            actor_id = str(agent_identity.get("agent_id") or "").strip()
-            actor_args = (
-                f" --claimed-by {shlex.quote(actor_id)}"
-                if actor_id
-                else " --claimed-by <agent-id>"
-            )
-            actions.append(
-                f"loopx todo add --goal-id {goal_id} --role agent "
-                "--task-class advancement_task --text '<selected runnable next slice>'"
-                f"{actor_args}"
-            )
-        delta_kind = (
-            "runnable_todo_set"
-            if runnable_todo_writeback_required
-            else "<delta_kind>"
+        writeback_contract = (
+            packet.get("writeback_contract")
+            if isinstance(packet.get("writeback_contract"), dict)
+            else {}
         )
-        actions.extend([
-            f"loopx refresh-state --goal-id {goal_id} --classification autonomous_replan_recorded --autonomous-replan-recorded --repair-delta-kind {delta_kind} --delivery-batch-scale <scale> --delivery-outcome <outcome>{settlement_args}{scoped_cli_args}",
-            (
-                "if the replan writeback records an accountable delta such as "
-                "outcome_progress or primary_goal_outcome, run "
-                f"{_quota_spend_action(goal_id, scoped_cli_args=scoped_cli_args, payload=payload, settlement_plan=settlement_plan)}; "
-                "otherwise do not spend for surface_only watch-lane continuation/no-followup"
-            ),
-        ])
-        return actions
-    if mode in {
-        "bounded_delivery",
-        "outcome_floor_recovery",
-        "capability_bridge_repair",
-        "control_plane_self_repair",
-        "boundary_projection_repair",
-        "scoped_user_gate_fallback",
-        "bounded_delivery_with_user_notice",
-    }:
-        typed_writeback = settlement_step_command(
-            settlement_plan,
-            SettlementStepKind.DURABLE_WRITEBACK,
+        successor_command = str(
+            writeback_contract.get("successor_command") or ""
+        ).strip()
+        successor_ref = (
+            "execute replan_action_packet.writeback_contract.successor_command"
+            if successor_command
+            else ""
+        )
+        successor_boundary = "on host_action=end_current_heartbeat: stop"
+        if successor_command:
+            return [successor_ref, successor_boundary]
+        typed_progress_args = (
+            "--progress-result-class "
+            "<advanced|blocked|exploration_exhausted|no_followup> "
+            "--progress-surface-id <surface-id> "
+            "--progress-hypothesis-id <hypothesis-id> "
+            "--progress-probe-kind <probe-kind> "
+            "--progress-evidence-id <evidence-id>"
+        )
+        refresh_command = (
+            f"loopx --format json refresh-state --goal-id {goal_id} "
+            "--progress-scope agent_lane "
+            "--classification bounded_replan_progress "
+            f"{typed_progress_args}"
+            f"{settlement_args}{scoped_cli_args}"
         )
         return [
-            *capability_resolution_actions,
-            typed_writeback
-            or f"loopx refresh-state --goal-id {goal_id} --classification <validated_progress>{scoped_cli_args}",
-            _quota_spend_action(
-                goal_id,
-                scoped_cli_args=scoped_cli_args,
-                payload=payload,
-                settlement_plan=settlement_plan,
-            ),
+            action
+            for action in (
+                successor_ref,
+                refresh_command,
+                successor_boundary if successor_command else "",
+            )
+            if action
         ]
-    if mode in {"user_gate", "user_todo_blocker_push", "user_action_required"}:
-        return [
-            *capability_resolution_actions,
-            "no quota spend for blocker-push/gate-notification",
-        ]
-    return ["no quota spend without validated transition/blocker writeback"]
+    return _terminal_cli_actions(
+        mode=mode,
+        goal_id=goal_id,
+        scoped_cli_args=scoped_cli_args,
+        payload=payload,
+        settlement_plan=settlement_plan,
+        capability_resolution_actions=capability_resolution_actions,
+        capability_reentry_actions=capability_reentry_actions,
+    )
 
 
 def _interaction_required_reads(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -951,6 +1018,11 @@ def _interaction_spend_policy(
         return "no spend for moving agent work into an independent worktree"
     if mode == "automation_prompt_upgrade":
         return "no spend until the host update is acknowledged and quota reruns"
+    if mode == "capability_bridge_repair":
+        return (
+            "no spend or advancement checkpoint for capability verification; rerun "
+            "quota in the same turn"
+        )
     if mode == "autonomous_replan":
         return (
             "spend only after accountable replan delta; no spend for "
@@ -1038,6 +1110,7 @@ def _interaction_quiet_noop_allowed(
         "blocked_wait",
         "user_gate_cooldown_wait",
         "terminal_no_followup",
+        "peer_coordination_blocked",
         "agent_monitor_only",
         "skip",
     }
@@ -1047,7 +1120,6 @@ def _interaction_spend_after_validation(mode: str) -> bool:
     return mode in {
         "bounded_delivery",
         "outcome_floor_recovery",
-        "capability_bridge_repair",
         "autonomous_replan",
         "control_plane_self_repair",
         "boundary_projection_repair",
@@ -1114,6 +1186,7 @@ def _build_interaction_agent_channel(
     must_attempt: bool,
     delivery_allowed: bool,
     quiet_noop_allowed: bool,
+    capability_reentry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     channel: dict[str, Any] = {
         "must_attempt": must_attempt,
@@ -1121,6 +1194,23 @@ def _build_interaction_agent_channel(
         "quiet_noop_allowed": quiet_noop_allowed,
     }
     channel.update(build_primary_action_projection(payload, mode=mode))
+    if capability_reentry is not None:
+        candidate = capability_reentry["candidates"][0]
+        target = candidate["verification_target"]
+        channel["next_task_action"] = {
+            "kind": "capability_verification",
+            "capability": candidate["capability"],
+            "todo_id": target["todo_id"],
+            "action_kind": target["action_kind"],
+            "operation": target["action_kind"],
+            "instruction": target["instruction"],
+            "preflight_allowed": False,
+            "advancement_checkpoint": False,
+            "settles_turn": False,
+            "continuation_cli_action_index": 0,
+        }
+        if target.get("target_ref"):
+            channel["next_task_action"]["target_ref"] = target["target_ref"]
     if _blocked_successor_wait_observation_required(payload):
         channel["primary_action"] = (
             "record one no-spend blocked-successor wait observation, rerun quota, "
@@ -1197,12 +1287,14 @@ def _build_interaction_cli_channel(
     scheduler_execution_context: (
         Mapping[str, Any] | SchedulerExecutionContextResolution | None
     ) = None,
+    capability_reentry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    capability_reentry = build_runtime_capability_reentry_packet(
-        payload,
-        available_capabilities=available_capabilities,
-        scheduler_execution_context=scheduler_execution_context,
-    )
+    if capability_reentry is None:
+        capability_reentry = build_runtime_capability_reentry_packet(
+            payload,
+            available_capabilities=available_capabilities,
+            scheduler_execution_context=scheduler_execution_context,
+        )
     settlement_plan = _codex_app_settlement_plan(
         payload,
         available_capabilities=available_capabilities,
@@ -1392,6 +1484,11 @@ def build_interaction_contract(
     )
     spend_after_validation = _interaction_spend_after_validation(mode)
     required_reads = _interaction_required_reads(payload)
+    capability_reentry = build_runtime_capability_reentry_packet(
+        payload,
+        available_capabilities=available_capabilities,
+        scheduler_execution_context=scheduler_execution_context,
+    )
 
     user_channel = _build_interaction_user_channel(
         payload,
@@ -1410,6 +1507,7 @@ def build_interaction_contract(
         must_attempt=must_attempt,
         delivery_allowed=delivery_allowed,
         quiet_noop_allowed=quiet_noop_allowed,
+        capability_reentry=capability_reentry,
     )
     contract: dict[str, Any] = {
         "schema_version": INTERACTION_CONTRACT_SCHEMA_VERSION,
@@ -1424,6 +1522,7 @@ def build_interaction_contract(
             spend_after_validation=spend_after_validation,
             available_capabilities=available_capabilities,
             scheduler_execution_context=scheduler_execution_context,
+            capability_reentry=capability_reentry,
         ),
     }
     response_plan = _build_interaction_response_plan(

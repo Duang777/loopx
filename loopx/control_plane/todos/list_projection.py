@@ -57,6 +57,7 @@ _ITEM_FIELDS = (
     "cadence",
     "next_due_at",
     "expires_at",
+    "watch_only",
 )
 
 
@@ -81,6 +82,42 @@ def _compact_item(value: Any) -> Any:
             _compact_text(child) if key in {"text", "title", "note"} else child
         )
     return compact
+
+
+def todo_item_relations(item: dict[str, Any]) -> dict[str, Any]:
+    """Project the stable relationship fields for one todo list item."""
+
+    relations: dict[str, Any] = {}
+    for key in (
+        "claimed_by",
+        "bound_agent",
+        "goal_bound",
+        "blocks_agent",
+        "excluded_agents",
+        "global_gate",
+        "unblocks_todo_id",
+        "successor_todo_ids",
+        "superseded_by",
+        "resume_when",
+        "resume_condition",
+        "resume_ready",
+        "decision_scope",
+        "required_decision_scopes",
+        "required_write_scopes",
+        "required_capabilities",
+        "target_capabilities",
+        "task_class",
+        "action_kind",
+        "continuation_policy",
+        "target_key",
+        "cadence",
+        "next_due_at",
+        "expires_at",
+    ):
+        value = item.get(key)
+        if value is not None and value != []:
+            relations[key] = value
+    return relations
 
 
 def compact_agent_lane_todo_summary(

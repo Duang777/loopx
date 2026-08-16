@@ -613,15 +613,17 @@ without another dry-run, file edit, or quota spend.
 The generated task body also carries a no-progress self-repair guard. More
 importantly, `quota should-run` may expose a hard
 `autonomous_replan_obligation` / `execution_obligation.must_attempt_work=true`
-contract when active state or public run history shows 2 consecutive stalled
-turns. `quota_monitor_poll` events are no-spend stall evidence for this
-detector. Obey that machine contract before another quiet no-op: run one
+contract when active state or public run history shows repeated typed no-progress
+turns. Quiet future-monitor heartbeat receipts are liveness evidence only;
+`dead_monitor_repeat` counts unchanged due/external monitor executions with a
+concrete Todo or target identity at its declared threshold. Obey that machine
+contract before another quiet no-op: run one
 bounded self-repair/replan batch through implementation, validation, and
 writeback when that boundary is clear, then spend once. Do not stop at the first
 tiny substep when the repair has an obvious validation boundary. Cancel or
-pause the heartbeat automation only when that repair path is itself stuck for 2
-more eligible turns, explain the no-progress loop with `NOTIFY`, and skip quota
-spend for that self-cancel turn.
+pause the heartbeat automation only after 2 consecutive stalled turns (the same
+repair path stuck for 2 more eligible turns); explain the no-progress loop with
+`NOTIFY`, and skip quota spend for that self-cancel turn.
 The same generated task body also makes routine public commit, push, and PR
 creation autonomous after validation plus a clean public/private boundary scan.
 Do not reintroduce a user gate for public-safe publication itself.
@@ -912,9 +914,16 @@ isolated worktrees; keep the aggregate PR to `main` as the final review gate.
 When the next agent slice is not yet known, keep the bound `user_action`
 visible without converting it into a gate. If bounded no-progress evidence
 accumulates while the agent frontier is empty, follow
-`autonomous_replan_required`: create and claim a concrete runnable agent todo,
-then record `runnable_todo_set`. Only authoritative terminal-closure evidence
-may replace that todo writeback with explicit no-follow-up.
+`autonomous_replan_required` and produce one typed semantic outcome. If the
+projected frontier owns a concrete target, create and claim that runnable agent
+todo, binding it to the projected `obligation_id` with
+`--replan-obligation-id <exact-id>`, a typed `--action-kind`, and a stable
+`--target-key` or Explore node ref. The atomic Todo mutation is the semantic
+receipt; do not add a second repair ACK. When no executable target is known,
+use the projected typed semantic or coverage-backed terminal writeback rather
+than creating a Todo whose task is merely to replan. Only authoritative typed
+terminal-closure evidence may replace that Todo writeback with explicit
+no-follow-up.
 `successor_todo_ids` records lineage only: linking successors does not suspend
 an open parent. When splitting a parent into explicit successors, decide whether
 the parent still has an independent immediate action. If it does not, explicitly

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..extensions.runtime import extension_catalog_entries
+from .decision_context.catalog_entry import DECISION_CONTEXT_CATALOG_ENTRY
 from .issue_fix.workflow_plan import build_issue_fix_pr_lifecycle_command
 from .registry import CapabilityRegistry
 
@@ -13,6 +14,97 @@ CAPABILITY_DETAIL_SCHEMA_VERSION = "loopx_capability_detail_v0"
 
 
 BUILTIN_CAPABILITIES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "benchmark-toolkit",
+        "origin": "builtin",
+        "visibility": "public",
+        "provider_id": "loopx-core",
+        "title": "Benchmark experiment toolkit",
+        "status": "active-preview",
+        "real_world_anchor": (
+            "local no-upload agent benchmark experiments with independent scoring"
+        ),
+        "user_value": (
+            "Prepare, qualify, compare, and record benchmark runs through one "
+            "fail-closed evidence lifecycle without publishing raw tasks, "
+            "trajectories, verifier output, credentials, or local paths."
+        ),
+        "entry_command": "loopx benchmark --help",
+        "commands": [
+            {
+                "command": (
+                    "loopx benchmark integrity-qualification "
+                    "--trajectory-json <private.json> "
+                    "--runtime-attestation-json <attestation.json> "
+                    "--require-qualified --format json"
+                ),
+                "purpose": (
+                    "Reduce private ATIF tool evidence and runner-owned isolation "
+                    "facts to a compact integrity qualification receipt."
+                ),
+                "write_boundary": (
+                    "read-only private local inputs; emits hashes, counts, and "
+                    "reason codes only"
+                ),
+            },
+            {
+                "command": "loopx benchmark classify-artifacts <paths...> --format json",
+                "purpose": "Classify benchmark artifacts before reading or publishing them.",
+                "write_boundary": "path classification only; no file reads or writes",
+            },
+            {
+                "command": (
+                    "loopx benchmark run <family> --goal-id <goal-id> --format json"
+                ),
+                "purpose": (
+                    "Build a compact benchmark_run_v0 or ingest supported official "
+                    "result metadata through an adapter."
+                ),
+                "write_boundary": (
+                    "dry-run by default; explicit append paths consume compact "
+                    "results and never publish raw evidence"
+                ),
+            },
+            {
+                "command": (
+                    "loopx benchmark run-ledger-check --goal-id <goal-id> --format json"
+                ),
+                "purpose": "Reconcile compact run history with the public benchmark ledger.",
+                "write_boundary": "read-only compact history and ledger",
+            },
+        ],
+        "implemented_protocols": [
+            {
+                "schema_version": "benchmark_integrity_qualification_v0",
+                "module": "loopx.capabilities.benchmark_toolkit.integrity",
+                "doc": "docs/capabilities/benchmark-toolkit/README.md",
+            },
+            {
+                "schema_version": "benchmark_runtime_integrity_attestation_v0",
+                "module": "loopx.capabilities.benchmark_toolkit.integrity",
+                "doc": "docs/capabilities/benchmark-toolkit/README.md",
+            },
+            {
+                "schema_version": "run_permission_policy_v0",
+                "module": "loopx.benchmark_core.run_permissions",
+                "doc": "docs/capabilities/benchmark-toolkit/README.md",
+            },
+        ],
+        "smokes": ["python -m pytest tests/capabilities/test_benchmark_toolkit.py -q"],
+        "docs": ["docs/capabilities/benchmark-toolkit/README.md"],
+        "boundaries": [
+            "The toolkit never grants runner, Docker, model, upload, submission, or publication authority; each effect remains separately gated.",
+            "Raw trajectories are private local inputs to integrity qualification and are never copied into receipts, ledgers, docs, or PR artifacts.",
+            "A clean trajectory scan is not isolation proof: runner-owned permission and verifier-order attestations are mandatory and fail closed when absent.",
+            "Integrity qualification establishes countability eligibility only; an independent official result and matched experiment contract are still required.",
+            "Benchmark-family wiring remains in benchmark_adapters; the toolkit owns provider-neutral experiment and evidence policy.",
+        ],
+        "next_real_step": (
+            "Qualify one private local run, ingest its independent compact result, "
+            "and block the paired claim when either trajectory evidence or runner "
+            "isolation attestation is incomplete."
+        ),
+    },
     {
         "id": "integration-branch-reconcile",
         "origin": "builtin",
@@ -544,145 +636,7 @@ BUILTIN_CAPABILITIES: tuple[dict[str, Any], ...] = (
             "while keeping external PR/comment actions explicit."
         ),
     },
-    {
-        "id": "decision-context",
-        "origin": "builtin",
-        "visibility": "public",
-        "provider_id": "loopx-core",
-        "title": "Goal-scoped decision evidence and outcome contract",
-        "status": "experimental",
-        "default_enabled": False,
-        "real_world_anchor": (
-            "incremental authority rebase before long-running agent decisions"
-        ),
-        "user_value": (
-            "Separate current evidence, advisory proposals, and verified outcomes "
-            "while keeping source providers replaceable and Core authority unchanged."
-        ),
-        "entry_command": (
-            "loopx decision-context inspect-profile "
-            "--goal-id <goal-id> --agent-id <agent-id> --format json"
-        ),
-        "commands": [
-            {
-                "command": "loopx decision-context architecture --format json",
-                "purpose": "Render the default-off Stage-0 packet, source, provider, and lifecycle boundaries.",
-                "write_boundary": "stateless contract output only; no provider, source, goal state, or external write",
-            },
-            {
-                "command": (
-                    "loopx decision-context inspect-profile "
-                    "--goal-id <goal-id> --agent-id <agent-id> "
-                    "[--profile <private-local-profile>] --format json"
-                ),
-                "purpose": (
-                    "Resolve the default-off goal and agent route while projecting "
-                    "only public-safe provider availability."
-                ),
-                "write_boundary": (
-                    "reads an optional private local profile; never emits source "
-                    "locators, provider config, raw content, cursors, or credentials"
-                ),
-            },
-            {
-                "command": (
-                    "loopx decision-context source-manifest "
-                    "--goal-id <goal-id> --agent-id <agent-id> "
-                    "--profile <private-local-profile> --format json"
-                ),
-                "purpose": (
-                    "Project an enabled source profile into a public-safe manifest "
-                    "before any provider access."
-                ),
-                "write_boundary": (
-                    "read-only local projection; no provider access, cursor write, "
-                    "goal mutation, or external action"
-                ),
-            },
-            {
-                "command": (
-                    "loopx decision-context prepare-evidence "
-                    "--goal-id <goal-id> --agent-id <agent-id> "
-                    "--profile <private-local-profile> "
-                    "--decision-id <decision-id> "
-                    "[--cursor-state <private-cursor-json>] "
-                    "[--source-id <on-demand-source>] --format json"
-                ),
-                "purpose": (
-                    "Resolve enabled profile providers, run bounded scans and "
-                    "exact reads, and emit a public-safe evidence preparation "
-                    "packet for domain rebase."
-                ),
-                "write_boundary": (
-                    "read-only provider access; changed-source cursors remain "
-                    "preserved until semantic rebase and validated lifecycle "
-                    "writeback"
-                ),
-            },
-        ],
-        "implemented_protocols": [
-            {
-                "schema_version": "decision_context_architecture_v0",
-                "module": "loopx.capabilities.decision_context.architecture",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_evidence_packet_v0",
-                "module": "loopx.capabilities.decision_context.packets",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_proposal_v0",
-                "module": "loopx.capabilities.decision_context.packets",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_outcome_receipt_v0",
-                "module": "loopx.capabilities.decision_context.packets",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_source_manifest_v0",
-                "module": "loopx.capabilities.decision_context.sources",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_source_scan_receipt_v0",
-                "module": "loopx.capabilities.decision_context.sources",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_context_profile_v0",
-                "module": "loopx.capabilities.decision_context.profile",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_context_activation_status_v0",
-                "module": "loopx.capabilities.decision_context.profile",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-            {
-                "schema_version": "decision_cursor_commit_receipt_v0",
-                "module": "loopx.capabilities.decision_context.cursor_commit",
-                "doc": "docs/reference/protocols/decision-context-architecture-v0.md",
-            },
-        ],
-        "smokes": ["python3 examples/decision-context-contract-smoke.py"],
-        "docs": [
-            "docs/reference/protocols/decision-context-architecture-v0.md",
-            "docs/reference/protocols/decision-context-architecture-v0.zh-CN.md",
-        ],
-        "boundaries": [
-            "The capability is default-off and cannot create action authority or mutate Core state.",
-            "Private source locators, cursors, raw content, provider payloads, tool output, and credentials stay outside public packets.",
-            "DecisionSourceProvider rebases current authority; ContextProvider supplies advisory recall only.",
-            "The built-in local-file adapter and prepare-evidence route are read-only; cursor commit requires packet-chain validation, exact lifecycle-event readback, private-state CAS, and atomic verified write.",
-        ],
-        "next_real_step": (
-            "Exercise the first private incremental source profile and produce "
-            "an outcome receipt that changes or stops a real decision."
-        ),
-    },
+    DECISION_CONTEXT_CATALOG_ENTRY,
     {
         "id": "project-skill-delivery",
         "origin": "builtin",
@@ -1389,6 +1343,21 @@ BUILTIN_CAPABILITIES: tuple[dict[str, Any], ...] = (
                 "purpose": "Project caller-owned content items into one read-only managed queue surface.",
                 "write_boundary": "local queue projection only; no external read or write",
             },
+            {
+                "command": "loopx content-ops template-list --format json",
+                "purpose": "List the built-in public-safe content layout template library.",
+                "write_boundary": "packaged template read only; no external read or write",
+            },
+            {
+                "command": "loopx content-ops layout-plan --item-id <id> --template-id <id> --page <page:role:subject> --generated-at <iso> --format json",
+                "purpose": "Record typed page roles and a closing obligation before rendering.",
+                "write_boundary": "local plan packet only; no draft body or external write",
+            },
+            {
+                "command": "loopx content-ops layout-check --plan-json <plan.json> --measurement-json <measurement.json> --format json",
+                "purpose": "Enforce template density, visual safety, required page roles, and the final-page role.",
+                "write_boundary": "local deterministic check only; never grants publish authority",
+            },
         ],
         "implemented_protocols": [
             {
@@ -1431,6 +1400,16 @@ BUILTIN_CAPABILITIES: tuple[dict[str, Any], ...] = (
                 "module": "loopx.capabilities.content_ops.item_lifecycle",
                 "doc": "docs/reference/protocols/content-ops-queue-v0.md",
             },
+            {
+                "schema_version": "content_ops_layout_plan_v0",
+                "module": "loopx.capabilities.content_ops.layout",
+                "doc": "docs/reference/protocols/content-ops-layout-v0.md",
+            },
+            {
+                "schema_version": "content_ops_layout_check_packet_v0",
+                "module": "loopx.capabilities.content_ops.layout",
+                "doc": "docs/reference/protocols/content-ops-layout-v0.md",
+            },
         ],
         "smokes": [
             "python3 examples/content-ops-exploration-plan-smoke.py",
@@ -1439,18 +1418,22 @@ BUILTIN_CAPABILITIES: tuple[dict[str, Any], ...] = (
             "python3 examples/content-ops-chatview-report-smoke.py",
             "python3 examples/content-ops-packet-aggregation-smoke.py",
             "python3 examples/content-ops-queue-status-smoke.py",
+            "python3 examples/content-ops-layout-library-smoke.py",
         ],
         "docs": [
             "docs/capabilities/content-ops/README.md",
             "docs/reference/protocols/content-ops-surface-v0.md",
             "docs/reference/protocols/content-ops-item-lifecycle-v0.md",
             "docs/reference/protocols/content-ops-queue-v0.md",
+            "docs/reference/protocols/content-ops-layout-v0.md",
         ],
         "boundaries": [
             "Private connectors enter as owner gates or compact approved counts first.",
             "Raw chats, transcripts, auth material, logs, and local paths are not copied into public packets.",
             "Publish remains blocked until an explicit user decision.",
             "Queue projection is read-only and never stores draft bodies or provider credentials.",
+            "Layout checks consume relative asset references and compact measurements, never draft bodies or local absolute paths.",
+            "Layout acceptance is deterministic and never implies creator approval or publishing authority.",
         ],
         "next_real_step": (
             "Turn the aggregated surface into a small review/feed UI where a user "

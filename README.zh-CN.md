@@ -6,11 +6,11 @@
 
 **面向长程 Agent 的开放、有状态、Provider-neutral 控制面。**
 
-<sub>Codex、Claude Code、Cursor 或自有 runtime 负责一次次有界执行；LoopX 让目标、gate、todo、证据、quota 和交接跨轮次保持稳定。</sub>
+<sub>LoopX 运行在任何 agent harness 之上，提供长程状态、语义决策、治理、恢复与人机协同；目标、gate、todo、证据、quota 和交接跨轮次保持稳定，有界执行仍由 harness 负责。</sub>
 
 <a href="https://trendshift.io/repositories/102379?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-102379"><img src="https://trendshift.io/api/badge/repositories/102379" alt="huangruiteng/loopx 在 Trendshift 的趋势排名" width="220" height="48"></a>
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/huangruiteng/loopx?display_name=tag)](https://github.com/huangruiteng/loopx/releases/latest) [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/XmGgQyCFZd) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml) [![Local first](https://img.shields.io/badge/control--plane-local--first-brightgreen.svg)](docs/public-private-boundary.md) [![Loop Agents](https://img.shields.io/badge/status-loop%20agents%20early-orange.svg)](docs/product/release-readiness.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/huangruiteng/loopx?display_name=tag)](https://github.com/huangruiteng/loopx/releases/latest) [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/XmGgQyCFZd) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml) [![Local first](https://img.shields.io/badge/control--plane-local--first-brightgreen.svg)](docs/public-private-boundary.md) [![Loop Agents](https://img.shields.io/badge/status-loop%20agents%20active-brightgreen.svg)](docs/product/release-readiness.md)
 
 [产品首页](https://huangruiteng.github.io/loopx/) · [文档](https://huangruiteng.github.io/loopx/docs/) · [开发者手册](https://huangruiteng.github.io/loopx/docs/book/) · [试用 LoopX](#试用-loopx) · [查看真实 Loop](#证据) · [理解工作原理](#为什么需要-loopx) · [用户手册](https://my.feishu.cn/wiki/CaL5wMk9ui17ngkWzeUcMlAYnZg) · [English](README.md)
 
@@ -21,8 +21,9 @@
 ---
 
 LoopX 是开放且 Provider-neutral 的轻量 state kernel，也是 local-first
-的 Loop Engineering 控制面。它不替代真正执行任务的 agent runtime，而是让
-跨轮次、跨工具、跨 agent 的工作可审阅、可恢复、可接力。
+的 Loop Engineering 控制面。它运行在不同 agent harness 之上，而不是替代
+它们：LoopX 提供长程状态、语义决策、治理、恢复与人机协同，让跨轮次、
+跨工具、跨 agent 的工作可审阅、可恢复、可接力。
 
 > 让 Loop 持续向前，让关键判断留在人手里。
 
@@ -257,7 +258,25 @@ loopx doctor
 
 ## 能力
 
-LoopX 把控制面归结为五个用户可以直接行动的问题：
+LoopX 显式保留架构边界，使同一个受治理结果在更换 Agent harness 或外部 Provider
+后仍然成立。以下术语描述的是不同边界，而不是几种可以互换的插件：
+
+| 边界 | 含义 | 深入阅读 |
+| --- | --- | --- |
+| **Kernel** | 持有持久化 goal、todo、gate、evidence、quota、恢复和调度事实。 | [核心架构](docs/architecture.md) |
+| **Capability** | 定义稳定、provider-neutral 的合同，从 LoopX 状态交付一个有界、可验证的调用者结果。 | [Capability 目录](docs/capabilities/README.md) |
+| **Provider** | 调用外部系统或本地实现，返回有界 observation、effect result 和 readback。 | [Provider 运行责任](docs/reference/extensions.md#runtime-responsibilities) |
+| **Extension** | 通过显式安装、readiness、启用、升级、停用和回滚生命周期交付可选 Provider。 | [Extension 生命周期](docs/reference/extensions.md#runtime-lifecycle) |
+
+`--available-capability shell` 等 host 声明描述的是已观测到的执行支持；在这张
+产品图里属于 runtime capacity，不是产品 Capability，也不授予权限。真正执行前，
+Capability 仍须应用自己的 policy 和 authority check，再提出 typed transition。
+
+### 控制面核心承诺
+
+Kernel 把控制面归结为五个用户可以直接行动的问题。每个问题对应一个产品
+承诺：目标 → 长程状态；下一步 → 语义决策；人类判断 → 人机协同；
+证据 → 恢复；能否继续 → 治理。
 
 | 问题 | LoopX 保持可见的状态 |
 | --- | --- |
@@ -283,6 +302,25 @@ LoopX 把控制面归结为五个用户可以直接行动的问题：
 这些能力共同提供 lifetime goal、具体 user gate、经过审计的安全侧路、平级 todo
 ownership、quota 与 steering、紧凑 run history、证据化 handoff、read-first 管理面、
 项目级价值信号和 public/private boundary check。
+
+### 产品 Capability 路径
+
+Capability 把上述通用原语组成 outcome-owned 工作泳道。先按结果选择，再检查当前
+已注册实现及其写入边界：
+
+| 你需要…… | Capability | 从这里开始 |
+| --- | --- | --- |
+| 把公开 issue 推进为可审查、有证据的变更 | [Issue Fix](docs/capabilities/issue-fix/README.zh-CN.md) | `loopx capability show issue-fix --format json` |
+| 在交付前对精确 final diff 做质量验收 | [Change Quality](docs/capabilities/change-quality/README.md) | `loopx capability show change-quality-qualification --format json` |
+| 维护由多个已审查分支组成、持续变化的集成栈 | [Integration Branch](docs/capabilities/integration-branch/README.md) | `loopx capability show integration-branch-reconcile --format json` |
+| 在不丢失假设和发现的前提下探索不确定研究问题 | [Explore](docs/capabilities/explore/README.zh-CN.md) | `loopx capability show explore --format json` |
+| 基于当前证据和已验证结果重新建立决策上下文 | [Decision Context](docs/capabilities/decision-context/README.zh-CN.md) | `loopx capability show decision-context --format json` |
+| 生成带 receipt 的定时或进展触发报告 | [Periodic Report](docs/capabilities/periodic-report/README.md) | `loopx capability show periodic-report --format json` |
+
+运行 `loopx capability list --format json`，读取当前安装版本的权威目录。Capability
+详情包含用户价值、成熟度、Provider readiness、入口命令、写入边界、协议和持久
+验证。可从[人类可读 Capability 索引](docs/capabilities/README.md)按结果选择；安装或
+开发 Provider 时，再进入[Extension 与 Capability](docs/reference/extensions.md)。
 
 ### 四种运行责任
 
@@ -395,6 +433,33 @@ loopx check \
   --scan-path examples/
 ```
 
+## 当前技术方向
+
+LoopX 当前有三个活跃战略计划和一个架构与研究孵化器。这些内容用于表达方向，
+不是交付承诺；`main`、已发布 artifact 和 stable reference contract 仍然定义真实
+已交付行为。
+
+- **长程 Benchmark 与证据：**在互补 benchmark 环境中建立可复现的能力证据，
+  并开展受控的机制研究。
+  [方向 Tracker](https://github.com/huangruiteng/loopx/issues/3243)
+- **Operator Surface 与 IM Integration：**建设 operator workspace、session
+  record 与有界协作表面；当前在专用 integration branch 孵化，由 `@maxliux5`
+  作为 implementation lead。
+  [方向 Tracker](https://github.com/huangruiteng/loopx/issues/3244)
+- **Shared Goal Authority 与跨 Host 协作：**为显式共享 goal 提供
+  provider-neutral 协调；NoKV 是尚未晋级的 provider candidate，而不是新的控制面
+  权威。
+  [方向 Tracker](https://github.com/huangruiteng/loopx/issues/3245)
+- **架构与研究孵化器：**以明确不同的成熟度推进 Effect Program hardening、
+  TypeScript parity migration、hierarchical stride、research exploration、human
+  attention、artifact lifecycle 与 memory utility。
+  [方向 Tracker](https://github.com/huangruiteng/loopx/issues/3246)
+
+完整阶段、promotion gate、贡献者安全切片和 ownership 边界见
+[当前技术方向地图](docs/project/technical-directions.zh-CN.md)；社区讨论使用置顶的
+[GitHub Discussion](https://github.com/huangruiteng/loopx/discussions/2851)。核心控制面
+可靠性继续作为这些计划共同的底座。
+
 ## 进阶文档
 
 按当前任务选择入口；[线上文档](https://huangruiteng.github.io/loopx/docs/)
@@ -456,11 +521,14 @@ loopx check \
 
 ### 项目与社区
 
-- [Project Governance](GOVERNANCE.md)
+- [当前技术方向](docs/project/technical-directions.zh-CN.md)
+- [Project Governance](.github/GOVERNANCE.md)
 - [Contributing](CONTRIBUTING.md)与[Contributor Tasks](CONTRIBUTOR_TASKS.md)
 - [Authors and Contributors](AUTHORS.md)
 - [Project History](docs/project/history.md)
 - [Name and Marks](TRADEMARKS.md)
+- [生态采用清单](docs/community/ecosystem-adoption.zh-CN.md) - 我们观察并持续追踪的
+  真实集成、采样借鉴与衍生周边
 
 ## 合作伙伴项目
 
@@ -472,8 +540,9 @@ LoopX 欢迎与其他开源项目协作，共建长程 Agent 生态。已确认�
 
 ## 用户群与反馈
 
-LoopX 还在早期，最需要真实长程 agent 项目里的反馈：控制面帮到了哪里、哪里太重，
-哪些 gate、handoff 或 scope 仍然不够清楚。
+LoopX 已在真实长程 agent 目标上持续运行，并处于活跃迭代期。最需要真实长程
+agent 项目里的反馈：控制面帮到了哪里、哪里太重，哪些 gate、handoff 或 scope
+仍然不够清楚。
 
 - 可复现 bug、安装问题、功能建议：请提
   [GitHub Issue](https://github.com/huangruiteng/loopx/issues)。
@@ -481,8 +550,7 @@ LoopX 还在早期，最需要真实长程 agent 项目里的反馈：控制面�
 - 参与社区讨论：可加入 [Discord 社区](https://discord.gg/XmGgQyCFZd)，也可在
   下方直接加入飞书群或通过微信申请入群。
 
-渠道分工与支持边界见 [Support](SUPPORT.md)，官方发布源见
-[Communications](COMMUNICATIONS.md)。
+渠道分工、支持边界和官方发布源见 [Support](.github/SUPPORT.md)。
 
 <p align="center">
   <a href="docs/assets/loopx-lark-developer-group.png"><img src="docs/assets/loopx-lark-developer-group.png" alt="LoopX 飞书开发群二维码" width="280"></a>
@@ -498,7 +566,7 @@ LoopX 还在早期，最需要真实长程 agent 项目里的反馈：控制面�
 [Contributing](CONTRIBUTING.md)，尤其是 public/private 边界、smoke 保留规则和
 benchmark 证据边界。
 
-项目角色与维护权限见 [Governance](GOVERNANCE.md)，创建者与贡献者归属见
+项目角色与维护权限见 [Governance](.github/GOVERNANCE.md)，创建者与贡献者归属见
 [Authors and Contributors](AUTHORS.md)，关键公开演进见
 [Project History](docs/project/history.md)，名称与标识使用见
 [Name and Marks](TRADEMARKS.md)。
@@ -509,8 +577,8 @@ raw benchmark task/log/trajectory/verifier output、credentials、token、私有
 
 ## 当前状态
 
-`0.4.x` 已经是一套可用、但仍处于早期的长程 Agent 本地控制面。LoopX 不是完整
-agent platform，不是 agent runtime，也不是自治生产控制器。
+`0.4.x` 已经是一套可用的长程 Agent 本地控制面，正在进入更广泛的采用阶段。
+LoopX 不是完整 agent platform，不是 agent runtime，也不是自治生产控制器。
 
 目前 LoopX 已交付围绕 goal、typed todo / decision scope、平级 claim / lease、
 evidence / writeback、quota-aware scheduling 和跨轮 continuation 的 durable state
@@ -523,8 +591,9 @@ integration 和进阶路径仍是 optional、default-off 或 experimental。Loop
 获得 credential，不会替用户批准 destructive / production action，不会在未授权时
 公开发布，也不会把未经验证的 run 当成成功证据。
 
-下一阶段会继续改善安装与 host packaging、扩展 typed runtime adapter、加强重复公开
-Loop 的 terminal acceptance、补足独立采用与 outcome evidence，并打磨管理面。
+当前投入按[技术方向地图](docs/project/technical-directions.zh-CN.md)组织：长程
+benchmark 证据、operator surface 与 IM integration、shared-goal 跨 host 协作，以及
+明确分阶段的架构与研究孵化器。
 
 ## Star 趋势
 
@@ -535,4 +604,7 @@ Loop 的 terminal acceptance、补足独立采用与 outcome evidence，并打�
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+从 `v0.4.8` 起采用 Apache License 2.0，见 [LICENSE](LICENSE) 与
+[NOTICE](NOTICE)。`v0.4.7` 及更早版本永久保留原 MIT 许可；历史许可证全文与
+notice 保存在 [LICENSE-MIT](LICENSE-MIT)。[许可证政策](docs/project/licensing.md)
+说明版本、贡献、专利授权与 open-core 边界。

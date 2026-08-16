@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -51,9 +52,13 @@ SCHEDULER_HINT_DETAIL_SCHEMA_VERSION = "scheduler_hint_detail_v0"
 CODEX_APP_STATEFUL_BACKOFF_SCHEMA_VERSION = "codex_app_stateful_backoff_v0"
 CODEX_APP_SCHEDULER_ACK_HINT_SCHEMA_VERSION = "codex_app_scheduler_ack_hint_v0"
 CODEX_APP_SCHEDULER_FAILURE_HINT_SCHEMA_VERSION = "codex_app_scheduler_failure_hint_v0"
+CODEX_APP_SCHEDULER_FALLBACK_HINT_SCHEMA_VERSION = (
+    "codex_app_scheduler_fallback_hint_v0"
+)
 USER_GATE_NOTIFICATION_COOLDOWN_SCHEMA_VERSION = "user_gate_notification_cooldown_v0"
 CODEX_APP_MAX_INTERVAL_MINUTES = 60
 DEFAULT_ACK_CAPABILITIES = {"shell", "filesystem_read", "filesystem_write"}
+FALLBACK_AUTOMATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SCHEDULER_BASE_IDENTITY_KEYS = (
     "goal_id",
     "agent_identity.agent_id",
@@ -61,6 +66,31 @@ SCHEDULER_BASE_IDENTITY_KEYS = (
     "heartbeat_recommendation.recommended_mode",
     "interaction_contract.mode",
 )
+
+
+def build_projected_codex_app_automation_id(
+    *,
+    goal_id: Any,
+    agent_id: Any,
+) -> str:
+    """Build a deterministic Codex App automation id when none is installed yet.
+
+    The fallback bridge needs a stable automation id to create the first
+    heartbeat automation for a goal/agent pair. The id is derived from the
+    same identity keys used by the scheduler so a later run can resolve it
+    back to the installed automation without guessing.
+    """
+
+    safe_goal_id = str(goal_id or "").strip()
+    safe_agent_id = str(agent_id or "").strip()
+    raw = (
+        f"loopx-{safe_goal_id}-{safe_agent_id}"
+        if safe_agent_id
+        else f"loopx-{safe_goal_id}"
+    )
+    projected = re.sub(r"[^A-Za-z0-9._:-]", "-", raw)
+    projected = re.sub(r"-+", "-", projected).strip("-")
+    return projected[:128] or "loopx-fallback"
 SCHEDULER_FRONTIER_IDENTITY_KEYS = (
     "selected_todo.todo_id",
     "selected_todo.action_kind",
@@ -115,6 +145,57 @@ def _scheduler_identity_keys(
         *base_keys[:-1],
         *SCHEDULER_FRONTIER_IDENTITY_KEYS,
         base_keys[-1],
+    )
+
+
+def _build_scheduler_stop_hint(
+    *,
+    execution_context: SchedulerExecutionContextResolution,
+    action: str,
+    cadence_class: str,
+    reason_code: str,
+    reason: str,
+    spend_policy: str,
+    resume_trigger: str,
+    ssh_goal_runtime_action: str,
+    unchanged_spend_policy: str,
+) -> dict[str, Any]:
+    return apply_scheduler_execution_context(
+        {
+            "schema_version": SCHEDULER_HINT_SCHEMA_VERSION,
+            "source": "quota.should-run",
+            "action": action,
+            "cadence_class": cadence_class,
+            "reason_code": reason_code,
+            "reason": reason,
+            "spend_policy": spend_policy,
+            "codex_app": {
+                "apply": "pause_or_delete_current_heartbeat_if_possible",
+                "host_tool": "automation_update",
+                "host_action": "pause_or_delete_current_heartbeat",
+                "host_action_required": True,
+                "attempt_limit": 1,
+                "verify_host_result": True,
+                "ack_required": False,
+                "resume_trigger": resume_trigger,
+                "no_spend_for_host_action": True,
+            },
+            "unchanged_poll": {
+                "local_scheduler": "stop",
+                "codex_cli_tui": "exit",
+                CODEX_APP_SSH_GOAL_RUNTIME_KEY: ssh_goal_runtime_action,
+                "claude_code_loop": "stop",
+                "final_quota_replan_check_enabled": False,
+                "spend_policy": unchanged_spend_policy,
+            },
+            "unchanged_identity_keys": list(
+                _scheduler_identity_keys(
+                    cadence_class=cadence_class,
+                    execution_context=execution_context,
+                )
+            ),
+        },
+        execution_context,
     )
 
 
@@ -331,6 +412,84 @@ def build_codex_app_scheduler_failure_hint(
     }
 
 
+def build_codex_app_scheduler_fallback_hint(
+    *,
+    goal_id: Any,
+    agent_id: Any,
+    automation_id: Any,
+    turn_instance_id: Any = "${LOOPX_TURN:?}",
+) -> dict[str, Any]:
+    """Project the bounded SQLite/TOML RRULE fallback for automation_update gaps.
+
+    The fallback is a standalone host bridge (``loopx-apply-rrule``) that backs
+    up ``codex-dev.db``, syncs the automation TOML and SQLite row, and runs the
+    bound scheduler ACK. It directly edits the Codex App automation store,
+    bypassing the app API, so it is projected only when the host tool is
+    unavailable or failed and ``apply_needed=true`` - never as the routine path.
+    When no automation is installed yet, a deterministic automation id is
+    projected so the fallback bridge can create the first heartbeat automation.
+    """
+
+    safe_goal_id = str(goal_id or "").strip()
+    safe_agent_id = str(agent_id or "").strip()
+    safe_automation_id = str(automation_id or "").strip()
+    safe_turn_instance_id = str(turn_instance_id or "").strip() or "${LOOPX_TURN:?}"
+    projected_automation_id = False
+    if not FALLBACK_AUTOMATION_ID_PATTERN.match(safe_automation_id):
+        safe_automation_id = build_projected_codex_app_automation_id(
+            goal_id=safe_goal_id,
+            agent_id=safe_agent_id,
+        )
+        projected_automation_id = True
+    cli_args = [
+        "loopx-apply-rrule",
+        "--goal-id",
+        safe_goal_id,
+        "--agent-id",
+        safe_agent_id,
+        "--automation-id",
+        safe_automation_id,
+        "--turn-instance-id",
+        safe_turn_instance_id,
+    ]
+    return {
+        "schema_version": CODEX_APP_SCHEDULER_FALLBACK_HINT_SCHEMA_VERSION,
+        "available": True,
+        "command": "loopx-apply-rrule",
+        "after": "automation_update_unavailable_or_failed",
+        "cli_args": cli_args,
+        "args": {
+            "goal_id": safe_goal_id,
+            "agent_id": safe_agent_id,
+            "automation_id": safe_automation_id,
+            "turn_instance_id": safe_turn_instance_id,
+        },
+        "no_spend": True,
+        "reason": (
+            "fallback only when automation_update is unavailable or failed and "
+            "apply_needed=true; loopx-apply-rrule directly updates the Codex App "
+            "SQLite automation store (codex-dev.db) and TOML, which bypasses the "
+            "app API - use only as a bounded fallback, never as the routine path; "
+            "run the bound ack_hint after it succeeds"
+            + (
+                "; automation_id_projected: no installed heartbeat automation "
+                "matched this goal/agent, so loopx-apply-rrule will create it "
+                "before applying the rrule"
+                if projected_automation_id
+                else ""
+            )
+        ),
+        **(
+            {
+                "automation_id_projected": True,
+                "action": "create_then_apply_rrule_via_fallback",
+            }
+            if projected_automation_id
+            else {}
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class _SchedulerHintBuilder:
     payload: dict[str, Any]
@@ -340,6 +499,7 @@ class _SchedulerHintBuilder:
     scheduler_ack_capabilities: Any
     codex_app_scheduler_state: dict[str, Any] | None
     codex_app_current_rrule: Any
+    codex_app_automation_id: Any
     include_detail: bool
 
     def _identity_value(self, path: str) -> Any:
@@ -655,6 +815,11 @@ class _SchedulerHintBuilder:
                     observed_host_rrule=effective_host_rrule,
                     available_capabilities=self.scheduler_ack_capabilities,
                 )
+                codex_app["fallback_hint"] = build_codex_app_scheduler_fallback_hint(
+                    goal_id=goal_id,
+                    agent_id=agent_id,
+                    automation_id=self.codex_app_automation_id,
+                )
         if ack_needed and goal_id and agent_id:
             codex_app["ack_hint"] = build_codex_app_scheduler_ack_hint(
                 goal_id=goal_id,
@@ -783,6 +948,7 @@ def build_scheduler_hint(
     codex_app_scheduler_state: dict[str, Any] | None = None,
     available_capabilities: Any = None,
     codex_app_current_rrule: Any = None,
+    codex_app_automation_id: Any = None,
     scheduler_execution_context: (
         Mapping[str, Any] | SchedulerExecutionContextResolution | None
     ) = None,
@@ -901,45 +1067,43 @@ def build_scheduler_hint(
     )
 
     if arbitration.disposition == SchedulerDisposition.TERMINAL_STOP:
-        return apply_scheduler_execution_context(
-            {
-                "schema_version": SCHEDULER_HINT_SCHEMA_VERSION,
-                "source": "quota.should-run",
-                "action": "stop_until_explicit_resume",
-                "cadence_class": "terminal_no_followup",
-                "reason_code": arbitration.reason_code,
-                "reason": (
-                    "validated closure evidence derives no-follow-up and confirms no "
-                    "remaining frontier; recurring polling must stop until resume"
-                ),
-                "spend_policy": "no quota spend for terminal automation shutdown",
-                "codex_app": {
-                    "apply": "pause_or_delete_current_heartbeat_if_possible",
-                    "host_tool": "automation_update",
-                    "host_action": "pause_or_delete_current_heartbeat",
-                    "host_action_required": True,
-                    "attempt_limit": 1,
-                    "verify_host_result": True,
-                    "ack_required": False,
-                    "resume_trigger": "explicit goal resume or newly projected work",
-                    "no_spend_for_host_action": True,
-                },
-                "unchanged_poll": {
-                    "local_scheduler": "stop",
-                    "codex_cli_tui": "exit",
-                    CODEX_APP_SSH_GOAL_RUNTIME_KEY: "complete_host_goal",
-                    "claude_code_loop": "stop",
-                    "final_quota_replan_check_enabled": False,
-                    "spend_policy": "no quota spend for terminal loop stop",
-                },
-                "unchanged_identity_keys": list(
-                    _scheduler_identity_keys(
-                        cadence_class="terminal_no_followup",
-                        execution_context=execution_context,
-                    )
-                ),
-            },
-            execution_context,
+        return _build_scheduler_stop_hint(
+            execution_context=execution_context,
+            action="stop_until_explicit_resume",
+            cadence_class="terminal_no_followup",
+            reason_code=arbitration.reason_code,
+            reason=(
+                "validated closure evidence derives no-follow-up and confirms no "
+                "remaining frontier; recurring polling must stop until resume"
+            ),
+            spend_policy="no quota spend for terminal automation shutdown",
+            resume_trigger="explicit goal resume or newly projected work",
+            ssh_goal_runtime_action="complete_host_goal",
+            unchanged_spend_policy="no quota spend for terminal loop stop",
+        )
+
+    if arbitration.disposition == SchedulerDisposition.PEER_COORDINATION_STOP:
+        cadence_class = "peer_coordination_blocked"
+        return _build_scheduler_stop_hint(
+            execution_context=execution_context,
+            action="return_to_owner_until_material_change",
+            cadence_class=cadence_class,
+            reason_code=arbitration.reason_code,
+            reason=(
+                "explicit peer coordination has no executable peer lane or local "
+                "fallback; recurring polling must stop until its inputs change"
+            ),
+            spend_policy=(
+                "no quota spend while explicit peer coordination is blocked"
+            ),
+            resume_trigger=(
+                "peer activation capability, peer runtime readiness, coordinator "
+                "configuration, or newly projected local work"
+            ),
+            ssh_goal_runtime_action="return_to_owner",
+            unchanged_spend_policy=(
+                "no quota spend for blocked coordination stop"
+            ),
         )
 
     builder = _SchedulerHintBuilder(
@@ -950,6 +1114,7 @@ def build_scheduler_hint(
         scheduler_ack_capabilities=scheduler_ack_capabilities,
         codex_app_scheduler_state=codex_app_scheduler_state,
         codex_app_current_rrule=codex_app_current_rrule,
+        codex_app_automation_id=codex_app_automation_id,
         include_detail=include_detail,
     )
     if arbitration.disposition == SchedulerDisposition.AGENT_MONITOR_ONLY_WAIT:

@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..capabilities.explore.composition_frontier import (
+    project_live_explore_composition_frontier,
+)
 from ..control_plane.quota.cli_projection import (
     compact_quota_monitor_poll_cli_payload,
     compact_quota_should_run_cli_payload,
 )
+from ..control_plane.goals.path_resolution import resolve_goal_local_path
+from ..control_plane.quota.goal_boundary import registry_goal_by_id
 from ..control_plane.quota.error_codes import quota_error_code
-from ..control_plane.quota.effect_program import SettlementIdentity
 from ..control_plane.quota.heartbeat_receipt import (
     fail_heartbeat_receipt,
     find_heartbeat_receipt,
     heartbeat_receipt_view,
-    upgrade_identityless_heartbeat_receipt,
+)
+from ..control_plane.quota.host_poll_receipts import (
+    record_host_poll_receipt,
 )
 from ..control_plane.quota.live_decision import build_live_quota_should_run_decision
 from ..control_plane.quota.monitor_poll import find_quota_monitor_poll_turn
@@ -26,10 +33,8 @@ from ..control_plane.quota.settlement_cli import (
     attach_spend_settlement_result,
     quota_rollout_details,
     quota_rollout_todo_id,
-)
-from ..control_plane.quota.spend_sources import (
-    DEFAULT_SLOT_SPEND_SOURCE,
-    VALID_SLOT_SPEND_SOURCES,
+    render_existing_heartbeat_receipt_payload,
+    reconcile_existing_heartbeat_receipt_for_turn,
 )
 from ..control_plane.quota.turn_envelope import build_turn_envelope
 from ..control_plane.runtime.status_projection_cache import (
@@ -69,13 +74,12 @@ from ..turn_identity import normalize_turn_instance_id
 from ..upgrade import resolve_codex_app_automation_rrule
 from .lark_inbox import build_lark_operator_inbox_urgency_projector
 from .quota_request import (
-    QUOTA_DETAIL_SECTIONS,
     QUOTA_MONITOR_POLL_DETAIL_SECTIONS,
     QUOTA_SHOULD_RUN_DETAIL_SECTIONS,
     quota_detail_sections_from_args,
-    register_quota_monitor_poll_request_arguments,
     validate_quota_command_request,
 )
+from .quota_registration import register_quota_command as register_quota_command
 
 PrintPayload = Callable[
     [dict[str, object], str, Callable[[dict[str, object]], str]],
@@ -116,10 +120,6 @@ class _QuotaCommandContext:
     heartbeat_turn_id: str | None
 
 
-def default_public_scan_root() -> str:
-    return str(Path(__file__).resolve().parents[2])
-
-
 def _scheduler_execution_context_from_args(
     args: argparse.Namespace,
 ) -> Mapping[str, object] | SchedulerExecutionContextResolution | None:
@@ -153,218 +153,6 @@ def _scheduler_execution_context_from_args(
             "source": "quota_cli_invocation",
         }
     return None
-
-
-def register_quota_command(subparsers: argparse._SubParsersAction) -> None:
-    quota_parser = subparsers.add_parser(
-        "quota",
-        help="Show agent-facing compute quota status or next-turn plan.",
-    )
-    quota_parser.add_argument(
-        "quota_command",
-        nargs="?",
-        choices=[
-            "status",
-            "plan",
-            "should-run",
-            "monitor-poll",
-            "scheduler-ack",
-            "scheduler-ack-current",
-            "scheduler-fail-current",
-            "spend-slot",
-            "void-slot",
-        ],
-        default="status",
-        help="Use status for all groups, plan for next-turn groups, should-run for one goal, monitor-poll for no-spend quiet poll evidence, scheduler-ack for successful Codex App RRULE state, scheduler-fail-current to suppress a repeated failed host update pair, spend-slot for accounting, or void-slot for a non-destructive accounting correction.",
-    )
-    quota_parser.add_argument("--goal-id", help="Goal id to check. Required for one-goal quota commands, including should-run, scheduler ACK/failure, spend, and void.")
-    quota_parser.add_argument(
-        "--agent-id",
-        help=(
-            "Registered agent id for `quota should-run` and scoped quota accounting "
-            "commands; suppresses identity-upgrade warnings and records the identity "
-            "on appended monitor/scheduler/spend/void events."
-        ),
-    )
-    quota_parser.add_argument(
-        "--available-capability",
-        dest="available_capabilities",
-        action="append",
-        help=(
-            "For `quota should-run`, `quota monitor-poll`, `quota scheduler-ack`, "
-            "`quota scheduler-ack-current`, and `quota spend-slot`, declare a "
-            "capability available in this current agent environment. Repeat the "
-            "same declarations for commands that recompute should-run; basic local "
-            "shell/filesystem capabilities are assumed."
-        ),
-    )
-    quota_parser.add_argument(
-        "--include-detail",
-        dest="include_details",
-        action="append",
-        choices=[*QUOTA_DETAIL_SECTIONS, "all"],
-        help=(
-            "Include one command-specific cold-path detail section. For `quota "
-            "should-run`: scheduler, agent-todos, user-todos, goal-boundary, or "
-            "vision. For `quota monitor-poll`: decisions. Repeat for multiple "
-            "sections or use `all`."
-        ),
-    )
-    quota_parser.add_argument(
-        "--include-scheduler-detail",
-        action="store_true",
-        # Deprecated compatibility alias. Remove in the next breaking release.
-        help=argparse.SUPPRESS,
-    )
-    quota_parser.add_argument(
-        "--codex-app-current-rrule",
-        help=(
-            "Current RRULE observed from the active Codex App heartbeat. For "
-            "`quota should-run`, this reconciles host reality with LoopX's last "
-            "scheduler ACK so a stale ACK cannot suppress a required update."
-        ),
-    )
-    quota_parser.add_argument(
-        "--runtime-profile",
-        choices=[profile.value for profile in SchedulerRuntimeProfile],
-        help=(
-            "Explicit scheduler runtime shortcut for a known host boundary. "
-            "Cannot be combined with --host-surface, --scheduler-owner, or "
-            "--execution-mode."
-        ),
-    )
-    quota_parser.add_argument(
-        "-A",
-        "--codex-app",
-        action="store_true",
-        help=(
-            "Compact explicit alias for --runtime-profile "
-            "codex_app_heartbeat. Cannot be combined with another scheduler "
-            "runtime or execution context."
-        ),
-    )
-    quota_parser.add_argument(
-        "-H",
-        "--host-surface",
-        choices=[
-            "ark_managed_agent",
-            "codex_app",
-            "codex_app_ssh",
-            "codex_cli",
-            "generic_cli",
-            "claude_code",
-            "local_scheduler",
-        ],
-        help="Host surface that will consume this scheduler projection.",
-    )
-    quota_parser.add_argument(
-        "-O",
-        "--scheduler-owner",
-        choices=[
-            "host_automation",
-            "agent_cli_loop",
-            "goal_runtime",
-            "outer_controller",
-            "none",
-        ],
-        help="Runtime that owns the next cadence decision.",
-    )
-    quota_parser.add_argument(
-        "-M",
-        "--execution-mode",
-        choices=["interactive", "isolated_headless", "hosted_automation"],
-        help="Execution mode paired with --host-surface and --scheduler-owner.",
-    )
-    quota_parser.add_argument(
-        "--turn-envelope",
-        action="store_true",
-        help=(
-            "For `quota should-run`, return the additive bounded TurnEnvelope view. "
-            "The default full decision remains unchanged."
-        ),
-    )
-    quota_parser.add_argument(
-        "--turn-instance-id",
-        help=(
-            "Stable heartbeat settlement id for `quota should-run` and "
-            "`quota spend-slot`. The guard persists one idempotent receipt; "
-            "reuse the same id through writeback, spend, and retries."
-        ),
-    )
-    quota_parser.add_argument("--slots", type=int, default=1, help="Slots to account for `quota spend-slot`.")
-    quota_parser.add_argument(
-        "--source",
-        choices=sorted(VALID_SLOT_SPEND_SOURCES),
-        default=DEFAULT_SLOT_SPEND_SOURCE,
-        help="Source label for `quota spend-slot`.",
-    )
-    quota_parser.add_argument("--void-generated-at", help="generated_at timestamp of the quota_slot_spent run to void.")
-    quota_parser.add_argument("--reason-summary", help="Public-safe reason for `quota void-slot`.")
-    register_quota_monitor_poll_request_arguments(quota_parser)
-    quota_parser.add_argument("--surface", default="codex_app", help="Scheduler surface for scheduler ACK/failure commands; defaults to codex_app.")
-    quota_parser.add_argument("--state-key", default="scheduler_hint.codex_app.stateful_backoff", help="Scheduler state key for scheduler ACK/failure commands.")
-    quota_parser.add_argument("--applied-rrule", help="RRULE successfully applied by the host before `quota scheduler-ack --execute`.")
-    quota_parser.add_argument("--failed-rrule", help="RRULE whose host update failed before `quota scheduler-fail-current --execute`.")
-    quota_parser.add_argument(
-        "--failure-kind",
-        choices=["host_tool_failure", "timeout", "rejected", "unavailable"],
-        default="host_tool_failure",
-        help="Bounded public-safe failure category for scheduler-fail-current.",
-    )
-    quota_parser.add_argument("--reset-token", help="Optional reset token to validate before scheduler ack.")
-    quota_parser.add_argument("--identity-signature", help="Optional identity signature to validate before scheduler ack.")
-    quota_parser.add_argument(
-        "--host-match-observed",
-        action="store_true",
-        help=(
-            "A bound scheduler hint has authoritative host proof from a successful "
-            "update or matching readback, so persist its exact reset-token/identity "
-            "binding."
-        ),
-    )
-    quota_parser.add_argument(
-        "--use-current-hint",
-        action="store_true",
-        help=(
-            "For `quota scheduler-ack`, resolve reset token and identity signature "
-            "from the latest quota should-run scheduler hint; `scheduler-ack-current` "
-            "sets this automatically."
-        ),
-    )
-    quota_parser.add_argument("--dry-run", action="store_true", help="Keep quota accounting or scheduler-state writes as preview-only. This is the default.")
-    quota_parser.add_argument("--execute", action="store_true", help="Execute the quota accounting write or no-spend scheduler-state ack.")
-    quota_parser.add_argument(
-        "--scan-root",
-        default=default_public_scan_root(),
-        help="Public files to scan for obvious private material. Defaults to the LoopX install root.",
-    )
-    quota_parser.add_argument(
-        "--scan-path",
-        action="append",
-        default=[],
-        help="Specific public file or directory to scan. Repeatable. Overrides --scan-root when set.",
-    )
-    quota_parser.add_argument(
-        "--use-projection-cache",
-        action="store_true",
-        help=(
-            "Read a fresh status_projection_cache_v0 snapshot before building "
-            "quota decisions. Misses and expired snapshots fall back to full "
-            "status collection."
-        ),
-    )
-    quota_parser.add_argument(
-        "--write-projection-cache",
-        action="store_true",
-        help="Write the status projection cache after a full quota status collection.",
-    )
-    quota_parser.add_argument(
-        "--projection-cache-ttl-seconds",
-        type=int,
-        default=120,
-        help="Freshness window for --use-projection-cache. Defaults to 120 seconds.",
-    )
-    quota_parser.add_argument("--limit", type=int, default=5)
 
 
 def _prepare_quota_command_context(
@@ -401,6 +189,8 @@ def _prepare_quota_command_context(
         raise ValueError(
             "--include-scheduler-detail is only valid with `quota should-run`"
         )
+    if bool(getattr(args, "record_host_poll", False)) and command != "should-run":
+        raise ValueError("--record-host-poll is only valid with `quota should-run`")
 
     heartbeat_turn_id = normalize_turn_instance_id(
         getattr(args, "turn_instance_id", None)
@@ -595,78 +385,6 @@ def _quota_renderer(
     }.get(command, render_quota_markdown)
 
 
-def _reconcile_existing_heartbeat_receipt(
-    payload: dict[str, object],
-    args: argparse.Namespace,
-    *,
-    runtime_root: Path,
-    turn_instance_id: str,
-    existing: dict[str, object],
-) -> tuple[dict[str, object], str, bool, str]:
-    """Bind an identity-less same-turn receipt without changing a bound receipt."""
-
-    receipt = existing
-    receipt_status = "replayed"
-    receipt_appended = False
-    rollout_todo_id = quota_rollout_todo_id(payload, args)
-    if rollout_todo_id:
-        existing_details_value = receipt.get("details")
-        existing_details = (
-            existing_details_value
-            if isinstance(existing_details_value, Mapping)
-            else {}
-        )
-        existing_todo_id = str(existing_details.get("todo_id") or "").strip()
-        existing_effect_id = str(
-            existing_details.get("settlement_effect_id") or ""
-        ).strip()
-        expected_effect_id = SettlementIdentity(
-            goal_id=args.goal_id,
-            agent_id=args.agent_id,
-            todo_id=rollout_todo_id,
-            turn_instance_id=turn_instance_id,
-        ).effect_id
-        if existing_todo_id and existing_effect_id:
-            if (
-                existing_todo_id != rollout_todo_id
-                or existing_effect_id != expected_effect_id
-            ):
-                raise ValueError(
-                    "heartbeat receipt settlement identity conflicts with the "
-                    "current selected Todo"
-                )
-        else:
-            rollout_details = quota_rollout_details(
-                payload,
-                args,
-                todo_id=rollout_todo_id,
-            )
-            receipt, upgraded = upgrade_identityless_heartbeat_receipt(
-                runtime_root,
-                goal_id=args.goal_id,
-                agent_id=args.agent_id,
-                turn_instance_id=turn_instance_id,
-                todo_id=rollout_todo_id,
-                settlement_effect_id=expected_effect_id,
-                status=str(
-                    payload.get("effective_action")
-                    or payload.get("decision")
-                    or "should-run"
-                ),
-                summary=f"heartbeat quota receipt upgraded for turn={turn_instance_id}",
-                details=rollout_details,
-            )
-            if upgraded:
-                receipt_status = "upgraded"
-                receipt_appended = True
-    details_value = receipt.get("details")
-    details: Mapping[str, object] = (
-        details_value if isinstance(details_value, Mapping) else {}
-    )
-    stall_observation = str(details.get("stall_observation") or "not_applicable")
-    return receipt, receipt_status, receipt_appended, stall_observation
-
-
 def handle_quota_command(
     args: argparse.Namespace,
     *,
@@ -682,6 +400,7 @@ def handle_quota_command(
     heartbeat_receipt_ready = False
     heartbeat_stall_observation = "not_evaluated"
     detail_sections: frozenset[str] = frozenset()
+    context: _QuotaCommandContext | None = None
     try:
         context = _prepare_quota_command_context(
             args,
@@ -711,6 +430,9 @@ def handle_quota_command(
                 host_observation_resolver=resolve_codex_app_automation_rrule,
                 scheduler_execution_context=scheduler_context,
                 operator_inbox_urgency_projector=operator_inbox_urgency_projector,
+                bounded_research_frontier_projector=(
+                    project_live_explore_composition_frontier
+                ),
             )
             if heartbeat_turn_id:
                 heartbeat_receipt_existing = find_heartbeat_receipt(
@@ -725,14 +447,14 @@ def handle_quota_command(
                         heartbeat_receipt_existing_status,
                         heartbeat_receipt_existing_appended,
                         heartbeat_stall_observation,
-                    ) = _reconcile_existing_heartbeat_receipt(
+                        heartbeat_receipt_ready,
+                    ) = reconcile_existing_heartbeat_receipt_for_turn(
                         payload,
                         args,
                         runtime_root=runtime_root,
                         turn_instance_id=heartbeat_turn_id,
                         existing=heartbeat_receipt_existing,
                     )
-                    heartbeat_receipt_ready = True
                 else:
                     existing_stall = find_quota_monitor_poll_turn(
                         runtime_root,
@@ -755,6 +477,9 @@ def handle_quota_command(
                             turn_instance_id=heartbeat_turn_id,
                             scheduler_execution_context=scheduler_context,
                             operator_inbox_urgency_projector=operator_inbox_urgency_projector,
+                            bounded_research_frontier_projector=(
+                                project_live_explore_composition_frontier
+                            ),
                         )
                         if not poll.get("ok"):
                             raise RuntimeError(
@@ -781,6 +506,9 @@ def handle_quota_command(
                             host_observation_resolver=resolve_codex_app_automation_rrule,
                             scheduler_execution_context=scheduler_context,
                             operator_inbox_urgency_projector=operator_inbox_urgency_projector,
+                            bounded_research_frontier_projector=(
+                                project_live_explore_composition_frontier
+                            ),
                         )
                         cache_metadata = None
                         heartbeat_stall_observation = (
@@ -821,6 +549,9 @@ def handle_quota_command(
                 next_claimed_by=args.next_claimed_by,
                 scheduler_execution_context=scheduler_context,
                 operator_inbox_urgency_projector=operator_inbox_urgency_projector,
+                bounded_research_frontier_projector=(
+                    project_live_explore_composition_frontier
+                ),
                 status_reloader=lambda: collect_status(
                     registry_path=registry_path,
                     runtime_root_override=runtime_root_arg,
@@ -944,19 +675,13 @@ def handle_quota_command(
                     ),
                 )
             elif heartbeat_receipt_existing:
-                payload["heartbeat_receipt"] = heartbeat_receipt_view(
-                    heartbeat_receipt_existing,
+                render_existing_heartbeat_receipt_payload(
+                    payload,
+                    receipt=heartbeat_receipt_existing,
                     turn_instance_id=heartbeat_turn_id,
                     status=heartbeat_receipt_existing_status,
+                    appended=heartbeat_receipt_existing_appended,
                 )
-                payload["rollout_event"] = {
-                    "schema_version": heartbeat_receipt_existing.get("schema_version"),
-                    "event_id": heartbeat_receipt_existing.get("event_id"),
-                    "event_kind": heartbeat_receipt_existing.get("event_kind"),
-                    "recorded_at": heartbeat_receipt_existing.get("recorded_at"),
-                    "status": heartbeat_receipt_existing.get("status"),
-                    "appended": heartbeat_receipt_existing_appended,
-                }
             else:
                 rollout_details.update(
                     {
@@ -1072,5 +797,63 @@ def handle_quota_command(
             payload,
             include_decision_detail="decisions" in detail_sections,
         )
+    if args.quota_command == "should-run" and context is not None:
+        _attach_host_poll_receipt(context, args, payload, registry_path=registry_path)
     print_payload(payload, args.format, _quota_renderer(args))
     return 0 if payload.get("ok") else 1
+
+
+def _attach_host_poll_receipt(
+    ctx: _QuotaCommandContext,
+    args: argparse.Namespace,
+    payload: dict[str, Any],
+    *,
+    registry_path: Path,
+) -> None:
+    if not bool(getattr(args, "record_host_poll", False)) or not bool(payload.get("ok")):
+        return
+    try:
+        receipt_view = _record_host_poll_for_should_run(
+            ctx,
+            args,
+            payload,
+            registry_path=registry_path,
+        )
+        if receipt_view is not None:
+            payload["host_poll_receipt"] = receipt_view
+    except Exception as exc:  # noqa: BLE001 - receipt must never break the quota decision.
+        payload["host_poll_receipt"] = {
+            "recorded": False,
+            "error": str(exc)[:200],
+        }
+
+
+def _record_host_poll_for_should_run(
+    ctx: _QuotaCommandContext,
+    args: argparse.Namespace,
+    payload: dict[str, Any],
+    *,
+    registry_path: Path,
+) -> dict[str, Any] | None:
+    goal = registry_goal_by_id(ctx.status_payload).get(str(args.goal_id or ""))
+    if not goal:
+        return None
+    state_path = resolve_goal_local_path(
+        goal.get("state_file"),
+        goal,
+        fallback_base=registry_path.parent,
+    )
+    receipt = record_host_poll_receipt(
+        goal,
+        state_path,
+        agent_id=args.agent_id,
+        decision=payload,
+    )
+    if receipt is None:
+        return None
+    return {
+        "recorded": True,
+        "poll_count": receipt.get("poll_count"),
+        "last_poll_at": receipt.get("last_poll_at"),
+        "expected_continuation": receipt.get("expected_continuation"),
+    }

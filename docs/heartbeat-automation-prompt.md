@@ -541,12 +541,27 @@ hint directly, otherwise do nothing. For the uniquely matched current heartbeat,
 `quota should-run` reconciles the installed RRULE with the ACK ledger; a
 `host_observation.status=drift_detected` result reopens `apply_needed`:
 
+If `automation_update` is unavailable in the session and
+`scheduler_hint.codex_app.fallback_hint.available=true`, run the bound
+`fallback_hint.cli_args` (`loopx-apply-rrule`) once instead. It backs up
+`codex-dev.db`, syncs the automation TOML and SQLite row, and runs the bound
+ACK; direct SQLite edits bypass the app API, so this is a bounded fallback and
+never the routine path. The bridge treats the provided turn id as its parent
+and derives a stable child receipt id for the internal quota query, so it does
+not reuse the already-settled heartbeat receipt. When the automation id could
+not be resolved,
+`fallback_hint.available=false` and the pasteable heartbeat gate is the correct
+stop - never guess an automation id.
+
 ```text
 Create a heartbeat automation starting at 3 minutes for the current thread;
 then apply `quota should-run.scheduler_hint`: update RRULE only when
 `apply_needed=true`, trying once per hint and turn; ack with the provided
 `ack_hint.cli_args` only after the host update succeeds, or run the provided
-`failure_hint.cli_args` once if that update fails or times out.
+`failure_hint.cli_args` once if that update fails or times out. If
+`automation_update` is unavailable and `fallback_hint.available=true`, run the
+provided `fallback_hint.cli_args` once instead; if it is unavailable, surface
+the pasteable heartbeat gate.
 
 Task:
 Advance <GOAL_ID> using <ACTIVE_GOAL_STATE_PATH>. Before any delivery work,
@@ -659,7 +674,8 @@ For every automatic heartbeat turn, the agent-facing checklist is:
 11. Start bounded self-repair/replan if 2 consecutive eligible turns are only
    repeated no-progress status loops. Cancel or pause instead of spending only
    if that repair path is itself stuck for 2 more eligible turns.
-12. Nontrivial done -> successor todo or no-follow-up rationale.
+12. Ordinary completion links a successor before settlement. Final no-follow-up
+    completion happens only after the accountable refresh and matching spend receipt.
 13. Plans/top todos/route changes need LoopX todo / Next Action
    writeback or a no-writeback rationale.
 14. Treat routine public commit, push, and PR creation as autonomous after clean

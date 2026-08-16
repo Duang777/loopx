@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from json import dumps as json_dumps
+from json import loads as json_loads
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,6 @@ from .control_plane.todos.contract import (
     TODO_STATUS_DEFERRED,
     TODO_STATUS_DONE,
     TODO_STATUS_OPEN,
-    TODO_TASK_CLASS_MONITOR,
     TODO_TASK_CLASS_USER_GATE,
     build_todo_id,
     format_todo_metadata_line,
@@ -43,6 +44,7 @@ from .control_plane.todos.contract import (
     normalize_todo_id,
     normalize_todo_id_list,
     normalize_todo_required_decision_scopes,
+    normalize_todo_replan_obligation_id,
     normalize_todo_resume_when,
     normalize_supported_todo_resume_when,
     normalize_todo_status,
@@ -53,7 +55,6 @@ from .control_plane.todos.contract import (
     resolve_next_user_task_class,
     resolve_todo_continuation_policy,
     require_supported_todo_resume_when,
-    todo_done_for_status,
     todo_marker_for_status,
 )
 from .control_plane.todos.active_state_editing import (
@@ -66,12 +67,17 @@ from .control_plane.todos.active_state_editing import (
     set_todo_marker,
     todo_blocks,
 )
+from .control_plane.todos.addition import matching_todo_block, require_replan_successor_rebinding, require_replan_successor_scope
 from .control_plane.todos.completed_archive import archive_completed_todo_lines
 from .control_plane.todos.completion_policy import (
     linked_successor_from_todo,
     resolve_completion_policy,
 )
 from .control_plane.todos.completion_fence import completed_todo_replay
+from .control_plane.todos.completion_validation import (
+    COMPLETION_VALIDATION_TIMEOUT_MAX_SECONDS,
+    run_completion_validation_gate,
+)
 from .control_plane.todos.event_writeback import (
     complete_event_projected_goal_todo,
     event_projection_todo_context,
@@ -84,11 +90,12 @@ from .control_plane.todos.line_update import (
 from .control_plane.todos.list_projection import (
     compact_agent_lane_todo_summary,
     compact_todo_projection_overlay,
+    todo_item_relations,
     todo_list_projection_contract,
 )
-from .control_plane.todos.monitor_metadata import require_monitor_metadata_scope
+from .control_plane.todos import monitor_metadata as todo_monitor_metadata
 from .control_plane.todos.mutation_authority import authorize_todo_lifecycle_mutation, todo_update_authority_action
-from .control_plane.todos.todo_summary import compact_todo_group, normalize_todo_text
+from .control_plane.todos.todo_summary import compact_todo_group, todo_item_status
 from .control_plane.todos.succession_warning import build_open_parent_successor_advisory
 from .control_plane.todos.todo_index import MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL
 from .control_plane.todos.text import (
@@ -105,7 +112,15 @@ from .control_plane.todos.write_policy import (
     require_user_todo_task_class,
     resolve_user_gate_global_gate_update,
 )
-from .control_plane.work_items.task_lease import hold_task_lease_mutation_fence
+from .control_plane.todos.handoff_mode import (
+    enter_added_todo_ownership_handoff_gate,
+    enter_todo_ownership_handoff_gate,
+    resolve_todo_completion_handoff,
+)
+from .control_plane.work_items.task_lease import (
+    hold_task_lease_mutation_fence,
+    release_verified_task_lease_fence,
+)
 
 
 ARCHIVE_COMPLETED_DEFAULT_MAX_ACTIVE_DONE = max(0, MAX_ACTIVE_DONE_TODOS_BEFORE_ARCHIVE - 2)
@@ -177,13 +192,6 @@ def resolve_todo_state_path(
     if not resolved_state_file.exists():
         raise ValueError(f"active state file does not exist: {resolved_state_file}")
     return resolved_project, resolved_state_file
-
-
-def todo_item_status(item: dict[str, Any]) -> str:
-    status = normalize_todo_status(item.get("status"))
-    if status:
-        return status
-    return TODO_STATUS_DONE if item.get("done") else TODO_STATUS_OPEN
 
 
 def empty_todo_summary(*, role: str) -> dict[str, Any]:
@@ -264,40 +272,6 @@ def filtered_todo_summary(
         )
         or empty_todo_summary(role=role)
     )
-
-
-def todo_item_relations(item: dict[str, Any]) -> dict[str, Any]:
-    relations: dict[str, Any] = {}
-    for key in (
-        "claimed_by",
-        "bound_agent",
-        "goal_bound",
-        "blocks_agent",
-        "excluded_agents",
-        "global_gate",
-        "unblocks_todo_id",
-        "successor_todo_ids",
-        "superseded_by",
-        "resume_when",
-        "resume_condition",
-        "resume_ready",
-        "decision_scope",
-        "required_decision_scopes",
-        "required_write_scopes",
-        "required_capabilities",
-        "target_capabilities",
-        "task_class",
-        "action_kind",
-        "continuation_policy",
-        "target_key",
-        "cadence",
-        "next_due_at",
-        "expires_at",
-    ):
-        value = item.get(key)
-        if value is not None and value != []:
-            relations[key] = value
-    return relations
 
 
 def _summary_items(fields: dict[str, Any], role: str) -> list[dict[str, Any]]:
@@ -576,22 +550,26 @@ def list_goal_todos(
     return payload
 
 
-def matching_todo_block(
-    lines: list[str],
-    start: int,
-    end: int,
-    text: str,
-    *,
-    role: str | None = None,
-    source_section: str | None = None,
-) -> dict[str, Any] | None:
-    expected = normalize_todo_text(text)
-    for block in todo_blocks(lines, start, end, role=role, source_section=source_section):
-        if todo_done_for_status(todo_item_status(block)):
-            continue
-        if normalize_todo_text(str(block.get("text") or "")) == expected:
-            return block
-    return None
+def _normalize_validation_command_json(raw: str | None) -> list[str] | None:
+    """Validate a ``--validation-command-json`` payload (run-once precedent).
+
+    Returns the argv list, or ``None`` when no JSON form is declared. Raises
+    ``ValueError`` when the payload is not a non-empty JSON string array —
+    the same shape rule the Turn-level ``--validation-command-json`` applies.
+    """
+    if raw is None:
+        return None
+    try:
+        argv = json_loads(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "--validation-command-json must be a JSON string array"
+        ) from exc
+    if not isinstance(argv, list) or not argv or not all(
+        isinstance(item, str) and item for item in argv
+    ):
+        raise ValueError("--validation-command-json must be a JSON string array")
+    return argv
 
 
 def add_todo_to_lines(
@@ -619,11 +597,39 @@ def add_todo_to_lines(
     excluded_agents: list[str] | None = None,
     global_gate: bool | None = None,
     unblocks_todo_id: str | None = None,
+    replan_obligation_id: str | None = None,
     resume_when: str | None = None,
+    validation_command: str | None = None,
+    validation_command_json: str | None = None,
+    validation_label: str | None = None,
+    validation_timeout_seconds: int | None = None,
     monitor_metadata: dict[str, Any] | None = None,
     evidence: str | None = None,
     updated_at: str | None = None,
 ) -> dict[str, Any]:
+    if validation_command and validation_command_json:
+        raise ValueError(
+            "--validation-command and --validation-command-json are mutually "
+            "exclusive; declare the validation command in exactly one form"
+        )
+    validation_argv = _normalize_validation_command_json(validation_command_json)
+    if validation_timeout_seconds is not None:
+        if not validation_command and validation_argv is None:
+            raise ValueError(
+                "--validation-timeout-seconds requires --validation-command "
+                "or --validation-command-json"
+            )
+        if not (
+            1
+            <= validation_timeout_seconds
+            <= COMPLETION_VALIDATION_TIMEOUT_MAX_SECONDS
+        ):
+            raise ValueError(
+                "--validation-timeout-seconds must be between 1 and "
+                f"{COMPLETION_VALIDATION_TIMEOUT_MAX_SECONDS} (the outer "
+                "CLI/MCP subprocess budget is 30s, and a timed-out "
+                "validation must still produce a typed receipt)"
+            )
     if role == "agent" and blocks_agent:
         raise ValueError(
             "blocks_agent is only valid for user gates; use excluded_agents for "
@@ -644,7 +650,7 @@ def add_todo_to_lines(
     if status and not normalized_status:
         raise ValueError("todo status must be one of: open, done, blocked, deferred")
     normalized_resume_when = require_supported_todo_resume_when(resume_when)
-    normalized_monitor_metadata = require_monitor_metadata_scope(
+    normalized_monitor_metadata = todo_monitor_metadata.require_monitor_metadata_scope(
         monitor_metadata=monitor_metadata,
         role=role,
         task_class=task_class,
@@ -697,7 +703,20 @@ def add_todo_to_lines(
             excluded_agents=excluded_agents,
             global_gate=global_gate,
             unblocks_todo_id=unblocks_todo_id,
+            replan_obligation_id=replan_obligation_id,
             resume_when=normalized_resume_when,
+            validation_command=validation_command,
+            validation_command_argv=(
+                json_dumps(validation_argv)
+                if validation_argv is not None
+                else None
+            ),
+            validation_label=validation_label,
+            validation_timeout_seconds=(
+                str(validation_timeout_seconds)
+                if validation_timeout_seconds is not None
+                else None
+            ),
             **normalized_monitor_metadata,
             evidence=evidence,
             updated_at=updated_at,
@@ -773,6 +792,11 @@ def add_todo_to_lines(
             updates["global_gate"] = global_gate
         if unblocks_todo_id:
             updates["unblocks_todo_id"] = unblocks_todo_id
+        if replan_obligation_id:
+            updates["replan_obligation_id"] = require_replan_successor_rebinding(
+                existing_obligation_id=block.get("replan_obligation_id"),
+                requested_obligation_id=replan_obligation_id,
+            )
         if normalized_resume_when:
             updates["resume_when"] = normalized_resume_when
         updates.update(normalized_monitor_metadata)
@@ -836,11 +860,15 @@ def add_todo_to_lines(
         ),
         "global_gate": normalize_todo_global_gate(effective_metadata.get("global_gate")),
         "unblocks_todo_id": normalize_todo_id(effective_metadata.get("unblocks_todo_id")),
+        "replan_obligation_id": normalize_todo_replan_obligation_id(
+            effective_metadata.get("replan_obligation_id")
+        ),
         "resume_when": normalize_todo_resume_when(effective_metadata.get("resume_when")),
         "target_key": effective_metadata.get("target_key"),
         "cadence": effective_metadata.get("cadence"),
         "next_due_at": effective_metadata.get("next_due_at"),
         "expires_at": effective_metadata.get("expires_at"),
+        "watch_only": effective_metadata.get("watch_only"),
         "evidence": effective_metadata.get("evidence") or evidence,
         "updated_at": effective_metadata.get("updated_at") or updated_at,
     }
@@ -873,7 +901,12 @@ def add_goal_todo(
     global_gate: bool = False,
     agent_id: str | None = None,
     unblocks_todo_id: str | None = None,
+    replan_obligation_id: str | None = None,
     resume_when: str | None = None,
+    validation_command: str | None = None,
+    validation_command_json: str | None = None,
+    validation_label: str | None = None,
+    validation_timeout_seconds: int | None = None,
     monitor_metadata: dict[str, Any] | None = None,
     project: Path | None = None,
     state_file: Path | None = None,
@@ -905,6 +938,15 @@ def add_goal_todo(
         raise ValueError("task_domain is only valid for agent todos")
     if capability_binding_ref and role != "agent":
         raise ValueError("capability_binding_ref is only valid for agent todos")
+    replan_obligation_id = require_replan_successor_scope(
+        role=role,
+        task_class=task_class,
+        claimed_by=claimed_by,
+        obligation_id=replan_obligation_id,
+        action_kind=action_kind,
+        target_key=(monitor_metadata or {}).get("target_key"),
+        explore_result_node_refs=explore_result_node_refs,
+    )
     normalized_status = normalize_todo_status(status) if status else TODO_STATUS_OPEN
     if status and not normalized_status:
         raise ValueError("todo status must be one of: open, done, blocked, deferred")
@@ -922,7 +964,7 @@ def add_goal_todo(
         resolved_state_file,
         agent_id=agent_id or claimed_by,
         operation="todo_add",
-    ):
+    ), ExitStack() as handoff_gate_stack:
         original = resolved_state_file.read_text(encoding="utf-8")
         lines = original.splitlines()
         updated_at = now_local()
@@ -1012,17 +1054,28 @@ def add_goal_todo(
         if unblocks_todo_id and not normalized_unblocks_todo_id:
             raise ValueError("unblocks_todo_id must use the public token shape todo_<letters-digits-underscore-hyphen>")
         normalized_resume_when = require_supported_todo_resume_when(resume_when)
-        if task_class == TODO_TASK_CLASS_MONITOR and normalized_resume_when:
-            raise ValueError(
-                "continuous_monitor todos cannot use resume_when; use target_key, "
-                "cadence, and next_due_at so the monitor can observe the transition"
-            )
         if normalized_status == TODO_STATUS_DEFERRED and not normalized_resume_when:
             raise ValueError("deferred todo add requires --resume-when with a supported condition")
-        normalized_monitor_metadata = require_monitor_metadata_scope(
+        normalized_monitor_metadata = todo_monitor_metadata.require_monitor_metadata_scope(
             monitor_metadata=monitor_metadata,
             role=role,
             task_class=task_class,
+        )
+        todo_monitor_metadata.require_continuous_monitor_boundedness(
+            task_class=task_class,
+            resume_when=normalized_resume_when,
+            monitor_metadata=normalized_monitor_metadata,
+        )
+        handoff_gate = enter_added_todo_ownership_handoff_gate(
+            handoff_gate_stack,
+            lines=lines,
+            state_text=original,
+            registry_path=registry_path,
+            goal_id=goal_id,
+            role=role,
+            text=todo_text,
+            claimed_by=effective_claimed_by,
+            actor_agent_id=effective_agent_id or effective_claimed_by,
         )
         add_result = add_todo_to_lines(
             lines,
@@ -1050,7 +1103,12 @@ def add_goal_todo(
             excluded_agents=effective_excluded_agents,
             global_gate=True if global_gate else None,
             unblocks_todo_id=normalized_unblocks_todo_id,
+            replan_obligation_id=replan_obligation_id,
             resume_when=normalized_resume_when,
+            validation_command=validation_command,
+            validation_command_json=validation_command_json,
+            validation_label=validation_label,
+            validation_timeout_seconds=validation_timeout_seconds,
             monitor_metadata=normalized_monitor_metadata,
             updated_at=updated_at,
         )
@@ -1096,14 +1154,17 @@ def add_goal_todo(
         "excluded_agents": add_result.get("excluded_agents"),
         "global_gate": add_result.get("global_gate"),
         "unblocks_todo_id": add_result.get("unblocks_todo_id"),
+        "replan_obligation_id": add_result.get("replan_obligation_id"),
         "resume_when": add_result.get("resume_when"),
         "target_key": add_result.get("target_key"),
         "cadence": add_result.get("cadence"),
         "next_due_at": add_result.get("next_due_at"),
         "expires_at": add_result.get("expires_at"),
+        "watch_only": add_result.get("watch_only"),
         "state_file": str(resolved_state_file),
         "project": str(resolved_project) if resolved_project else None,
         "updated_at": updated_at if changed else None,
+        **handoff_gate,
     }
     return _attach_todo_write_correctness_dry_run_packet(
         payload,
@@ -1167,6 +1228,7 @@ def update_goal_todo(
     clear_resume_when: bool = False,
     no_followup: bool | None = None,
     monitor_metadata: dict[str, Any] | None = None,
+    enforce_monitor_boundedness: bool = True,
     clear_claim: bool = False,
     claim_only: bool = False,
     project: Path | None = None,
@@ -1195,7 +1257,7 @@ def update_goal_todo(
         resolved_state_file,
         agent_id=agent_id or claimed_by,
         operation="todo_update",
-    ):
+    ), ExitStack() as handoff_gate_stack:
         original = resolved_state_file.read_text(encoding="utf-8")
         lines = original.splitlines()
         updated_at = now_local()
@@ -1274,6 +1336,16 @@ def update_goal_todo(
             authority_action=None if claim_only else authority_action,
             authority_reason=authority_reason,
             requested_claimed_by=effective_claimed_by,
+        )
+        handoff_gate = enter_todo_ownership_handoff_gate(
+            handoff_gate_stack,
+            state_text=original,
+            registry_path=registry_path,
+            goal_id=goal_id,
+            todo_id=str(authority_todo.get("todo_id") or todo_id),
+            mutation_authority=mutation_authority,
+            actor_agent_id=effective_agent_id or effective_claimed_by,
+            ownership_mutation=(claimed_by is not None or clear_claim) and target_role == "agent",
         )
         target_task_class = task_class or str(existing_block.get("task_class") or "")
         if target_role == "user" and claimed_by:
@@ -1396,26 +1468,28 @@ def update_goal_todo(
             else normalized_resume_when
             or normalize_supported_todo_resume_when(existing_block.get("resume_when"))
         )
-        if target_task_class == TODO_TASK_CLASS_MONITOR and normalized_resume_when:
-            raise ValueError(
-                "continuous_monitor todos cannot use resume_when; use target_key, "
-                "cadence, and next_due_at so the monitor can observe the transition"
-            )
-        if (
-            task_class == TODO_TASK_CLASS_MONITOR
-            and effective_resume_when
-            and not clear_resume_when
-        ):
-            raise ValueError(
-                "moving a todo to continuous_monitor requires --clear-resume-when"
-            )
         if target_status == TODO_STATUS_DEFERRED and not effective_resume_when:
             raise ValueError("transition to deferred requires --resume-when with a supported condition")
-        normalized_monitor_metadata = require_monitor_metadata_scope(
+        normalized_monitor_metadata = todo_monitor_metadata.require_monitor_metadata_scope(
             monitor_metadata=monitor_metadata,
             role=target_role,
             task_class=target_task_class,
         )
+        effective_monitor_metadata = {
+            key: existing_block.get(key)
+            for key in (
+                "expires_at",
+                "watch_only",
+            )
+            if existing_block.get(key) is not None
+        }
+        effective_monitor_metadata.update(normalized_monitor_metadata)
+        if enforce_monitor_boundedness:
+            todo_monitor_metadata.require_continuous_monitor_boundedness(
+                task_class=target_task_class,
+                resume_when=effective_resume_when,
+                monitor_metadata=effective_monitor_metadata,
+            )
         update_result = apply_todo_update_to_lines(
             lines,
             todo_id=todo_id,
@@ -1476,6 +1550,7 @@ def update_goal_todo(
         "goal_id": goal_id,
         "agent_id": effective_agent_id,
         "mutation_authority": mutation_authority,
+        **handoff_gate,
         **update_result,
         "state_file": str(resolved_state_file),
         "project": str(resolved_project) if resolved_project else None,
@@ -1495,6 +1570,8 @@ def update_goal_todo(
         write_class=write_class,
         state_text=original,
     )
+
+
 
 
 def complete_goal_todo(
@@ -1543,6 +1620,20 @@ def complete_goal_todo(
         project=project,
         state_file=state_file,
     )
+    # Run caller-approved validation BEFORE acquiring the mutation lock so a
+    # slow validation command does not block concurrent todo operations on the
+    # same goal (the MUTATION lock deadline is 5s). Returns a typed failure
+    # payload (ok=False) when validation blocks; otherwise None.
+    validation_failure = run_completion_validation_gate(
+        state_file=resolved_state_file,
+        todo_id=todo_id,
+        role=role,
+        registry_path=registry_path,
+        goal_id=goal_id,
+        dry_run=dry_run,
+    )
+    if validation_failure is not None:
+        return validation_failure
     with exclusive_file_lock(
         resolved_state_file,
         agent_id=agent_id or claimed_by,
@@ -1605,11 +1696,13 @@ def complete_goal_todo(
             decision_outcome=effective_decision_outcome,
             decision_target=decision_target,
         )
+        completion_handoff = resolve_todo_completion_handoff(state_text=original, mutation_authority=mutation_authority)
         terminal_replay = completed_todo_replay(
             todo=completion_todo,
             goal_id=goal_id,
             todo_id=todo_id,
             completion_turn_key=completion_turn_key,
+            handoff_mode=completion_handoff["handoff_mode"],
             mutation_authority=mutation_authority,
             state_file=str(resolved_state_file),
             project=str(resolved_project) if resolved_project else None,
@@ -1632,6 +1725,7 @@ def complete_goal_todo(
                     task_lease_idempotency_key is not None
                     or task_lease_expected_version is not None
                 ),
+                handoff=completion_handoff,
             )
         )
         normalized_successor_todo_ids = normalize_todo_id_list(successor_todo_ids)
@@ -1719,6 +1813,11 @@ def complete_goal_todo(
                 event_result["linked_successor_id"] = completion_policy.linked_successor_id
                 event_result["mutation_authority"] = mutation_authority
                 event_result["task_lease_fence"] = task_lease_fence
+                event_result.update(completion_handoff)
+                release_verified_task_lease_fence(
+                    task_lease_fence,
+                    committed=bool(event_result.get("changed")) and not dry_run,
+                )
                 return event_result
         update_result = apply_todo_update_to_lines(
             lines,
@@ -1830,6 +1929,10 @@ def complete_goal_todo(
             new_text = replace_updated_at(new_text, updated_at)
         if changed and not dry_run:
             resolved_state_file.write_text(new_text, encoding="utf-8")
+        release_verified_task_lease_fence(
+            task_lease_fence,
+            committed=changed and not dry_run,
+        )
     result = {
         "ok": True,
         "dry_run": dry_run,
@@ -1841,6 +1944,7 @@ def complete_goal_todo(
         "linked_successor_id": completion_policy.linked_successor_id,
         "mutation_authority": mutation_authority,
         "task_lease_fence": task_lease_fence,
+        **completion_handoff,
         "state_file": str(resolved_state_file),
         "project": str(resolved_project) if resolved_project else None,
         "updated_at": updated_at if changed else None,

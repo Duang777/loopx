@@ -4,17 +4,27 @@ import argparse
 from collections.abc import Callable
 from pathlib import Path
 
-from ..control_plane.todos.contract import TODO_CONTINUATION_POLICY_VALUES
+from ..control_plane.todos.contract import (
+    TODO_CONTINUATION_POLICY_VALUES,
+    replan_successor_semantic_binding,
+)
 from ..control_plane.quota.settlement import (
-    require_settlement_todo_completion,
+    require_settlement_spend,
+    require_settlement_terminal_closeout,
+    require_settlement_writeback,
     resolve_heartbeat_settlement_identity,
     settlement_result_payload,
 )
+from ..control_plane.todos.handoff_mode import HandoffModeError
 from ..control_plane.todos.markdown import render_todo_markdown
 from ..control_plane.work_items.task_lease import TaskLeaseError
 from ..file_lock import lock_timeout_error_fields
-from ..history import load_registry
+from ..history import load_index, load_registry
 from ..paths import resolve_runtime_root
+from ..registry import registry_goals
+from ..control_plane.work_items.semantic_replan_writeback import (
+    qualify_replan_writeback,
+)
 from ..todo_followups import capture_followup_todos
 from ..todo_suggestion_prompt import (
     ALLOWED_TODO_SUGGESTION_SOURCES,
@@ -28,6 +38,7 @@ from ..todos import (
     archive_completed_todos,
     complete_goal_todo,
     list_goal_todos,
+    resolve_todo_state,
     supersede_goal_todo,
     update_goal_todo,
 )
@@ -52,6 +63,83 @@ PrintPayload = Callable[
     [dict[str, object], str, Callable[[dict[str, object]], str]],
     None,
 ]
+
+
+def _validated_replan_successor_obligation(
+    args: argparse.Namespace,
+    *,
+    registry_path: Path,
+    runtime_root_arg: str | None,
+) -> str | None:
+    requested = str(getattr(args, "replan_obligation_id", None) or "").strip()
+    if not requested:
+        return None
+    if not (
+        args.role == "agent"
+        and args.task_class == "advancement_task"
+        and args.claimed_by
+    ):
+        raise ValueError(
+            "--replan-obligation-id requires --role agent --task-class "
+            "advancement_task and --claimed-by"
+        )
+    if replan_successor_semantic_binding(
+        action_kind=args.action_kind,
+        target_key=args.monitor_target_key,
+        explore_result_node_refs=args.explore_result_node_refs,
+    ) is None:
+        raise ValueError(
+            "--replan-obligation-id requires --action-kind and either "
+            "--target-key or --explore-result-node-ref"
+        )
+    registry = load_registry(registry_path)
+    runtime_root = resolve_runtime_root(registry, runtime_root_arg)
+    _, _, state_text, _ = resolve_todo_state(
+        registry_path=registry_path,
+        goal_id=args.goal_id,
+        **_todo_path_args(args),
+    )
+    existing_runs, _ = load_index(
+        runtime_root / "goals" / args.goal_id / "runs" / "index.jsonl"
+    )
+    newest_first_runs = [
+        run
+        for _, run in sorted(
+            enumerate(existing_runs),
+            key=lambda item: (
+                str(item[1].get("generated_at") or ""),
+                item[0],
+            ),
+            reverse=True,
+        )
+    ]
+    registry_goal = next(
+        (
+            item
+            for item in registry_goals(registry)
+            if str(item.get("id") or "").strip() == args.goal_id
+        ),
+        None,
+    )
+    obligation, _ = qualify_replan_writeback(
+        newest_first_runs=newest_first_runs,
+        state_text=state_text,
+        agent_id=args.claimed_by,
+        goal_id=args.goal_id,
+        registry_goal=registry_goal,
+    )
+    current = str((obligation or {}).get("obligation_id") or "").strip()
+    if not current:
+        raise ValueError(
+            "--replan-obligation-id was provided but this agent has no open "
+            "replan obligation"
+        )
+    if current != requested:
+        raise ValueError(
+            "--replan-obligation-id does not match the current open obligation: "
+            f"expected {current}"
+        )
+    return current
 
 
 def register_todo_command(
@@ -108,9 +196,51 @@ def register_todo_command(
             "turn-scoped quota guard and reuse it on retries."
         ),
     )
+    todo_parser.add_argument(
+        "--replan-obligation-id",
+        help=(
+            "For todo add, bind one newly selected runnable advancement successor "
+            "to the exact open replan obligation. Requires --action-kind and a "
+            "stable --target-key or --explore-result-node-ref. The Todo write "
+            "becomes the semantic receipt; no follow-up ACK command is required."
+        ),
+    )
     todo_parser.add_argument("--status", choices=["open", "done", "blocked", "deferred"], help="For todo add/update, set the lifecycle status.")
     todo_parser.add_argument("--note", help="Public-safe note to attach to a lifecycle transition.")
     todo_parser.add_argument("--evidence", help="Public-safe evidence pointer or short result for complete/update.")
+    todo_parser.add_argument(
+        "--validation-command",
+        help=(
+            "Caller-approved validation command (no shell) to run before a "
+            "todo's completion commits, e.g. 'pytest -q tests/test_x.py'. Set "
+            "on `todo add`; completion runs it independently and blocks on a "
+            "non-zero exit."
+        ),
+    )
+    todo_parser.add_argument(
+        "--validation-label",
+        help="Optional public-safe label for the validation receipt.",
+    )
+    todo_parser.add_argument(
+        "--validation-command-json",
+        help=(
+            "Trusted JSON string array (argv form, no shell parsing) for the "
+            "completion validation command, e.g. '[\"pytest\",\"-q\",\"tests/"
+            "test_x.py\"]'. Mutually exclusive with --validation-command; set "
+            "on `todo add`."
+        ),
+    )
+    todo_parser.add_argument(
+        "--validation-timeout-seconds",
+        type=int,
+        help=(
+            "Per-todo timeout for the caller-approved validation command. "
+            "Only meaningful with --validation-command or "
+            "--validation-command-json on `todo add`; must be 1-29 so a "
+            "timed-out validation still produces a typed receipt inside the "
+            "30s outer subprocess budget. Defaults to 20."
+        ),
+    )
     todo_parser.add_argument("--reason", help="Public-safe reason for blocked/deferred/supersede transitions.")
     todo_parser.add_argument(
         "--authority-reason",
@@ -361,6 +491,15 @@ def register_todo_command(
         ),
     )
     todo_parser.add_argument(
+        "--watch-only",
+        action="store_true",
+        help=(
+            "For agent continuous_monitor add/update, declare an intentionally "
+            "unbounded liveness watch. Watch-only monitors remain schedulable but "
+            "do not drive autonomous replan or block goal convergence."
+        ),
+    )
+    todo_parser.add_argument(
         "--clear-claim",
         action="store_true",
         help="For todo update, remove the soft claimed_by owner from the todo.",
@@ -466,6 +605,11 @@ def handle_todo_command(
             )
         elif args.todo_command == "add":
             validate_todo_add_options(args)
+            replan_obligation_id = _validated_replan_successor_obligation(
+                args,
+                registry_path=registry_path,
+                runtime_root_arg=runtime_root_arg,
+            )
             payload = add_goal_todo(
                 registry_path=registry_path,
                 goal_id=args.goal_id,
@@ -492,16 +636,33 @@ def handle_todo_command(
                 global_gate=bool(args.global_gate),
                 agent_id=args.agent_id,
                 unblocks_todo_id=args.unblocks_todo_id,
+                replan_obligation_id=replan_obligation_id,
                 resume_when=args.resume_when,
+                validation_command=args.validation_command,
+                validation_command_json=args.validation_command_json,
+                validation_label=args.validation_label,
+                validation_timeout_seconds=args.validation_timeout_seconds,
                 monitor_metadata={
                     "target_key": args.monitor_target_key,
                     "cadence": args.cadence,
                     "next_due_at": args.next_due_at,
                     "expires_at": args.expires_at,
+                    "watch_only": "true" if args.watch_only else None,
                 },
                 **_todo_path_args(args),
                 dry_run=bool(args.dry_run),
             )
+            if replan_obligation_id and payload.get("ok"):
+                payload["replan_transition"] = {
+                    "schema_version": "replan_successor_transition_v0",
+                    "obligation_id": replan_obligation_id,
+                    "outcome": "new_runnable_successor",
+                    "successor_todo_id": payload.get("todo_id"),
+                    "recorded": not bool(payload.get("dry_run")),
+                    "turn_boundary": "end_current_heartbeat",
+                }
+                if not payload.get("dry_run"):
+                    payload["host_action"] = "end_current_heartbeat"
         elif args.todo_command == "claim":
             validate_todo_claim_options(args)
             payload = update_goal_todo(
@@ -563,6 +724,7 @@ def handle_todo_command(
                     "cadence": args.cadence,
                     "next_due_at": args.next_due_at,
                     "expires_at": args.expires_at,
+                    "watch_only": "true" if args.watch_only else None,
                 },
                 clear_claim=bool(args.clear_claim),
                 **_todo_path_args(args),
@@ -571,6 +733,7 @@ def handle_todo_command(
         elif args.todo_command == "complete":
             validate_todo_complete_options(args)
             settlement_result = None
+            settlement_identity = None
             completion_turn_key = None
             if getattr(args, "turn_instance_id", None):
                 runtime_root = resolve_runtime_root(
@@ -588,7 +751,27 @@ def handle_todo_command(
                     raise ValueError(settlement_result.failure.reason)
                 if settlement_result.value is None:
                     raise ValueError("turn-scoped Todo completion has no identity")
-                completion_turn_key = settlement_result.value.effect_id
+                identity = settlement_result.value
+                settlement_identity = identity
+                if args.no_follow_up:
+                    settlement_result = settlement_result.bind(
+                        lambda resolved: require_settlement_writeback(
+                            runtime_root,
+                            resolved,
+                        )
+                    ).bind(
+                        lambda _writeback: require_settlement_spend(
+                            runtime_root,
+                            identity,
+                        )
+                    )
+                    if settlement_result.failure is not None:
+                        raise ValueError(
+                            "terminal no-follow-up closeout requires matching "
+                            "writeback and quota spend receipts: "
+                            + settlement_result.failure.reason
+                        )
+                completion_turn_key = identity.effect_id
             payload = complete_goal_todo(
                 registry_path=registry_path,
                 goal_id=args.goal_id,
@@ -620,8 +803,8 @@ def handle_todo_command(
                 **_todo_path_args(args),
                 dry_run=bool(args.dry_run),
             )
-            if settlement_result is not None and settlement_result.value is not None:
-                payload["settlement_identity"] = settlement_result.value.as_dict()
+            if settlement_identity is not None:
+                payload["settlement_identity"] = settlement_identity.as_dict()
                 payload["settlement_result"] = settlement_result_payload(
                     settlement_result
                 )
@@ -706,7 +889,7 @@ def handle_todo_command(
             "error": str(exc),
             **lock_timeout_error_fields(exc),
         }
-        if isinstance(exc, TaskLeaseError):
+        if isinstance(exc, (TaskLeaseError, HandoffModeError)):
             payload["error_code"] = exc.code
             payload.update(exc.payload)
     append_todo_rollout_event(
@@ -726,22 +909,21 @@ def handle_todo_command(
             load_registry(registry_path),
             runtime_root_arg,
         )
-        guard_result = resolve_heartbeat_settlement_identity(
-            runtime_root,
-            goal_id=args.goal_id,
-            agent_id=args.agent_id,
-            todo_id=args.todo_id,
-            turn_instance_id=getattr(args, "turn_instance_id", None),
-        )
-        identity = guard_result.value
-        if identity is None:
-            settlement_result = guard_result
-        else:
-            settlement_result = guard_result.bind(
-                lambda resolved: require_settlement_todo_completion(
+        if args.no_follow_up and settlement_identity is not None:
+            assert settlement_result is not None
+            settlement_result = settlement_result.bind(
+                lambda _spend: require_settlement_terminal_closeout(
                     runtime_root,
-                    resolved,
+                    settlement_identity,
                 )
+            )
+        else:
+            settlement_result = resolve_heartbeat_settlement_identity(
+                runtime_root,
+                goal_id=args.goal_id,
+                agent_id=args.agent_id,
+                todo_id=args.todo_id,
+                turn_instance_id=getattr(args, "turn_instance_id", None),
             )
         payload["settlement_result"] = settlement_result_payload(
             settlement_result

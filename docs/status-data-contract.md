@@ -188,13 +188,23 @@ also carries compact `handoff_readiness` with `handoff_status` and
 `post_handoff_run_seen`. Heartbeat jobs can therefore tell whether the selected
 goal is still waiting for a target run or has already seen post-handoff work
 without parsing the full status payload.
-For replan and handoff, the guard and review packet may also carry
-`required_reads` / `project_agent_required_reads` entries that point to
-`loopx evidence-log --goal-id <goal-id> --agent-id <agent-id> --thin`. Treat
-that command as the cold-path chronology for the selected agent lane: it expands
-the current agent's public-safe events, keeps other agents compressed to
-frontier context, and does not replace status, quota, review packets, or the
-append-only event sources.
+For replan, the guard carries a host-built `replan_context_v0` and the compact
+`replan_action_packet_v0`. The context projects a bounded coverage ledger from
+the agent-scoped evidence history, an uncovered frontier, and a delivery
+receipt. The acting model therefore chooses a direction from delivered context;
+it does not have to discover and execute an evidence-log command as a protocol
+preflight. `loopx evidence-log --goal-id <goal-id> --agent-id <agent-id> --thin`
+remains the cold-path diagnostic chronology, and its read receipt remains useful
+for observability, but a read or legacy ACK cannot close a replan obligation.
+Closure requires a typed semantic delta accepted against the current obligation:
+a new surface, hypothesis, probe family, state-grounded runnable successor,
+fresh evidence-linked vision path, concrete new blocker, or coverage-backed
+terminal result. A runnable successor is recorded by one `todo add` carrying
+the exact `replan_obligation_id`; the Todo write is the receipt and returns the
+fine-grained turn boundary, so no second ACK command is required. The same
+goal-frontier reducer is used by quota and
+`refresh-state`, so a vision/frontier-derived obligation cannot be bypassed by a
+maintenance classification or an ACK for an older obligation.
 The same guard may include `work_lane_contract`. Schema
 `work_lane_contract_v1` is the compatibility drill-down for monitor versus
 advancement routing under the guard's first-class `interaction_contract`. It
@@ -847,6 +857,13 @@ Item fields:
   hot-path readers do not need to scan the detailed todo sections. The richer
   top-level `user_todos`, `agent_todos`, and `quota` fields remain available
   for detailed views.
+- `goal_boundary.peer_task_coordination`: optional quota-only coordination
+  authority. It appears only when the registry explicitly selects a
+  `coordinator_agent_id`. Registered peers are otherwise independent; child
+  spawn policy never implies registered-peer coordination authority. A blocked
+  explicit bundle never displaces the coordinator's own runnable Todo; with no
+  local fallback it projects `interaction_contract.mode=peer_coordination_blocked`
+  so schedulers stop until a material coordination input changes.
 - Current routing authority: consumers should choose the current owner, gate,
   waiting party, and next action from `attention_queue.items` and its
   `project_asset`. `run_history.latest_runs` is an evidence and drill-down
@@ -1363,12 +1380,17 @@ todos remain visible, as long as the selected slice stays outside private,
 destructive, production, or owner-only authority and honors `stop_condition`.
 An open typed `user_action` remains a non-blocking notice even when no agent
 todo is currently runnable; it must not force `waiting_on=controller`. When two
-bounded stalls leave that agent frontier empty, the obligation sets
-`agent_todo_writeback_required=true`. The interaction contract then projects a
-concrete claimed `todo add` action and requires a `runnable_todo_set` repair
-delta. Explicit terminal no-follow-up may replace the new todo only when
-closure evidence is authoritative. The user reminder stays visible throughout
-this replan path.
+bounded stalls leave that agent frontier empty, the obligation requires one
+typed semantic outcome. When the bounded frontier already owns a
+concrete typed target, the interaction contract projects a claimed `todo add`
+with `--replan-obligation-id <exact-id>`, `--action-kind`, and a stable
+`--target-key` or Explore node ref. That one mutation atomically records the
+runnable successor and its causal obligation; it returns
+`host_action=end_current_heartbeat`, and the successor runs on the next
+heartbeat. A generic planning instruction is never compiled into a Todo. When
+no executable target is known, the packet instead requires a typed semantic or
+coverage-backed terminal writeback. No second repair-ACK write is required.
+The user reminder stays visible throughout this replan path.
 This is intended to keep monitor-only work from consuming the primary
 executable backlog, not to bypass real gates.
 `quota should-run` and `status --agent-id` may also expose
@@ -1446,7 +1468,13 @@ is projected by a future `quota should-run`, not by the ack response.
 The payload also includes `execution_obligation`, which is the compatibility
 entry point for older workers deciding whether a quiet no-op is allowed.
 `heartbeat_recommendation.notify` is only a user-facing notification policy. It
-must not be interpreted as an execution gate. If
+must not be interpreted as an execution gate. `heartbeat_recommendation.
+agent_must_attempt` mirrors `execution_obligation.must_attempt_work` as a
+single-field shortcut so thin heartbeat prompts can key work obligation off
+one boolean instead of parsing notify semantics. If
+`autonomous_replan_required`, `heartbeat_recommendation.notify` is `NOTIFY`:
+replan turns are machine execution contracts and must not be projected as
+`DONT_NOTIFY`, which agents can misread as permission for a quiet no-op. If
 `execution_obligation.kind=external_evidence_observation_required`, ordinary
 delivery is still blocked, but the worker must perform one read-only
 observation or write a compact missing-handle blocker before it may stop. If

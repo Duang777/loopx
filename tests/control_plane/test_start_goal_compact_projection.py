@@ -20,7 +20,11 @@ from loopx.capabilities.issue_fix.candidate_preflight import (
     build_issue_fix_candidate_preflight_packet,
     candidate_preflight_input_contract,
 )
-from loopx.cli import main as cli_main
+from loopx.cli import build_parser, main as cli_main
+from loopx.cli_commands.todo_argument_validation import (
+    validate_shared_todo_options,
+    validate_todo_add_options,
+)
 
 GOAL_ID = "guided-projection-goal"
 AGENT_ID = "codex-guided-projection"
@@ -188,6 +192,51 @@ def test_default_projection_preserves_host_actions_and_json_anchors(
         _resolve_pointer(compact, ref["json_pointer"])
     for ref in projection["packet_summary"]["detail_refs"].values():
         _resolve_pointer(projection, ref["json_pointer"])
+
+
+def test_goal_start_packet_is_parity_complete_behavior_authority(
+    tmp_path: Path,
+) -> None:
+    project = _write_connected_project(tmp_path)
+    payload = _build(project, include_detail=False)
+
+    contract = payload["command_pack"]["goal_start_contract"]
+    assert "ordered_steps + goal_start_contract" in contract["behavior_authority"]
+    assert "passes raw arguments" in contract["behavior_authority"]
+
+    invariants = contract["execution_invariants"]
+    for marker in (
+        "fresh public-safe agent",
+        "explicit takeover",
+        "bind/readback before Todo",
+        "loopx agent-onboard --list-agent-types",
+        "selected_capability_route",
+        "never infer from text/URLs",
+        "#/activation",
+        "#/stop_conditions",
+        "Agent advancement_task",
+        "business Todo before work",
+        "current evidence + next Todo",
+        "chat not durable",
+        "returned typed quota_guard",
+        "one bounded validation+writeback",
+        "exact blocker",
+        "explicit apply",
+    ):
+        assert marker in invariants
+
+    prompt = payload["command_pack"]["commands"]["goal_start_plan_prompt"]
+    for required_text in (
+        "stable unbound host gets a fresh public-safe agent",
+        "selected_capability_route",
+        "no `--priority`",
+        "current Todo evidence + next executable Todo",
+        "Chat/model summaries are not durable state",
+        "Codex App heartbeat automation",
+        "returned typed `quota_guard`",
+        "surface the exact pasteable gate",
+    ):
+        assert required_text in prompt
 
 
 def test_issue_fix_goal_projects_capability_guard_without_todo_fields(
@@ -662,7 +711,7 @@ def test_start_goal_reuses_bound_thread_agent_and_scopes_commands(tmp_path: Path
     assert "bind_thread_identity" not in {
         step["id"] for step in payload["guided_transaction"]["ordered_steps"]
     }
-    assert f"--agent-id {AGENT_ID}" in payload["guided_transaction"]["ordered_steps"][3]["command_template"]
+    assert f"--claimed-by {AGENT_ID}" in payload["guided_transaction"]["ordered_steps"][3]["command_template"]
 
     explicit_override = build_start_goal_guided_packet(
         project=project,
@@ -1103,10 +1152,12 @@ def test_cli_without_host_returns_read_only_host_selection_gate(
         "codex-cli-tui",
         "claude-code",
         "opencode",
+        "opencode2",
         "traex-cli",
         "pi",
         "gemini-cli",
         "cursor-agent",
+        "deepseek-harness",
         "ark-managed-agent",
         "shell",
         "other-agent",
@@ -1290,3 +1341,45 @@ def test_codex_ide_plugin_uses_visible_goal_and_preserves_compact_parity(
     assert legacy["command_pack"]["host_loop_activation"]["host_surface"] == (
         "codex_ide_visible_goal_mode"
     )
+
+
+def _runnable_todo_add_argv(command_template: str) -> list[str]:
+    """Drop the documented optional span so the template can be parsed as argv."""
+    tokens = shlex.split(command_template)
+    assert tokens[0] == "loopx"
+    argv: list[str] = []
+    inside_optional = False
+    for token in tokens[1:]:
+        if inside_optional:
+            inside_optional = not token.endswith("]")
+            continue
+        if token.startswith("["):
+            inside_optional = not token.endswith("]")
+            continue
+        argv.append(token)
+    return argv
+
+
+@pytest.mark.parametrize("agent_id", [AGENT_ID, None])
+def test_guided_write_ordered_todos_template_is_accepted_by_todo_add(
+    tmp_path: Path,
+    agent_id: str | None,
+) -> None:
+    project = _write_connected_project(tmp_path)
+    payload = build_start_goal_guided_packet(
+        project=project,
+        goal_id=GOAL_ID,
+        agent_id=agent_id,
+        cli_bin="loopx",
+        host_surface="codex-app",
+        goal_text=GOAL_TEXT,
+        available_capabilities=["network"],
+    )
+    template = next(
+        step["command_template"]
+        for step in payload["guided_transaction"]["ordered_steps"]
+        if step["id"] == "write_ordered_todos"
+    )
+    args = build_parser().parse_args(_runnable_todo_add_argv(template))
+    validate_shared_todo_options(args)
+    validate_todo_add_options(args)

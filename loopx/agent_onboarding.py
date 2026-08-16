@@ -257,6 +257,7 @@ def _bootstrap_pack_command(
         "pi": "pi",
         "gemini-cli": "gemini-cli",
         "cursor-agent": "cursor-agent",
+        "deepseek-harness": "deepseek-harness",
         "ark-managed-agent": "ark-managed-agent",
         "manual": "shell",
         "other-agent": "other-agent",
@@ -310,6 +311,12 @@ def _start_instruction(agent_type: str) -> str:
             "start every following turn with `quota should-run`, reading state through "
             "the registered `loopx` MCP server or the CLI."
         )
+    if agent_type == "deepseek-harness":
+        return (
+            "Install `loopx[deepseek-harness]`, prepare a dsh cordis.yml, and run "
+            "`loopx turn run-once` with `scripts/dsh_turn_host_adapter.py` as the "
+            "generic-cli host adapter; every tick starts from `quota should-run`."
+        )
     if agent_type == "ark-managed-agent":
         return (
             "Use `$loopx <task>` as the ordinary task entry; after its todo "
@@ -339,7 +346,7 @@ def build_agent_onboarding_packet(
     resolved_project = str(inspection["project"])
     resolved_goal_id = str(inspection["goal_id"])
     registry_path = Path(str(inspection["registry"]))
-    registry = read_json(registry_path)
+    registry = read_json(registry_path) if registry_path.exists() else {}
     goal = next(
         (
             item

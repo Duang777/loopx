@@ -42,7 +42,10 @@ LoopX 的职责是中间两步：它接收来自 agent 或 host 的 effect reque
 | M4 架构文档 | 已合并/完成（#2921、#2923、#2924、#2985） |
 | M5 稳态评审 | 已合并/完成（#2922、#2931、#2984、#2985） |
 | M6 通用 effect-program 抽象 | Narrow gate 已完成（#2963-#2987）；定性提升需要 M7 |
-| M7 Effect Program Runtime | 已重新规划：先做 outcome contract 和一个纵向 runtime slice，再泛化 |
+| M7.1 因果刻画 | 已合并/完成（#2994、#2998、#3009、#3022、#3026） |
+| M7.2 Typed settlement runtime | 已合并/完成（#3016、#3020、#3023、#3024、#3033-#3036） |
+| M7.3 共享 executor 决策 | 以 no-follow-up 关闭：两个 adapter 共享 algebra，但不共享执行所有权 |
+| M7.4 有界核心路径采用 | 首个非 Turn 路径 task lease 已落地（#3091、#3095）；仅在 typed effect 能删除重复 runtime truth 时继续 |
 
 ## 为什么这很重要
 
@@ -173,7 +176,7 @@ A => F[C]
 - replay：durable receipt 跳过已经提交的 effect；以及
 - non-commutativity：writeback、spend 与 host handoff 不允许重排。
 
-runtime 合同有两个一等调用方。默认 Codex App 路径通过跨 agent/host 边界的 data-encoded CLI effects 结算普通 LoopX turn。隔离 turn driver 通过 in-process callbacks 执行同一 settlement 形状。它们应共享 plan、receipt、effect identity 和 failure algebra，但不需要共享同一个 executor，因为它们的 authority boundary 不同。在共享执行所有权被证明之前，通用 `Kleisli`、middleware stack、executor registry 或通用 `Effect` monad 仍为时过早。
+runtime algebra 目前有三个一等 adapter。默认 Codex App 路径通过跨 agent/host 边界的 data-encoded CLI effects 结算普通 LoopX turn。隔离 turn driver 通过 in-process callbacks 执行同一 settlement 形状。Task-lease acquire 也组合相同 algebra 来连接 validation 与 durable lease write，但 owner eligibility、conflict、file lock 和 CAS 仍归自己的 bounded context。三个 adapter 共享 plan、receipt、effect identity 和 failure 语义，不共享同一个 executor，因为它们的 authority boundary 不同。在共享执行所有权被证明之前，通用 `Kleisli`、middleware stack、executor registry 或通用 `Effect` monad 仍为时过早。
 
 共享 settlement algebra 由核心 `effect_program` 模块拥有。Quota 只提供 Codex App/CLI plan builder 与兼容 re-export；各 runtime adapter 组合核心 algebra，而不是继承领域 program，也不会把自己的执行权上移到通用基类。
 
@@ -274,10 +277,14 @@ M7 只有在至少产生一个下列最终 effect 时才有理由存在：
 ### 今天已存在什么
 
 - `EffectRequest`、`EffectInterpretation`、`EffectObservation`、`EffectNext` 和 `EffectTurn` 作为 canonical slots。
-- `interpret_quota_should_run_packet` 作为第一个真实 interpreter。
-- `interpret_turn_result_packet` 作为第二个真实 interpreter。
-- `EffectNext.execution_mode` 支持 `serial`、`parallel` 和 `interleaved` 执行策略。
-- `EffectProgram` 和 `effect_program_from_ordered_steps` 作为现有 `guided_transaction.ordered_steps` 上的 read-only 形状。
+- 核心层已经拥有 settlement algebra：`SettlementIdentity`、`SettlementPlan`、`SettlementReceipt`、typed failure kinds，以及保留 receipt 的 `SettlementResult.bind`。
+- 默认 Codex App / CLI quota 路径构建一份 typed settlement plan，把 validation、durable writeback、quota spend 和 conditional terminal closeout 绑定到原始 turn effect identity。final `no_followup` 是 spend 后 effect；普通 successor completion 仍属于 Todo lifecycle（#3016、#3033、#3034）。
+- 隔离 turn driver 通过自己的 callback executor 消费同一套 plan、identity、receipt、failure、replay 和 short-circuit algebra（#3020、#3023）；terminal closeout 单独写入 journal，因此 closeout 失败只重试 closeout，不重复 writeback/spend；loop controller 从已提交 receipt chain 派生 continuation，不再维护第二份 settlement truth（#3024）。
+- Task-lease acquire 是第一个有界采用该 algebra 的非 Turn 核心路径。adapter 把 validation 绑定到现有原子 lease write；纯 eligibility、conflict、file-lock 和 CAS 规则仍由 task-lease bounded context 持有（#3091、#3095）。
+- Scheduler apply、ACK、failure writeback 和 cadence 仍是 agent-owned settlement 之外的数据化 host handoff。
+- `interpret_quota_should_run_packet` 与 `interpret_turn_result_packet` 继续作为 packet lens；`EffectProgram` 和 `effect_program_from_ordered_steps` 继续为 bootstrap 与本地 scheduler construction 提供兼容的 ordered-step reader。
+- Outcome-continuity wait 已按因果关系判断。没有 material trigger 和 fresh evidence-linked path decision 的 `unchanged_with_reason` checkpoint，不能清除更早的 material checkpoint 或五条 Todo 完成长链 gap。这是有意的 qualification 行为，不是 watch-ACK 集成回归（#2998、#3009、#3022）。
+- 正式测试已经覆盖合法 phase prefix、failure short-circuit、replay、effect identity exactly-once、跨 adapter conformance、语义 mutation sentinel 和 public-safe 事故回放（#3026、#3032、#3035、#3036）。
 - R1 替换：bootstrap guided rendering 通过 `EffectProgram` 读取 `ordered_steps`（#2955）。
 - R2 替换：turn executor 通过 `interpret_turn_result_packet` 解析 result kind（#2956）。
 - R3 替换：Codex CLI 本地 scheduler commands 通过 `EffectProgram` 构建（#2957）。
@@ -287,14 +294,29 @@ M7 只有在至少产生一个下列最终 effect 时才有理由存在：
 
 ### 还缺什么
 
-- 只有在两个 runtime execution path 需要相同的 plan/receipt 语义后，才定义最小 interpreter 或 executor protocol。两个 packet reader 本身不足以证明该合同。
-- 一个真实 host 或 turn-driver caller，在执行有序 effect program 时保留 failure、cancellation、permission 和 budget 语义。
+- 通用共享 executor 被有意保留为空。当前 adapter 共享 plan/receipt algebra，却拥有不同的执行边界，因此 M7.3 应以 no-follow-up 关闭，而不是用推测性 framework 填充。
+- 常规 LoopX 核心路径仍需逐条做有界采用判断。只有当路径包含多步 external effect、单一稳定 identity、durable receipt、replay 要求，并且变更能删除重复 settlement truth 时，才应该使用这套 algebra。
+- Race/CAS qualification 推迟到真实并发执行入口出现后；同步 adapter 本身不足以证明需要并发基础设施或测试。
+- M7.4 仍是 evidence-driven replacement gate，而不是把每个 Todo、gate、monitor、scheduler 或 replan rule 都改成 Kleisli arrow 的要求。
 
-R4 继续保持 deferred，直到存在真实的多步 executor caller。
+### 核心路径采用矩阵
+
+| 核心路径 | 决策 | 边界 |
+|---|---|---|
+| Codex App / CLI 常规 turn closeout | 已采用 | core plan/receipt algebra；quota adapter 拥有 CLI binding 和 durable settlement check |
+| 隔离 turn-driver closeout | 已采用 | 共享同一 algebra；local callback executor 与 journal 仍归 turn driver 所有 |
+| Task-lease acquire | 有界采用 | validation 与 durable write 共享 core algebra；eligibility、conflict、locking、CAS 和 persistence 仍归 task lease 所有 |
+| Turn continuation | 作为 consumer 采用 | pure controller 读取已提交 receipt chain，不执行 host effect |
+| Todo completion、`refresh-state`、quota spend | 有界采用 | 普通 completion 保持 Todo-owned；refresh/spend 组成基础 settlement，final `no_followup` 是 conditional post-spend closeout |
+| Goal vision 与 replan checkpoint | 选择性 typed qualification | causal evidence 与完成链 checkpoint 是共享 invariant；vision policy 不进入 settlement executor |
+| Capability gate、user gate、monitor selection | 保持 domain-local | 除非未来证明存在重复 external-effect settlement，否则它们仍是 decision state machine |
+| Scheduler apply、ACK、cadence、failure hint | settlement 之外 | host-owned effect 保持数据化，不隐藏到 agent executor 后面 |
+| Bootstrap 与本地 scheduler command rendering | 只复用 read model | `EffectProgram` 可以读取 ordered steps；没有可删除的重复 truth 就不迁移 runtime |
+| 并发/racing settlement | 推迟 | 只有真实 concurrent caller 与 authority boundary 出现后才加入 race/CAS 行为 |
 
 ### 何时泛化
 
-只有至少两个真实 runtime execution path 需要相同的 plan/receipt 语义时才泛化。Packet interpreters 可以建立共同 read model，但本身不足以证明共享 executor protocol 的合理性。
+只有至少两个真实 runtime path 同时共享 plan/receipt 语义和执行所有权时，才泛化执行层。当前 adapter 证明了共享 algebra，却反证了共享 executor：一条路径跨越 CLI/host boundary，一条拥有 in-process callback，另一条把原子 persistence 委托给 task-lease bounded context。Packet 相似或共同的 `bind` 方法不能覆盖这些边界。
 
 在此之前，把抽象保持为文档化视角，并增加证明每个 packet 无损映射的测试。这可以避免构建一个没有 runtime 使用的通用 `Effect` 框架。
 
@@ -307,7 +329,7 @@ R1、R2、R3 和 R5 已完成：
 - R3 Codex CLI scheduler command set 通过 `EffectProgram`（#2957）；
 - R5 quota should-run TurnEnvelope 通过 `interpret_quota_should_run_packet`。
 
-R4 仍 pending，并且在真实多步 host/turn-driver caller 执行有序 effect program 之前不得实现。
+R4 原来的 generic-executor 提案以 no-follow-up 关闭。只有当另一个真实 caller 能在不跨 authority boundary 的前提下删除重复编排时，才重新开启。
 
 ### 定性改进计划
 
@@ -349,11 +371,13 @@ M7.0：盘点真实多步 runtime 候选。选中的核心是从稳定 quota dec
 
 M7.1：在添加 protocol 前刻画选中的 vertical slice。为合法与非法 transition、部分执行、重试、取消、权限拒绝、预算拒绝和结算捕获 parity fixtures。durable transfer 必须包含 writeback 和 scheduler handoff 时的 cancellation、host execution 和 quota spend 时的 permission denial，以及 writeback 后的 spend-budget rejection。该阶段保留当前 runtime behavior，包括 M7.2 预期修复的任何 split projection。还必须刻画默认 Codex App selection-drift seam：选中 Todo 完成后，writeback 推进 frontier 时，spend 仍必须结算原始 effect identity，而不是绑定到新选中的 successor。
 
-M7.2：用一个 typed plan/receipt algebra 替换核心 settlement truth。plan step 必须携带稳定 kind、owner、precondition、idempotency identity 和 expected receipt。首先让默认 Codex App path 把 completion、refresh 和 spend 绑定到原始 quota-turn effect identity，而不是新的 Todo selection。然后让隔离 turn driver 消费同一 algebra。每个 replacement PR 都必须删除对应的 manual command 或 settlement truth。Raw mappings 和 free-form CLI commands 可以保留为 compatibility payloads，但不是语义执行合同。组合必须满足上文定义的 identity、associativity、short-circuit、replay 和 ordering 性质，保持 cancellation、permission denial 和 budget rejection 可区分，并让 scheduler apply 或 ACK 留在 agent-owned settlement boundary 之外。
+M7.2：用一个 typed plan/receipt algebra 替换核心 settlement truth。plan step 必须携带稳定 kind、owner、precondition、idempotency identity 和 expected receipt。默认 Codex App path 与隔离 turn driver 把 validation、durable writeback、quota spend 和 conditional terminal closeout 绑定到原始 quota-turn effect identity。普通 successor completion 可以在 settlement 前推进 Todo frontier；final `no_followup` 只有在 matching writeback/spend receipt 后才提交，不能增加 terminal guard 例外。每个 replacement PR 都必须删除对应的 manual command 或 settlement truth。Raw mappings 和 free-form CLI commands 可以保留为 compatibility payloads，但不是语义执行合同。组合必须满足上文定义的 identity、associativity、short-circuit、replay 和 ordering 性质，保持 cancellation、permission denial 和 budget rejection 可区分，并让 scheduler apply 或 ACK 留在 agent-owned settlement boundary 之外。
 
 M7.3：在两个 M7.2 adapter 都消费经过验证的 plan/receipt 语义后，比较它们的执行所有权。只有在删除重复编排且不跨越 Codex App agent/host boundary 时，才抽取最小的共享 executor 或 Kleisli-like bind protocol。不要增加 registry 或通用组合框架。`quota should-run` 可以从同一个 canonical decision plan 派生 packet 和 effect projection，但更早构造 `EffectTurn` 本身不是验收条件。如果两个 caller 只共享 algebra 而不共享 executor boundary，用结构化 no-follow-up decision 关闭 M7.3，并保留各自的 local executor。
 
 M7.4：只有在移除重复知识时，才一次扩展一个有界状态族。Todo、monitor、capability、scheduler 和 gate 状态机保留自己的 domain transition invariants。它们不能仅仅因为 packet 字段相似就移到共享 protocol 后面。
+
+#3208 的 replan semantic-exit 修复明确不是候选：`refresh-state` 已经会重新推导当前 obligation 并记录 typed semantic ACK，实际缺陷是 goal-frontier 中一个额外的 settlement 条件在 acceptance gaps 仍存在时忽略了合法的 non-successor ACK。这是 domain-local reducer/ACK invariant，不是第二个 multi-step executor，应继续由 replan/goal-frontier owner 持有。只有第二个真实 runtime 场景（例如具有相同 plan/receipt lifecycle 的 quota/status read ACK）出现，并且能在两个 adapter 间删除重复编排时，才重新评估 Effect Program 迁移。
 
 因此，之前的 R5-R9 列表不是实施队列：
 
@@ -529,15 +553,17 @@ Monitor cadence or due horizon
 
 1. 增加第二个真实 interpreter，例如 `interpret_turn_result_packet` 或 `interpret_status_packet`，并用聚焦测试证明 `EffectTurn` 对该 family 也无损。
 2. 把 packet interpretation 保持为 read-model seam。只有当两个执行路径需要相同 plan/receipt 语义时，才抽取共享 runtime interpreter 或 executor protocol。暂不增加 registry 或通用组合框架。
-3. 为 `EffectNext` 增加 `execution_mode`，用聚焦测试文档化 `serial` / `parallel` / `interleaved` 语义。
-4. 当一个 owner 能执行并结算多个步骤时，引入 data-encoded ordered effect program shape 和真实 executor seam。在选中第一个 slice 前，qualify turn closeout、guided bootstrap 和 quota-to-host scheduling；现有 ordered list 本身不建立可执行 authority boundary。
-5. 在每一个 interpreter 中保持 failure、cancellation、permission 和 budget 语义结构化。不引入 catch-all wrapper。
+3. 不再把 replan 当作通用 read-and-ACK 的先例。replan evidence 由 host 投影为 context，精确绑定当前 obligation 的 runnable-successor Todo 或 typed progress 写入才是语义 receipt。在第二个 runtime caller 同时需要相同 effect identity、freshness、原子状态转移和 turn boundary 之前，该 transition 继续归 replan 领域所有。只有真实第二调用方出现时才抽取最小 observation/transition receipt；不要恢复手工 evidence-read ACK 仪式。
+4. 为 `EffectNext` 增加 `execution_mode`，用聚焦测试文档化 `serial` / `parallel` / `interleaved` 语义。
+5. 当一个 owner 能执行并结算多个步骤时，引入 data-encoded ordered effect program shape 和真实 executor seam。在选中第一个 slice 前，qualify turn closeout、guided bootstrap 和 quota-to-host scheduling；现有 ordered list 本身不建立可执行 authority boundary。
+6. 在每一个 interpreter 中保持 failure、cancellation、permission 和 budget 语义结构化。不引入 catch-all wrapper。
 
 验收标准：
 
 - 至少两个 packet family 产生 `EffectTurn`。
 - Runtime code（不只是 tests）消费共享 shape。
 - `next_effect` 能用显式 execution mode 表达有序 effect program。
+- 共享 observation/transition receipt contract 至少有两个 runtime caller；只有一条领域 transition 时继续由领域 owner 持有。
 - 在出现第二个 runtime caller 之前，不增加通用 `Effect` monad、registry 或 middleware framework。
 
 ## 测试策略

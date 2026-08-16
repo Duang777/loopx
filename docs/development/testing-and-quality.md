@@ -113,6 +113,18 @@ Durable smoke 应保护已交付行为、可复用合同、公开/私有边界�
 贡献者检查项、语义 oracle 示例、公开安全 fixture 规则和合并流程见
 [什么是好的 Smoke](good-smokes.md)。
 
+The repository hygiene smoke is the thin baseline for LoopX's own public
+checkout: it asserts required tracked files, runs the canonical public/private
+boundary scan, and ratchets the release timeline to every published version
+tag.
+
+仓库卫生 smoke 是 LoopX 自身公共 checkout 的薄基线：断言必需跟踪文件存在，
+执行规范的公开/私有边界扫描，并把 release 时间线收紧到每个已发布版本 tag。
+
+```bash
+python3 examples/repository-hygiene-smoke.py
+```
+
 Run one focused smoke while developing, then let the canary planner select the
 smallest cross-surface set from the Git diff:
 
@@ -259,15 +271,17 @@ continues after a healthy onboarding transition, or repairs a known projection
 gap. The composition group also checks decisions where several individually
 reasonable signals conflict: a monitor lane says wait while a vision contract
 requires replan; a user notice remains open while an independent successor must
-run; or capability-blocked advancement yields to monitor-schedule repair. Keep
+run; or capability-blocked advancement requires an agent-owned capability-
+bridge repair before any monitor fallback. Keep
 schema validity, cold-path restoration, exact field presence, and the underlying
 state transition table in deterministic tests.
 
 它适合验证模型是否识别 selected todo、尊重人类门禁、在健康 onboarding transition
 后继续、或识别已知 projection gap。组合场景还会验证多个单独看来都合理、合在一起
 却存在优先级冲突的信号：monitor lane 要求等待但 vision 合同要求 replan；user notice
-仍打开但独立 successor 必须运行；advancement 被 capability 阻塞时应转而修复 monitor
-schedule。schema、冷路径恢复、精确字段存在性和底层状态转移表仍由确定性测试负责。
+仍打开但独立 successor 必须运行；advancement 被 capability 阻塞时，agent 必须先
+执行 capability-bridge repair，不能退回 monitor wait。schema、冷路径恢复、精确字段
+存在性和底层状态转移表仍由确定性测试负责。
 
 Live Doubao calls are a low-frequency local/manual gate, not ordinary CI.
 `ARK_API_KEY` is injected only through the process environment. Packets,
@@ -287,20 +301,106 @@ nonzero unless every real provider call passes. See
 [Model behavior qualification v0](../reference/protocols/model-behavior-qualification-v0.md)
 for the actor and promotion contract.
 
+Replan semantic action has a separate function-tool qualification because a
+no-tool JSON decision cannot prove that the model would use projected coverage
+to choose and persist a different direction. It creates a hermetic public-safe
+Goal with two equivalent typed progress observations, gives the live model the
+shipped thin Codex App heartbeat task body and one ordinary `exec_command`
+function tool, and runs accepted quota and refresh commands through the real
+LoopX CLI. The bounded host loop passes only when real quota emits the
+host-projected coverage context and minimal action packet, and the model then
+submits a typed semantic delta accepted by the write-time gate:
+
+```bash
+python3 scripts/qualify-doubao-replan-semantic-action-live.py \
+  --qualification-id <public-safe-run-id>
+```
+
+The model does not receive a testing-only decision schema, expected command, or
+prebuilt quota packet. Clock and a small set of workspace reads are supported
+for normal heartbeat preflight. Commands are parsed into a strict allowlist
+without invoking a shell; quota and refresh may write only inside the temporary
+fixture, and no external or repository write is allowed. The actor independently
+qualifies the selected typed observation before executing it. Evidence-log-only,
+prose-only, pre-quota, equivalent-fingerprint, and ungrounded actions fail. The
+receipt retains only action kinds, command digests, and typed semantic outcomes.
+
+The selected-Todo scenario has its own focused real-action entrypoint for
+changes to quota selection, heartbeat instructions, or the shared tool seam:
+
+```bash
+python3 scripts/qualify-doubao-selected-todo-tool-live.py \
+  --qualification-id <public-safe-run-id>
+```
+
+It starts from the same production heartbeat contract, executes real quota,
+and passes only after the model reads the target named by the selected Todo.
+Reading the target before quota, choosing a deferred decoy, describing the
+action without calling the tool, or issuing an unallowlisted command fails.
+
 真实 Doubao 调用是低频本地/手动门，不进入普通 CI。`ARK_API_KEY` 只通过进程环境
 注入；packet、prompt、原始响应、凭证和对话都不能成为仓库证据，只保留有界 receipt
 与 mismatch code。fake transport 只能验证 adapter 的序列化、脱敏与 fail-closed，不能
 作为 Doubao 行为通过证据。真实入口缺少密钥时直接失败，且任一真实调用不通过都会以
 非零状态退出。
 
+replan semantic action 另有一条 function-tool 行为资格门，因为 no-tool JSON 决策不能
+证明模型会使用覆盖账本选择新方向并完成真实写回。资格门创建一个包含两个等价 typed
+progress observation 的隔离、public-safe 临时 Goal；真实模型只看到正式 thin Codex App
+heartbeat task body 和普通 `exec_command` tool。真实 quota 必须投影 host coverage context
+与最小 action packet，模型随后提交的 typed semantic delta 还要通过独立语义判定和真实
+写时闸门。若模型选择新 successor，资格门要求它以当前 `obligation_id` 调用真实
+`todo add`，验证 Todo 原子 receipt 与 `host_action=end_current_heartbeat`，且不得在同一
+turn 执行 successor；surface/hypothesis/probe 等结果仍走真实 `refresh-state`。仅读
+evidence-log、只换措辞、quota 前动作、等价指纹或未落在当前状态中的 successor 都不算
+通过。receipt 只保留 action kind、command digest 与 typed semantic outcome。
+
+The scoped-gate successor composition case is also a real tool loop. Its
+hermetic Goal contains an unrelated open user gate and a deferred successor
+whose prerequisite is complete. After real quota selects the successor, the
+model must surface the user action as a non-blocking assistant notice and read
+the exact successor target. Waiting after the notice, omitting it, or reading
+the gated decoy fails.
+
+```bash
+python3 scripts/qualify-doubao-scoped-gate-successor-tool-live.py \
+  --qualification-id <public-safe-run-id>
+```
+
+Capability-bridge re-entry is the fourth real tool loop. Its hermetic Goal has
+a capability-blocked advancement Todo and an incomplete monitor fallback. Real
+quota must project `capability_bridge_repair`. The actor sends the shipped task
+body inside the same heartbeat trigger envelope, including its trigger time,
+that the Codex App model normally receives. The default CLI projection keeps
+`interaction_contract` in the action-first prefix rather than after diagnostic
+lanes. The model must verify the capability with the blocked Todo's real
+task-facing read, then execute the projected quota re-entry command in the same
+heartbeat; quota must select the original Todo without a repair Todo, turn
+settlement, or durable capability grant. Waiting on or updating the monitor,
+reading the callsite before quota, re-entering before successful verification,
+or reading a different target fails. Bounded workspace inspection remains
+available before quota; unrelated workspace reads after quota are classified as
+backtracking and fail immediately.
+
+```bash
+python3 scripts/qualify-doubao-capability-monitor-repair-tool-live.py \
+  --qualification-id <public-safe-run-id>
+```
+
 The regular live suite is
-`actual_default_model_behavior_portfolio_v0`: fifteen one-arm scenarios, two
-attempts each, and at most 30 provider calls. Nine core scenarios check normal
+`actual_default_model_behavior_portfolio_v0`: fifteen one-arm scenarios and two
+attempts each. Its selected-Todo case starts from a production thin heartbeat,
+executes real quota, and requires the model to perform the selected Todo's
+read-only target action. Its required-vision replan case independently builds a
+hermetic missing-vision state, executes real quota, and requires the model to
+use host-projected frontier/work-source context and submit a typed semantic
+action through the real write path. The other turn cases remain
+bounded packet-interpretation checks. Nine core scenarios check normal
 onboarding, agent identity and goal selection, selected todo, peer identity
 routing, same-agent continuation, final human gate, healthy continuation, and
 projection repair. Three composition scenarios check vision/monitor/peer replan
 precedence, non-blocking user notice plus ready-successor execution, and
-capability fallback into monitor-schedule repair. Three compaction scenarios
+capability-bridge repair before monitor fallback. Three compaction scenarios
 check the JSON budget and source-derived semantic parity, then repeat clean
 selected-work and blocking-gate contracts under over-budget omitted diagnostics.
 Four contrast groups require the clean/noisy cases to remain invariant while
@@ -308,28 +408,40 @@ blocking gate versus non-blocking notice and selected work versus required
 vision replan remain distinguishable. Each
 scenario has an independent deterministic source oracle derived before CLI
 projection; every repeat must pass and hard actor errors are not retried. The
-live turn actor consumes the default CLI hot-path
-`quota should-run` projection used by Codex App automation and returns
+remaining live turn actor cases consume the default CLI hot-path
+`quota should-run` projection used by Codex App automation and return
 runtime-facing decisions rather than echoing the testing-only nine-field
-semantic contract.
+semantic contract. The suite has 30 bounded scenario attempts and, after
+accounting for all four tool loops, at most 70 provider turns.
 Exact scheduler, vision, writeback, and warning fields stay in deterministic
 action-signature coverage; pair mode keeps TurnEnvelope semantic extraction for
 explicit packet differentials or outcome claims.
 
 常规 live suite 是 `actual_default_model_behavior_portfolio_v0`：15 个 one-arm
-场景，每个重复 2 次，最多 30 次模型调用。9 个核心场景覆盖正常接入、agent 身份与
+场景，每个重复 2 次。9 个核心场景覆盖正常接入、agent 身份与
 goal 选择、selected todo、peer 身份路由、same-agent 续接、最终 human gate、健康继续
 和 projection repair；3 个组合场景覆盖 vision/monitor/peer replan 优先级、非阻塞
-user notice 与 ready successor 并存，以及 capability fallback 转入 monitor schedule
-修复；3 个 compaction 场景覆盖 JSON 预算与 source-derived 语义一致，并分别让正常
+user notice 与 ready successor 并存，以及 capability-bridge re-entry 必须先于 monitor
+fallback；3 个 compaction 场景覆盖 JSON 预算与 source-derived 语义一致，并分别让正常
 selected work 和阻塞 gate 在超预算省略诊断下重复运行。4 个 contrast group 要求
 clean/noisy 场景保持不变，同时要求 blocking gate 与 non-blocking notice、selected
 work 与 required vision replan 仍然可区分。每个
 场景都有在 CLI projection 前推导的独立确定性 source oracle，所有重复都必须通过；
-actor 硬错误不自动重试。live turn actor 直接读取 Codex App automation 使用的默认 CLI hot-path
-`quota should-run` projection 并返回运行时决策，不再回显测试专用的九字段 semantic
-contract。scheduler、vision、writeback 与 warning 的精确字段继续由 action-signature
-确定性覆盖；pair 中的 TurnEnvelope 只用于明确的 packet 差分或结果提升声明。
+actor 硬错误不自动重试。selected-Todo 场景从正式 thin heartbeat 开始，执行真实 quota，
+并要求模型实际读取 selected Todo 指向的目标；required-vision replan 场景独立构造
+缺失 vision 的 hermetic 状态，执行真实 quota，并要求模型读取 host 投影的 frontier 与
+工作源，再通过真实写路径提交 typed semantic action；其他 turn 场景仍直接读取 Codex App
+automation 使用的默认 CLI hot-path `quota should-run` projection 并返回运行时决策，
+scoped-gate successor 场景也从 hermetic Goal 与正式 heartbeat 开始：真实 quota 必须
+同时投影非阻塞 user notice 和 ready deferred successor，模型随后既要呈现提醒，也要
+实际执行被选中的 successor；capability re-entry 场景则要求模型先执行原 blocked Todo
+的真实任务侧 read，再在同一 heartbeat 执行 quota 投影的 re-entry 命令；quota 必须重新
+选中原 Todo，且全程不创建 repair Todo、不结算 turn、也不写 durable capability grant。
+其他 turn 场景仍属于
+packet interpretation。scheduler、vision、writeback 与
+warning 的精确字段继续由 action-signature 确定性覆盖；pair 中的 TurnEnvelope 只用于
+明确的 packet 差分或结果提升声明。全套仍是 30 个有界 scenario attempt；考虑四个
+真实工具场景各自每次最多 6 个 provider turn，最坏上限为 70 个 provider turn。
 
 For onboarding packets, the suite uses the shipped guided packet builder and
 redacts only local absolute path surfaces before provider transport. The

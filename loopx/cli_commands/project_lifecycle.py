@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from importlib import import_module
 import json
 from collections.abc import Callable, Mapping
+from importlib import import_module
 from pathlib import Path
 
 from ..capabilities.explore.activation import (
@@ -24,28 +24,34 @@ from ..control_plane.work_items.delivery_batch_scale import (
     DELIVERY_BATCH_SCALE_INPUT_CHOICES,
 )
 from ..control_plane.work_items.delivery_outcome import DELIVERY_OUTCOME_CHOICES
-from ..extensions.runtime import (
-    default_extension_state_file,
-    resolve_extension_activation,
-)
+from ..control_plane.work_items.progress_observation import ProgressResultClass
 from ..extensions.lark.goal_channel_lifecycle import (
     goal_channel_gate_sync_failure,
     sync_human_gate_after_refresh,
 )
+from ..extensions.runtime import (
+    default_extension_state_file,
+    resolve_extension_activation,
+)
+from ..feedback import (
+    LESSON_KINDS,
+    append_human_reward,
+    compact_reward,
+    render_reward_markdown,
+)
 from ..history import load_registry
-from ..feedback import LESSON_KINDS, append_human_reward, compact_reward, render_reward_markdown
 from ..operator_gate import (
     DEFAULT_OPERATOR_GATE,
     OPERATOR_GATE_DECISIONS,
     record_operator_gate,
     render_operator_gate_markdown,
 )
+from ..paths import resolve_runtime_root
 from ..project_map import (
     DEFAULT_PROJECT_MAP_CLASSIFICATION,
     read_only_project_map_run,
     render_read_only_project_map_markdown,
 )
-from ..paths import resolve_runtime_root
 from ..state_refresh import (
     DEFAULT_REFRESH_ACTION,
     DEFAULT_REFRESH_CLASSIFICATION,
@@ -54,7 +60,6 @@ from ..state_refresh import (
     refresh_state_run,
     render_state_refresh_markdown,
 )
-
 
 PrintPayload = Callable[
     [dict[str, object], str, Callable[[dict[str, object]], str]],
@@ -91,17 +96,29 @@ def _lark_explore_graph_syncer(
     )
 
     def sync(**kwargs: object) -> Mapping[str, object]:
+        implementation = import_module(
+            "loopx.extensions.lark.presentation.explore_results"
+        )
+        preview_kwargs = dict(kwargs)
+        preview_kwargs["execute"] = False
+        preview = dict(
+            implementation.sync_issue_fix_explore_on_material_change(
+                **preview_kwargs
+            )
+        )
+        if preview.get("status") in {"not_applicable", "not_configured"}:
+            return preview
+
         provider = import_module("loopx.extensions.lark")
         activation = resolve_extension_activation(
             str(provider.LARK_EXTENSION_ID),
             state_file=default_extension_state_file(extension_runtime_root),
             required_permissions=(str(provider.LARK_PROJECTION_SINK_PERMISSION),),
         )
-        implementation = import_module(
-            "loopx.extensions.lark.presentation.explore_results"
-        )
-        result = dict(
-            implementation.sync_issue_fix_explore_on_material_change(**kwargs)
+        result = (
+            dict(implementation.sync_issue_fix_explore_on_material_change(**kwargs))
+            if kwargs.get("execute")
+            else preview
         )
         result["extension_activation"] = activation
         return result
@@ -156,6 +173,46 @@ def _inline_agent_vision_packet(args: argparse.Namespace) -> dict[str, object] |
     if state:
         packet["state"] = state
     return packet
+
+
+def _inline_progress_observation(
+    args: argparse.Namespace,
+) -> dict[str, object] | None:
+    fields = {
+        "surface_id": getattr(args, "progress_surface_id", None),
+        "hypothesis_id": getattr(args, "progress_hypothesis_id", None),
+        "probe_kind": getattr(args, "progress_probe_kind", None),
+        "result_class": getattr(args, "progress_result_class", None),
+        "blocker_id": getattr(args, "progress_blocker_id", None),
+        "coverage_scope_id": getattr(args, "progress_coverage_scope_id", None),
+        "coverage_complete": getattr(args, "progress_coverage_complete", None),
+    }
+    evidence_ids = list(getattr(args, "progress_evidence_ids", None) or [])
+    if not any(value is not None for value in fields.values()) and not evidence_ids:
+        return None
+    if not fields["result_class"]:
+        raise ValueError("typed progress observation requires --progress-result-class")
+    if fields["result_class"] in {
+        ProgressResultClass.EXPLORATION_EXHAUSTED.value,
+        ProgressResultClass.NO_FOLLOWUP.value,
+    } and not fields["coverage_scope_id"]:
+        raise ValueError(
+            f"--progress-result-class {fields['result_class']} requires "
+            "--progress-coverage-scope-id"
+        )
+    if (
+        fields["result_class"] == ProgressResultClass.EXPLORATION_EXHAUSTED.value
+        and fields["coverage_complete"] is not True
+    ):
+        raise ValueError(
+            "--progress-result-class exploration_exhausted requires "
+            "--progress-coverage-complete"
+        )
+    return {
+        "schema_version": "typed_progress_observation_v0",
+        **{key: value for key, value in fields.items() if value is not None},
+        "evidence_ids": evidence_ids,
+    }
 
 
 def register_project_lifecycle_commands(
@@ -240,6 +297,29 @@ def register_project_lifecycle_commands(
             "Mark this refresh as the explicit autonomous replan ACK. "
             "Use only after the agent has performed and written back the bounded replan slice."
         ),
+    )
+    refresh_state_parser.add_argument(
+        "--progress-result-class",
+        choices=[item.value for item in ProgressResultClass],
+        help=(
+            "Typed result for this bounded work slice. Semantics come only from "
+            "this enum and stable identifiers, never from classification prose."
+        ),
+    )
+    refresh_state_parser.add_argument("--progress-surface-id")
+    refresh_state_parser.add_argument("--progress-hypothesis-id")
+    refresh_state_parser.add_argument("--progress-probe-kind")
+    refresh_state_parser.add_argument("--progress-blocker-id")
+    refresh_state_parser.add_argument("--progress-coverage-scope-id")
+    refresh_state_parser.add_argument(
+        "--progress-evidence-id",
+        dest="progress_evidence_ids",
+        action="append",
+    )
+    refresh_state_parser.add_argument(
+        "--progress-coverage-complete",
+        action="store_true",
+        default=None,
     )
     refresh_state_parser.add_argument(
         "--repair-delta-kind",
@@ -512,6 +592,7 @@ def handle_project_lifecycle_command(
     fmt = output_format(args)
     if args.command == "refresh-state":
         agent_vision_packet: dict[str, object] | None = None
+        progress_observation: dict[str, object] | None = None
         merge_agent_vision_patch = False
         try:
             inline_agent_vision_packet = _inline_agent_vision_packet(args)
@@ -526,6 +607,7 @@ def handle_project_lifecycle_command(
             elif inline_agent_vision_packet:
                 agent_vision_packet = inline_agent_vision_packet
                 merge_agent_vision_patch = True
+            progress_observation = _inline_progress_observation(args)
         except Exception as exc:
             payload = {
                 "ok": False,
@@ -566,6 +648,7 @@ def handle_project_lifecycle_command(
                 agent_vision_packet=agent_vision_packet,
                 merge_agent_vision_patch=merge_agent_vision_patch,
                 vision_unchanged_reason=args.vision_unchanged_reason,
+                progress_observation=progress_observation,
                 dry_run=bool(args.dry_run),
                 sync_global=not bool(args.no_global_sync),
             )

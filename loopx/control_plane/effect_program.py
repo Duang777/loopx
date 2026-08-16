@@ -6,11 +6,11 @@ from enum import StrEnum
 from typing import Any, Generic, TypeVar, cast
 
 
-# Keep the established wire ids while moving their implementation to the
-# core-owned algebra shared by quota and Turn adapters.
+# Identity remains stable while the plan and receipt versions advance with the
+# typed terminal-closeout step shared by quota and Turn adapters.
 SETTLEMENT_IDENTITY_SCHEMA_VERSION = "quota_settlement_identity_v0"
-SETTLEMENT_PLAN_SCHEMA_VERSION = "quota_settlement_plan_v0"
-SETTLEMENT_RECEIPT_SCHEMA_VERSION = "quota_settlement_receipt_v0"
+SETTLEMENT_PLAN_SCHEMA_VERSION = "quota_settlement_plan_v1"
+SETTLEMENT_RECEIPT_SCHEMA_VERSION = "quota_settlement_receipt_v1"
 
 
 @dataclass(frozen=True)
@@ -74,11 +74,37 @@ class EffectProgram:
     execution_mode: str | None = None
 
 
-class SettlementStepKind(StrEnum):
+class TurnTransactionPhase(StrEnum):
+    HOST_EXECUTE = "host_execute"
+    TYPED_RESULT = "typed_result"
     VALIDATION = "validation"
-    TODO_COMPLETION = "todo_completion"
     DURABLE_WRITEBACK = "durable_writeback"
     QUOTA_SPEND = "quota_spend"
+    SCHEDULER_APPLY = "scheduler_apply"
+    SCHEDULER_ACK = "scheduler_ack"
+
+
+TURN_TRANSACTION_PHASES = tuple(phase.value for phase in TurnTransactionPhase)
+
+
+class TurnJournalViolation(StrEnum):
+    GOAL_IDENTITY_MISSING = "goal_identity_missing"
+    GOAL_MISMATCH = "goal_mismatch"
+    OWNER_IDENTITY_MISSING = "owner_identity_missing"
+    OWNER_MISMATCH = "owner_mismatch"
+    TURN_KEY_IDENTITY_MISSING = "turn_key_identity_missing"
+    TURN_KEY_MISMATCH = "turn_key_mismatch"
+    COMPLETED_PHASES_INVALID = "completed_phases_invalid"
+    COMPLETED_PHASES_NOT_ORDERED_PREFIX = "completed_phases_not_ordered_prefix"
+    JOURNAL_NOT_TERMINAL = "journal_not_terminal"
+    JOURNAL_STATUS_UNSUPPORTED = "journal_status_unsupported"
+
+
+class SettlementStepKind(StrEnum):
+    VALIDATION = "validation"
+    DURABLE_WRITEBACK = "durable_writeback"
+    QUOTA_SPEND = "quota_spend"
+    TERMINAL_CLOSEOUT = "terminal_closeout"
 
 
 class SettlementFailureKind(StrEnum):
@@ -88,6 +114,7 @@ class SettlementFailureKind(StrEnum):
     WRITEBACK_MISSING = "writeback_missing"
     WRITEBACK_REJECTED = "writeback_rejected"
     QUOTA_SPEND_REJECTED = "quota_spend_rejected"
+    TERMINAL_CLOSEOUT_REJECTED = "terminal_closeout_rejected"
     CANCELLED = "cancelled"
     PERMISSION_DENIED = "permission_denied"
     BUDGET_REJECTED = "budget_rejected"
@@ -139,13 +166,17 @@ class SettlementFailure:
     kind: SettlementFailureKind
     step_kind: SettlementStepKind
     reason: str
+    details: Mapping[str, Any] | None = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "kind": self.kind.value,
             "step_kind": self.step_kind.value,
             "reason": self.reason,
         }
+        if self.details:
+            result["details"] = dict(self.details)
+        return result
 
 
 T = TypeVar("T")
@@ -175,6 +206,7 @@ class SettlementResult(Generic[T]):
         step_kind: SettlementStepKind,
         reason: str,
         receipts: tuple[SettlementReceipt, ...] = (),
+        details: Mapping[str, Any] | None = None,
     ) -> SettlementResult[T]:
         return cls(
             value=None,
@@ -183,6 +215,7 @@ class SettlementResult(Generic[T]):
                 kind=kind,
                 step_kind=step_kind,
                 reason=reason,
+                details=details,
             ),
         )
 
@@ -254,6 +287,36 @@ def settlement_result_payload(result: SettlementResult[Any]) -> dict[str, Any]:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _valid_identity_value(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _identity_state(
+    required_values: Sequence[Any],
+    *,
+    optional_values: Sequence[tuple[bool, Any]] = (),
+    expected: str | None = None,
+) -> tuple[bool, bool]:
+    required_complete = all(
+        _valid_identity_value(value) for value in required_values
+    )
+    optional_complete = all(
+        not present or _valid_identity_value(value)
+        for present, value in optional_values
+    )
+    expected_complete = expected is None or _valid_identity_value(expected)
+    complete = required_complete and optional_complete and expected_complete
+    observed = [value for value in required_values if _valid_identity_value(value)]
+    observed.extend(
+        value
+        for present, value in optional_values
+        if present and _valid_identity_value(value)
+    )
+    if expected is not None and _valid_identity_value(expected):
+        observed.append(expected)
+    return complete, complete and len(set(observed)) == 1
 
 
 def effect_program_from_ordered_steps(
@@ -367,6 +430,129 @@ def interpret_quota_should_run_packet(
         interpretation=interpretation,
         observation=observation,
         next_effect=next_effect,
+    )
+
+
+def interpret_turn_journal(
+    journal: Mapping[str, Any],
+    *,
+    goal_id: str | None = None,
+    agent_id: str | None = None,
+    turn_key: str | None = None,
+    capabilities: Sequence[str] = (),
+) -> EffectTurn:
+    """Read one fenced Turn journal through the canonical effect slots."""
+
+    plan = _mapping(journal.get("plan"))
+    envelope = _mapping(plan.get("turn_envelope"))
+    transaction = _mapping(plan.get("transaction"))
+    settlement = _mapping(transaction.get("settlement_plan"))
+    identity = _mapping(settlement.get("identity"))
+    host_result = _mapping(journal.get("host_result"))
+    receipt = _mapping(journal.get("receipt"))
+
+    goal_complete, goal_matches = _identity_state(
+        (
+            journal.get("goal_id"),
+            envelope.get("goal_id"),
+            identity.get("goal_id"),
+        ),
+        expected=goal_id,
+    )
+    owner_complete, owner_matches = _identity_state(
+        (envelope.get("agent_id"), identity.get("agent_id")),
+        expected=agent_id,
+    )
+    turn_key_complete, turn_key_matches = _identity_state(
+        (journal.get("turn_key"), transaction.get("turn_key")),
+        optional_values=(
+            ("turn_key" in host_result, host_result.get("turn_key")),
+            ("turn_key" in receipt, receipt.get("turn_key")),
+        ),
+        expected=turn_key,
+    )
+
+    violations: list[TurnJournalViolation] = []
+    if not goal_complete:
+        violations.append(TurnJournalViolation.GOAL_IDENTITY_MISSING)
+    elif not goal_matches:
+        violations.append(TurnJournalViolation.GOAL_MISMATCH)
+    if not owner_complete:
+        violations.append(TurnJournalViolation.OWNER_IDENTITY_MISSING)
+    elif not owner_matches:
+        violations.append(TurnJournalViolation.OWNER_MISMATCH)
+    if not turn_key_complete:
+        violations.append(TurnJournalViolation.TURN_KEY_IDENTITY_MISSING)
+    elif not turn_key_matches:
+        violations.append(TurnJournalViolation.TURN_KEY_MISMATCH)
+
+    raw_completed_phases = journal.get("completed_phases")
+    if isinstance(raw_completed_phases, list):
+        completed_phases = tuple(str(phase) for phase in raw_completed_phases)
+        phases_form_ordered_prefix = completed_phases == TURN_TRANSACTION_PHASES[
+            : len(completed_phases)
+        ]
+        if not phases_form_ordered_prefix:
+            violations.append(
+                TurnJournalViolation.COMPLETED_PHASES_NOT_ORDERED_PREFIX
+            )
+    else:
+        completed_phases = ()
+        phases_form_ordered_prefix = False
+        violations.append(TurnJournalViolation.COMPLETED_PHASES_INVALID)
+
+    journal_status = str(journal.get("status") or "")
+    tombstone_retained = journal_status in {"committed", "stopped", "failed"}
+    if journal_status in {"in_progress", "scheduler_action_required"}:
+        violations.append(TurnJournalViolation.JOURNAL_NOT_TERMINAL)
+    elif not tombstone_retained:
+        violations.append(TurnJournalViolation.JOURNAL_STATUS_UNSUPPORTED)
+
+    replay_legal = not violations
+    context = {
+        "replay_legal": replay_legal,
+        "goal_matches": goal_matches,
+        "owner_matches": owner_matches,
+        "turn_key_matches": turn_key_matches,
+        "phases_form_ordered_prefix": phases_form_ordered_prefix,
+        "journal_status": journal_status,
+        "tombstone_retained": tombstone_retained,
+        "completed_phases": completed_phases,
+        "violations": tuple(violation.value for violation in violations),
+    }
+    return EffectTurn(
+        request=EffectRequest(
+            kind="turn_journal",
+            source="turn_journal",
+            goal_id=goal_id,
+            agent_id=agent_id,
+            capabilities=tuple(capabilities),
+            context=context,
+        ),
+        interpretation=EffectInterpretation(
+            route="turn_journal_replay",
+            obligation="observe_fenced_replay",
+            interaction_mode="read_only",
+        ),
+        observation=EffectObservation(
+            decision="replay_legal" if replay_legal else "replay_blocked",
+            should_run=False,
+            effective_action=("observe_replay" if replay_legal else "block_replay"),
+            recommended_action=(
+                "Retain the terminal Turn journal tombstone."
+                if replay_legal
+                else "Inspect the structured Turn journal violations before replay."
+            ),
+            protocol_summary=(
+                "Turn journal replay is legal and effect-free."
+                if replay_legal
+                else (
+                    "Turn journal replay is blocked by "
+                    f"{len(violations)} structured violation(s)."
+                )
+            ),
+        ),
+        next_effect=EffectNext(),
     )
 
 

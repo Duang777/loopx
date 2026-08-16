@@ -7,12 +7,17 @@ import pytest
 from loopx.control_plane.goals.goal_frontier import (
     derive_goal_frontier_replan_obligation_from_summaries,
 )
+from loopx.control_plane.goals.goal_frontier.ack_policy import (
+    replan_successor_transition_ack,
+)
 from loopx.control_plane.goals.goal_frontier.replan_rules import (
     GOAL_FRONTIER_REPLAN_RULE_ORDER,
     GoalFrontierReplanFacts,
     GoalFrontierReplanRule,
     select_goal_frontier_replan_rule,
 )
+from loopx.control_plane.todos.addition import require_replan_successor_scope
+from loopx.control_plane.todos.summary_item import compact_todo_summary_item
 
 
 @pytest.mark.parametrize(
@@ -53,7 +58,6 @@ from loopx.control_plane.goals.goal_frontier.replan_rules import (
                 "acceptance_gap_count": 1,
                 "selectable_frontier_advancement": 1,
                 "outcome_checkpoint_replan_required": True,
-                "acceptance_allows_watch_lane_continuation": True,
             },
             GoalFrontierReplanRule.VISION_ACCEPTANCE_GAP,
             True,
@@ -65,24 +69,6 @@ from loopx.control_plane.goals.goal_frontier.replan_rules import (
             },
             GoalFrontierReplanRule.LONG_TODO_CHAIN,
             True,
-        ),
-        (
-            {
-                "long_todo_chain_triggered": True,
-                "long_todo_chain_acknowledged": True,
-                "selectable_frontier_advancement": 15,
-            },
-            GoalFrontierReplanRule.LONG_TODO_CHAIN_ACKNOWLEDGED,
-            False,
-        ),
-        (
-            {
-                "watch_lane_continuation_acknowledged": True,
-                "monitor_only_lane": True,
-                "monitor_count": 1,
-            },
-            GoalFrontierReplanRule.WATCH_LANE_CONTINUATION_ACKNOWLEDGED,
-            False,
         ),
         (
             {
@@ -119,6 +105,24 @@ from loopx.control_plane.goals.goal_frontier.replan_rules import (
             },
             GoalFrontierReplanRule.ADVANCEMENT_REMAINS,
             False,
+        ),
+        (
+            {
+                "monitor_only_lane": True,
+                "monitor_count": 1,
+                "future_monitor_schedule_present": True,
+            },
+            GoalFrontierReplanRule.FUTURE_MONITOR_WAIT,
+            False,
+        ),
+        (
+            {
+                "monitor_only_lane": True,
+                "monitor_count": 1,
+                "monitor_schedule_gap_count": 1,
+            },
+            GoalFrontierReplanRule.MONITOR_FRONTIER_EXHAUSTED,
+            True,
         ),
         (
             {"monitor_only_lane": True, "monitor_count": 1},
@@ -213,3 +217,306 @@ def test_current_agent_advancement_satisfies_scoped_vision_frontier() -> None:
     )
 
     assert obligation is None
+
+
+def test_exact_replan_successor_uses_authoritative_todo_source() -> None:
+    obligation_id = "replan-0123456789abcdef"
+    frontier_identity = "progress:abcdef0123456789"
+    successor = compact_todo_summary_item(
+        {
+            "todo_id": "todo_0123456789ab",
+            "text": "Run the selected bounded experiment.",
+            "status": "open",
+            "task_class": "advancement_task",
+            "claimed_by": "current-agent",
+            "replan_obligation_id": obligation_id,
+            "action_kind": "validate",
+            "target_key": "experiment:selected-bounded-slice",
+        }
+    )
+    unrelated_display_items = [
+        _advancement(f"todo_{index:012x}", "current-agent") for index in range(3)
+    ]
+
+    ack = replan_successor_transition_ack(
+        {"first_executable_items": unrelated_display_items},
+        agent_id="current-agent",
+        replan_obligation={
+            "obligation_id": obligation_id,
+            "frontier_identity": frontier_identity,
+            "satisfying_semantic_outcomes": ["new_runnable_successor"],
+        },
+        agent_todo_items=[*unrelated_display_items, successor],
+    )
+
+    assert successor["replan_obligation_id"] == obligation_id
+    assert ack is not None
+    assert ack["frontier_identity"] == frontier_identity
+    assert ack["semantic_delta"]["successor_todo_id"] == successor["todo_id"]
+    assert ack["semantic_delta"]["outcomes"] == ["new_runnable_successor"]
+    assert ack["semantic_delta"]["successor_binding"] == {
+        "action_kind": "validate",
+        "target_key": "experiment:selected-bounded-slice",
+    }
+
+
+def test_untyped_replan_successor_cannot_close_replan() -> None:
+    obligation_id = "replan-0123456789abcdef"
+    successor = {
+        **_advancement("todo_0123456789ab", "current-agent"),
+        "replan_obligation_id": obligation_id,
+    }
+
+    ack = replan_successor_transition_ack(
+        {"first_executable_items": [successor]},
+        agent_id="current-agent",
+        replan_obligation={
+            "obligation_id": obligation_id,
+            "satisfying_semantic_outcomes": ["new_runnable_successor"],
+        },
+        agent_todo_items=[successor],
+    )
+
+    assert ack is None
+
+
+def test_replan_successor_authoring_requires_typed_action_and_target() -> None:
+    with pytest.raises(ValueError, match="typed action_kind"):
+        require_replan_successor_scope(
+            role="agent",
+            task_class="advancement_task",
+            claimed_by="current-agent",
+            obligation_id="replan-0123456789abcdef",
+            action_kind=None,
+            target_key=None,
+            explore_result_node_refs=None,
+        )
+
+    assert require_replan_successor_scope(
+        role="agent",
+        task_class="advancement_task",
+        claimed_by="current-agent",
+        obligation_id="replan-0123456789abcdef",
+        action_kind="validate",
+        target_key="experiment:selected-bounded-slice",
+        explore_result_node_refs=None,
+    ) == "replan-0123456789abcdef"
+
+    with pytest.raises(ValueError, match="16 lowercase hex"):
+        require_replan_successor_scope(
+            role="agent",
+            task_class="advancement_task",
+            claimed_by="current-agent",
+            obligation_id="replan-not-current",
+            action_kind="validate",
+            target_key="experiment:selected-bounded-slice",
+            explore_result_node_refs=None,
+        )
+
+
+def test_unrelated_actionable_todo_cannot_close_replan() -> None:
+    obligation_id = "replan-0123456789abcdef"
+
+    ack = replan_successor_transition_ack(
+        {"first_executable_items": []},
+        agent_id="current-agent",
+        replan_obligation={
+            "obligation_id": obligation_id,
+            "satisfying_semantic_outcomes": ["new_runnable_successor"],
+        },
+        agent_todo_items=[
+            {
+                **_advancement("todo_0123456789ab", "current-agent"),
+                "replan_obligation_id": "replan-fedcba9876543210",
+            }
+        ],
+    )
+
+    assert ack is None
+
+
+def test_empty_authoritative_todo_source_does_not_use_stale_display_item() -> None:
+    obligation_id = "replan-0123456789abcdef"
+    stale_display_item = {
+        **_advancement("todo_0123456789ab", "current-agent"),
+        "replan_obligation_id": obligation_id,
+    }
+
+    ack = replan_successor_transition_ack(
+        {"first_executable_items": [stale_display_item]},
+        agent_id="current-agent",
+        replan_obligation={
+            "obligation_id": obligation_id,
+            "satisfying_semantic_outcomes": ["new_runnable_successor"],
+        },
+        agent_todo_items=[],
+    )
+
+    assert ack is None
+
+
+def test_terminal_ack_cannot_hide_invalid_monitor_schedule() -> None:
+    monitor = {
+        "todo_id": "todo_monitor_gap",
+        "status": "open",
+        "task_class": "continuous_monitor",
+        "claimed_by": "current-agent",
+        "target_key": "bounded-monitor",
+        "cadence": "1d",
+    }
+    terminal_ack = {
+        "schema_version": "autonomous_replan_ack_v0",
+        "recorded": True,
+        "generated_at": "2026-08-13T09:00:00+08:00",
+        "semantic_delta": {
+            "accepted": True,
+            "outcomes": ["coverage_backed_exploration_exhausted"],
+        },
+    }
+
+    obligation = derive_goal_frontier_replan_obligation_from_summaries(
+        user_todo_summary={"open_count": 0},
+        agent_todo_summary={
+            "open_count": 1,
+            "claimed_advancement_open_count": 0,
+            "current_agent_claimed_advancement_count": 0,
+            "unclaimed_priority_open_items": [],
+            "executable_backlog_items": [],
+            "claim_scope": {"other_agent_claimed_items": []},
+            "monitor_open_items": [monitor],
+            "monitor_due_count": 0,
+            "monitor_schedule_gap_count": 1,
+        },
+        work_lane_contract={
+            "lane": "continuous_monitor",
+            "must_attempt_work": False,
+        },
+        agent_id="current-agent",
+        existing_replan_obligation=None,
+        latest_replan_ack=terminal_ack,
+    )
+
+    assert obligation is not None
+    assert obligation["triggers"][0]["kind"] == "frontier_exhausted_monitor_lane"
+    assert obligation["triggers"][0]["future_monitor_schedule_present"] is False
+
+
+def _ack(generated_at: str, delta_kind: str = "goal_vision_patch") -> dict[str, object]:
+    return {
+        "generated_at": generated_at,
+        "schema_version": "autonomous_replan_ack_v0",
+        "recorded": True,
+        "delta_contract": {
+            "schema_version": "repair_delta_contract_v0",
+            "required": True,
+            "delta_present": True,
+            "delta_kinds": [delta_kind],
+        },
+    }
+
+
+def _vision_gap_with_generated_at(generated_at: str) -> list[dict[str, object]]:
+    return [
+        {
+            "kind": "vision_successor_required",
+            "acceptance_summary": "Write the next bounded agent vision.",
+            "replan_trigger_summary": "stage vision closed while the goal remains active",
+            "advancement_policy": "repeat_until_closed",
+            "generated_at": generated_at,
+        }
+    ]
+
+
+def test_fresh_replan_ack_settles_repeat_vision_gap_on_empty_frontier() -> None:
+    gap_time = "2026-08-13T08:00:00+08:00"
+    ack_time = "2026-08-13T09:00:00+08:00"
+
+    obligation = derive_goal_frontier_replan_obligation_from_summaries(
+        user_todo_summary={"open_count": 1},
+        agent_todo_summary={
+            "open_count": 0,
+            "claimed_advancement_open_count": 0,
+            "current_agent_claimed_advancement_count": 0,
+            "unclaimed_priority_open_items": [],
+            "executable_backlog_items": [],
+            "claim_scope": {"other_agent_claimed_items": []},
+        },
+        work_lane_contract={"lane": "advancement_task", "must_attempt_work": True},
+        agent_id="current-agent",
+        existing_replan_obligation=None,
+        acceptance_gaps=_vision_gap_with_generated_at(gap_time),
+        latest_replan_ack=_ack(ack_time),
+    )
+
+    assert obligation is None, "a fresh ack must settle the repeat vision gap"
+
+
+def test_stale_ack_does_not_settle_newer_vision_gap() -> None:
+    gap_time = "2026-08-13T09:00:00+08:00"
+    ack_time = "2026-08-13T08:00:00+08:00"
+
+    obligation = derive_goal_frontier_replan_obligation_from_summaries(
+        user_todo_summary={"open_count": 0},
+        agent_todo_summary={
+            "open_count": 0,
+            "claimed_advancement_open_count": 0,
+            "current_agent_claimed_advancement_count": 0,
+            "unclaimed_priority_open_items": [],
+            "executable_backlog_items": [],
+            "claim_scope": {"other_agent_claimed_items": []},
+        },
+        work_lane_contract={"lane": "advancement_task", "must_attempt_work": True},
+        agent_id="current-agent",
+        existing_replan_obligation=None,
+        acceptance_gaps=_vision_gap_with_generated_at(gap_time),
+        latest_replan_ack=_ack(ack_time, delta_kind="successor_link"),
+    )
+
+    assert obligation is not None, "an older non-vision ack must not settle a newer gap"
+
+
+def test_open_user_action_owns_empty_frontier_without_obligation() -> None:
+    obligation = derive_goal_frontier_replan_obligation_from_summaries(
+        user_todo_summary={
+            "open_count": 1,
+            "gate_open_items": [],
+        },
+        agent_todo_summary={
+            "open_count": 0,
+            "claimed_advancement_open_count": 0,
+            "current_agent_claimed_advancement_count": 0,
+            "unclaimed_priority_open_items": [],
+            "executable_backlog_items": [],
+            "claim_scope": {"other_agent_claimed_items": []},
+        },
+        work_lane_contract={"lane": "advancement_task", "must_attempt_work": True},
+        agent_id="current-agent",
+        existing_replan_obligation=None,
+    )
+
+    assert obligation is None, "open user-owned work owns the empty frontier"
+
+def test_vision_patch_ack_settles_newer_gap_from_the_ack_turn() -> None:
+    gap_time = "2026-08-13T09:10:00+08:00"
+    ack_time = "2026-08-13T09:00:00+08:00"
+
+    obligation = derive_goal_frontier_replan_obligation_from_summaries(
+        user_todo_summary={"open_count": 1},
+        agent_todo_summary={
+            "open_count": 0,
+            "claimed_advancement_open_count": 0,
+            "current_agent_claimed_advancement_count": 0,
+            "unclaimed_priority_open_items": [],
+            "executable_backlog_items": [],
+            "claim_scope": {"other_agent_claimed_items": []},
+        },
+        work_lane_contract={"lane": "advancement_task", "must_attempt_work": True},
+        agent_id="current-agent",
+        existing_replan_obligation=None,
+        acceptance_gaps=_vision_gap_with_generated_at(gap_time),
+        latest_replan_ack=_ack(ack_time, delta_kind="goal_vision_patch"),
+    )
+
+    assert obligation is None, (
+        "a goal_vision_patch ack settles vision gaps written by the ack turn itself"
+    )

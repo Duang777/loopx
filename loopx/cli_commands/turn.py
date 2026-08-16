@@ -5,20 +5,30 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+from ..capabilities.explore.composition_frontier import (
+    project_live_explore_composition_frontier,
+)
 from ..control_plane.quota.live_decision import build_live_quota_should_run_decision
 from ..control_plane.quota.turn_envelope import build_turn_envelope
 from ..control_plane.runtime.status_projection_cache import (
     resolve_status_projection_cache_runtime_root,
+)
+from ..control_plane.todos.durable_completion import (
+    project_durable_completion_intent,
+    project_durable_completion_outcome,
+    read_persisted_todo_record,
 )
 from ..control_plane.scheduler.execution_context import (
     scheduler_execution_context_for_turn,
 )
 from ..control_plane.turn_driver import (
     LOOPX_TURN_EXECUTION_SCHEMA_VERSION,
+    LOOPX_TURN_JOURNAL_INSPECTION_SCHEMA_VERSION,
     LOOPX_TURN_SESSION_BINDING_SCHEMA_VERSION,
     build_loopx_turn_command_validator,
     build_loopx_turn_plan,
     codex_cli_session_binding,
+    inspect_loopx_turn_journal,
     load_loopx_turn_plan_from_journal,
     run_codex_cli_host,
     run_loopx_turn_once,
@@ -27,7 +37,7 @@ from ..control_plane.turn_driver import (
 from ..quota import spend_quota_slot
 from ..state_refresh import refresh_state_run
 from ..status import AUTONOMOUS_REPLAN_PERIODIC_LOOKBACK, collect_status
-from ..todos import complete_goal_todo, update_goal_todo
+from ..todos import complete_goal_todo, resolve_todo_state_path, update_goal_todo
 from .lark_inbox import build_lark_operator_inbox_urgency_projector
 
 PrintPayload = Callable[
@@ -48,9 +58,18 @@ def register_turn_commands(
 ) -> None:
     parser = subparsers.add_parser(
         "turn",
-        help="Plan or run one governed external-host turn from a live LoopX decision.",
+        help="Plan, run, or inspect one governed external-host Turn.",
     )
     command_sub = parser.add_subparsers(dest="turn_command", required=True)
+    inspect_journal = command_sub.add_parser(
+        "inspect-journal",
+        help="Inspect one canonical fenced Turn journal without executing effects.",
+    )
+    add_subcommand_format(inspect_journal)
+    inspect_journal.add_argument("--goal-id", required=True)
+    inspect_journal.add_argument("--agent-id", required=True)
+    inspect_journal.add_argument("--turn-key", required=True)
+
     plan = command_sub.add_parser(
         "plan",
         help="Build one typed read-only host decision without launching or writing.",
@@ -270,6 +289,45 @@ def _render_loopx_turn_execution_markdown(payload: dict[str, object]) -> str:
     )
 
 
+def _render_loopx_turn_journal_inspection_markdown(
+    payload: dict[str, object],
+) -> str:
+    if not payload.get("ok"):
+        error = payload.get("error") or "Turn journal inspection failed"
+        return f"LoopX Turn journal inspection failed: {error}"
+    completed_phases = payload.get("completed_phases")
+    violations = payload.get("violations")
+    return "\n".join(
+        [
+            "# LoopX Turn Journal Inspection",
+            f"- decision: {payload.get('decision')}",
+            f"- journal_status: {payload.get('journal_status')}",
+            f"- replay_legal: {payload.get('replay_legal')}",
+            f"- goal_matches: {payload.get('goal_matches')}",
+            f"- owner_matches: {payload.get('owner_matches')}",
+            f"- turn_key_matches: {payload.get('turn_key_matches')}",
+            (
+                "- phases_form_ordered_prefix: "
+                f"{payload.get('phases_form_ordered_prefix')}"
+            ),
+            "- completed_phases: "
+            + (
+                ", ".join(str(value) for value in completed_phases)
+                if isinstance(completed_phases, list) and completed_phases
+                else "none"
+            ),
+            f"- tombstone_retained: {payload.get('tombstone_retained')}",
+            "- violations: "
+            + (
+                ", ".join(str(value) for value in violations)
+                if isinstance(violations, list) and violations
+                else "none"
+            ),
+            "- effects: none",
+        ]
+    )
+
+
 def handle_turn_command(
     args: argparse.Namespace,
     *,
@@ -280,6 +338,31 @@ def handle_turn_command(
 ) -> int | None:
     if args.command != "turn":
         return None
+    if args.turn_command == "inspect-journal":
+        try:
+            runtime_root = resolve_status_projection_cache_runtime_root(
+                registry_path=registry_path,
+                runtime_root_override=runtime_root_arg,
+            )
+            payload = inspect_loopx_turn_journal(
+                runtime_root,
+                goal_id=args.goal_id,
+                agent_id=args.agent_id,
+                turn_key=args.turn_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - typed CLI failure boundary
+            payload = {
+                "ok": False,
+                "schema_version": LOOPX_TURN_JOURNAL_INSPECTION_SCHEMA_VERSION,
+                "error": str(exc),
+                "effects": [],
+            }
+        print_payload(
+            payload,
+            output_format(args),
+            _render_loopx_turn_journal_inspection_markdown,
+        )
+        return 0 if payload.get("ok") else 1
     try:
         scan_roots = [Path(item).expanduser() for item in args.scan_path]
         if not scan_roots:
@@ -318,6 +401,9 @@ def handle_turn_command(
             route_source="loopx_turn_plan",
             scheduler_execution_context=scheduler_context,
             operator_inbox_urgency_projector=operator_inbox_urgency_projector,
+            bounded_research_frontier_projector=(
+                project_live_explore_composition_frontier
+            ),
         )
         resume_identity = {
             "goal_id": args.resume_goal_id,
@@ -443,7 +529,12 @@ def handle_turn_command(
                 else None
             )
 
-            def writeback(result: dict[str, object]) -> dict[str, object]:
+            def writeback(
+                result: dict[str, object],
+                *,
+                completion_todo_id: str | None = None,
+                completion_turn_key: str | None = None,
+            ) -> dict[str, object]:
                 # The host workspace is execution context, not state authority.
                 state_project = None
                 result_kind = str(result.get("result_kind") or "")
@@ -485,11 +576,37 @@ def handle_turn_command(
                     vision_unchanged_reason=(
                         str(result.get("vision_unchanged_reason") or "") or None
                     ),
+                    completion_todo_id=completion_todo_id,
+                    completion_turn_key=completion_turn_key,
                     dry_run=False,
                     sync_global=not bool(args.no_global_sync),
                 )
 
-            def completion_writeback(result: dict[str, object]) -> dict[str, object]:
+            def completion_intent(_result: dict[str, object]) -> dict[str, object]:
+                todo_id = str(selected_todo.get("todo_id") or "")
+                if not todo_id:
+                    raise ValueError(
+                        "validated_completion requires one selected todo for lifecycle writeback"
+                    )
+                _state_project, state_file = resolve_todo_state_path(
+                    registry_path=registry_path,
+                    goal_id=args.goal_id,
+                    project=None,
+                    state_file=None,
+                )
+                durable_todo, existing_todo_ids = read_persisted_todo_record(
+                    state_file,
+                    todo_id=todo_id,
+                    registry_path=registry_path,
+                    goal_id=args.goal_id,
+                )
+                return project_durable_completion_intent(
+                    todo=durable_todo,
+                    expected_todo_id=todo_id,
+                    existing_todo_ids=existing_todo_ids,
+                )
+
+            def todo_completion(result: dict[str, object]) -> dict[str, object]:
                 todo_id = str(selected_todo.get("todo_id") or "")
                 if not todo_id:
                     raise ValueError(
@@ -510,19 +627,66 @@ def handle_turn_command(
                     project=None,
                     dry_run=False,
                 )
-                refresh = writeback(result)
+                # Project the continuation the Todo lifecycle durably recorded,
+                # never a host-normalized continuation. Contradictory or
+                # dangling durable state fails closed before any further
+                # writeback so the typed settlement sees the truthful outcome.
+                state_file = completion.get("state_file")
+                if not isinstance(state_file, str) or not state_file:
+                    return {
+                        "ok": False,
+                        "appended": False,
+                        "reason": (
+                            "validated completion lifecycle did not report its "
+                            "durable Todo state file"
+                        ),
+                    }
+                try:
+                    durable_todo, existing_todo_ids = read_persisted_todo_record(
+                        Path(state_file),
+                        todo_id=todo_id,
+                        registry_path=registry_path,
+                        goal_id=args.goal_id,
+                    )
+                    completion_outcome = project_durable_completion_outcome(
+                        todo=durable_todo,
+                        expected_todo_id=todo_id,
+                        existing_todo_ids=existing_todo_ids,
+                    )
+                except ValueError as exc:
+                    return {
+                        "ok": False,
+                        "appended": False,
+                        "reason": f"durable completion projection failed: {exc}",
+                    }
                 return {
-                    "ok": bool(completion.get("ok")) and bool(refresh.get("ok")),
+                    "ok": bool(completion.get("ok")),
                     # A completed Todo is idempotent under Turn replay: after an
                     # interrupted journal write, the retry may observe it done.
                     "appended": bool(completion.get("completed")) and bool(
+                        completion.get("changed")
+                        or completion.get("idempotent_replay")
+                    ),
+                    "completion": completion_outcome,
+                }
+
+            def completion_writeback(result: dict[str, object]) -> dict[str, object]:
+                completion = todo_completion(result)
+                if not completion.get("ok"):
+                    return completion
+                todo_id = str(selected_todo.get("todo_id") or "")
+                refresh = writeback(
+                    result,
+                    completion_todo_id=todo_id,
+                    completion_turn_key=str(result["turn_key"]),
+                )
+                return {
+                    "ok": bool(refresh.get("ok")),
+                    "appended": bool(completion.get("appended")) and bool(
                         refresh.get("appended")
                     ),
                     "classification": refresh.get("classification"),
-                    "completion": {
-                        "todo_id": completion.get("todo_id"),
-                        "continuation": "active_goal",
-                    },
+                    "completion": completion["completion"],
                 }
 
             def current_status() -> dict[str, object]:
@@ -566,6 +730,9 @@ def handle_turn_command(
                     route_source="loopx_turn_run_once",
                     scheduler_execution_context=turn_scheduler_context,
                     operator_inbox_urgency_projector=operator_inbox_urgency_projector,
+                    bounded_research_frontier_projector=(
+                        project_live_explore_composition_frontier
+                    ),
                 )
                 hint = latest.get("scheduler_hint") if isinstance(latest.get("scheduler_hint"), dict) else {}
                 phase = hint.get("execution_phase")
@@ -604,6 +771,8 @@ def handle_turn_command(
                 task_validator=task_validator,
                 writeback=writeback if args.execute else None,
                 completion_writeback=completion_writeback if args.execute else None,
+                completion_intent=completion_intent if args.execute else None,
+                terminal_closeout=todo_completion if args.execute else None,
                 spend=spend if args.execute else None,
                 scheduler=scheduler if args.execute else None,
             )

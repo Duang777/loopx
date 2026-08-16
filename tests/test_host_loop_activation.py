@@ -257,6 +257,27 @@ def test_pi_is_not_a_native_goal_host() -> None:
     }
 
 
+def test_deepseek_harness_is_an_exact_host_type_with_external_loop_activation() -> None:
+    assert normalize_agent_type("dsh") == "deepseek-harness"
+    assert normalize_agent_type("DeepSeek Harness") == "deepseek-harness"
+    assert agent_type_for_host_surface("deepseek-harness") == "deepseek-harness"
+    assert agent_type_for_host_surface("dsh") == "deepseek-harness"
+    assert scheduler_command_binding_for_agent_type("deepseek-harness") == {
+        "runtime_profile": "generic_cli"
+    }
+
+    packet = build_host_loop_activation_packet(
+        agent_type="deepseek-harness",
+        goal_id="fixture-goal",
+        agent_id="dsh-fixture",
+        registered_agents=["dsh-fixture"],
+    )
+    assert packet["host_surface"] == "deepseek_harness_automation_loop", packet
+    assert packet["activation_method"] == "external_loop_driver", packet
+    assert "--runtime-profile generic_cli" in packet["commands"]["heartbeat_prompt"], packet
+    assert "scripts/dsh_turn_host_adapter.py" in packet["entry_command_hint"], packet
+
+
 @pytest.mark.parametrize(
     "runtime_profile",
     ("ark_managed_agent_goal", "codex_app_ssh_goal"),
@@ -307,6 +328,42 @@ def test_goal_hosts_share_narrow_runtime_skill_routing(
     )
     assert "a segment is progress, not a new Goal boundary" in task_body
     assert "do not create a successor host Goal merely to continue" in task_body
+
+
+def test_goal_hosts_reuse_thin_dispatch_and_stay_compact() -> None:
+    shared_rules = (
+        "Run quota; execute `interaction_contract` next—no detours.",
+        "No learning queue unless asked.",
+    )
+    common = {
+        "goal_id": "goal-prompt-composition-fixture",
+        "thin": True,
+        "agent_id": "codex-main-control",
+        "agent_scopes": ["visible goal delivery lane"],
+        "registered_agents": ["codex-main-control"],
+    }
+    generic = build_heartbeat_prompt(
+        **common,
+        runtime_profile="codex_app_heartbeat",
+    )
+    goal_hosts = [
+        build_heartbeat_prompt(**common, runtime_profile="codex_app_ssh_goal"),
+        build_heartbeat_prompt(**common, runtime_profile="codex_cli"),
+        build_heartbeat_prompt(**common, runtime_profile="ark_managed_agent_goal"),
+        build_heartbeat_prompt(
+            **common,
+            runtime_profile="generic_cli",
+            visible_goal_host="traex-cli",
+        ),
+    ]
+
+    for rule in shared_rules:
+        assert rule in generic["task_body"]
+    for payload in goal_hosts:
+        for rule in shared_rules:
+            assert rule in payload["task_body"]
+        assert payload["interface_budget"]["budget_char_count"] <= 2_800
+        assert payload["interface_budget"]["within_budget"] is True
 
 
 def test_native_codex_goal_wait_rule_matches_blocked_resume_contract() -> None:
@@ -491,6 +548,9 @@ def test_codex_app_thin_prompt_embeds_profile_only_in_quota_command() -> None:
     assert "--codex-app" in prompt["task_body"]
     assert "host_surface" not in prompt["task_body"]
     assert "scheduler_owner" not in prompt["task_body"]
+    assert "Run quota; execute `interaction_contract` next—no detours." in prompt[
+        "task_body"
+    ]
     assert "compact_prompt_command" not in prompt
     assert "brief_prompt_command" not in prompt
     assert prompt["interface_budget"]["within_budget"] is True
@@ -509,6 +569,24 @@ def test_opencode_activation_uses_bridge_tool_and_generic_cli_quota() -> None:
     assert packet["host_mutation"]["host_tool"] == "loopx_goal_activate"
     assert packet["setup_command"].endswith(
         "--surface opencode --with-goal-bridge"
+    )
+    assert "--runtime-profile generic_cli" in packet["commands"]["heartbeat_prompt"]
+
+
+def test_opencode2_activation_starts_the_goal_worker() -> None:
+    packet = build_host_loop_activation_packet(
+        agent_type="opencode2",
+        goal_id="fixture-goal",
+        agent_id="opencode2-fixture",
+        registered_agents=["opencode2-fixture"],
+    )
+
+    assert packet["host_surface"] == "opencode2_goal_worker_mode"
+    assert packet["activation_method"] == "start_opencode2_goal_worker"
+    assert packet["host_mutation"]["host_tool"] == "opencode2-goal-worker"
+    assert packet["host_mutation"]["cli_can_mutate_directly"] is True
+    assert any(
+        "opencode2-goal-worker" in str(step) for step in packet["activation_steps"]
     )
     assert "--runtime-profile generic_cli" in packet["commands"]["heartbeat_prompt"]
 

@@ -12,6 +12,9 @@ from ...rollout_event_log import (
     rollout_event_log_path,
 )
 from .effect_program import SETTLEMENT_IDENTITY_SCHEMA_VERSION, SettlementIdentity
+from .settlement_workspace_causality import (
+    delivery_workspace_causality_from_event_details,
+)
 
 HEARTBEAT_RECEIPT_SCHEMA_VERSION = "heartbeat_quota_receipt_v0"
 
@@ -235,6 +238,12 @@ def heartbeat_receipt_view(
             "todo_id": todo_id,
             "turn_instance_id": turn_instance_id,
         }
+        workspace_causality = delivery_workspace_causality_from_event_details(
+            details,
+            todo_id=todo_id,
+        )
+        if workspace_causality:
+            receipt["delivery_workspace_causality"] = workspace_causality
     return receipt
 
 

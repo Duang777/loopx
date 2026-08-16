@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 
 SUCCESSOR_REPLAN_REQUIRED_MODE = "successor_replan_required"
@@ -13,6 +13,7 @@ def build_execution_obligation(
     heartbeat_recommendation: dict[str, Any],
     work_lane_contract: dict[str, Any] | None = None,
     external_evidence_observation: dict[str, Any] | None = None,
+    user_gate_owns_frontier: bool = False,
     successor_replan_mode: str = SUCCESSOR_REPLAN_REQUIRED_MODE,
 ) -> dict[str, Any]:
     """Separate the worker execution contract from user-facing notification."""
@@ -73,38 +74,29 @@ def build_execution_obligation(
             ),
         }
     if should_run and recommended_mode == "autonomous_replan_required":
+        raw_replan_obligation = heartbeat_recommendation.get("replan_obligation")
         replan_obligation = (
-            heartbeat_recommendation.get("replan_obligation")
-            if isinstance(heartbeat_recommendation.get("replan_obligation"), dict)
+            cast(dict[str, Any], raw_replan_obligation)
+            if isinstance(raw_replan_obligation, dict)
             else {}
-        )
-        agent_todo_writeback_required = (
-            replan_obligation.get("agent_todo_writeback_required") is True
         )
         obligation = {
             "must_attempt_work": True,
             "kind": "autonomous_replan_required",
-            "minimum": (
-                "one_bounded_replan_with_agent_todo_writeback"
-                if agent_todo_writeback_required
-                else "one_bounded_replan_segment"
-            ),
+            "minimum": "one_bounded_replan_with_typed_outcome",
             "notify_is_execution_gate": False,
             "stall_threshold": replan_obligation.get("stall_threshold"),
             "contract_obligation": (
-                "apply autonomous_replan_obligation and create a concrete runnable "
-                "agent todo; explicit terminal no-follow-up is allowed only with "
-                "closure evidence"
-                if agent_todo_writeback_required
-                else "apply autonomous_replan_obligation before monitor-only work"
+                "apply autonomous_replan_obligation; create a typed concrete "
+                "runnable agent todo only when an executable target is known, "
+                "otherwise record an accepted typed semantic or coverage-backed "
+                "terminal outcome"
             ),
             "reason": (
                 "autonomous_replan_obligation is a machine execution contract; "
                 "quiet no-op is not allowed until the replan slice is validated or blocked"
             ),
         }
-        if agent_todo_writeback_required:
-            obligation["contract"] = "autonomous_replan_agent_todo_writeback"
         return obligation
     if should_run and recommended_mode == successor_replan_mode:
         return {
@@ -210,7 +202,7 @@ def build_execution_obligation(
                 "heartbeat_recommendation is explanatory"
             ),
         }
-    if should_run:
+    if should_run and not user_gate_owns_frontier:
         return {
             "must_attempt_work": True,
             "kind": effective_action or recommended_mode or "bounded_delivery",
@@ -219,6 +211,17 @@ def build_execution_obligation(
             "reason": (
                 "should_run=true means a Codex-actionable turn exists; heartbeat notify "
                 "only controls whether to interrupt the user"
+            ),
+        }
+    if should_run:
+        return {
+            "must_attempt_work": False,
+            "kind": "user_gate_quiet_wait",
+            "delivery_allowed": False,
+            "notify_is_execution_gate": False,
+            "reason": (
+                "the user owns the next step and the agent lane has no executable "
+                "work; wait quietly for the user instead of repeating the same turn"
             ),
         }
     return {

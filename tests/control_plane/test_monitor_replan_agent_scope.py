@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shlex
+
+from loopx.cli import build_parser
 from loopx.cli_commands.status import attach_agent_lane_next_actions
 from loopx.control_plane.agents.agent_lane_recommendation import (
     scope_status_item_to_agent_lane,
@@ -149,6 +152,106 @@ def test_peer_advancement_does_not_suppress_current_monitor_streak_replan() -> N
         "unclaimed_advancement_count": 0,
         "other_agent_claimed_advancement_count": 1,
     }
+
+
+def test_watch_only_monitor_streak_does_not_create_replan_obligation() -> None:
+    monitor = quota_todo_item(
+        todo_id="todo_watch_only_monitor",
+        index=1,
+        title="Observe public release liveness.",
+        task_class="continuous_monitor",
+        claimed_by=AGENT_ID,
+        target_key="github-pr-123",
+        consecutive_no_change="50",
+        cadence="30m",
+        next_due_at="2099-01-01T00:00:00+00:00",
+        watch_only="true",
+    )
+    payload = quota_status_payload(
+        goal_id=GOAL_ID,
+        status="active",
+        recommended_action="Observe liveness quietly.",
+        agent_todos=quota_todo_summary([monitor]),
+        coordination={
+            "agent_model": "peer_v1",
+            "registered_agents": [AGENT_ID],
+        },
+    )
+
+    guard = build_quota_should_run(
+        payload,
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+        scheduler_execution_context=(
+            GENERIC_CLI_OUTER_CONTROLLER_SCHEDULER_CONTEXT
+        ),
+    )
+
+    assert guard["decision"] != "autonomous_replan_required"
+    assert guard.get("autonomous_replan_obligation") is None
+    assert guard["goal_frontier_projection"]["monitor_only_lanes"]["present"] is False
+
+
+def test_rejected_replan_ack_reason_is_visible_in_quota_feedback() -> None:
+    monitor = quota_todo_item(
+        todo_id="todo_stalled_monitor",
+        index=1,
+        title="Watch bounded qualification evidence.",
+        task_class="continuous_monitor",
+        claimed_by=AGENT_ID,
+        target_key="qualification",
+        consecutive_no_change="5",
+        cadence="30m",
+        next_due_at="2099-01-01T00:00:00+00:00",
+        expires_at="2099-01-02T00:00:00+00:00",
+    )
+    payload = quota_status_payload(
+        goal_id=GOAL_ID,
+        status="active",
+        recommended_action="Replan the stalled qualification lane.",
+        agent_todos=quota_todo_summary([monitor]),
+        coordination={
+            "agent_model": "peer_v1",
+            "registered_agents": [AGENT_ID],
+        },
+        latest_runs=[
+            {
+                "generated_at": "2026-08-11T00:00:00Z",
+                "agent_id": AGENT_ID,
+                "classification": "replan_noop",
+                "replan_ack_feedback": {
+                    "schema_version": "replan_ack_feedback_v0",
+                    "generated_at": "2026-08-11T00:00:00Z",
+                    "agent_id": AGENT_ID,
+                    "classification": "replan_noop",
+                    "rejected_claims": [
+                        {
+                            "kind": "watch_lane_continuation",
+                            "reason": "monitor is missing expires_at or resume_when",
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+
+    guard = build_quota_should_run(
+        payload,
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+        scheduler_execution_context=(
+            GENERIC_CLI_OUTER_CONTROLLER_SCHEDULER_CONTEXT
+        ),
+    )
+
+    obligation = guard["autonomous_replan_obligation"]
+    assert obligation["replan_ack_feedback"]["rejected_claims"][0]["kind"] == (
+        "watch_lane_continuation"
+    )
+    assert "previous replan ACK was rejected" in obligation["recommended_action"]
+    assert guard["heartbeat_recommendation"]["replan_obligation"][
+        "replan_ack_feedback"
+    ] == obligation["replan_ack_feedback"]
 
 
 def test_current_agent_advancement_still_preempts_monitor_streak_replan() -> None:
@@ -495,7 +598,6 @@ def test_nonblocking_user_action_does_not_suppress_empty_frontier_replan() -> No
                 "text": "create the next runnable experiment slice",
             }
         ],
-        "agent_todo_writeback_required": True,
         "stop_condition": "stop on owner-only authority",
     }
     payload = quota_status_payload(
@@ -528,36 +630,47 @@ def test_nonblocking_user_action_does_not_suppress_empty_frontier_replan() -> No
     assert guard["execution_obligation"] == {
         "must_attempt_work": True,
         "kind": "autonomous_replan_required",
-        "minimum": "one_bounded_replan_with_agent_todo_writeback",
+        "minimum": "one_bounded_replan_with_typed_outcome",
         "notify_is_execution_gate": False,
         "stall_threshold": 2,
         "contract_obligation": (
-            "apply autonomous_replan_obligation and create a concrete runnable "
-            "agent todo; explicit terminal no-follow-up is allowed only with "
-            "closure evidence"
+            "apply autonomous_replan_obligation; create a typed concrete runnable "
+            "agent todo only when an executable target is known, otherwise record "
+            "an accepted typed semantic or coverage-backed terminal outcome"
         ),
         "reason": (
             "autonomous_replan_obligation is a machine execution contract; "
             "quiet no-op is not allowed until the replan slice is validated or blocked"
         ),
-        "contract": "autonomous_replan_agent_todo_writeback",
     }, guard
     contract = guard["interaction_contract"]
     assert contract["mode"] == "autonomous_replan", contract
     assert contract["user_channel"]["non_blocking"] is True, contract
     assert contract["agent_channel"]["must_attempt"] is True, contract
     cli_actions = contract["cli_channel"]["next_cli_actions"]
-    assert any(
-        "todo add" in action
-        and "--task-class advancement_task" in action
-        and f"--claimed-by {AGENT_ID}" in action
-        and "--agent-id" not in action
-        for action in cli_actions
-    ), cli_actions
-    assert any(
-        "--repair-delta-kind runnable_todo_set" in action
-        for action in cli_actions
-    ), cli_actions
+    refresh_action = next(action for action in cli_actions if "refresh-state" in action)
+    assert "--progress-surface-id <surface-id>" in refresh_action
+    assert "--progress-hypothesis-id <hypothesis-id>" in refresh_action
+    assert "--progress-probe-kind <probe-kind>" in refresh_action
+    assert "--progress-evidence-id <evidence-id>" in refresh_action
+    assert "typed-progress-identifiers-and-evidence" not in refresh_action
+    assert refresh_action.startswith("loopx --format json refresh-state ")
+    assert "--delivery-batch-scale" not in refresh_action
+    assert "--delivery-outcome" not in refresh_action
+    rendered_action = (
+        refresh_action.replace(
+            "<advanced|blocked|exploration_exhausted|no_followup>",
+            "advanced",
+        )
+        .replace("<surface-id>", "surface-new")
+        .replace("<hypothesis-id>", "hypothesis-new")
+        .replace("<probe-kind>", "probe-new")
+        .replace("<evidence-id>", "evidence-new")
+    )
+    parsed = build_parser().parse_args(shlex.split(rendered_action)[1:])
+    assert parsed.command == "refresh-state"
+    assert parsed.progress_result_class == "advanced"
+    assert not any("todo add" in action for action in cli_actions), cli_actions
 
 
 def test_blocking_user_gate_still_precedes_stalled_monitor_replan() -> None:

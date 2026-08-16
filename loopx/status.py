@@ -20,7 +20,6 @@ from .control_plane.work_items.delivery_batch_scale import (
 )
 from .control_plane.work_items.delivery_outcome import (
     DELIVERY_OUTCOME_NOT_CONFIGURED,
-    PROGRESS_DELIVERY_OUTCOMES,
     delivery_turn_kind_for_run,
 )
 from .doctor import (
@@ -92,7 +91,6 @@ from .control_plane.work_items.autonomous_replan_ack import (
 )
 from .control_plane.work_items.autonomous_replan_obligation import (
     AUTONOMOUS_REPLAN_STALL_THRESHOLD as _AUTONOMOUS_REPLAN_STALL_THRESHOLD_READ_MODEL,
-    AUTONOMOUS_REPLAN_TRIGGER_PATTERNS as _AUTONOMOUS_REPLAN_TRIGGER_PATTERNS_READ_MODEL,
     MAX_AUTONOMOUS_REPLAN_TRIGGERS as _MAX_AUTONOMOUS_REPLAN_TRIGGERS_READ_MODEL,
 )
 from .control_plane.work_items.backlog_hygiene import (
@@ -182,6 +180,10 @@ from .control_plane.agents.subagent_activity import (
 )
 from .control_plane.agents.management_projection import (
     build_agent_management_projection as _build_agent_management_projection_read_model,
+)
+from .control_plane.runtime.agent_scoped_evidence_log import (
+    MAX_PROJECTED_READ_RECEIPTS,
+    project_evidence_log_read_receipts,
 )
 from .control_plane.runtime.stale_latest_run import (
     stale_latest_run_projection_warning as _stale_latest_run_projection_warning_read_model,
@@ -394,20 +396,11 @@ BACKLOG_HYGIENE_HINT_PATTERN = re.compile(
 )
 AUTONOMOUS_REPLAN_SCHEMA_VERSION = "autonomous_replan_obligation_v0"
 DEAD_MONITOR_REPEAT_SCHEMA_VERSION = "dead_monitor_repeat_v0"
-AUTONOMOUS_REPLAN_SECTION_HEADINGS = (
-    "Next Action",
-    "Operating Lessons",
-)
-AUTONOMOUS_REPLAN_TRIGGER_PATTERNS = _AUTONOMOUS_REPLAN_TRIGGER_PATTERNS_READ_MODEL
-AUTONOMOUS_RUN_HISTORY_PROGRESS_OUTCOMES = PROGRESS_DELIVERY_OUTCOMES
 AUTONOMOUS_RUN_HISTORY_NEUTRAL_CLASSIFICATIONS = {
     "quota_slot_spent",
     "quota_slot_voided",
     "delivery_completion_spend_accounted_v0",
 }
-AUTONOMOUS_RUN_HISTORY_STALL_PATTERN = re.compile(
-    r"(?i)(?:monitor|observe|observation|poll|watch|quiet|no[-_ ]?op|no[-_ ]?progress|stalled?|unchanged|dependency|停转|无进展|重复|反复|观察|轮询)"
-)
 
 
 
@@ -473,18 +466,6 @@ def backlog_hygiene_warning(state_text: str, *, agent_todos: dict[str, Any] | No
     return _backlog_hygiene_warning(state_text, agent_todos=agent_todos)
 
 
-def autonomous_replan_obligation(
-    state_text: str,
-    *,
-    agent_todos: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    from .control_plane.status.active_state_projection import (
-        autonomous_replan_obligation as _autonomous_replan_obligation,
-    )
-
-    return _autonomous_replan_obligation(state_text, agent_todos=agent_todos)
-
-
 def build_autonomous_replan_obligation(
     evidence: list[dict[str, Any]],
     *,
@@ -498,14 +479,6 @@ def build_autonomous_replan_obligation(
         evidence,
         agent_todos=agent_todos,
     )
-
-
-def _run_history_stall_signal(run: dict[str, Any]) -> dict[str, Any] | None:
-    from .control_plane.status.autonomous_replan_projection import (
-        _run_history_stall_signal as _run_history_stall_signal_projection,
-    )
-
-    return _run_history_stall_signal_projection(run)
 
 
 def run_history_monitor_wait_already_acknowledged(
@@ -829,7 +802,6 @@ def active_state_todo_fields(
         parse_issue_meta_surface=parse_issue_meta_surface,
         backlog_hygiene_warning=backlog_hygiene_warning,
         completed_todo_archive_warning=completed_todo_archive_warning,
-        autonomous_replan_obligation=autonomous_replan_obligation,
         state_projection_gap_warning=state_projection_gap_warning,
     )
 
@@ -1169,12 +1141,14 @@ def attach_goal_channel_projection(
     *,
     goal: dict[str, Any],
     goal_latest_runs: list[dict[str, Any]],
+    runtime_root: Path | None = None,
 ) -> None:
     _attach_goal_channel_projection_read_model(
         item,
         goal=goal,
         goal_latest_runs=goal_latest_runs,
         build_goal_channel_projection=build_goal_channel_projection,
+        runtime_root=runtime_root,
     )
 
 
@@ -1187,7 +1161,7 @@ def build_attention_queue(
     include_task_graph: bool = False,
     goal_id_filter: str | None = None,
 ) -> dict[str, Any]:
-    return _build_attention_queue_read_model(
+    queue = _build_attention_queue_read_model(
         contract=contract,
         history=history,
         global_registry=global_registry,
@@ -1228,6 +1202,23 @@ def build_attention_queue(
         include_task_graph=include_task_graph,
         goal_id_filter=goal_id_filter,
     )
+    if runtime_root is not None:
+        for item in queue.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            goal_id = str(item.get("goal_id") or "").strip()
+            if not goal_id:
+                continue
+            receipts = project_evidence_log_read_receipts(
+                load_rollout_events(
+                    rollout_event_log_path(runtime_root, goal_id),
+                    limit=MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL,
+                ),
+                limit=MAX_PROJECTED_READ_RECEIPTS,
+            )
+            if receipts:
+                item["evidence_log_read_receipts"] = receipts
+    return queue
 
 
 def _compact_benchmark_post_launch_materialization(value: Any) -> dict[str, Any] | None:

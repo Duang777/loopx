@@ -484,6 +484,7 @@ def _write_typed_settlement_fixture(
     todo_id: str,
     turn_instance_id: str,
     include_spend: bool = False,
+    workspace_requirement: str | None = None,
 ) -> str:
     effect_id = f"{GOAL_ID}:{AGENT_A}:{todo_id}:{turn_instance_id}"
     identity = {
@@ -517,6 +518,26 @@ def _write_typed_settlement_fixture(
         )
     _write_run_index(runtime, records)
 
+    guard_details = {
+        "todo_id": todo_id,
+        "settlement_effect_id": effect_id,
+    }
+    if workspace_requirement:
+        guard_details.update(
+            {
+                "delivery_workspace_causality_schema_version": (
+                    "delivery_workspace_causality_v0"
+                ),
+                "delivery_workspace_causality_todo_id": todo_id,
+                "delivery_workspace_requirement": workspace_requirement,
+                "delivery_workspace_causality_source": "selected_todo_contract",
+                "delivery_workspace_causality_reason": (
+                    "declared_repository_or_write_contract"
+                    if workspace_requirement == "required"
+                    else "todo_write_contract_not_explicit"
+                ),
+            }
+        )
     events = [
         {
             "schema_version": "loopx_rollout_event_v0",
@@ -525,10 +546,7 @@ def _write_typed_settlement_fixture(
             "goal_id": GOAL_ID,
             "agent_id": AGENT_A,
             "run_id": turn_instance_id,
-            "details": {
-                "todo_id": todo_id,
-                "settlement_effect_id": effect_id,
-            },
+            "details": guard_details,
         },
         {
             "schema_version": "loopx_rollout_event_v0",
@@ -638,6 +656,46 @@ def test_heartbeat_spend_recovers_completed_todo_identity_after_reselection(
     assert preview["delivery_completion_spend"] is True
     assert preview["turn_instance_id"] == turn_instance_id
     assert preview["settlement_identity"]["effect_id"] == effect_id
+
+
+@pytest.mark.parametrize("workspace_requirement", ["required", "unknown"])
+def test_typed_workspace_causality_fails_closed_without_workspace_snapshot(
+    tmp_path: Path,
+    workspace_requirement: str,
+) -> None:
+    runtime = tmp_path / "runtime"
+    original_todo_id = "todo_completed_delivery"
+    turn_instance_id = "turn-completed-delivery"
+    _write_typed_settlement_fixture(
+        runtime,
+        todo_id=original_todo_id,
+        turn_instance_id=turn_instance_id,
+        workspace_requirement=workspace_requirement,
+    )
+    before = _normal_run_before(todo_id="todo_new_successor")
+
+    preview = build_quota_slot_preview_for_decision(
+        _normal_run_status(runtime),
+        goal_id=GOAL_ID,
+        before=before,
+        after_decision=lambda _: {
+            **before,
+            "quota": {**before["quota"], "spent_slots": 1},
+        },
+        quota_status_builder=lambda goal, **_: goal["quota"],
+        self_repair_spend_actions=frozenset(),
+        agent_id=AGENT_A,
+        todo_id=original_todo_id,
+        turn_instance_id=turn_instance_id,
+        source="heartbeat",
+    )
+
+    assert preview["ok"] is False
+    assert "requires a valid delivery workspace snapshot" in preview["reason"]
+    assert preview["delivery_workspace_causality"]["requirement"] == (
+        workspace_requirement
+    )
+    assert preview["delivery_workspace_validated"] is False
 
 
 def test_implicit_heartbeat_identity_fails_closed_on_persisted_effect_drift(

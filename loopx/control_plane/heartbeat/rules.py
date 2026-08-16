@@ -1,7 +1,5 @@
 """Heartbeat prompt rule constants inside the heartbeat bounded context."""
 
-from __future__ import annotations
-
 
 DEFAULT_MATERIAL_QUEUE_RULE = "Do not consume the learning material queue unless the user explicitly asks."
 DEFAULT_PERMISSION_RULE = "Do not ask for permissions when the current Codex session is already trusted."
@@ -13,9 +11,17 @@ USER_TODO_FINAL_MESSAGE_RULE = (
     "the projection internally and stay quiet."
 )
 HEARTBEAT_NOTIFICATION_RULE_SHORT = (
-    "`user_channel.notify`: NOTIFY=Chinese action; DONT_NOTIFY=quiet. "
+    "`user_channel.notify` controls OUTPUT only: NOTIFY=向用户输出动作; "
+    "DONT_NOTIFY=安静输出。执行义务看 `heartbeat_recommendation.agent_must_attempt`/"
+    "`execution_obligation.must_attempt_work`：true 时必须执行 bounded slice 并写回，"
+    "quiet no-op 仅当 false。"
     "Due/peer gate != prompt; missing NOTIFY action->"
     "具体user todo未投影，需修复LoopX状态投影."
+)
+HEARTBEAT_NOTIFICATION_RULE_THIN = (
+    "`user_channel.notify` controls OUTPUT only: NOTIFY=向用户输出动作; "
+    "DONT_NOTIFY=安静输出。执行义务看 `agent_must_attempt`/`must_attempt_work`。"
+    "Due/peer gate != prompt; missing NOTIFY action->具体user todo未投影."
 )
 HEARTBEAT_VISION_WRITEBACK_RULE_SHORT = (
     "writeback: no-change=`surface_only`/no spend; "
@@ -23,16 +29,19 @@ HEARTBEAT_VISION_WRITEBACK_RULE_SHORT = (
 )
 SCHEDULER_HINT_APPLICATION_RULE = (
     "`scheduler_hint` no-spend. host_action=pause_or_delete_current_heartbeat -> "
-    "automation_update stop once, verify, end; else apply_needed -> RRULE then "
-    "ack/failure_hint; ack_needed -> ack."
+    "automation_update stop once, verify, end; else apply_needed -> RRULE via "
+    "automation_update; unavailable -> fallback_hint.cli_args (SQLite/app API "
+    "bypass - fallback only), then ack; further failure -> failure_hint; "
+    "ack_needed -> ack."
 )
 SCHEDULER_HINT_COMPACT_RULE = (
     "host_action=pause_or_delete_current_heartbeat: automation_update stop; "
-    "else RRULE apply/ack/fail. No spend."
+    "else RRULE apply via automation_update, fallback_hint when unavailable, "
+    "then ack/fail. No spend."
 )
 SCHEDULER_HINT_THIN_RULE = (
     "host_action=pause_or_delete_current_heartbeat->automation_update stop(no-spend); "
-    "else RRULE/ack/fail."
+    "else RRULE/fallback_hint/ack/fail."
 )
 RUNTIME_CAPABILITY_PROJECTION_THIN_RULE = (
     "Observed capabilities -> `--available-capability`; never user gates."
@@ -41,11 +50,19 @@ RUNTIME_EXECUTION_ROUTING_RULE = (
     "Normal turns use CLI `interaction_contract`; use `loopx-project` for "
     "lifecycle/registry and `loopx-self-repair` for runtime/projection drift."
 )
-CODEX_NATIVE_GOAL_UNCHANGED_WAIT_RULE = """
-
-Native Codex `/goal` owns its blocked state. At the matching
-`scheduler_hint.unchanged_poll` limit, rerun quota once. If the same blocking
-condition remains for the third consecutive Goal turn and no meaningful progress
-is possible, call `update_goal` with `status=blocked`. This stops native Goal
-continuation without spending or completing LoopX. Only user `/goal resume`
-reactivates it; rerun quota after resume."""
+HOST_LOOP_QUOTA_DISPATCH_RULE = (
+    "Run quota; execute `interaction_contract` next—no detours."
+)
+HOST_LOOP_TODO_CLOSEOUT_RULE = (
+    "Done -> successor first; final -> accountable refresh, spend, then "
+    "no-follow-up completion."
+)
+HOST_LOOP_TODO_CLOSEOUT_COMPACT_RULE = (
+    "Done->successor first; final->refresh->spend->no-follow-up."
+)
+CODEX_NATIVE_GOAL_UNCHANGED_WAIT_RULE = (
+    "\n\nNative Codex `/goal` owns blocked state. Recheck quota at the "
+    "`scheduler_hint.unchanged_poll` limit. Third identical blocked turn with no "
+    "progress: call `update_goal` with `status=blocked`; no spend or LoopX "
+    "completion. Only user `/goal resume` reactivates it; rerun quota after resume."
+)

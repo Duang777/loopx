@@ -12,11 +12,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOK = REPO_ROOT / "docs" / "book"
 CONTROL_PLANE_COURSE = REPO_ROOT / "docs" / "development" / "control-plane-course"
 MKDOCS = REPO_ROOT / "mkdocs.yaml"
-MKDOCS_ZH = REPO_ROOT / "mkdocs.book.zh.yaml"
-MKDOCS_EN = REPO_ROOT / "mkdocs.book.en.yaml"
+MKDOCS_ZH = BOOK / "mkdocs.zh.yaml"
+MKDOCS_EN = BOOK / "mkdocs.en.yaml"
 BRAND_STYLES = REPO_ROOT / "docs" / "stylesheets" / "loopx.css"
-HOMEPAGE = REPO_ROOT / "apps" / "presentation" / "site" / "index.html"
-HOMEPAGE_SCRIPT = REPO_ROOT / "apps" / "presentation" / "site" / "home.js"
+HOMEPAGE = REPO_ROOT / "apps" / "presentation" / "site" / "src" / "App.tsx"
 
 CHAPTERS = (
     "00-reading-guide",
@@ -150,6 +149,8 @@ def main() -> int:
     args = parser.parse_args()
 
     assert not (BOOK / "labs").exists(), "Dev Book publication must not include Labs"
+    assert not (REPO_ROOT / "mkdocs.book.zh.yaml").exists()
+    assert not (REPO_ROOT / "mkdocs.book.en.yaml").exists()
 
     mkdocs = read(MKDOCS)
     assert "book/chapters/" not in mkdocs
@@ -164,14 +165,16 @@ def main() -> int:
     zh_config = read(MKDOCS_ZH)
     en_config = read(MKDOCS_EN)
     for config in (zh_config, en_config):
-        assert "INHERIT: mkdocs.yaml" in config
+        assert "INHERIT: ../../mkdocs.yaml" in config
         assert config.index("scheme: slate") < config.index("scheme: default")
         assert "navigation.sections" in config
         assert "navigation.expand" not in config
-    assert "docs_dir: docs/book" in zh_config
+    assert "docs_dir: ." in zh_config
+    assert "site_dir: ../../output/docs-book-zh" in zh_config
     assert "language: zh" in zh_config
     assert "en/**" in zh_config
-    assert "docs_dir: docs/book/en" in en_config
+    assert "docs_dir: en" in en_config
+    assert "site_dir: ../../output/docs-book-en" in en_config
     assert "language: en" in en_config
     assert "中文:" not in en_config
 
@@ -194,17 +197,14 @@ def main() -> int:
         assert marker in styles, marker
 
     homepage = read(HOMEPAGE)
-    script = read(HOMEPAGE_SCRIPT)
-    assert 'data-devbook-base="__LOOPX_BASE__docs/book"' in homepage
     for path in (
-        "/",
-        "/chapters/01-from-session-to-loop",
-        "/chapters/05-connect-existing-project",
-        "/chapters/source-protocol-map",
+        "docs/book/",
+        "chapters/01-from-session-to-loop/",
+        "chapters/05-connect-existing-project/",
+        "chapters/source-protocol-map/",
     ):
-        assert f'data-devbook-path="{path}"' in homepage
-    assert 'language === "zh" ? "" : "/en"' in script
-    assert "developerBookBase" in script
+        assert path in homepage
+    assert 'language === "en" ? "en/" : ""' in homepage
 
     for locale_root in (BOOK / "index.md", BOOK / "en" / "index.md"):
         text = read(locale_root)

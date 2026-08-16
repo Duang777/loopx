@@ -26,6 +26,49 @@ decision or turn-settlement logic; they give refactor and test code one
 stable abstraction for reading the effect program shape across packet
 families.
 
+## Turn Journal Lens
+
+`interpret_turn_journal` reads an existing fenced Turn journal and returns an
+`EffectTurn`. It compares goal, agent owner, and Turn-key identity across the
+journal, stored plan, typed settlement identity, host result, and receipt. It
+also validates that completed phases are an ordered transaction prefix and
+exposes retained `committed`, `stopped`, and `failed` journal tombstones.
+
+`request.context.replay_legal` is the replay-legality signal. Identity,
+phase-order, and terminal-status failures appear together as stable typed
+violation values in `request.context.violations`; semantic mismatches return a
+blocked observation instead of raising an exception.
+
+`EffectObservation.should_run` remains false and `EffectNext` remains empty.
+Interpretation therefore grants no authority to execute or retry a Turn,
+schedule work, write state, or spend quota. In particular, failed-journal
+recovery with `retry_failed=True` remains owned by the Turn executor.
+
+The public read-only consumer is:
+
+```bash
+loopx turn inspect-journal \
+  --goal-id <goal-id> \
+  --agent-id <agent-id> \
+  --turn-key <sha256:64-hex-digest> \
+  --format json
+```
+
+It resolves only the canonical journal location. There is no arbitrary
+`--journal-path` input. The command validates selectors, takes the existing
+journal lock, schema-checks the stored JSON, and returns the versioned
+`loopx_turn_journal_inspection_v0` projection. That projection allowlists only
+the replay decision, journal status, replay legality, identity-match booleans,
+ordered phase-prefix result, completed phase ids, tombstone retention, typed
+violation ids, and the explicit effect-free marker `effects: []`.
+
+JSON and Markdown render the same projection. They do not expose raw journal,
+plan, host-result, or receipt bodies; request context; capabilities;
+recommended actions; credentials; evidence; or resolved local paths. A
+successfully interpreted `replay_blocked` journal exits zero because replay
+legality is diagnostic data. Invalid selectors, missing journals, malformed
+JSON, and unsupported schemas exit non-zero.
+
 ## Canonical Example
 
 ### 1. Effect Request
@@ -115,6 +158,28 @@ existing `guided_transaction.ordered_steps` value onto `EffectProgram`:
 
 This is still a read-only lens. The executor remains host-driven until a
 LoopX runtime caller owns multi-step execution.
+
+## Terminal Closeout Ordering
+
+The settlement plan keeps final Goal closure distinct from ordinary Todo
+continuation. Its ordered contract is:
+
+```text
+validation -> durable_writeback -> quota_spend -> terminal_closeout?
+```
+
+`terminal_closeout` is conditional: it is present only when the validated
+completion declares `no_followup`. Ordinary successor completion remains a
+Todo-lifecycle action and does not pretend to be a terminal settlement step.
+The final closeout must prove the same effect identity and matching writeback
+and spend receipts before it may make the Goal terminal.
+
+This order is deliberate. Completing the final Todo first would make strict
+terminal guards reject the spend that accounts for the same material effect.
+The repair is not an after-terminal spend exception: terminal state remains
+strict, and the closeout moves after spend. If closeout fails, its journaled
+receipt may be retried without repeating writeback or spend. Scheduler apply
+and ACK remain host handoffs outside this settlement chain.
 
 ## Relationship To State Machines
 

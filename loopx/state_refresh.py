@@ -22,18 +22,25 @@ from .control_plane.quota.settlement import (
     find_settlement_writeback,
     require_settlement_writeback,
     resolve_heartbeat_settlement_identity,
+    resolve_settlement_delivery_workspace_causality,
     settlement_result_payload,
 )
 from .control_plane.work_items.repair_delta import (
+    REPAIR_DELTA_CONTRACT_SCHEMA_VERSION as REPAIR_DELTA_CONTRACT_SCHEMA_VERSION,
     REPAIR_DELTA_KIND_CHOICES as REPAIR_DELTA_KIND_CHOICES,
+    build_repair_delta_contract,
     normalize_repair_delta_kinds,
     repair_delta_kinds_have_accountable_progress,
-    repair_delta_kinds_have_frontier_delta,
-    validate_repair_delta_claims,
 )
 from .control_plane.work_items.autonomous_replan_ack import (
     latest_monitor_replan_frontier_identity,
     watch_lane_continuation_todo_ids,
+)
+from .control_plane.work_items.progress_observation import (
+    normalize_progress_observation,
+)
+from .control_plane.work_items.semantic_replan_writeback import (
+    enforce_open_replan_writeback,
 )
 from .control_plane.runtime.shared_runtime_refresh_projection import (
     build_shared_runtime_projection,
@@ -55,11 +62,14 @@ from .history import (
 from .control_plane.runtime.local_state_write_correctness import build_local_state_write_correctness_dry_run_packet
 from .paths import resolve_runtime_root
 from .control_plane.goals.goal_vision import normalize_goal_vision_update
+from .control_plane.goals.vision_checkpoint import (
+    build_vision_checkpoint,
+    normalize_vision_unchanged_reason,
+)
 from .control_plane.goals.goal_frontier import latest_agent_vision_from_runs
 from .registry import registry_goals, resolve_state_file
 from .runtime import validate_goal_id_path_segment
 from .state_projection import state_projection_gap_warning
-from .control_plane.todos.active_state_todo_parser import parse_active_state_todos
 from .control_plane.todos.contract import (
     TODO_TASK_CLASS_ADVANCEMENT,
     TODO_TASK_CLASS_BLOCKER,
@@ -67,7 +77,10 @@ from .control_plane.todos.contract import (
     TODO_TASK_CLASS_USER_GATE,
     normalize_todo_claimed_by,
 )
-
+from .control_plane.todos.active_state_todo_parser import parse_active_state_todos
+from .control_plane.todos.completion_validation_accountability import (
+    require_accountable_completion_validation,
+)
 
 DEFAULT_REFRESH_CLASSIFICATION = "state_refreshed"
 DEFAULT_REFRESH_ACTION = "inspect refreshed active goal state and continue the next bounded progress segment"
@@ -82,15 +95,7 @@ RECOMMENDED_ACTION_SECTION_LINE_LIMIT = 16
 BULLET_PREFIX_RE = re.compile(r"^(?:[-*]\s+|\d+[.)]\s+)")
 CHECKBOX_PREFIX_RE = re.compile(r"^\[(?P<mark>[ xX])\]\s+")
 ACTIVE_STATE_NEXT_ACTION_UPDATE_SCHEMA_VERSION = "active_state_next_action_update_v0"
-REPAIR_DELTA_CONTRACT_SCHEMA_VERSION = "repair_delta_contract_v0"
 REPAIR_NOOP_SCHEMA_VERSION = "repair_noop_v0"
-VISION_CHECKPOINT_SCHEMA_VERSION = "vision_checkpoint_v0"
-VISION_CHECKPOINT_MATERIAL_OUTCOMES = {
-    "outcome_gap",
-    "outcome_progress",
-    "primary_goal_outcome",
-}
-VISION_UNCHANGED_REASON_LIMIT = 240
 
 
 def now_local() -> str:
@@ -196,177 +201,6 @@ def _noop_classification_for(classification: str) -> str:
     if "repair" in normalized and "replan" not in normalized:
         return "repair_noop"
     return "replan_noop"
-
-
-def build_repair_delta_contract(
-    *,
-    requested_delta_kinds: list[str],
-    active_state_next_action_update: dict[str, Any] | None,
-    agent_vision: dict[str, Any] | None,
-    existing_agent_vision: dict[str, Any] | None,
-    state_text: str,
-    agent_id: str | None,
-    dry_run: bool,
-) -> dict[str, Any]:
-    update = active_state_next_action_update or {}
-    todo_fields = parse_active_state_todos(state_text, item_limit=None)
-    effective_vision = agent_vision or existing_agent_vision or {}
-    vision_patch = (
-        effective_vision.get("vision_patch")
-        if isinstance(effective_vision.get("vision_patch"), dict)
-        else {}
-    )
-    delta_kinds, evidence, rejected_claims = validate_repair_delta_claims(
-        requested_delta_kinds,
-        agent_todo_summary=(
-            todo_fields.get("agent_todos")
-            if isinstance(todo_fields.get("agent_todos"), dict)
-            else None
-        ),
-        agent_id=agent_id,
-        advancement_policy=str(vision_patch.get("advancement_policy") or "").strip(),
-        next_action_changed=bool(update.get("would_update")),
-        vision_patch_written=agent_vision is not None,
-    )
-    if update.get("updated") is True:
-        if "active_state_next_action" not in delta_kinds:
-            delta_kinds.append("active_state_next_action")
-        evidence.append(
-            {
-                "kind": "active_state_next_action",
-                "source": "refresh_state_next_action_update",
-                "updated": True,
-            }
-        )
-    elif update.get("would_update") is True:
-        evidence.append(
-            {
-                "kind": "active_state_next_action",
-                "source": "refresh_state_next_action_update",
-                "would_update": True,
-                "dry_run": bool(dry_run),
-            }
-        )
-    if agent_vision:
-        if "goal_vision_patch" not in delta_kinds:
-            delta_kinds.append("goal_vision_patch")
-        evidence.append(
-            {
-                "kind": "goal_vision_patch",
-                "source": "refresh_state_agent_vision",
-                "state": agent_vision.get("state"),
-                "agent_id": agent_vision.get("agent_id"),
-                "budget_status": (
-                    agent_vision.get("vision_budget", {}).get("status")
-                    if isinstance(agent_vision.get("vision_budget"), dict)
-                    else None
-                ),
-            }
-        )
-
-    contract = {
-        "schema_version": REPAIR_DELTA_CONTRACT_SCHEMA_VERSION,
-        "required": True,
-        "delta_present": repair_delta_kinds_have_frontier_delta(delta_kinds),
-        "delta_kinds": delta_kinds,
-        "auto_evidence": evidence,
-        "accepted_without_delta": False,
-    }
-    if rejected_claims:
-        contract["rejected_claims"] = rejected_claims
-    return contract
-
-
-def build_vision_checkpoint(
-    *,
-    agent_id: str | None,
-    agent_vision: dict[str, Any] | None,
-    existing_agent_vision: dict[str, Any] | None,
-    vision_unchanged_reason: str | None,
-    delivery_outcome: str | None,
-    autonomous_replan_recorded: bool,
-    active_state_next_action_update: dict[str, Any] | None,
-    repair_delta_kinds: list[str] | None,
-) -> dict[str, Any]:
-    """Return the explicit vision closeout decision for this refresh run."""
-
-    triggers: list[dict[str, Any]] = []
-    if autonomous_replan_recorded:
-        triggers.append({"kind": "autonomous_replan_recorded"})
-    if delivery_outcome in VISION_CHECKPOINT_MATERIAL_OUTCOMES:
-        triggers.append(
-            {
-                "kind": "material_delivery_outcome",
-                "delivery_outcome": delivery_outcome,
-            }
-        )
-    if active_state_next_action_update and active_state_next_action_update.get("would_update"):
-        triggers.append({"kind": "durable_next_action_update"})
-
-    delta_kinds = set(repair_delta_kinds or [])
-    unchanged = normalize_vision_unchanged_reason(vision_unchanged_reason)
-
-    required = bool(triggers or unchanged)
-    if agent_vision:
-        decision = "patched"
-        satisfied = True
-    elif unchanged and existing_agent_vision:
-        decision = "unchanged_with_reason"
-        satisfied = True
-    elif unchanged:
-        decision = "missing_required"
-        satisfied = False
-    elif delta_kinds & {"no_followup", "successor_or_supersede"}:
-        decision = "retired_or_superseded"
-        satisfied = True
-    elif required:
-        decision = "missing_required"
-        satisfied = False
-    else:
-        decision = "not_required"
-        satisfied = True
-
-    checkpoint: dict[str, Any] = {
-        "schema_version": VISION_CHECKPOINT_SCHEMA_VERSION,
-        "agent_id": agent_id,
-        "required": required,
-        "satisfied": satisfied,
-        "decision": decision,
-        "triggers": triggers,
-    }
-    if agent_vision:
-        checkpoint["agent_vision_state"] = agent_vision.get("state")
-    if unchanged and existing_agent_vision:
-        checkpoint["unchanged_reason"] = unchanged
-        checkpoint["agent_vision_state"] = existing_agent_vision.get("state")
-    elif unchanged:
-        checkpoint["missing_baseline"] = True
-        checkpoint["rejected_unchanged_reason"] = unchanged
-    if delta_kinds:
-        checkpoint["repair_delta_kinds"] = sorted(delta_kinds)
-    if not satisfied:
-        checkpoint["required_resolution"] = ["write_vision_patch"]
-        if not checkpoint.get("missing_baseline"):
-            checkpoint["required_resolution"].append("record_unchanged_reason")
-        checkpoint["required_resolution"].extend(
-            ["record_no_followup", "link_successor_or_supersede"]
-        )
-    return checkpoint
-
-
-def normalize_vision_unchanged_reason(value: str | None) -> str:
-    """Normalize and validate a vision closeout reason before state mutation."""
-
-    unchanged = " ".join(str(value or "").strip().split())
-    if not unchanged:
-        return ""
-    validate_public_safe_text("vision_unchanged_reason", unchanged)
-    if len(unchanged) > VISION_UNCHANGED_REASON_LIMIT:
-        raise ValueError(
-            "vision_unchanged_reason exceeds "
-            f"{VISION_UNCHANGED_REASON_LIMIT} chars"
-        )
-    return unchanged
 
 
 def next_action_section_bounds(lines: list[str]) -> tuple[int, int] | None:
@@ -558,15 +392,31 @@ def resolve_goal_state(
     if project is None and goal and goal.get("repo"):
         project = Path(str(goal.get("repo"))).expanduser()
 
+    registered_state_file = (
+        resolve_state_file(project, goal.get("state_file"))
+        if project and goal and goal.get("state_file")
+        else None
+    )
     state_file = state_file_override.expanduser() if state_file_override else None
     if state_file is None and goal:
-        state_file = resolve_state_file(project, goal.get("state_file")) if project else None
+        state_file = registered_state_file
     if state_file is None:
         raise ValueError("state file is required when the goal is not resolvable from registry")
     if not state_file.is_absolute():
         if project is None:
             raise ValueError("relative state file requires --project or registry repo")
         state_file = project / state_file
+    state_file = state_file.resolve()
+    if state_file_override is not None:
+        if project is None:
+            raise ValueError("--state-file override requires --project or a registry goal with repo")
+        registered_resolved = (
+            registered_state_file.resolve() if registered_state_file is not None else None
+        )
+        if state_file != registered_resolved and not state_file.is_relative_to(project):
+            raise ValueError(
+                f"--state-file {state_file} escapes project root {project}"
+            )
     return goal, project, state_file
 
 
@@ -587,9 +437,11 @@ def build_state_refresh_record(
     agent_lane: str | None = None,
     autonomous_replan_recorded: bool = False,
     repair_delta_contract: dict[str, Any] | None = None,
+    replan_semantic_delta: dict[str, Any] | None = None,
     autonomous_replan_frontier_identity: str | None = None,
     agent_vision: dict[str, Any] | None = None,
     vision_checkpoint: dict[str, Any] | None = None,
+    progress_observation: dict[str, Any] | None = None,
     delivery_workspace: dict[str, Any] | None = None,
     settlement_identity: SettlementIdentity | None = None,
 ) -> dict[str, Any]:
@@ -648,6 +500,10 @@ def build_state_refresh_record(
         }
         if repair_delta_contract:
             record["autonomous_replan_ack"]["delta_contract"] = repair_delta_contract
+        if replan_semantic_delta:
+            record["autonomous_replan_ack"]["semantic_delta"] = (
+                replan_semantic_delta
+            )
         if autonomous_replan_frontier_identity:
             record["autonomous_replan_ack"]["frontier_identity"] = (
                 autonomous_replan_frontier_identity
@@ -656,6 +512,8 @@ def build_state_refresh_record(
         record["agent_vision"] = agent_vision
     if vision_checkpoint:
         record["vision_checkpoint"] = vision_checkpoint
+    if progress_observation:
+        record["progress_observation"] = progress_observation
     if progress_scope:
         record["progress_scope"] = progress_scope
     if agent_id:
@@ -709,7 +567,7 @@ def _build_state_refresh_output_projections(
             index_record[field] = record[field]
 
     replan_ack = record.get("autonomous_replan_ack") or {}
-    if autonomous_replan_recorded_requested:
+    if autonomous_replan_recorded_requested or replan_ack.get("recorded") is True:
         index_record["autonomous_replan_ack"] = replan_ack
         if replan_ack.get("requested_classification"):
             index_record["requested_classification"] = replan_ack["requested_classification"]
@@ -726,7 +584,13 @@ def _build_state_refresh_output_projections(
         if isinstance(agent_vision.get("path_delta"), dict):
             index_record["agent_vision"]["path_delta"] = agent_vision["path_delta"]
 
-    for field in ("vision_checkpoint", "progress_scope", "agent_id", "agent_lane"):
+    for field in (
+        "vision_checkpoint",
+        "progress_observation",
+        "progress_scope",
+        "agent_id",
+        "agent_lane",
+    ):
         if field in record:
             index_record[field] = record[field]
 
@@ -963,6 +827,9 @@ def refresh_state_run(
     agent_vision_packet: dict[str, Any] | None = None,
     merge_agent_vision_patch: bool = False,
     vision_unchanged_reason: str | None = None,
+    progress_observation: dict[str, Any] | None = None,
+    completion_todo_id: str | None = None,
+    completion_turn_key: str | None = None,
     dry_run: bool,
     sync_global: bool = True,
 ) -> dict[str, Any]:
@@ -990,10 +857,19 @@ def refresh_state_run(
             "--delivery-workspace-path requires an accountable --delivery-outcome"
         )
     normalized_repair_delta_kinds = normalize_repair_delta_kinds(repair_delta_kinds)
+    normalized_progress_observation = (
+        normalize_progress_observation(
+            progress_observation,
+            work_item_id=todo_id,
+        )
+        if progress_observation is not None
+        else None
+    )
     registry = load_registry(registry_path)
     runtime_root = resolve_runtime_root(registry, runtime_root_override)
     settlement_identity = None
     settlement_result = None
+    delivery_workspace_causality = None
     if todo_id or turn_instance_id:
         if normalized_delivery_outcome not in ACCOUNTABLE_DELIVERY_OUTCOMES:
             raise ValueError(
@@ -1011,6 +887,9 @@ def refresh_state_run(
         settlement_identity = settlement_result.value
         if settlement_identity is None:
             raise ValueError("turn-scoped refresh-state has no settlement identity")
+        delivery_workspace_causality = resolve_settlement_delivery_workspace_causality(
+            runtime_root, settlement_identity
+        )
         if not dry_run:
             prior_writeback = require_settlement_writeback(
                 runtime_root,
@@ -1094,6 +973,12 @@ def refresh_state_run(
         raise FileNotFoundError(f"state file does not exist: {resolved_state_file}")
     state_text = resolved_state_file.read_text(encoding="utf-8")
     expected_write_state_text = state_text
+    if normalized_delivery_outcome in ACCOUNTABLE_DELIVERY_OUTCOMES:
+        require_accountable_completion_validation(
+            state_text,
+            todo_id=(settlement_identity.todo_id if settlement_identity else None),
+            agent_id=normalized_agent_id or None,
+        )
     normalized_next_action = normalize_next_action_text(next_action) if next_action else None
     registered_agents = registered_agents_for_goal(registry_goal)
     known_agents = {agent for agent in registered_agents if agent}
@@ -1142,11 +1027,7 @@ def refresh_state_run(
     existing_agent_vision: dict[str, Any] | None = None
     autonomous_replan_frontier_identity: str | None = None
     newest_first_runs: list[dict[str, Any]] = []
-    if normalized_agent_id and (
-        agent_vision_packet is not None
-        or normalized_vision_unchanged_reason
-        or autonomous_replan_recorded
-    ):
+    if normalized_agent_id:
         existing_runs, _ = load_index(
             runtime_root / "goals" / safe_goal_id / "runs" / "index.jsonl"
         )
@@ -1192,8 +1073,6 @@ def refresh_state_run(
                 "dry_run": bool(dry_run),
                 "updated_at": generated_at if state_updated else None,
             }
-            if state_updated and not dry_run:
-                resolved_state_file.write_text(updated_state_text, encoding="utf-8")
             state_text = updated_state_text if state_updated else locked_state_text
 
     if recommended_action:
@@ -1212,9 +1091,15 @@ def refresh_state_run(
             active_state_next_action_update=active_state_next_action_update,
             agent_vision=agent_vision,
             existing_agent_vision=existing_agent_vision,
-            state_text=state_text,
+            agent_todo_summary=parse_active_state_todos(
+                state_text, item_limit=None
+            ).get("agent_todos"),
             agent_id=normalized_agent_id or None,
             dry_run=dry_run,
+            selected_todo_id=(
+                settlement_identity.todo_id if settlement_identity else None
+            ),
+            newest_first_runs=newest_first_runs,
         )
         validated_repair_delta_kinds = list(
             repair_delta_contract.get("delta_kinds") or []
@@ -1241,18 +1126,40 @@ def refresh_state_run(
                     ),
                 )
             )
+    replan_semantic_delta = enforce_open_replan_writeback(
+        newest_first_runs=newest_first_runs,
+        state_text=state_text,
+        agent_id=normalized_agent_id,
+        goal_id=safe_goal_id,
+        progress_observation=normalized_progress_observation,
+        registry_goal=registry_goal,
+        agent_vision=agent_vision,
+        completion_todo_id=completion_todo_id,
+        completion_turn_key=completion_turn_key,
+    )
+    if replan_semantic_delta:
+        effective_autonomous_replan_recorded = True
     vision_checkpoint = build_vision_checkpoint(
         agent_id=normalized_agent_id or None,
         agent_vision=agent_vision,
         existing_agent_vision=existing_agent_vision,
         vision_unchanged_reason=normalized_vision_unchanged_reason,
         delivery_outcome=normalized_delivery_outcome,
-        autonomous_replan_recorded=bool(autonomous_replan_recorded),
         active_state_next_action_update=active_state_next_action_update,
-        repair_delta_kinds=validated_repair_delta_kinds,
     )
     delivery_workspace = None
-    if normalized_delivery_outcome in ACCOUNTABLE_DELIVERY_OUTCOMES:
+    workspace_requirement = str(
+        (delivery_workspace_causality or {}).get("requirement") or "unknown"
+    )
+    if delivery_workspace_path is not None and workspace_requirement == "not_required":
+        raise ValueError(
+            "--delivery-workspace-path conflicts with the original Todo's "
+            "explicit non-delivery settlement contract"
+        )
+    if (
+        normalized_delivery_outcome in ACCOUNTABLE_DELIVERY_OUTCOMES
+        and workspace_requirement != "not_required"
+    ):
         delivery_workspace = capture_delivery_workspace(
             current_path=delivery_workspace_path,
             peer_independent_worktree_required=peer_independent_worktree_required,
@@ -1275,6 +1182,19 @@ def refresh_state_run(
             delivery_workspace["repository_source"] = (
                 "refresh_state.delivery_workspace_path"
             )
+    if (
+        active_state_next_action_update
+        and active_state_next_action_update.get("would_update")
+        and not dry_run
+    ):
+        with exclusive_file_lock(resolved_state_file):
+            current_state_text = resolved_state_file.read_text(encoding="utf-8")
+            if current_state_text != expected_write_state_text:
+                raise ValueError(
+                    "active goal state changed while refresh-state was qualifying "
+                    "its semantic writeback; retry from the current state"
+                )
+            resolved_state_file.write_text(state_text, encoding="utf-8")
     record = build_state_refresh_record(
         goal_id=safe_goal_id,
         state_file=resolved_state_file,
@@ -1294,9 +1214,12 @@ def refresh_state_run(
         autonomous_replan_frontier_identity=autonomous_replan_frontier_identity,
         agent_vision=agent_vision,
         vision_checkpoint=vision_checkpoint,
+        progress_observation=normalized_progress_observation,
         delivery_workspace=delivery_workspace,
         settlement_identity=settlement_identity,
     )
+    if delivery_workspace_causality:
+        record["delivery_workspace_causality"] = delivery_workspace_causality
     if autonomous_replan_recorded:
         if "autonomous_replan_ack" not in record:
             record["autonomous_replan_ack"] = {
@@ -1318,6 +1241,18 @@ def refresh_state_run(
                 "requested_classification": requested_classification,
                 "reason": "autonomous replan ACK requested without a machine-visible repair delta",
             }
+    if replan_semantic_delta:
+        record.setdefault(
+            "autonomous_replan_ack",
+            {
+                "schema_version": "autonomous_replan_ack_v0",
+                "recorded": True,
+                "source": "refresh_state_semantic_delta",
+            },
+        )
+        record["autonomous_replan_ack"]["semantic_delta"] = (
+            replan_semantic_delta
+        )
     if active_state_next_action_update:
         record["active_state_next_action_update"] = active_state_next_action_update
     compact_route = compact_runtime_projection_route(runtime_projection_route)

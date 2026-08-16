@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from scripts.codex_app_apply_rrule import (
     _now_ms,
+    _scheduler_hint_turn_instance_id,
     _update_sqlite,
     _update_toml,
     main,
@@ -85,10 +89,90 @@ def _hint_payload(*, apply_needed: bool, ack_needed: bool = False) -> dict:
 
 
 class _FakeCompleted:
-    def __init__(self, payload: dict) -> None:
-        self.returncode = 0
-        self.stdout = json.dumps(payload)
-        self.stderr = ""
+    def __init__(
+        self,
+        payload: dict | None = None,
+        *,
+        returncode: int = 0,
+        stdout: str | None = None,
+        stderr: str = "",
+    ) -> None:
+        self.returncode = returncode
+        self.stdout = json.dumps(payload or {}) if stdout is None else stdout
+        self.stderr = stderr
+
+
+def test_scheduler_hint_uses_stable_child_turn_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    parent_turn = "heartbeat-turn-3231"
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return _FakeCompleted(_hint_payload(apply_needed=False))
+
+    monkeypatch.setattr("scripts.codex_app_apply_rrule.subprocess.run", fake_run)
+
+    assert (
+        main(
+            [
+                "--automations-root",
+                str(tmp_path / "automations"),
+                "--db-path",
+                str(tmp_path / "codex-dev.db"),
+                "--loopx",
+                "loopx",
+                "--turn-instance-id",
+                parent_turn,
+            ]
+        )
+        == 0
+    )
+
+    child_turn = calls[0][calls[0].index("--turn-instance-id") + 1]
+    assert child_turn == _scheduler_hint_turn_instance_id(parent_turn)
+    assert child_turn == _scheduler_hint_turn_instance_id(parent_turn)
+    assert child_turn != parent_turn
+    assert len(child_turn) <= 128
+    assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", child_turn)
+
+
+def test_should_run_failure_reports_structured_stdout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    failure = {
+        "ok": False,
+        "error_code": "heartbeat_receipt_identity_conflict",
+        "reason": "heartbeat receipt settlement identity conflicts",
+    }
+
+    monkeypatch.setattr(
+        "scripts.codex_app_apply_rrule.subprocess.run",
+        lambda command, **kwargs: _FakeCompleted(failure, returncode=1),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        main(
+            [
+                "--automations-root",
+                str(tmp_path / "automations"),
+                "--db-path",
+                str(tmp_path / "codex-dev.db"),
+                "--loopx",
+                "loopx",
+                "--turn-instance-id",
+                "heartbeat-turn-3231",
+            ]
+        )
+
+    message = str(raised.value)
+    assert "loopx should-run failed (1)" in message
+    assert "stdout=" in message
+    assert "heartbeat_receipt_identity_conflict" in message
+    assert "heartbeat receipt settlement identity conflicts" in message
 
 
 def test_apply_updates_toml_db_and_runs_ack(
@@ -237,3 +321,95 @@ def test_update_toml_and_sqlite_helpers(tmp_path: Path) -> None:
     finally:
         connection.close()
     assert row == ("FREQ=MINUTELY;INTERVAL=10",)
+
+
+def test_apply_creates_missing_automation_toml_and_sqlite(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    automations_root = tmp_path / "automations"
+    db_path = tmp_path / "codex-dev.db"
+    registry_path = tmp_path / "registry.json"
+    sqlite3.connect(str(db_path)).close()
+    registry_path.write_text(
+        json.dumps(
+            {
+                "goals": [
+                    {
+                        "id": "goal",
+                        "repo": "/tmp/workspace",
+                        "coordination": {
+                            "thread_agent_bindings": [
+                                {
+                                    "agent_id": "agent",
+                                    "thread_id": "thread-1",
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        if "should-run" in command:
+            return _FakeCompleted(_hint_payload(apply_needed=True))
+        if "heartbeat-prompt" in command:
+            return _FakeCompleted(
+                {
+                    "ok": True,
+                    "task_body": (
+                        "Advance `goal` from active state. "
+                        "Agent: `agent`."
+                    ),
+                }
+            )
+        calls.append(command)
+        return _FakeCompleted({"ok": True})
+
+    monkeypatch.setattr("scripts.codex_app_apply_rrule.subprocess.run", fake_run)
+
+    code = main(
+        [
+            "--automations-root",
+            str(automations_root),
+            "--db-path",
+            str(db_path),
+            "--registry",
+            str(registry_path),
+            "--goal-id",
+            "goal",
+            "--agent-id",
+            "agent",
+            "--automation-id",
+            "loopx-goal-agent",
+            "--loopx",
+            "loopx",
+        ]
+    )
+
+    assert code == 0
+    toml_path = automations_root / "loopx-goal-agent" / "automation.toml"
+    assert toml_path.exists()
+    toml_text = toml_path.read_text(encoding="utf-8")
+    assert 'rrule = "FREQ=MINUTELY;INTERVAL=5"' in toml_text
+    assert 'target_thread_id = "thread-1"' in toml_text
+    assert 'prompt = """Advance `goal` from active state.' in toml_text
+
+    connection = sqlite3.connect(str(db_path))
+    try:
+        row = connection.execute(
+            "SELECT id, rrule, prompt, cwds FROM automations "
+            "WHERE id='loopx-goal-agent'"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    assert row[1] == "FREQ=MINUTELY;INTERVAL=5"
+    assert "Advance `goal`" in row[2]
+    assert "/tmp/workspace" in row[3]
+    assert any("scheduler-ack-current" in call for call in calls)
+    assert list(tmp_path.glob("codex-dev.db.bak-*"))

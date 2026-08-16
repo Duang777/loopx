@@ -70,6 +70,39 @@ def assert_contains(text: str, needle: str, label: str) -> None:
         raise AssertionError(f"{label} missing {needle!r}")
 
 
+def assert_global_risks_contract(contract: str) -> None:
+    compact_contract = " ".join(contract.split())
+    for required in (
+        "loopx global-risks",
+        "Only `/loop-goal-summary` remains host-only",
+        "`status.ok=false`",
+        "`summary.source_health_ok`",
+        "top-level `generated_at`",
+        "required projection container",
+        "Omitted empty source-list fields are valid empty sources",
+        "present with a non-list value is malformed",
+        "`global_registry.available=false` is a valid empty source",
+        "partition the flat `risks` list",
+        "original source-list index",
+        "`occurrence_count`",
+        "`source_scan_limit`",
+        "`source_rows_truncated`",
+        "100 results",
+        "400 rows per accepted source",
+        "never aged out by `time_range`",
+        "No current accepted source proves a rollback candidate",
+        "does not authorize rollback, history rewrite, external cleanup, or merge",
+        "`run_history.goals[].coordination.registered_agents`",
+        "no quota fan-out",
+        "`agent_management_projection`",
+        "fail closed with `agent_scope_unavailable`",
+        "Structured `code` values, not prose",
+        "source `severity=error` to risk `severity=high`",
+        "`rollback_candidate_source_unavailable`",
+    ):
+        assert_contains(compact_contract, required, "focused global risks contract")
+
+
 def main() -> int:
     contract = read(CONTRACT_PATH)
     index = read(INDEX_PATH)
@@ -93,6 +126,7 @@ def main() -> int:
     for command in REJECTED_COMMAND_ALIASES:
         if command in contract:
             raise AssertionError(f"command set should not include superseded alias {command!r}")
+    assert_global_risks_contract(contract)
     for needle in [
         "read-only by default",
         "Action Ladder",
@@ -100,6 +134,15 @@ def main() -> int:
         "global_manager_command_response_v0",
         "loopx global-summary",
         "loopx global-gates",
+        "loopx global-todos",
+        "readiness",
+        "work_kind",
+        "matched_todo_count",
+        "returned_todo_count",
+        "deferred_ready",
+        "review counts overlap readiness counts",
+        "goal_scan_limit",
+        "goal_scan_truncated",
         "compact run-history",
         "unblocks_todo_id",
         "goal scope",

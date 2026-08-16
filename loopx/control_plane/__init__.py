@@ -54,8 +54,18 @@ def control_plane_policy_summary(policy: Any) -> str:
     raw_self_repair = compact.get("self_repair")
     self_repair: dict[str, Any] = raw_self_repair if isinstance(raw_self_repair, dict) else {}
     if not self_repair:
-        return "self_repair=default_off"
-    enabled = "on" if self_repair.get("enabled") else "off"
-    health = "health" if self_repair.get("allow_health_blocker_repair") else "no-health"
-    waiting = "waiting" if self_repair.get("allow_waiting_projection_repair") else "no-waiting"
-    return f"self_repair={enabled}:{health},{waiting}"
+        summary = "self_repair=default_off"
+    else:
+        enabled = "on" if self_repair.get("enabled") else "off"
+        health = (
+            "health"
+            if self_repair.get("allow_health_blocker_repair")
+            else "no-health"
+        )
+        waiting = (
+            "waiting"
+            if self_repair.get("allow_waiting_projection_repair")
+            else "no-waiting"
+        )
+        summary = f"self_repair={enabled}:{health},{waiting}"
+    return summary

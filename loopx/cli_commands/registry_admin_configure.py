@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from ..execution_profile import TURN_GRANULARITY_CHOICES
 from ..orchestration import EXPLORE_HARNESS_PROFILES
 from .registry_admin_peer import (
     register_peer_runtime_arguments,
@@ -24,6 +25,14 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
     )
     configure_goal_parser.add_argument(
         "--goal-id", required=True, help="Goal id to configure."
+    )
+    configure_goal_parser.add_argument(
+        "--execution-turn-granularity",
+        choices=TURN_GRANULARITY_CHOICES,
+        help=(
+            "Set sticky goal turn granularity. fine runs one small checkpoint Todo "
+            "per turn and replans from fresh evidence before its successor."
+        ),
     )
     configure_goal_parser.add_argument(
         "--quota-compute",
@@ -153,6 +162,18 @@ def register_configure_goal_command(subparsers: argparse._SubParsersAction) -> N
         "--clear-registered-agents",
         action="store_true",
         help="Clear coordination.registered_agents.",
+    )
+    configure_goal_parser.add_argument(
+        "--peer-task-coordinator",
+        help=(
+            "Explicitly select one registered peer to coordinate peer-owned task "
+            "lanes. Registration alone never enables coordination."
+        ),
+    )
+    configure_goal_parser.add_argument(
+        "--clear-peer-task-coordinator",
+        action="store_true",
+        help="Disable registered-peer task coordination for this goal.",
     )
     configure_goal_parser.add_argument(
         "--agent-profile-json",

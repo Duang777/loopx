@@ -8,6 +8,10 @@ from typing import Any
 
 from ...agent_registry import normalize_registered_agents
 from ...ark_managed_agent_host import build_ark_managed_agent_host_contract
+from ...execution_profile import (
+    TURN_GRANULARITY_FINE,
+    execution_profile_turn_granularity,
+)
 from ..agents.runtime_model import AgentRuntimeModel
 from ..quota.spend_sources import (
     DEFAULT_SLOT_SPEND_SOURCE,
@@ -63,6 +67,18 @@ from ...project_prompt import (
     render_refresh_state_command,
 )
 
+FINE_GRAINED_TURN_RULE = (
+    "Fine-grained planning contract: each Todo must be one small verifiable checkpoint; "
+    "if broader, split before delivery. The turn budget is one coherent decision slice "
+    "and may complete one or more causally related Agent advancement Todos. After each "
+    "completion inspect fresh evidence before creating or claiming a successor; continue "
+    "only while the direction remains unchanged. Validate and durably complete each Todo, "
+    "then perform accountable refresh and spend to settle the turn once after the slice. "
+    "A direction change or bounded-chain review must use the existing replan obligation/"
+    "ACK path before further delivery. Protocol/setup and capability re-entry steps are "
+    "inline non-advancement work: never create Todos or settle a turn for them alone."
+)
+
 
 def _select_task_body_renderer(
     *,
@@ -109,9 +125,14 @@ def build_heartbeat_prompt(
     runtime_profile: str | None = None,
     scheduler_execution_context: dict[str, Any] | None = None,
     visible_goal_host: str | None = None,
+    turn_granularity: str | None = None,
 ) -> dict[str, Any]:
     if not (full or compact or brief or thin):
         thin = True
+    normalized_turn_granularity = execution_profile_turn_granularity(
+        {"turn_granularity": turn_granularity} if turn_granularity is not None else None
+    )
+    fine_grained = normalized_turn_granularity == TURN_GRANULARITY_FINE
     if visible_goal_host not in {None, "traex-cli"}:
         raise ValueError(f"unsupported visible goal host: {visible_goal_host}")
     if visible_goal_host == "traex-cli" and (
@@ -309,6 +330,8 @@ def build_heartbeat_prompt(
         brief_prompt_command=brief_prompt_command,
         thin_prompt_command=thin_prompt_command,
     )
+    if fine_grained:
+        task_body = f"{task_body}\n\n{FINE_GRAINED_TURN_RULE}"
     if native_goal_host and len(task_body) > NATIVE_GOAL_HOST_MAX_CHARS:
         host_limit = (
             "Ark Managed Agent goal prompt"
@@ -384,10 +407,22 @@ def build_heartbeat_prompt(
         ),
         "task_body": task_body,
     }
+    if fine_grained:
+        payload["turn_granularity"] = TURN_GRANULARITY_FINE
+        payload["turn_mode"] = "fine_grained"
     payload["agent_model"] = AgentRuntimeModel.PEER_V1.value
     if thin:
         payload.pop("compact_prompt_command", None)
         payload.pop("brief_prompt_command", None)
+        for key in (
+            "agent_profile",
+            "agent_role",
+            "agent_scope_source",
+            "agent_scopes",
+            "registered_agents",
+        ):
+            if not payload.get(key):
+                payload.pop(key, None)
     return payload
 def build_heartbeat_prompt_error_payload(
     *,

@@ -27,24 +27,32 @@ EXPECTED_NEXT_ACTION = (
 
 
 def run_cli(root: Path, *args: str, registry_path: Path, runtime: Path) -> dict:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "loopx.cli",
-            "--registry",
-            str(registry_path),
-            "--runtime-root",
-            str(runtime),
-            "--format",
-            "json",
-            *args,
-        ],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    command = [
+        sys.executable,
+        "-m",
+        "loopx.cli",
+        "--registry",
+        str(registry_path),
+        "--runtime-root",
+        str(runtime),
+        "--format",
+        "json",
+        *args,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise AssertionError(
+            "LoopX CLI failed during heartbeat smoke\n"
+            f"stdout:\n{exc.stdout}\n"
+            f"stderr:\n{exc.stderr}"
+        ) from exc
     return json.loads(result.stdout)
 
 
@@ -778,88 +786,39 @@ def main() -> int:
             registry_path=registry_path,
             runtime=runtime,
         )
-        assert first_guard["decision"] == "autonomous_replan_required", first_guard
-        assert first_guard["effective_action"] == "autonomous_replan_required", first_guard
-        assert first_guard["should_run"] is True, first_guard
+        assert first_guard["decision"] == "skip", first_guard
+        assert first_guard["effective_action"] == "monitor_quiet_skip", first_guard
+        assert first_guard["should_run"] is False, first_guard
         assert first_guard["heartbeat_recommendation"]["recommended_mode"] == (
-            "autonomous_replan_required"
+            "monitor_quiet_until_material_transition"
         ), first_guard
-        assert first_guard["autonomous_replan_obligation"]["triggers"][0]["kind"] == (
-            "frontier_exhausted_monitor_lane"
-        ), first_guard
-        assert first_guard["execution_obligation"]["kind"] == (
-            "autonomous_replan_required"
-        ), first_guard
-        assert first_guard["execution_obligation"]["must_attempt_work"] is True, first_guard
+        assert first_guard.get("autonomous_replan_obligation") is None, first_guard
+        assert first_guard["execution_obligation"]["kind"] == "monitor_quiet_skip", first_guard
+        assert first_guard["execution_obligation"]["must_attempt_work"] is False, first_guard
         assert first_guard["automation_liveness"]["automation_action"] == (
-            "execute_bounded_work"
+            "keep_active_quiet"
         ), first_guard
         assert first_guard["automation_liveness"]["pause_allowed"] is False, first_guard
-        assert first_guard["scheduler_hint"]["action"] == "run_now", first_guard
-        assert first_guard["scheduler_hint"]["cadence_class"] == "active_work", first_guard
-        assert first_guard["scheduler_hint"]["codex_app"]["recommended_interval_minutes"] == 3, first_guard
+        assert first_guard["scheduler_hint"]["action"] == "backoff_until_material_transition", first_guard
+        assert first_guard["scheduler_hint"]["cadence_class"] == "monitor_wait", first_guard
+        assert first_guard["scheduler_hint"]["codex_app"]["recommended_interval_minutes"] == 15, first_guard
         assert first_guard["scheduler_hint"]["codex_app"]["recommended_rrule"] == (
-            "FREQ=MINUTELY;INTERVAL=3"
+            "FREQ=MINUTELY;INTERVAL=15"
         ), first_guard
         reset = first_guard["scheduler_hint"]["reset_policy"]
-        assert reset["codex_app_initial_rrule"] == "FREQ=MINUTELY;INTERVAL=3", reset
+        assert reset["codex_app_initial_rrule"] == "FREQ=MINUTELY;INTERVAL=15", reset
         assert "reset_condition_summary" not in reset, reset
         frontier = first_guard["goal_frontier_projection"]
         assert frontier["monitor_only_lanes"]["present"] is True, frontier
         assert frontier["monitor_only_lanes"]["quiet_until_material_transition"] is True, frontier
-        assert frontier["replan_required"] is True, frontier
-        assert "automation=execute_bounded_work" in first_guard["protocol_action_packet"]["summary"], first_guard
+        assert frontier["replan_required"] is False, frontier
+        assert "automation=keep_active_quiet" in first_guard["protocol_action_packet"]["summary"], first_guard
         assert count_events(runtime, "quota_monitor_poll") == 0, first_guard
         interaction = first_guard["interaction_contract"]
-        assert interaction["mode"] == "autonomous_replan", interaction
-        assert interaction["agent_channel"]["must_attempt"] is True, interaction
-        assert interaction["agent_channel"]["quiet_noop_allowed"] is False, interaction
-        assert interaction["cli_channel"]["spend_after_validation"] is True, interaction
-        assert "accountable replan delta" in interaction["cli_channel"]["spend_policy"], interaction
-        assert "surface_only" in " ".join(interaction["cli_channel"]["next_cli_actions"]), interaction
-
-        refresh = run_cli(
-            root,
-            "refresh-state",
-            "--goal-id",
-            GOAL_ID,
-            "--agent-id",
-            "codex-main-control",
-            "--progress-scope",
-            "goal",
-            "--classification",
-            "monitor_poll_autonomous_replan_recorded_v0",
-            "--autonomous-replan-recorded",
-            "--repair-delta-kind",
-            "watch_lane_continuation",
-            "--vision-unchanged-reason",
-            "watch lane continuation recorded; no current acceptance gap is claimed complete",
-            "--delivery-batch-scale",
-            "single_surface",
-            "--delivery-outcome",
-            "outcome_progress",
-            "--no-global-sync",
-            registry_path=registry_path,
-            runtime=runtime,
-        )
-        assert refresh["ok"] is True, refresh
-        assert refresh["delivery_outcome"] == "outcome_gap", refresh
-
-        post_refresh_guard = run_cli(
-            root,
-            "quota",
-            "should-run",
-            "--codex-app",
-            "--goal-id",
-            GOAL_ID,
-            "--agent-id",
-            "codex-main-control",
-            "--scan-path",
-            str(project),
-            registry_path=registry_path,
-            runtime=runtime,
-        )
-        assert post_refresh_guard.get("autonomous_replan_obligation") is None, post_refresh_guard
+        assert interaction["mode"] == "monitor_quiet_skip", interaction
+        assert interaction["agent_channel"]["must_attempt"] is False, interaction
+        assert interaction["agent_channel"]["quiet_noop_allowed"] is True, interaction
+        assert interaction["cli_channel"]["spend_after_validation"] is False, interaction
 
         spend_rc, spend = run_cli_result(
             root,
@@ -873,6 +832,8 @@ def main() -> int:
             "1",
             "--source",
             "heartbeat",
+            "--turn-instance-id",
+            "future-monitor-no-spend-turn",
             "--execute",
             "--scan-path",
             str(project),
@@ -881,7 +842,7 @@ def main() -> int:
         )
         assert spend_rc == 1, spend
         assert spend["ok"] is False, spend
-        assert "monitor-class work" in spend["reason"], spend
+        assert "turn-scoped settlement requires" in spend["reason"], spend
         assert count_spend_events(runtime) == 0, spend
 
         duplicate_rc, duplicate = run_cli_result(
@@ -896,6 +857,8 @@ def main() -> int:
             "1",
             "--source",
             "heartbeat",
+            "--turn-instance-id",
+            "future-monitor-no-spend-turn",
             "--execute",
             "--scan-path",
             str(project),
@@ -1008,10 +971,10 @@ def main() -> int:
         assert heartbeat_turn_one_replay["heartbeat_receipt"]["event_id"] == (
             heartbeat_turn_one["heartbeat_receipt"]["event_id"]
         ), (heartbeat_turn_one, heartbeat_turn_one_replay)
-        assert heartbeat_turn_two["effective_action"] == "autonomous_replan_required", (
+        assert heartbeat_turn_two["effective_action"] == "monitor_quiet_skip", (
             heartbeat_turn_two
         )
-        assert heartbeat_turn_two["execution_obligation"]["must_attempt_work"] is True, (
+        assert heartbeat_turn_two["execution_obligation"]["must_attempt_work"] is False, (
             heartbeat_turn_two
         )
         assert count_spend_events(runtime) == 0, heartbeat_turn_two
@@ -1036,39 +999,10 @@ def main() -> int:
             registry_path=registry_path,
             runtime=runtime,
         )
-        assert first_guard["effective_action"] == "autonomous_replan_required", first_guard
+        assert first_guard["effective_action"] == "monitor_quiet_skip", first_guard
         interaction = first_guard["interaction_contract"]
-        assert interaction["mode"] == "autonomous_replan", interaction
-        assert "accountable replan delta" in interaction["cli_channel"]["spend_policy"], interaction
-
-        refresh = run_cli(
-            root,
-            "refresh-state",
-            "--goal-id",
-            GOAL_ID,
-            "--agent-id",
-            "codex-main-control",
-            "--progress-scope",
-            "agent_lane",
-            "--classification",
-            "monitor_poll_autonomous_replan_recorded_v0",
-            "--autonomous-replan-recorded",
-            "--repair-delta-kind",
-            "watch_lane_continuation",
-            "--repair-delta-kind",
-            "no_followup",
-            "--vision-unchanged-reason",
-            "watch lane continuation recorded; no current acceptance gap is claimed complete",
-            "--delivery-batch-scale",
-            "single_surface",
-            "--delivery-outcome",
-            "surface_only",
-            "--no-global-sync",
-            registry_path=registry_path,
-            runtime=runtime,
-        )
-        assert refresh["ok"] is True, refresh
-        assert refresh["delivery_outcome"] == "surface_only", refresh
+        assert interaction["mode"] == "monitor_quiet_skip", interaction
+        assert interaction["cli_channel"]["spend_after_validation"] is False, interaction
 
         post_refresh_guard = run_cli(
             root,
@@ -1099,6 +1033,8 @@ def main() -> int:
             "1",
             "--source",
             "heartbeat",
+            "--turn-instance-id",
+            "future-monitor-agent-lane-no-spend-turn",
             "--execute",
             "--scan-path",
             str(project),
@@ -1266,16 +1202,14 @@ def main() -> int:
         assert lane["lane"] == "continuous_monitor", lane
         assert lane["obligation"] == "quiet_until_material_monitor_transition", lane
         assert lane["must_attempt_work"] is False, lane
-        assert guard["decision"] == "autonomous_replan_required", guard
+        assert guard["decision"] == "skip", guard
         interaction = guard["interaction_contract"]
-        assert interaction["mode"] == "autonomous_replan", interaction
-        assert interaction["agent_channel"]["must_attempt"] is True, interaction
-        assert interaction["agent_channel"]["delivery_allowed"] is True, interaction
-        required_reads = interaction["agent_channel"]["required_reads"]
-        assert required_reads[0]["kind"] == "agent_scoped_evidence_log", required_reads
-        assert required_reads[0]["agent_id"] == "codex-side-bypass", required_reads
-        assert required_reads[0]["todo_id"] is None, required_reads
-        assert "--agent-id codex-side-bypass" in required_reads[0]["command"], required_reads
+        assert interaction["mode"] == "monitor_quiet_skip", interaction
+        assert interaction["agent_channel"]["must_attempt"] is False, interaction
+        assert interaction["agent_channel"]["delivery_allowed"] is False, interaction
+        assert "required_reads" not in interaction["agent_channel"], interaction
+        assert guard.get("replan_action_packet") is None, guard
+        assert guard.get("autonomous_replan_obligation") is None, guard
 
     with tempfile.TemporaryDirectory(prefix="loopx-external-evidence-projection-") as tmp:
         root = Path(tmp)

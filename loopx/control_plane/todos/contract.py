@@ -23,6 +23,7 @@ TODO_CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9_:-]{0,63}$")
 TODO_CAPABILITY_BINDING_REF_PATTERN = re.compile(
     r"^[a-z][a-z0-9_.-]{0,31}:[a-z][a-z0-9_.:-]{2,95}$"
 )
+TODO_REPLAN_OBLIGATION_ID_PATTERN = re.compile(r"^replan-[a-f0-9]{16}$")
 TODO_EXPLORE_RESULT_NODE_REF_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,95}$")
 TODO_EXPLORE_RESULT_NODE_REF_LIMIT = 8
 TODO_DECISION_SCOPE_KEY_PATTERN = re.compile(r"^(?:\*|[a-z0-9][a-z0-9_.:@*/-]{0,95})$")
@@ -49,7 +50,16 @@ TODO_MONITOR_METADATA_FIELDS = (
     "consecutive_no_change",
     "material_change",
     "max_no_change_before_replan",
+    "watch_only",
 )
+
+
+def normalize_todo_watch_only(value: Any) -> bool | None:
+    if value is True or str(value or "").strip().lower() == "true":
+        return True
+    if value is False or str(value or "").strip().lower() == "false":
+        return False
+    return None
 
 TODO_TASK_CLASS_ADVANCEMENT = "advancement_task"
 TODO_TASK_CLASS_MONITOR = "continuous_monitor"
@@ -246,6 +256,15 @@ def normalize_todo_task_domain(value: Any) -> str | None:
     if not candidate:
         return None
     if TODO_TASK_DOMAIN_PATTERN.fullmatch(candidate):
+        return candidate
+    return None
+
+
+def normalize_todo_replan_obligation_id(value: Any) -> str | None:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    if TODO_REPLAN_OBLIGATION_ID_PATTERN.fullmatch(candidate):
         return candidate
     return None
 
@@ -518,6 +537,34 @@ def normalize_explore_result_node_refs(value: Any) -> list[str]:
         if len(refs) >= TODO_EXPLORE_RESULT_NODE_REF_LIMIT:
             break
     return refs
+
+
+def replan_successor_semantic_binding(
+    *,
+    action_kind: Any,
+    target_key: Any,
+    explore_result_node_refs: Any,
+) -> dict[str, Any] | None:
+    """Return the typed executable identity of a replan successor.
+
+    An obligation id establishes causality, but it does not turn a planning
+    instruction into executable work.  A successor also needs an explicit
+    action and at least one stable target identity.
+    """
+
+    safe_action_kind = normalize_todo_action_kind(action_kind)
+    safe_target_key = compact_todo_text(target_key) or None
+    safe_explore_refs = normalize_explore_result_node_refs(
+        explore_result_node_refs
+    )
+    if not safe_action_kind or not (safe_target_key or safe_explore_refs):
+        return None
+    binding: dict[str, Any] = {"action_kind": safe_action_kind}
+    if safe_target_key:
+        binding["target_key"] = safe_target_key
+    if safe_explore_refs:
+        binding["explore_result_node_refs"] = safe_explore_refs
+    return binding
 
 
 def normalize_todo_decision_scope(value: Any) -> dict[str, str] | None:
@@ -1046,6 +1093,14 @@ _TODO_METADATA_FIELD_SCHEMA = (
         ),
     ),
     _TodoMetadataField(
+        "replan_obligation_id",
+        normalize_todo_replan_obligation_id,
+        invalid_message=(
+            "replan_obligation_id must use the current replan-<16 lowercase hex> "
+            "identity"
+        ),
+    ),
+    _TodoMetadataField(
         "resume_when",
         normalize_todo_resume_when,
         invalid_message=(
@@ -1081,6 +1136,10 @@ _TODO_METADATA_FIELD_SCHEMA = (
             "completed_at",
             "updated_at",
             "completion_turn_key",
+            "validation_command",
+            "validation_command_argv",
+            "validation_label",
+            "validation_timeout_seconds",
         )
     ),
     _TodoMetadataField(
@@ -1201,6 +1260,7 @@ def format_todo_metadata_line(
     global_gate: bool | None = None,
     unblocks_todo_id: str | None = None,
     successor_todo_ids: Any = None,
+    replan_obligation_id: str | None = None,
     resume_when: str | None = None,
     no_followup: bool | None = None,
     target_key: str | None = None,
@@ -1212,9 +1272,14 @@ def format_todo_metadata_line(
     consecutive_no_change: str | None = None,
     material_change: str | None = None,
     max_no_change_before_replan: str | None = None,
+    watch_only: str | None = None,
     note: str | None = None,
     evidence: str | None = None,
     completion_turn_key: str | None = None,
+    validation_command: str | None = None,
+    validation_command_argv: str | None = None,
+    validation_label: str | None = None,
+    validation_timeout_seconds: str | None = None,
     reason: str | None = None,
     completed_at: str | None = None,
     updated_at: str | None = None,

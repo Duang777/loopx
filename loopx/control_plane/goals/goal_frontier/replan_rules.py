@@ -16,16 +16,17 @@ class GoalFrontierReplanRule(str, Enum):
     BLOCKING_HANDOFF_GATE = "blocking_handoff_gate"
     READY_DEFERRED_SUCCESSOR = "ready_deferred_successor"
     OPEN_USER_TODO = "open_user_todo"
+    USER_ACTION_OWNS_EMPTY_FRONTIER = "user_action_owns_empty_frontier"
     TODO_SUCCESSION_GAP = "todo_succession_gap"
     VISION_ACCEPTANCE_GAP = "vision_acceptance_gap"
     LONG_TODO_CHAIN = "long_todo_chain"
-    LONG_TODO_CHAIN_ACKNOWLEDGED = "long_todo_chain_acknowledged"
-    WATCH_LANE_CONTINUATION_ACKNOWLEDGED = "watch_lane_continuation_acknowledged"
     CURRENT_AGENT_BLOCKER = "current_agent_blocker"
     MONITOR_NO_CHANGE_STREAK = "monitor_no_change_streak"
     NOT_MONITOR_ONLY = "not_monitor_only"
     NO_OPEN_MONITOR = "no_open_monitor"
     ADVANCEMENT_REMAINS = "advancement_remains"
+    DUE_MONITOR_EXECUTION = "due_monitor_execution"
+    FUTURE_MONITOR_WAIT = "future_monitor_wait"
     MONITOR_FRONTIER_EXHAUSTED = "monitor_frontier_exhausted"
 
 
@@ -39,20 +40,24 @@ class GoalFrontierReplanFacts:
     ready_deferred_successor_count: int = 0
     successor_vision_required: bool = False
     blocking_user_open_count: int = 0
+    user_open_count: int = 0
     succession_gap_count: int = 0
+    succession_gap_acknowledged: bool = False
+    vision_gap_acknowledged: bool = False
     agent_advancement_count: int = 0
     total_frontier_advancement: int = 0
     acceptance_gap_count: int = 0
     selectable_frontier_advancement: int = 0
     outcome_checkpoint_replan_required: bool = False
-    acceptance_allows_watch_lane_continuation: bool = False
     long_todo_chain_triggered: bool = False
-    long_todo_chain_acknowledged: bool = False
-    watch_lane_continuation_acknowledged: bool = False
     current_agent_blocker_count: int = 0
     monitor_no_change_streak_triggered: bool = False
     monitor_only_lane: bool = False
     monitor_count: int = 0
+    monitor_due_count: int = 0
+    monitor_schedule_gap_count: int = 0
+    future_monitor_schedule_present: bool = False
+    monitor_lane_semantically_valid: bool = True
 
 
 @dataclass(frozen=True)
@@ -106,21 +111,19 @@ def select_goal_frontier_replan_rule(
             GoalFrontierReplanRule.TODO_SUCCESSION_GAP,
             facts.succession_gap_count > 0
             and facts.agent_advancement_count == 0
-            and facts.total_frontier_advancement == 0,
+            and facts.total_frontier_advancement == 0
+            and not facts.succession_gap_acknowledged,
             True,
             "completed advancement work lacks a successor or no-followup rationale",
         ),
         (
             GoalFrontierReplanRule.VISION_ACCEPTANCE_GAP,
             facts.acceptance_gap_count > 0
+            and not facts.vision_gap_acknowledged
             and (
                 facts.successor_vision_required
                 or facts.outcome_checkpoint_replan_required
                 or facts.selectable_frontier_advancement == 0
-            )
-            and (
-                facts.outcome_checkpoint_replan_required
-                or not facts.acceptance_allows_watch_lane_continuation
             ),
             True,
             (
@@ -130,22 +133,9 @@ def select_goal_frontier_replan_rule(
         ),
         (
             GoalFrontierReplanRule.LONG_TODO_CHAIN,
-            facts.long_todo_chain_triggered
-            and not facts.long_todo_chain_acknowledged,
+            facts.long_todo_chain_triggered,
             True,
             "the selectable todo chain crossed the bounded replan threshold",
-        ),
-        (
-            GoalFrontierReplanRule.LONG_TODO_CHAIN_ACKNOWLEDGED,
-            facts.long_todo_chain_triggered and facts.long_todo_chain_acknowledged,
-            False,
-            "a frontier-delta acknowledgement covers the long todo chain",
-        ),
-        (
-            GoalFrontierReplanRule.WATCH_LANE_CONTINUATION_ACKNOWLEDGED,
-            facts.watch_lane_continuation_acknowledged,
-            False,
-            "an explicit watch-lane continuation covers the empty frontier",
         ),
         (
             GoalFrontierReplanRule.CURRENT_AGENT_BLOCKER,
@@ -160,6 +150,12 @@ def select_goal_frontier_replan_rule(
             and facts.monitor_no_change_streak_triggered,
             True,
             "the current agent monitor crossed the no-change replan threshold",
+        ),
+        (
+            GoalFrontierReplanRule.USER_ACTION_OWNS_EMPTY_FRONTIER,
+            facts.user_open_count > 0 and facts.total_frontier_advancement == 0,
+            False,
+            "open user-owned work owns the empty frontier",
         ),
         (
             GoalFrontierReplanRule.NOT_MONITOR_ONLY,
@@ -179,6 +175,23 @@ def select_goal_frontier_replan_rule(
             or facts.total_frontier_advancement > 0,
             False,
             "advancement work remains on the frontier",
+        ),
+        (
+            GoalFrontierReplanRule.DUE_MONITOR_EXECUTION,
+            facts.monitor_due_count > 0
+            and facts.monitor_schedule_gap_count == 0
+            and facts.monitor_lane_semantically_valid,
+            False,
+            "a scheduled monitor is due and remains executable",
+        ),
+        (
+            GoalFrontierReplanRule.FUTURE_MONITOR_WAIT,
+            facts.future_monitor_schedule_present
+            and facts.monitor_due_count == 0
+            and facts.monitor_schedule_gap_count == 0
+            and facts.monitor_lane_semantically_valid,
+            False,
+            "the monitor-only lane has a valid future schedule and should wait quietly",
         ),
         (
             GoalFrontierReplanRule.MONITOR_FRONTIER_EXHAUSTED,

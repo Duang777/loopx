@@ -35,8 +35,22 @@
 - [ ] Build, packaging, installer, or CI
 - [ ] Host or runtime integration
 
+## Technical Direction
+
+<!-- Select one. Direction labels route review; they do not imply maturity or merge authority. -->
+
+- [ ] Core control-plane hardening
+- [ ] Long-horizon benchmark evidence
+- [ ] Operator surface and IM integration
+- [ ] Shared Goal Authority and cross-host coordination
+- [ ] Architecture and research incubator
+
+- Target base branch:
+- Direction tracker or promotion unit:
+
 ## Boundary Checklist
 
 - [ ] I did not commit `.loopx/`, `.codex/goals/`, live `ACTIVE_GOAL_STATE.md`, credentials, private benchmark traces, verifier output, raw agent sessions, internal document links, or local machine paths.
 - [ ] I did not duplicate maintainer-owned benchmark work unless a maintainer split out a public issue for it.
 - [ ] I kept the change scoped to the linked issue/task.
+- [ ] Every commit includes a DCO `Signed-off-by` trailer (`git commit -s`).

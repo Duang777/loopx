@@ -4,13 +4,13 @@
 
 <img src="docs/assets/loopx-social-preview.png" alt="LoopX loop engineering social preview banner" width="560">
 
-**The open, provider-neutral, stateful control plane for long-running agents.**
+**The open, provider-neutral, stateful control plane for long-horizon agents.**
 
-<sub>Keep objectives, gates, todos, evidence, quota, and handoffs stable while Codex, Claude Code, Cursor, or your own runtime executes bounded turns.</sub>
+<sub>Runs on top of any agent harness — Codex App, Claude Code, Cursor, dsh, or your own — providing long-horizon state, semantic decisions, governance, recovery, and human-agent collaboration. Objectives, gates, todos, evidence, quota, and handoffs stay stable while the harness executes bounded turns.</sub>
 
 <a href="https://trendshift.io/repositories/102379?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-102379"><img src="https://trendshift.io/api/badge/repositories/102379" alt="huangruiteng/loopx on Trendshift" width="220" height="48"></a>
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/huangruiteng/loopx?display_name=tag)](https://github.com/huangruiteng/loopx/releases/latest) [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/XmGgQyCFZd) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml) [![Local first](https://img.shields.io/badge/control--plane-local--first-brightgreen.svg)](docs/public-private-boundary.md) [![Loop Agents](https://img.shields.io/badge/status-loop%20agents%20early-orange.svg)](docs/product/release-readiness.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/huangruiteng/loopx?display_name=tag)](https://github.com/huangruiteng/loopx/releases/latest) [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/XmGgQyCFZd) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml) [![Local first](https://img.shields.io/badge/control--plane-local--first-brightgreen.svg)](docs/public-private-boundary.md) [![Loop Agents](https://img.shields.io/badge/status-loop%20agents%20active-brightgreen.svg)](docs/product/release-readiness.md)
 
 [Public website](https://huangruiteng.github.io/loopx/) · [Docs](https://huangruiteng.github.io/loopx/docs/) · [Developer Book](https://huangruiteng.github.io/loopx/docs/book/) · [Try LoopX](#try-loopx) · [See real loops](#evidence) · [How it works](#why-loopx) · [User manual](https://my.feishu.cn/wiki/CaL5wMk9ui17ngkWzeUcMlAYnZg) · [简体中文](README.zh-CN.md)
 
@@ -21,11 +21,13 @@
 ---
 
 Open and provider-neutral, LoopX is a lightweight state kernel and local-first
-control plane for loop engineering. It keeps long-running work reviewable,
-restartable, and easier to hand off across turns, tools, and agents without
-replacing the runtime that performs the work.
+control plane for loop engineering. It runs on top of different agent harnesses
+rather than replacing them, providing the long-horizon state, semantic
+decisions about what happens next, governance, recovery, and human-agent
+collaboration that keep long-running work reviewable, restartable, and easier
+to hand off across turns, tools, and agents.
 
-**Loop engineering for long-running AI agents and peer agent teams.**
+**Loop engineering for long-horizon AI agents and peer agent teams.**
 
 > Keep the loop moving. Keep the judgment human.
 
@@ -283,7 +285,28 @@ loopx doctor
 
 ## Capabilities
 
-LoopX folds its control-plane mechanics into five questions:
+LoopX keeps the architecture explicit so the same governed outcome can survive
+a change of agent harness or external provider. The terms describe different
+boundaries rather than interchangeable kinds of plugin:
+
+| Boundary | Meaning | Go deeper |
+| --- | --- | --- |
+| **Kernel** | Owns durable goal, todo, gate, evidence, quota, recovery, and scheduling truth. | [Architecture](docs/architecture.md) |
+| **Capability** | Defines a stable, provider-neutral contract for producing one bounded, verifiable caller outcome from LoopX state. | [Capability catalog](docs/capabilities/README.md) |
+| **Provider** | Calls an external system or local implementation and returns bounded observations, effect results, and readback. | [Provider responsibilities](docs/reference/extensions.md#runtime-responsibilities) |
+| **Extension** | Packages and operates an optional provider through explicit install, readiness, enable, upgrade, disable, and rollback lifecycle. | [Extension lifecycle](docs/reference/extensions.md#runtime-lifecycle) |
+
+Host declarations such as `--available-capability shell` describe observed
+execution support. They are runtime capacities in this product map, not product
+capabilities and not permission grants. The effective capability still applies
+its own policy and authority checks before proposing a transition.
+
+### Core Control-Plane Promises
+
+The Kernel folds its mechanics into five questions. Each question delivers one
+product promise on top of any agent harness: objective → long-horizon state;
+next → semantic decisions; human judgment → human-agent collaboration;
+evidence → recovery; continuation → governance.
 
 | Question | What LoopX keeps visible |
 | --- | --- |
@@ -311,6 +334,28 @@ The shipped primitives include lifetime goals, concrete user gates, audited safe
 fallbacks, peer todo ownership, quota and steering, compact run history,
 evidence-backed handoff, a read-first management surface, project-level value
 signals, and public/private boundary checks.
+
+### Product Capability Paths
+
+Capabilities turn those generic primitives into outcome-owned work lanes. Start
+from the outcome, then inspect the current registered implementation and its
+write boundary:
+
+| You need to... | Capability | Start with |
+| --- | --- | --- |
+| Turn a public issue into a reviewable, evidence-backed change | [Issue Fix](docs/capabilities/issue-fix/README.md) | `loopx capability show issue-fix --format json` |
+| Qualify the exact final diff before delivery | [Change Quality](docs/capabilities/change-quality/README.md) | `loopx capability show change-quality-qualification --format json` |
+| Preserve a changing stack of already reviewed branches | [Integration Branch](docs/capabilities/integration-branch/README.md) | `loopx capability show integration-branch-reconcile --format json` |
+| Explore uncertain research without losing hypotheses and findings | [Explore](docs/capabilities/explore/README.md) | `loopx capability show explore --format json` |
+| Rebase decisions on current evidence and verified outcomes | [Decision Context](docs/capabilities/decision-context/README.md) | `loopx capability show decision-context --format json` |
+| Produce scheduled or progress-triggered reports with receipts | [Periodic Report](docs/capabilities/periodic-report/README.md) | `loopx capability show periodic-report --format json` |
+
+Run `loopx capability list --format json` for the authoritative catalog in the
+installed release. A capability detail reports its user value, maturity,
+provider readiness, entry commands, write boundaries, protocols, and durable
+validation. Browse the [human-readable capability index](docs/capabilities/README.md)
+to choose by outcome; use [Extensions and Capabilities](docs/reference/extensions.md)
+when installing or building a provider.
 
 ### Runtime Responsibilities
 
@@ -438,6 +483,36 @@ loopx check \
   --scan-path examples/
 ```
 
+## Current Technical Directions
+
+LoopX has three active strategic programs plus an architecture and research
+incubator. These are direction signals, not delivery promises; `main`, released
+artifacts, and stable reference contracts remain the source of shipped truth.
+
+- **Long-Horizon Benchmarks and Evidence:** reproducible capability evidence
+  and controlled mechanism research across complementary benchmark
+  environments. [Direction tracker](https://github.com/huangruiteng/loopx/issues/3243)
+- **Operator Surface and IM Integration:** an operator workspace, session
+  records, and bounded collaboration surfaces, currently incubating on a
+  dedicated integration branch with `@maxliux5` as implementation lead.
+  [Direction tracker](https://github.com/huangruiteng/loopx/issues/3244)
+- **Shared Goal Authority and Cross-host Coordination:** provider-neutral
+  coordination for explicitly shared goals, with NoKV as an unpromoted
+  provider candidate rather than a new control-plane authority.
+  [Direction tracker](https://github.com/huangruiteng/loopx/issues/3245)
+- **Architecture and Research Incubator:** Effect Program hardening,
+  TypeScript parity migration, hierarchical stride, research exploration,
+  human attention, artifact lifecycle, and memory utility work at explicitly
+  different maturity levels.
+  [Direction tracker](https://github.com/huangruiteng/loopx/issues/3246)
+
+Read the canonical
+[Technical Directions map](docs/project/technical-directions.md) for stages,
+promotion gates, contributor-safe cuts, and ownership boundaries. Use the
+pinned [GitHub Discussion](https://github.com/huangruiteng/loopx/discussions/2851)
+for community discussion. Core control-plane reliability continues as the
+shared foundation beneath these programs.
+
 ## Advanced Documentation
 
 Start with the path that matches your current task. Use the hosted
@@ -507,11 +582,14 @@ deeper documents and versioned protocols.
 
 ### Project and Community
 
-- [Project Governance](GOVERNANCE.md)
+- [Current Technical Directions](docs/project/technical-directions.md)
+- [Project Governance](.github/GOVERNANCE.md)
 - [Contributing](CONTRIBUTING.md) and [Contributor Tasks](CONTRIBUTOR_TASKS.md)
 - [Authors and Contributors](AUTHORS.md)
 - [Project History](docs/project/history.md)
 - [Name and Marks](TRADEMARKS.md)
+- [Ecosystem Adoption](docs/community/ecosystem-adoption.md) - integrations,
+  sampling, and derivatives we observe and track
 
 ## Partner Projects
 
@@ -526,9 +604,10 @@ long-running agent ecosystem. Our confirmed partners include:
 
 ## Community and Feedback
 
-LoopX is still early. The most useful feedback comes from real long-running
-agent projects: where the control plane helped, where it felt heavy, and which
-gates or handoffs disappeared from view.
+LoopX is already running real long-running agent goals and is under active
+development. The most useful feedback comes from real long-running agent
+projects: where the control plane helped, where it felt heavy, and which gates
+or handoffs disappeared from view.
 
 - Use [GitHub Issues](https://github.com/huangruiteng/loopx/issues) for
   reproducible bugs, install problems, and feature requests.
@@ -536,8 +615,8 @@ gates or handoffs disappeared from view.
 - Join the [Discord community](https://discord.gg/XmGgQyCFZd), or use Lark or
   WeChat below.
 
-See [Support](SUPPORT.md) for channel routing and service boundaries, and
-[Communications](COMMUNICATIONS.md) for official publication sources.
+See [Support](.github/SUPPORT.md) for channel routing, service boundaries, and
+official publication sources.
 
 <p align="center">
   <a href="docs/assets/loopx-lark-developer-group.png"><img src="docs/assets/loopx-lark-developer-group.png" alt="LoopX Lark developer group QR code" width="280"></a>
@@ -552,7 +631,8 @@ See [Support](SUPPORT.md) for channel routing and service boundaries, and
 External contributors should start with
 [Contributor Tasks](CONTRIBUTOR_TASKS.md) for public, claimable work and
 [Contributing](CONTRIBUTING.md) for setup, validation, and boundary rules.
-Project roles and public history are recorded in [Governance](GOVERNANCE.md),
+Project roles and public history are recorded in
+[Governance](.github/GOVERNANCE.md),
 [Authors and Contributors](AUTHORS.md), and
 [Project History](docs/project/history.md).
 
@@ -562,9 +642,9 @@ traces, credentials, private logs, or operator artifacts.
 
 ## Current Status
 
-The v0.4.x line is an early but usable local control plane for long-running
-agent work. It is not a full agent platform, an agent runtime, or an autonomous
-production controller.
+The v0.4.x line is a usable local control plane for long-running agent work and
+is entering broader adoption. It is not a full agent platform, an agent runtime,
+or an autonomous production controller.
 
 Today LoopX ships a durable state kernel for goals, typed todos and decision
 scopes, peer claims and leases, evidence and writeback, quota-aware scheduling,
@@ -579,10 +659,10 @@ or experimental. LoopX does not grant credentials, approve destructive or
 production actions, publish on a user's behalf without authorization, or turn
 an unverified run into evidence of success.
 
-The next milestones are simpler installation and host packaging, broader typed
-runtime adapters, stronger terminal acceptance across repeated public loops,
-independent adoption and outcome evidence, and a more polished management
-surface.
+Current investment is organized through the
+[Technical Directions map](docs/project/technical-directions.md): long-horizon
+benchmark evidence, operator surface and IM integration, shared-goal cross-host
+coordination, and an explicitly staged architecture and research incubator.
 
 ## Star History
 
@@ -593,6 +673,10 @@ surface.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Apache License 2.0 beginning with `v0.4.8`. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE). Releases through `v0.4.7` remain under their original MIT
+terms; the historical text and notice are preserved in
+[LICENSE-MIT](LICENSE-MIT). The [licensing policy](docs/project/licensing.md)
+explains the version, contribution, patent-grant, and open-core boundaries.
 
 [osai-verify: eb42dd9cf910399988f0]: #

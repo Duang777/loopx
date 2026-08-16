@@ -806,7 +806,14 @@ def assert_capability_repair_precedes_monitor_schedule_repair() -> None:
     assert guard["heartbeat_recommendation"]["recommended_mode"] == "repair_capability_bridge", guard
     assert guard["execution_obligation"]["contract"] == "capability_gate", guard
     primary_action = guard["interaction_contract"]["agent_channel"]["primary_action"]
-    assert "repair or materialize the missing bridge capability" in primary_action, guard
+    assert primary_action.startswith(
+        "execute interaction_contract.agent_channel.next_task_action.operation once"
+    ), guard
+    assert "on success execute cli_channel.next_cli_actions[0]" in primary_action, guard
+    next_task_action = guard["interaction_contract"]["agent_channel"]["next_task_action"]
+    assert next_task_action["kind"] == "capability_verification", guard
+    assert next_task_action["capability"] == "private_read", guard
+    assert next_task_action["todo_id"] == "todo_adv_1", guard
     assert guard["scheduler_hint"]["cadence_class"] == "active_work", guard
 
 

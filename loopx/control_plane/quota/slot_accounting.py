@@ -1,37 +1,40 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .decision_summary import compact_quota_decision, quota_decision_agent_id
-from .monitor_poll import QUOTA_MONITOR_POLL_CLASSIFICATION
-from .scheduler_ack import QUOTA_SCHEDULER_ACK_CLASSIFICATION
-from .spend_sources import DEFAULT_SLOT_SPEND_SOURCE, VALID_SLOT_SPEND_SOURCES
-from ..runtime.time import now_local_iso
+from ..agents.workspace_guard import (
+    build_delivery_workspace_guard,
+    delivery_workspace_repository,
+)
 from ..runtime.run_artifacts import (
     next_run_artifact_paths,
     reserve_run_artifact_paths,
     run_file_stem,
 )
-from ..agents.workspace_guard import (
-    build_delivery_workspace_guard,
-    delivery_workspace_repository,
-)
+from ..runtime.time import now_local_iso
 from ..todos.contract import normalize_todo_claimed_by, normalize_todo_id
 from ..work_items.delivery_outcome import (
     ACCOUNTABLE_DELIVERY_OUTCOMES,
     normalize_delivery_outcome,
 )
+from .decision_summary import compact_quota_decision, quota_decision_agent_id
+from .monitor_poll import QUOTA_MONITOR_POLL_CLASSIFICATION
+from .scheduler_ack import QUOTA_SCHEDULER_ACK_CLASSIFICATION
 from .settlement import (
     SettlementIdentity,
     infer_persisted_heartbeat_settlement_identity,
     require_settlement_writeback,
     resolve_heartbeat_settlement_identity,
+    resolve_settlement_delivery_workspace_causality,
     settlement_result_payload,
 )
-
+from .settlement_workspace_causality import completed_todo_workspace_causality
+from .settlement_validation import completion_validation_spend_error
+from .spend_sources import DEFAULT_SLOT_SPEND_SOURCE, VALID_SLOT_SPEND_SOURCES
 
 QUOTA_SLOT_SPENT_CLASSIFICATION = "quota_slot_spent"
 QUOTA_SLOT_VOIDED_CLASSIFICATION = "quota_slot_voided"
@@ -43,10 +46,18 @@ QuotaStatusBuilder = Callable[..., dict[str, Any]]
 def _todo_binding_error(
     *,
     source: str,
+    status_payload: dict[str, Any],
+    goal_id: str,
     before: dict[str, Any],
     requested_todo_id: str | None,
+    agent_id: str | None,
     settlement_identity: SettlementIdentity | None = None,
 ) -> str | None:
+    selected = (
+        before.get("selected_todo")
+        if isinstance(before.get("selected_todo"), dict)
+        else {}
+    )
     if settlement_identity is not None:
         if requested_todo_id != settlement_identity.todo_id:
             return (
@@ -54,8 +65,13 @@ def _todo_binding_error(
                 f"expected {settlement_identity.todo_id} but received "
                 f"{requested_todo_id or 'missing'}"
             )
-        return None
-    selected = before.get("selected_todo") if isinstance(before.get("selected_todo"), dict) else {}
+        return completion_validation_spend_error(
+            status_payload,
+            goal_id=goal_id,
+            todo_id=requested_todo_id,
+            agent_id=agent_id,
+            selected_todo=selected,
+        )
     selected_todo_id = normalize_todo_id(selected.get("todo_id"))
     if requested_todo_id and selected_todo_id and requested_todo_id != selected_todo_id:
         return (
@@ -73,7 +89,13 @@ def _todo_binding_error(
             f"quota spend requires --todo-id {selected_todo_id} for heartbeat "
             "delivery so the accounted turn is bound to the selected todo"
         )
-    return None
+    return completion_validation_spend_error(
+        status_payload,
+        goal_id=goal_id,
+        todo_id=requested_todo_id,
+        agent_id=agent_id,
+        selected_todo=selected,
+    )
 
 
 def _resolve_preview_settlement(
@@ -112,6 +134,11 @@ def _resolve_preview_settlement(
     if result is None:
         return {}
     identity = result.value if result.failure is None else None
+    delivery_workspace_causality = (
+        resolve_settlement_delivery_workspace_causality(runtime_root, identity)
+        if identity is not None
+        else None
+    )
     if identity is not None:
         result = result.bind(
             lambda resolved: require_settlement_writeback(
@@ -123,6 +150,7 @@ def _resolve_preview_settlement(
         "identity": identity,
         "result": result,
         "delivery_run": result.value if result.failure is None else None,
+        "delivery_workspace_causality": delivery_workspace_causality,
         "reason": result.failure.reason if result.failure is not None else None,
     }
 
@@ -263,6 +291,45 @@ def _latest_unspent_accountable_delivery_run(
     return None
 
 
+def _missing_delivery_workspace_preview(
+    *,
+    delivery_workspace_causality: dict[str, Any] | None,
+    delivery_workspace: dict[str, Any] | None,
+    goal_id: str,
+    slots: int,
+    agent_id: str | None,
+    before: dict[str, Any],
+) -> dict[str, Any] | None:
+    requirement = str(
+        (delivery_workspace_causality or {}).get("requirement") or ""
+    )
+    if (
+        not delivery_workspace_causality
+        or requirement == "not_required"
+        or delivery_workspace_repository(delivery_workspace)
+    ):
+        return None
+    return {
+        "ok": False,
+        "mode": "spend-slot",
+        "dry_run": True,
+        "goal_id": goal_id,
+        "slots": slots,
+        "agent_id": agent_id,
+        "appended": False,
+        "registry_mutated": False,
+        "reason": (
+            "quota spend requires a valid delivery workspace snapshot for "
+            f"settlement causality requirement {requirement}"
+        ),
+        "delivery_workspace": delivery_workspace,
+        "delivery_workspace_causality": delivery_workspace_causality,
+        "delivery_workspace_validated": False,
+        "before": before,
+        "after": None,
+    }
+
+
 def build_quota_slot_preview_for_decision(
     status_payload: dict[str, Any],
     *,
@@ -286,6 +353,7 @@ def build_quota_slot_preview_for_decision(
     settlement_identity = None
     settlement_result = None
     delivery_completion_run = None
+    delivery_workspace_causality = None
     settlement = _resolve_preview_settlement(
         raw_runtime_root=raw_runtime_root,
         source=source,
@@ -297,6 +365,9 @@ def build_quota_slot_preview_for_decision(
     settlement_identity = settlement.get("identity")
     settlement_result = settlement.get("result")
     delivery_completion_run = settlement.get("delivery_run")
+    delivery_workspace_causality = settlement.get(
+        "delivery_workspace_causality"
+    )
     if settlement.get("reason"):
         return {
             "ok": False,
@@ -318,8 +389,11 @@ def build_quota_slot_preview_for_decision(
         }
     binding_error = _todo_binding_error(
         source=source,
+        status_payload=status_payload,
+        goal_id=safe_goal_id,
         before=before,
         requested_todo_id=normalized_todo_id,
+        agent_id=safe_requested_agent_id,
         settlement_identity=settlement_identity,
     )
     if binding_error:
@@ -358,6 +432,12 @@ def build_quota_slot_preview_for_decision(
         if raw_runtime_root
         else None
     )
+    if settlement_identity is not None and not delivery_workspace_causality:
+        delivery_workspace_causality = completed_todo_workspace_causality(
+            status_payload,
+            goal_id=safe_goal_id,
+            todo_id=settlement_identity.todo_id,
+        )
     safe_bypass_without_delivery = (
         safe_bypass_requested and delivery_completion_run is None
     )
@@ -385,9 +465,26 @@ def build_quota_slot_preview_for_decision(
         and isinstance(delivery_completion_run.get("delivery_workspace"), dict)
         else None
     )
+    missing_delivery_workspace_preview = _missing_delivery_workspace_preview(
+        delivery_workspace_causality=delivery_workspace_causality,
+        delivery_workspace=raw_delivery_workspace,
+        goal_id=safe_goal_id,
+        slots=safe_slots,
+        agent_id=safe_requested_agent_id,
+        before=before,
+    )
+    if missing_delivery_workspace_preview:
+        return missing_delivery_workspace_preview
+    workspace_requirement = str(
+        (delivery_workspace_causality or {}).get("requirement") or ""
+    )
+    raw_delivery_workspace_repository = delivery_workspace_repository(
+        raw_delivery_workspace
+    )
     delivery_workspace = (
         raw_delivery_workspace
-        if delivery_workspace_repository(raw_delivery_workspace)
+        if raw_delivery_workspace_repository
+        and workspace_requirement != "not_required"
         else None
     )
     delivery_workspace_guard = (
@@ -412,6 +509,7 @@ def build_quota_slot_preview_for_decision(
             "reason": delivery_workspace_guard["reason"],
             "workspace_guard": delivery_workspace_guard,
             "delivery_workspace": delivery_workspace,
+            "delivery_workspace_causality": delivery_workspace_causality,
             "delivery_workspace_validated": False,
             "before": before,
             "after": None,
@@ -433,6 +531,7 @@ def build_quota_slot_preview_for_decision(
             "appended": False,
             "registry_mutated": False,
             "delivery_workspace": delivery_workspace,
+            "delivery_workspace_causality": delivery_workspace_causality,
             "delivery_workspace_validated": False,
             "reason": (
                 "agent workspace guard requires moving to an independent "
@@ -571,6 +670,7 @@ def build_quota_slot_preview_for_decision(
         if delivery_completion_run
         else None,
         "delivery_workspace": delivery_workspace,
+        "delivery_workspace_causality": delivery_workspace_causality,
         "delivery_workspace_validated": delivery_workspace_validated,
     }
 
@@ -702,6 +802,9 @@ def build_quota_slot_spend_event(
             "delivery_run_agent_id": preview.get("delivery_run_agent_id"),
             "delivery_run_recommended_action": delivery_run_action or None,
             "delivery_workspace": preview.get("delivery_workspace"),
+            "delivery_workspace_causality": preview.get(
+                "delivery_workspace_causality"
+            ),
             "delivery_workspace_validated": bool(
                 preview.get("delivery_workspace_validated")
             ),

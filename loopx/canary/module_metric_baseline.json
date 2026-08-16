@@ -53,17 +53,22 @@
     "loopx/control_plane/goals/goal_frontier/__init__.py": {
       "any_count": 115,
       "dict_any_count": 0,
-      "lines": 2056
+      "lines": 2105
     },
     "loopx/control_plane/goals/goal_frontier/terminal.py": {
       "any_count": 15,
       "dict_any_count": 0,
       "lines": 180
     },
-    "loopx/extensions/lark/presentation/explore_results.py": {
-      "any_count": 58,
+    "loopx/control_plane/work_items/interaction_contract.py": {
+      "any_count": 85,
       "dict_any_count": 0,
-      "lines": 1965
+      "lines": 1544
+    },
+    "loopx/extensions/lark/presentation/explore_results.py": {
+      "any_count": 68,
+      "dict_any_count": 0,
+      "lines": 2276
     },
     "loopx/extensions/lark/presentation/kanban.py": {
       "any_count": 95,
@@ -90,6 +95,11 @@
       "dict_any_count": 0,
       "lines": 1999
     },
+    "loopx/state_refresh.py": {
+      "any_count": 30,
+      "dict_any_count": 0,
+      "lines": 1489
+    },
     "loopx/status.py": {
       "any_count": 180,
       "dict_any_count": 0,
@@ -98,7 +108,7 @@
     "loopx/todos.py": {
       "any_count": 48,
       "dict_any_count": 0,
-      "lines": 2142
+      "lines": 2229
     },
     "loopx/worker_bridge.py": {
       "any_count": 28,

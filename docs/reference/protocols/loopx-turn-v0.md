@@ -87,6 +87,11 @@ A reference headless adapter for TraeX (`traex exec`) lives at
 Turn envelope and writes one typed result, leaving goal/todo authority and
 validation to LoopX.
 
+A DeepSeek Harness adapter lives at `scripts/dsh_turn_host_adapter.py`; it uses
+the optional `deepseek-harness-sdk` Python client to run one bounded dsh session
+and parses the final assistant JSON message into the same typed Turn result.
+See [DeepSeek Harness connector](../../integrations/deepseek-harness-connector.md).
+
 ### Five Questions For Any Agent CLI
 
 Before wiring Trae CLI, Codex CLI, or another host, answer these five questions:
@@ -225,6 +230,55 @@ One driver tick has exactly these ordered phases:
 
 The driver may stop after any phase. A stop must return a typed result and must
 not silently continue with a different execution mode.
+
+### Read-Only Journal Inspection
+
+Maintainers can inspect one existing fenced journal without entering the live
+Turn lifecycle:
+
+```bash
+loopx turn inspect-journal \
+  --goal-id <goal-id> \
+  --agent-id <agent-id> \
+  --turn-key <sha256:64-hex-digest> \
+  --format markdown
+```
+
+The command resolves the canonical runtime journal path, reads it under the
+existing journal lock, and projects `interpret_turn_journal` into
+`loopx_turn_journal_inspection_v0`. It branches before status collection,
+quota construction, scheduler context, planning, host invocation, settlement,
+spend, or state writeback. Its `effects` field is therefore always an empty
+list.
+
+Exit zero means that inspection completed, including when `decision` is
+`replay_blocked`. A non-zero exit means the command could not inspect the
+requested journal because a selector, file, JSON document, or schema was
+invalid. This surface is diagnostic evidence only: it grants no authority to
+resume, retry, settle, schedule, spend, or write, and it is never an execution
+gate. Settlement replay enforcement remains owned by the Turn executor.
+
+### User-Gate Quiet Wait
+
+When the user owns the next step and the agent lane has no executable work, the
+decision envelope carries an execution obligation of kind `user_gate_quiet_wait`
+with `must_attempt_work=false` and `delivery_allowed=false`. This happens when
+at least one open user-action todo exists while the agent lane exposes no first
+executable item, and no agent replan obligation takes precedence.
+
+A quiet-wait envelope is not a stall:
+
+- the host must not invoke the model, send prompts, retry with backoff, or
+  consume a heartbeat spend;
+- the host must not report a stall, session failure, or dead-process risk for a
+  driver that is correctly waiting at this obligation;
+- the driver stays quiet until the projected user action clears the frontier or
+  a later decision rotates the obligation (for example to a replan or a fresh
+  runnable todo).
+
+The obligation is machine-enforced by the control plane, not host prose: the
+host reads `must_attempt_work=false` from the typed obligation and preserves the
+quiet wait without re-deriving an action from status text.
 
 For material results, schema-valid host output is only candidate evidence. The
 caller or adapter must select an independent task/postcondition validator

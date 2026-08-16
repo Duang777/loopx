@@ -4,16 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "loopx"
-version = "0.4.4"
+version = "0.4.8"
 description = "A lightweight Loop Engineering control plane for long-running agent goals."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "LICENSE-MIT"]
 authors = [{ name = "LoopX contributors" }]
 dependencies = []
 
+[project.urls]
+Homepage = "https://huangruiteng.github.io/loopx/"
+Documentation = "https://huangruiteng.github.io/loopx/docs/"
+Repository = "https://github.com/huangruiteng/loopx"
+Issues = "https://github.com/huangruiteng/loopx/issues"
+Changelog = "https://github.com/huangruiteng/loopx/releases"
+
 [project.optional-dependencies]
+deepseek-harness = [
+  "deepseek-harness-sdk>=0.1.0rc5",
+]
 test = [
   "jsonschema>=4.23,<5",
   "pytest>=8,<9",
@@ -35,10 +45,12 @@ include = ["loopx*"]
 [tool.setuptools.package-data]
 "loopx" = ["web/chat/*.html", "web/chat/assets/*"]
 "loopx.capabilities.auto_research" = ["worker_skill/SKILL.md"]
+"loopx.capabilities.content_ops" = ["templates/*.json"]
 "loopx.extensions.lark" = ["extension.toml"]
 "loopx.extensions.openviking_periodic_report" = ["extension.toml"]
 "loopx.extensions.openviking_semantic_preference" = ["extension.toml"]
 "loopx.opencode_goal_mode" = ["*.js", "*.mjs", "README.md"]
+"loopx.opencode2_goal_mode" = ["*.mjs", "README.md"]
 "loopx.pi_goal_mode" = ["*.ts", "*.mjs", "README.md"]
 
 [tool.mypy]

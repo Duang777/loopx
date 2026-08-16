@@ -30,6 +30,10 @@ from .effect_program import (
     settlement_step_command,
 )
 from .heartbeat_receipt import find_heartbeat_receipt
+from .settlement_workspace_causality import (
+    delivery_workspace_causality_from_event_details,
+)
+from ..settlement_driver import effect_ids_match, settlement_receipt
 
 __all__ = [
     "SETTLEMENT_IDENTITY_SCHEMA_VERSION",
@@ -49,13 +53,34 @@ __all__ = [
     "find_settlement_writeback",
     "infer_persisted_heartbeat_settlement_identity",
     "require_settlement_spend",
-    "require_settlement_todo_completion",
+    "require_settlement_terminal_closeout",
     "require_settlement_writeback",
     "resolve_heartbeat_settlement_identity",
+    "resolve_settlement_delivery_workspace_causality",
     "settlement_binding_args",
     "settlement_result_payload",
     "settlement_step_command",
 ]
+
+
+def resolve_settlement_delivery_workspace_causality(
+    runtime_root: Path,
+    identity: SettlementIdentity,
+) -> dict[str, str] | None:
+    receipt_event = find_heartbeat_receipt(
+        runtime_root,
+        goal_id=identity.goal_id,
+        agent_id=identity.agent_id,
+        turn_instance_id=identity.turn_instance_id,
+    )
+    if not isinstance(receipt_event, Mapping):
+        return None
+    details_value = receipt_event.get("details")
+    details = details_value if isinstance(details_value, Mapping) else {}
+    return delivery_workspace_causality_from_event_details(
+        details,
+        todo_id=identity.todo_id,
+    )
 
 
 def _identity_mismatch(reason: str) -> SettlementResult[SettlementIdentity]:
@@ -131,7 +156,7 @@ def resolve_heartbeat_settlement_identity(
         turn_instance_id=normalized_turn_id,
     )
     receipt_effect_id = str(details.get("settlement_effect_id") or "").strip()
-    if receipt_effect_id and receipt_effect_id != identity.effect_id:
+    if not effect_ids_match(receipt_effect_id, identity.effect_id):
         return SettlementResult.failed(
             kind=SettlementFailureKind.IDENTITY_MISMATCH,
             step_kind=SettlementStepKind.VALIDATION,
@@ -145,10 +170,9 @@ def resolve_heartbeat_settlement_identity(
     return SettlementResult.pure(
         identity,
         receipts=(
-            SettlementReceipt(
+            settlement_receipt(
+                identity,
                 step_kind=SettlementStepKind.VALIDATION,
-                status="committed",
-                effect_id=identity.effect_id,
                 source_ref=f"rollout_event:{event_id}" if event_id else None,
             ),
         ),
@@ -305,7 +329,7 @@ def find_settlement_step_event(
     return None
 
 
-def require_settlement_todo_completion(
+def require_settlement_terminal_closeout(
     runtime_root: Path,
     identity: SettlementIdentity,
 ) -> SettlementResult[dict[str, Any]]:
@@ -314,20 +338,21 @@ def require_settlement_todo_completion(
         identity,
         event_kind="todo_complete",
     )
-    if receipt_event is None:
+    details_value = receipt_event.get("details") if receipt_event else None
+    details = details_value if isinstance(details_value, Mapping) else {}
+    if receipt_event is None or details.get("no_followup") is not True:
         return SettlementResult.failed(
             kind=SettlementFailureKind.RECEIPT_MISSING,
-            step_kind=SettlementStepKind.TODO_COMPLETION,
-            reason="matching Todo completion receipt is missing",
+            step_kind=SettlementStepKind.TERMINAL_CLOSEOUT,
+            reason="matching terminal no-follow-up closeout receipt is missing",
         )
     event_id = str(receipt_event.get("event_id") or "").strip()
     return SettlementResult.pure(
         receipt_event,
         receipts=(
-            SettlementReceipt(
-                step_kind=SettlementStepKind.TODO_COMPLETION,
-                status="committed",
-                effect_id=identity.effect_id,
+            settlement_receipt(
+                identity,
+                step_kind=SettlementStepKind.TERMINAL_CLOSEOUT,
                 source_ref=f"rollout_event:{event_id}" if event_id else None,
             ),
         ),
@@ -357,10 +382,9 @@ def require_settlement_writeback(
     return SettlementResult.pure(
         run,
         receipts=(
-            SettlementReceipt(
+            settlement_receipt(
+                identity,
                 step_kind=SettlementStepKind.DURABLE_WRITEBACK,
-                status="committed",
-                effect_id=identity.effect_id,
                 source_ref=f"rollout_event:{event_id}" if event_id else None,
             ),
         ),
@@ -404,10 +428,9 @@ def require_settlement_spend(
     return SettlementResult.pure(
         run,
         receipts=(
-            SettlementReceipt(
+            settlement_receipt(
+                identity,
                 step_kind=SettlementStepKind.QUOTA_SPEND,
-                status="committed",
-                effect_id=identity.effect_id,
                 source_ref=f"rollout_event:{event_id}" if event_id else None,
             ),
         ),

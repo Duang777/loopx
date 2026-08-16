@@ -38,10 +38,12 @@ def scheduler_command_binding_for_agent_type(
         "codex-ide-plugin": SchedulerRuntimeProfile.CODEX_CLI_VISIBLE,
         "claude-code": SchedulerRuntimeProfile.CLAUDE_CODE_VISIBLE,
         "opencode": SchedulerRuntimeProfile.GENERIC_CLI_AGENT_LOOP,
+        "opencode2": SchedulerRuntimeProfile.GENERIC_CLI_AGENT_LOOP,
         "traex-cli": SchedulerRuntimeProfile.GENERIC_CLI_AGENT_LOOP,
         "pi": SchedulerRuntimeProfile.GENERIC_CLI_AGENT_LOOP,
         "gemini-cli": SchedulerRuntimeProfile.GENERIC_CLI_AGENT_LOOP,
         "cursor-agent": SchedulerRuntimeProfile.GENERIC_CLI_AGENT_LOOP,
+        "deepseek-harness": SchedulerRuntimeProfile.GENERIC_CLI_AGENT_LOOP,
     }.get(canonical)
     if runtime_profile is not None:
         return {"runtime_profile": runtime_profile.value}
@@ -60,10 +62,12 @@ SUPPORTED_AGENT_TYPES = [
     "codex-cli",
     "claude-code",
     "opencode",
+    "opencode2",
     "traex-cli",
     "pi",
     "gemini-cli",
     "cursor-agent",
+    "deepseek-harness",
     "manual",
     "other-agent",
 ]
@@ -146,6 +150,18 @@ AGENT_TYPE_CATALOG: dict[str, dict[str, Any]] = {
         "entry": "/loopx <task> with the LoopX OpenCode bridge installed",
         "accepted_inputs": ["opencode", "open-code", "open_code", "open code"],
     },
+    "opencode2": {
+        "display_name": "OpenCode 2",
+        "host_loop": "visible OpenCode 2 session driven by the LoopX goal worker",
+        "entry": "/loopx <task> with OpenCode 2 and the LoopX goal worker",
+        "accepted_inputs": [
+            "opencode2",
+            "opencode-2",
+            "opencode_2",
+            "open-code-2",
+            "open code 2",
+        ],
+    },
     "traex-cli": {
         "display_name": "TraeX CLI TUI",
         "host_loop": "visible TraeX /goal gated by LoopX",
@@ -201,6 +217,17 @@ AGENT_TYPE_CATALOG: dict[str, dict[str, Any]] = {
             "cursor",
             "cursor-cli",
             "cursor cli",
+        ],
+    },
+    "deepseek-harness": {
+        "display_name": "DeepSeek Harness",
+        "host_loop": "DeepSeek Harness headless/automation loop gated by LoopX quota",
+        "entry": "loopx turn run-once with scripts/dsh_turn_host_adapter.py",
+        "accepted_inputs": [
+            "deepseek-harness",
+            "deepseek_harness",
+            "deepseek harness",
+            "dsh",
         ],
     },
     "manual": {
@@ -266,6 +293,9 @@ HOST_SURFACE_TO_AGENT_TYPE = {
     "codex-cli-tui": "codex-cli",
     "claude-code": "claude-code",
     "opencode": "opencode",
+    "opencode2": "opencode2",
+    "opencode-v2": "opencode2",
+    "opencode_2": "opencode2",
     "traex-cli": "traex-cli",
     "traex-cli-tui": "traex-cli",
     "traex": "traex-cli",
@@ -275,6 +305,8 @@ HOST_SURFACE_TO_AGENT_TYPE = {
     "gemini": "gemini-cli",
     "cursor-agent": "cursor-agent",
     "cursor": "cursor-agent",
+    "deepseek-harness": "deepseek-harness",
+    "dsh": "deepseek-harness",
     "shell": "manual",
     "http": "other-agent",
     "worker-bridge": "other-agent",
@@ -400,10 +432,12 @@ def _heartbeat_commands(
         "codex-cli": "Codex CLI /goal visible TUI loop",
         "claude-code": "Claude Code native /loop gated by LoopX",
         "opencode": "OpenCode visible goal loop gated by LoopX",
+        "opencode2": "OpenCode 2 visible goal loop driven by the LoopX worker",
         "traex-cli": "TraeX CLI /goal visible TUI loop gated by LoopX",
         "pi": "Pi visible goal loop gated by LoopX",
         "gemini-cli": "Gemini CLI agent loop gated by LoopX",
         "cursor-agent": "Cursor Agent CLI loop gated by LoopX",
+        "deepseek-harness": "DeepSeek Harness automation loop gated by LoopX",
         "manual": "External scheduler or manual shell LoopX poll",
         "other-agent": "Custom agent host loop gated by LoopX",
     }
@@ -855,6 +889,44 @@ def _opencode_activation(commands: dict[str, str], cli_bin: str) -> dict[str, An
     }
 
 
+def _opencode2_activation(commands: dict[str, str], cli_bin: str) -> dict[str, Any]:
+    return {
+        "host_surface": "opencode2_goal_worker_mode",
+        "entry_command_hint": "/loopx <task>",
+        "activation_method": "start_opencode2_goal_worker",
+        "activation_input_command": commands["heartbeat_prompt_json"],
+        "setup_command": None,
+        "host_mutation": {
+            "owner": "LoopX OpenCode 2 goal worker",
+            "host_tool": "opencode2-goal-worker",
+            "tool_argument_mapping": {
+                "goalId": "heartbeat_prompt.goal_id",
+                "directory": "the project directory",
+                "agentId": "heartbeat_prompt.agent_id when present",
+                "registryPath": "explicit registry path when present",
+                "availableCapabilities": "declared host capabilities when present",
+                "taskBody": "heartbeat_prompt.task_body",
+                "sessionId": "an existing OpenCode 2 session id when reattaching",
+            },
+            "cli_can_mutate_directly": True,
+            "missing_host_tool_gate": (
+                "The loopx opencode2-goal-worker command or the opencode2 binary "
+                "is unavailable; install LoopX and OpenCode 2 before claiming "
+                "autonomous heartbeat support."
+            ),
+        },
+        "activation_steps": [
+            "Run the heartbeat-prompt JSON command after project state and todos are written.",
+            "Start the worker from the project directory: loopx opencode2-goal-worker --goal-id <goal_id> --directory . --task-body <task_body>, with --agent-id and --capability flags when those values are present.",
+            "Let the worker create or attach the visible OpenCode 2 session, gate every turn through LoopX quota should-run, and keep quiet waits free of model calls.",
+        ],
+        "success_criteria": [
+            "A visible OpenCode 2 session runs the goal and the worker survives TUI close because it owns the timers.",
+            "Quiet waits make no model call, active work auto-continues, user intervention pauses visibly, and validated terminal no-follow-up stops the worker.",
+        ],
+    }
+
+
 def _traex_activation(commands: dict[str, str]) -> dict[str, Any]:
     return {
         "host_surface": "traex_visible_goal_mode",
@@ -977,6 +1049,38 @@ def _cursor_agent_activation(commands: dict[str, str], cli_bin: str) -> dict[str
     )
 
 
+def _deepseek_harness_activation(commands: dict[str, str]) -> dict[str, Any]:
+    return {
+        "host_surface": "deepseek_harness_automation_loop",
+        "entry_command_hint": "loopx turn run-once with scripts/dsh_turn_host_adapter.py",
+        "activation_method": "external_loop_driver",
+        "activation_input_command": commands["heartbeat_prompt_json"],
+        "host_mutation": {
+            "owner": "DeepSeek Harness adapter",
+            "host_loop_primitive": "deepseek-harness-sdk",
+            "cli_can_mutate_directly": False,
+            "missing_host_tool_gate": (
+                "DeepSeek Harness SDK or dsh runtime is unavailable; install "
+                "`loopx[deepseek-harness]` and verify the dsh cordis configuration "
+                "before claiming an automation loop."
+            ),
+        },
+        "activation_steps": [
+            "Install the optional DeepSeek Harness SDK (`loopx[deepseek-harness]`).",
+            "Prepare a dsh cordis.yml and any DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL settings.",
+            "Run the heartbeat-prompt JSON command after project state and todos are written.",
+            "Wire `loopx turn run-once` with `--host generic-cli` and "
+            "the `scripts/dsh_turn_host_adapter.py` host adapter command.",
+            "Start every automatic tick from quota should-run and stop when it says stop.",
+        ],
+        "success_criteria": [
+            "The DeepSeek Harness adapter returns a typed loopx_turn_result_v0.",
+            "Independent validation passes before LoopX writes state or spends quota.",
+            "Opaque dsh session roots stay outside public LoopX evidence.",
+        ],
+    }
+
+
 def _manual_activation(commands: dict[str, str]) -> dict[str, Any]:
     return {
         "host_surface": "external_scheduler_or_manual_shell",
@@ -1055,6 +1159,8 @@ def build_host_loop_activation_packet(
         surface = _claude_code_activation(commands, cli_bin)
     elif canonical == "opencode":
         surface = _opencode_activation(commands, cli_bin)
+    elif canonical == "opencode2":
+        surface = _opencode2_activation(commands, cli_bin)
     elif canonical == "traex-cli":
         surface = _traex_activation(commands)
     elif canonical == "pi":
@@ -1063,6 +1169,8 @@ def build_host_loop_activation_packet(
         surface = _gemini_cli_activation(commands, cli_bin)
     elif canonical == "cursor-agent":
         surface = _cursor_agent_activation(commands, cli_bin)
+    elif canonical == "deepseek-harness":
+        surface = _deepseek_harness_activation(commands)
     else:
         surface = _manual_activation(commands)
         if canonical == "other-agent":

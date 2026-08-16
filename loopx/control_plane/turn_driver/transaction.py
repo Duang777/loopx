@@ -14,6 +14,7 @@ from ..effect_program import (
     SettlementPlan,
     SettlementStep,
     SettlementStepKind,
+    TURN_TRANSACTION_PHASES,
 )
 
 LOOPX_TURN_TRANSACTION_PLAN_SCHEMA_VERSION = "loopx_turn_transaction_plan_v0"
@@ -21,15 +22,7 @@ LOOPX_TURN_RESULT_SCHEMA_VERSION = "loopx_turn_result_v0"
 LOOPX_TURN_RECEIPT_SCHEMA_VERSION = "loopx_turn_receipt_v0"
 LOOPX_TURN_RECEIPT_VALIDATION_SCHEMA_VERSION = "loopx_turn_receipt_validation_v0"
 LOOPX_TURN_EXECUTION_SCHEMA_VERSION = "loopx_turn_execution_v0"
-TRANSACTION_PHASES = (
-    "host_execute",
-    "typed_result",
-    "validation",
-    "durable_writeback",
-    "quota_spend",
-    "scheduler_apply",
-    "scheduler_ack",
-)
+TRANSACTION_PHASES = TURN_TRANSACTION_PHASES
 
 
 class LoopXTurnResultKind(str, Enum):
@@ -43,6 +36,7 @@ class LoopXTurnResultKind(str, Enum):
     VALIDATION_FAILED = "validation_failed"
     WRITEBACK_FAILED = "writeback_failed"
     QUOTA_SPEND_FAILED = "quota_spend_failed"
+    TERMINAL_CLOSEOUT_FAILED = "terminal_closeout_failed"
 
 
 MATERIAL_RESULT_KINDS = {
@@ -68,6 +62,7 @@ FAILURE_PHASES = {
     LoopXTurnResultKind.VALIDATION_FAILED: "validation",
     LoopXTurnResultKind.WRITEBACK_FAILED: "durable_writeback",
     LoopXTurnResultKind.QUOTA_SPEND_FAILED: "quota_spend",
+    LoopXTurnResultKind.TERMINAL_CLOSEOUT_FAILED: "terminal_closeout",
 }
 
 
@@ -184,6 +179,17 @@ def build_loopx_turn_transaction_plan(
                 precondition="matching durable writeback receipt exists",
                 idempotency_key_ref=effect_ref,
                 expected_receipt="quota_spend_receipt",
+            ),
+            SettlementStep(
+                kind=SettlementStepKind.TERMINAL_CLOSEOUT,
+                owner="turn_driver_callback_adapter",
+                precondition=(
+                    "validated completion durably declares no_followup and "
+                    "matching quota spend receipt exists"
+                ),
+                idempotency_key_ref=effect_ref,
+                expected_receipt="terminal_closeout_receipt",
+                conditional=True,
             ),
         ),
     )
@@ -302,7 +308,12 @@ def validate_loopx_turn_receipt(
         TRANSACTION_PHASES[next_index] if next_index < len(TRANSACTION_PHASES) else None
     )
 
-    if failed_phase and failed_phase != expected_next:
+    terminal_closeout_failure = bool(
+        failed_phase == "terminal_closeout"
+        and kind is LoopXTurnResultKind.TERMINAL_CLOSEOUT_FAILED
+        and completed == list(TRANSACTION_PHASES[:5])
+    )
+    if failed_phase and failed_phase != expected_next and not terminal_closeout_failure:
         errors.append("failed_phase must be the next uncompleted transaction phase")
     if failed_phase and kind not in FAILURE_PHASES:
         errors.append("failed_phase is only valid for a typed failure result")

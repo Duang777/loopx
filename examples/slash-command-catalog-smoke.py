@@ -44,6 +44,16 @@ def main() -> int:
     assert global_gates["implementation_status"] == "available", global_gates
     assert global_gates["cli_reference"] == "loopx global-gates", global_gates
     assert global_gates["legacy_aliases"] == ["/loop-global-gates"], global_gates
+    global_todos = commands["/loopx-global-todos"]
+    assert global_todos["implementation_status"] == "available", global_todos
+    assert global_todos["cli_reference"] == "loopx global-todos", global_todos
+    assert global_todos["legacy_aliases"] == ["/loop-global-todos"], global_todos
+    global_risks = commands["/loopx-global-risks"]
+    assert global_risks["implementation_status"] == "available", global_risks
+    assert global_risks["cli_reference"] == "loopx global-risks", global_risks
+    assert global_risks["legacy_aliases"] == ["/loop-global-risks"], global_risks
+    assert global_risks["mutation_policy"] == "read_only", global_risks
+    assert "/loop-global-risks" not in commands, commands
     project_start = commands["/loopx <goal text>"]
     assert "loopx start-goal --guided --project . --goal-text" in project_start["cli_reference"], project_start
     assert "bootstrap-command-pack --project . --goal-text" not in project_start["cli_reference"], project_start
@@ -88,12 +98,15 @@ def main() -> int:
     compact = json.loads(run_cli("--format", "json", "slash-commands", "--no-legacy-aliases").stdout)
     compact_text = json.dumps(compact)
     assert "/loop-global-summary" not in compact_text, compact
+    assert "/loop-global-risks" not in compact_text, compact
 
     markdown = run_cli("slash-commands").stdout
     assert "# LoopX Slash Commands" in markdown, markdown
     assert "`/loopx-global-summary`" in markdown, markdown
     assert "`loopx global-summary`" in markdown, markdown
     assert "`loopx global-gates`" in markdown, markdown
+    assert "`loopx global-todos`" in markdown, markdown
+    assert "`loopx global-risks`" in markdown, markdown
     assert "`/loopx-pr-review`" in markdown, markdown
     assert "`loopx pr-review [--repo owner/repo] [--state open\\|merged\\|all] [--since ISO]`" in markdown, markdown
     assert "Agent contract: run the CLI reference first" in markdown, markdown

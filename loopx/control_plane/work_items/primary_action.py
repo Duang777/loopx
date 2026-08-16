@@ -148,31 +148,30 @@ def protocol_first_candidate_action(payload: dict[str, Any]) -> str | None:
     return protocol_action_text(payload.get("recommended_action"))
 
 
-def protocol_replan_requires_runnable_todo(payload: dict[str, Any]) -> bool:
-    replan_obligation = (
-        payload.get("autonomous_replan_obligation")
-        if isinstance(payload.get("autonomous_replan_obligation"), dict)
+def protocol_replan_action_packet_instruction(payload: dict[str, Any]) -> str:
+    packet = (
+        payload.get("replan_action_packet")
+        if isinstance(payload.get("replan_action_packet"), dict)
         else {}
     )
-    satisfying_delta_kinds = {
-        str(item or "").strip()
-        for item in (replan_obligation.get("satisfying_repair_delta_kinds") or [])
-        if str(item or "").strip()
-    }
-    return (
-        "runnable_todo_set" in satisfying_delta_kinds
-        or replan_obligation.get("agent_todo_writeback_required") is True
+    uncovered = (
+        packet.get("uncovered_frontier")
+        if isinstance(packet.get("uncovered_frontier"), dict)
+        else {}
     )
-
-
-def protocol_strict_replan_action(payload: dict[str, Any]) -> str | None:
-    if not protocol_replan_requires_runnable_todo(payload):
-        return None
-    replan_obligation = payload["autonomous_replan_obligation"]
-    return protocol_action_text(
-        replan_obligation.get("recommended_action"),
-        limit=320,
+    writeback_contract = (
+        packet.get("writeback_contract")
+        if isinstance(packet.get("writeback_contract"), dict)
+        else {}
     )
+    if uncovered.get("required_any_of") and writeback_contract.get(
+        "successor_command"
+    ):
+        return (
+            "select one bounded next slice; prefer "
+            "replan_action_packet.writeback_contract.successor_command"
+        )
+    return "produce one typed outcome from the host-projected replan action packet"
 
 
 def protocol_monitor_action(payload: dict[str, Any]) -> str | None:
@@ -224,13 +223,7 @@ def resolve_canonical_primary_action(payload: dict[str, Any], *, mode: str) -> s
             "write a compact blocker when it is absent"
         )
     if mode == "autonomous_replan":
-        strict_replan_action = protocol_strict_replan_action(payload)
-        if strict_replan_action:
-            return strict_replan_action
-        lane_action = protocol_first_candidate_action(payload)
-        if lane_action:
-            return f"run one bounded autonomous replan slice around {lane_action}"
-        return "run one bounded self-repair or replan segment before another quiet no-op"
+        return protocol_replan_action_packet_instruction(payload)
     if mode == "monitor_quiet_skip":
         return (
             "ensure this heartbeat's idempotent quota receipt is committed, then "
@@ -289,7 +282,14 @@ def resolve_canonical_primary_action(payload: dict[str, Any], *, mode: str) -> s
     if mode == "outcome_floor_recovery":
         return "produce the required outcome-floor evidence artifact or write the concrete blocker"
     if mode == "capability_bridge_repair":
-        return "repair or materialize the missing bridge capability, rewrite the todo, or write a compact blocker"
+        return (
+            "execute interaction_contract.agent_channel.next_task_action.operation "
+            "once with its real task-facing tool and exact target_ref when projected; "
+            "preflight_allowed is false, and the instruction is context rather than "
+            "CLI text; on success "
+            "execute cli_channel."
+            "next_cli_actions[0] in the same turn and continue only when quota allows"
+        )
     if mode == "agent_workspace_repair":
         return "create or switch to an independent worktree/branch, then rerun quota guard before file edits"
     if mode == "automation_prompt_upgrade":
