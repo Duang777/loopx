@@ -143,6 +143,11 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
     ? runs.find((run) => run.goalId === selection.item.goalId && Boolean(run.sessionId))
       ?? runs.find((run) => run.goalId === selection.item.goalId)
     : null;
+  const hasProjectedRunActivity = selection.kind === "run" && (
+    selection.item.completedSteps > 0
+    || Boolean(selection.item.latestActivity)
+    || Boolean(selection.item.outputs?.length)
+  );
 
   async function sendCorrection() {
     if (selection.kind !== "run" || !correction.trim()) return;
@@ -394,7 +399,9 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
                       </li>
                     ))}</ol>
                   ) : (
-                    <p className="personal-session-empty">还没有运行记录。Agent 尚未开始这次执行；请在“详情与操作”查看等待条件或恢复 Session。</p>
+                    <p className="personal-session-empty">{hasProjectedRunActivity
+                      ? `当前没有可展示的逐步运行记录。LoopX 已读取到 ${selection.item.completedSteps}/${selection.item.totalSteps} 的投影进度${selection.item.outputs?.length ? `和 ${selection.item.outputs.length} 项产出` : ""}；请在“详情与操作”检查 Session 状态。`
+                      : "还没有运行记录。Agent 尚未开始这次执行；请在“详情与操作”查看等待条件或恢复 Session。"}</p>
                   )}
                   {selection.item.status === "running" ? <div className="personal-session-active-step"><i /><span><strong>正在分析</strong><small>Agent 正在继续执行，记录会自动更新。</small></span></div> : null}
                 </section>

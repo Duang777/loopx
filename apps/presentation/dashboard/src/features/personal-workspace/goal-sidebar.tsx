@@ -1,6 +1,6 @@
-import { Bell, Bot, ChevronRight, CircleUserRound, Clock3, FileCheck2, ListChecks, Plus } from "lucide-react";
+import { Bell, Bot, ChevronRight, CircleUserRound, Plus } from "lucide-react";
 
-import type { WorkspaceChannel, WorkspaceGoal } from "./personal-workspace-model";
+import type { WorkspaceGoal } from "./personal-workspace-model";
 
 const goalStateClass: Record<WorkspaceGoal["state"], string> = {
   "需修复": "is-danger",
@@ -13,27 +13,19 @@ const goalStateClass: Record<WorkspaceGoal["state"], string> = {
 
 export function GoalSidebar({
   attentionCount,
-  activeRunCount,
   goals,
   onRequestGoalCreate,
   onOpenNotifications,
-  onSelectChannel,
   onSelectGoal,
   ownerLabel = "个人工作区",
-  recentOutputCount,
-  selectedChannel,
   selectedGoalId,
 }: {
   attentionCount: number;
-  activeRunCount: number;
   goals: WorkspaceGoal[];
   onRequestGoalCreate?: () => void;
   onOpenNotifications?: () => void;
-  onSelectChannel: (channel: WorkspaceChannel) => void;
   onSelectGoal: (goalId: string | null) => void;
   ownerLabel?: string;
-  recentOutputCount: number;
-  selectedChannel: WorkspaceChannel;
   selectedGoalId: string | null;
 }) {
   return (
@@ -55,18 +47,6 @@ export function GoalSidebar({
           {attentionCount > 0 ? <span className="personal-sidebar-count">{attentionCount}</span> : null}
           <ChevronRight size={15} />
         </button>
-
-        <div className="personal-manager-channels">
-          <button aria-current={selectedGoalId === null && selectedChannel === "attention" ? "page" : undefined} onClick={() => onSelectChannel("attention")} type="button">
-            <ListChecks size={16} /><span>需要你</span><small>{attentionCount}</small>
-          </button>
-          <button aria-current={selectedGoalId === null && selectedChannel === "running" ? "page" : undefined} onClick={() => onSelectChannel("running")} type="button">
-            <Clock3 size={16} /><span>执行中</span><small>{activeRunCount}</small>
-          </button>
-          <button aria-current={selectedGoalId === null && selectedChannel === "outputs" ? "page" : undefined} onClick={() => onSelectChannel("outputs")} type="button">
-            <FileCheck2 size={16} /><span>最近产出</span><small>{recentOutputCount}</small>
-          </button>
-        </div>
 
         <div className="personal-sidebar-section-title">
           <span>Goals</span>

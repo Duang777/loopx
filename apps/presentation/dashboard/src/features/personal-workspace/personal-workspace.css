@@ -46,11 +46,6 @@
 .personal-manager-link:hover, .personal-goal-link:hover { background: rgb(255 255 255 / 65%); }
 .personal-manager-link[aria-current="page"], .personal-goal-link[aria-current="page"] { background: #fff; box-shadow: 0 1px 4px rgb(30 28 20 / 10%); }
 .personal-sidebar-count { min-width: 22px; padding: 2px 7px; border-radius: 99px; background: var(--pw-amber-bg); color: var(--pw-amber); font-size: 11px; font-weight: 650; text-align: center; }
-.personal-manager-channels { display: grid; gap: 2px; margin: 4px 0 0 40px; }
-.personal-manager-channels button { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 38px; padding: 6px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--pw-muted); cursor: pointer; text-align: left; font-size: 12px; }
-.personal-manager-channels button:hover { background: rgb(255 255 255 / 65%); }
-.personal-manager-channels button[aria-current="page"] { background: #fff; color: var(--pw-text); box-shadow: 0 1px 3px rgb(30 28 20 / 8%); }
-.personal-manager-channels small { min-width: 20px; padding: 1px 6px; border-radius: 99px; background: var(--pw-blue-soft); color: var(--pw-blue-ink); text-align: center; font-size: 10px; font-weight: 650; }
 .personal-sidebar-section-title { display: flex; justify-content: space-between; padding: 20px 10px 7px; color: var(--pw-faint); font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
 .personal-sidebar-title-actions { display: flex; align-items: center; gap: 6px; }
 .personal-sidebar-title-actions button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--pw-muted); cursor: pointer; }
@@ -346,6 +341,7 @@
 .personal-object-list > button { cursor: pointer; }
 .personal-object-list > button:hover { background: #faf9f6; }
 .personal-object-list > button:last-child { border-bottom: 0; }
+.personal-object-list > button > p { grid-column: 2 / -1; margin: -3px 0 0; color: var(--pw-muted); font-size: 12px; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .personal-object-list small { color: var(--pw-muted); }
 .personal-object-list > button > small { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .personal-object-list .is-done { color: var(--pw-green); }
@@ -684,10 +680,9 @@
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-brand { border-bottom: 2px solid #141414; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-brand-mark { border: 2px solid #141414; border-radius: 4px; background: #141414; color: #ffd91a; box-shadow: none; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-manager-icon { border: 2px solid #141414; border-radius: 4px; background: #fff; color: #141414; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-manager-link:hover, .personal-workspace-shell[data-pw-theme="brutal"] .personal-goal-link:hover, .personal-workspace-shell[data-pw-theme="brutal"] .personal-manager-channels button:hover, .personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-utility:hover { background: rgb(255 255 255 / 55%); }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-manager-link:hover, .personal-workspace-shell[data-pw-theme="brutal"] .personal-goal-link:hover, .personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-utility:hover { background: rgb(255 255 255 / 55%); }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-manager-link[aria-current="page"], .personal-workspace-shell[data-pw-theme="brutal"] .personal-goal-link[aria-current="page"] { border: 2px solid #141414; border-radius: 4px; background: #ff8fd0; box-shadow: 3px 3px 0 #141414; font-weight: 700; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-manager-channels button[aria-current="page"] { border: 2px solid #141414; border-radius: 4px; background: #fff; box-shadow: 2px 2px 0 #141414; color: #141414; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-count, .personal-workspace-shell[data-pw-theme="brutal"] .personal-manager-channels small { border: 2px solid #141414; background: #fff; color: #141414; box-shadow: 2px 2px 0 #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-count { border: 2px solid #141414; background: #fff; color: #141414; box-shadow: 2px 2px 0 #141414; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-section-title { color: #141414; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-title-actions button:hover { border: 2px solid #141414; background: #fff; box-shadow: none; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-sidebar-footer { border-top: 2px solid #141414; }
@@ -754,8 +749,7 @@
 .personal-digest-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; padding: 13px 16px; border: 1px solid var(--pw-line); border-radius: 14px; background: linear-gradient(135deg, #fff, #fbf7ee); }
 .personal-digest-card > strong { font-size: 13px; letter-spacing: 0.01em; }
 .personal-digest-stats { display: flex; gap: 8px; }
-.personal-digest-stats button { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 13px; border: 1px solid var(--pw-line-strong); border-radius: 99px; background: #fff; color: var(--pw-muted); cursor: pointer; font-size: 12px; }
-.personal-digest-stats button:hover { border-color: var(--pw-blue); color: var(--pw-blue-ink); }
+.personal-digest-stats span { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 13px; border: 1px solid var(--pw-line-strong); border-radius: 99px; background: #fff; color: var(--pw-muted); font-size: 12px; }
 .personal-digest-stats b { color: var(--pw-text); font-size: 14px; }
 
 
@@ -767,8 +761,7 @@
 .personal-priority-badge.is-blocked { background: var(--pw-red-bg); color: var(--pw-red); }
 
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-card { border: 2px solid #141414; border-radius: 4px; background: #fff; box-shadow: 3px 3px 0 #141414; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-stats button { border: 2px solid #141414; border-radius: 99px; color: #141414; box-shadow: 2px 2px 0 #141414; }
-.personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-stats button:hover { background: #ffe23f; border-color: #141414; color: #141414; }
+.personal-workspace-shell[data-pw-theme="brutal"] .personal-digest-stats span { border: 2px solid #141414; border-radius: 99px; color: #141414; box-shadow: 2px 2px 0 #141414; }
 .personal-workspace-shell[data-pw-theme="brutal"] .personal-priority-badge { border: 1.5px solid #141414; border-radius: 3px; }
 
 .personal-goal-notification code { padding: 1px 5px; border: 1px solid var(--pw-line); border-radius: 5px; background: var(--pw-bg, #f7f6f2); font-size: 11px; word-break: break-all; }

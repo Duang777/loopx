@@ -8,6 +8,7 @@ export function ChannelHeader({
   managerChatOpen,
   mobileNavigationOpen,
   onOpenGoalDetail,
+  onOpenManagerChat,
   onRefresh,
   onOpenNavigation,
   onSelectGoalTab,
@@ -24,6 +25,7 @@ export function ChannelHeader({
   managerChatOpen?: boolean;
   mobileNavigationOpen?: boolean;
   onOpenGoalDetail?: () => void;
+  onOpenManagerChat?: () => void;
   onRefresh?: () => void;
   onOpenNavigation?: () => void;
   onSelectGoalTab: (tab: WorkspaceGoalTab) => void;
@@ -51,12 +53,12 @@ export function ChannelHeader({
           <button aria-current={selectedGoalTab === "tasks" ? "page" : undefined} onClick={() => onSelectGoalTab("tasks")} type="button">Tasks</button>
           <button aria-current={selectedGoalTab === "files" ? "page" : undefined} onClick={() => onSelectGoalTab("files")} type="button">Files</button>
         </nav>
-      ) : managerChatOpen ? (
+      ) : (
         <nav aria-label="管家视图" className="personal-goal-tabs">
-          <button onClick={onReturnManagerHome} type="button">总览</button>
-          <button aria-current="page" type="button">Chat</button>
+          <button aria-current={!managerChatOpen ? "page" : undefined} onClick={onReturnManagerHome} type="button">总览</button>
+          <button aria-current={managerChatOpen ? "page" : undefined} onClick={onOpenManagerChat} type="button">Chat</button>
         </nav>
-      ) : null}
+      )}
       {selectedGoal && onOpenGoalDetail ? (
         <button aria-label="Goal 详情" className="personal-icon-button" onClick={onOpenGoalDetail} title="Goal 详情" type="button">
           <Info size={17} />
