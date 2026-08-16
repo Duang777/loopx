@@ -621,10 +621,46 @@ async function main() {
     if (!naturalBinding) throw new Error("Natural-language Agent binding did not create a typed preview");
     await page.getByRole("button", { name: "关闭", exact: true }).click();
 
-    const run = page.getByRole("button", { name: /查看执行过程与结果/ }).first();
-    await run.click();
+    const selectedGoalId = new URL(page.url()).searchParams.get("goalId");
+    if (!selectedGoalId) throw new Error("Selected Goal URL did not preserve goalId for the Session authority smoke");
+    const authoritativeSessionId = `session-authoritative-${selectedGoalId}`;
+    page.__loopxRuntime.sessions.set(authoritativeSessionId, {
+      session_id: authoritativeSessionId,
+      goal_id: selectedGoalId,
+      agent_id: "codex",
+      adapter_kind: "codex",
+      channel_id: "task.todo-session-authority-smoke",
+      status: "stale",
+      active_turn_id: null,
+      last_error_code: null,
+      created_at: "2026-08-13T01:00:00Z",
+      updated_at: "2026-08-13T01:00:00Z",
+      last_activity_at: "2026-08-13T01:00:00Z",
+      resumable: true,
+    });
+    page.__loopxRuntime.messages.set(authoritativeSessionId, []);
+    const authoritativeRun = page.locator(".personal-run-row", { hasText: "Agent 执行任务" });
+    await authoritativeRun.waitFor({ state: "visible", timeout: 5_000 });
+    page.__loopxRuntime.messages.set(authoritativeSessionId, [{
+      message_id: "message-authoritative-result",
+      turn_id: "turn-authoritative-result",
+      role: "agent",
+      text: "权威 Session 已完成只读分析，并返回可核验结果。",
+      created_at: "2026-08-13T01:00:03Z",
+    }]);
+    await authoritativeRun.click();
     await page.getByText("执行 Session", { exact: true }).waitFor({ state: "visible" });
     if (await page.getByRole("tab", { name: "执行过程与结果" }).getAttribute("aria-selected") !== "true") throw new Error("Session drawer did not open on the execution record");
+    const authoritativeRecord = page.getByRole("region", { name: "执行记录" });
+    try {
+      await authoritativeRecord.getByText("已完成", { exact: true }).waitFor({ state: "visible", timeout: 8_000 });
+    } catch (error) {
+      await page.screenshot({ path: resolve(outputDir, "session-authority-refresh-failed.png"), fullPage: true, animations: "disabled" });
+      throw new Error(`${error.message}; body=${(await page.locator("body").innerText()).slice(-5000)}`);
+    }
+    await page.getByLabel("执行 Session").getByText("1/1", { exact: true }).waitFor({ state: "visible" });
+    await page.getByText("权威 Session 已完成只读分析，并返回可核验结果。", { exact: true }).waitFor({ state: "visible" });
+    if (await page.getByText("stale", { exact: true }).count()) throw new Error("Fresh Session result left a stale status visible");
     await page.getByText("运行记录", { exact: true }).waitFor({ state: "visible" });
     await page.screenshot({ path: resolve(outputDir, "session-execution-record.png"), fullPage: false, animations: "disabled" });
     await page.getByRole("tab", { name: "详情与操作" }).click();

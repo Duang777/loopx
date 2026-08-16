@@ -211,6 +211,9 @@ assert.match(drawer, /已完成/, "The execution record labels completed Agent o
 assert.match(runRow, /查看执行过程与结果/, "Each run row exposes an explicit execution record action");
 assert.match(page, /item\.output\.summary \?\? item\.output\.safePreview/, "Files surfaces explain what each output contains");
 assert.match(dashboard, /executionSessionSnapshots/, "The dashboard preserves polled Session snapshots for the drawer");
+assert.match(dashboard, /const sessionId = run\.sessionId;[\s\S]*setExecutionSessionSnapshots\(\(current\) => \(\{[\s\S]*?\[sessionId\]: snapshot/s, "Opening a Session promotes the fetched snapshot into the authoritative execution projection");
+assert.match(dashboard, /\["agent", "assistant"\]\.includes\(role\.trim\(\)\.toLowerCase\(\)\)/, "LoopX agent-store replies and provider assistant replies both count as Session results");
+assert.match(page, /latestRun[\s\S]*activeSessionRun[\s\S]*setActiveSessionRun\(latestRun\.run\)/s, "An open Session drawer follows the latest projected run instead of freezing its opening state");
 assert.match(page, /<details className="personal-home-history"/, "Completed work is collapsed into history");
 assert.match(page, /function activityTimeLabel/, "Manager cards format raw ISO activity time for people");
 assert.doesNotMatch(page, />接下来</, "The ambiguous 接下来 lane is not rendered");
