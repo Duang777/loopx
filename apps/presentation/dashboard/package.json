@@ -20,6 +20,7 @@
     "smoke:frontstage-share-bundle": "node ../../../examples/frontstage-share-bundle-smoke.mjs",
     "smoke:home-browser": "node ../../../examples/dashboard-home-browser-smoke.mjs",
     "smoke:personal-workspace": "node ../../../examples/personal-workspace-browser-smoke.mjs",
+    "smoke:personal-workspace-router": "rm -rf /tmp/loopx-personal-workspace-router-smoke && tsc --ignoreConfig --target ES2022 --module commonjs --moduleResolution node --ignoreDeprecations 6.0 --skipLibCheck --strict --outDir /tmp/loopx-personal-workspace-router-smoke smoke/personal-workspace-router-smoke.ts src/features/personal-workspace/personal-workspace-router.ts && node /tmp/loopx-personal-workspace-router-smoke/smoke/personal-workspace-router-smoke.js",
     "smoke:home-route": "rm -rf /tmp/loopx-home-route-smoke && tsc --ignoreConfig --target ES2022 --module CommonJS --moduleResolution Node --ignoreDeprecations 6.0 --skipLibCheck --strict --outDir /tmp/loopx-home-route-smoke smoke/home-route-smoke.ts && node /tmp/loopx-home-route-smoke/home-route-smoke.js",
     "smoke:ops-decision-freshness": "node ../../../examples/dashboard-ops-decision-freshness-smoke.mjs",
     "smoke:promotion-readiness": "node ../../../examples/dashboard-promotion-readiness-browser-smoke.mjs",

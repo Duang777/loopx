@@ -7,6 +7,7 @@ const drawer = source("./context-drawer.tsx");
 const header = source("./channel-header.tsx");
 const sidebar = source("./goal-sidebar.tsx");
 const page = source("./personal-workspace-page.tsx");
+const router = source("./personal-workspace-router.ts");
 const shell = source("./workspace-shell.tsx");
 const timeline = source("./channel-timeline.tsx");
 const runRow = source("./cards/run-row.tsx");
@@ -63,12 +64,13 @@ assert.doesNotMatch(
   /onCorrectRun:[\s\S]{0,240}sendManagerQuestion/,
   "Run correction does not fall back to the read-only manager Chat",
 );
-assert.match(page, /function isExecutionIntent/, "Execution routing is centralized in one intent classifier");
-assert.match(page, /function hasHeartbeatIntent/, "Heartbeat routing is centralized and can honor negation");
-assert.match(page, /不要设置 Heartbeat/, "Heartbeat routing keeps a regression example for explicit negation");
-assert.match(page, /function hasMonitorIntent/, "Monitor routing is centralized and can honor negation");
-assert.match(page, /function hasTodoCreationIntent/, "Todo creation distinguishes a new write from a reference to an existing Todo");
-assert.match(page, /刚刚新增的 Todo/, "Todo routing keeps a regression example for read-only analysis of an existing Todo");
+assert.match(page, /routeWorkspaceInput\(message,/, "Every free-text send enters the unified Router contract");
+assert.match(router, /route: "projection" \| "typed_action" \| "agent_chat" \| "clarify"/, "Router exposes the constrained route contract");
+assert.match(router, /function executionIntent/, "Execution intent stays inside the Router implementation");
+assert.match(router, /function negates/, "Router can honor explicit negation");
+for (const legacyClassifier of ["hasHeartbeatIntent", "hasMonitorIntent", "hasTodoCreationIntent", "isExecutionIntent"]) {
+  assert.doesNotMatch(page, new RegExp(`function ${legacyClassifier}`), `${legacyClassifier} no longer bypasses the Router contract`);
+}
 assert.match(dashboard, /Agent 已返回结果/, "A completed task Session advertises its result instead of looking stalled");
 assert.match(dashboard, /sessionStatus: hasResult \? "completed"/, "A returned answer outranks a stale transport label in the visible Session status");
 assert.match(dashboard, /function visibleAgentMessage[\s\S]*GOAL_\(STATUS\|PROGRESS\)/, "Internal Session protocol markers stay out of the user-facing result");
@@ -82,9 +84,7 @@ assert.match(tasks, /转为 Task/, "Tasks offer an explicit preview-first bridge
 assert.match(page, /function todoTextFromMessage[\s\S]*标题[\s\S]*内容/, "Todo parsing preserves structured title and content fields");
 assert.match(page, /个 Task/, "Home cards expose durable activity when a new Goal has Todos but no run timestamp yet");
 assert.match(page, /创建 Goal 并开始首轮/, "Goal creation names the immediate first-turn effect");
-for (const phrase of ["用 bytedcli codebase 解决一下，push 一下", "帮我修复 MR 3960 的冲突，跑测试，然后 push"]) {
-  assert.match(page, new RegExp(JSON.stringify(phrase).slice(1, -1)), `Execution routing keeps a regression example for: ${phrase}`);
-}
+assert.match(router, /const asksForMutation/, "Execution routing remains explicit inside the Router contract");
 assert.match(timeline, /待你确认/, "Historical gated proposals are grouped into a compact summary");
 assert.match(timeline, /gatedItems\.length/, "The compact Gate summary exposes the pending count");
 assert.match(page, /Boolean\(item\.run\.sessionId\)/, "Running count requires a discovered execution Session");
@@ -169,7 +169,9 @@ assert.match(dashboard, /targetContextId === "manager" && isManagerProjectionQue
 assert.match(dashboard, /const asksForNextAction[\s\S]*if \(asksForNextAction\)[\s\S]*personalManagerMatches\(question, \["状态"/, "A next-step question outranks a read-only boundary that mentions state");
 assert.match(dashboard, /先处理「\$\{personalGoalTitle\(nextTodo\.goalId\)\}」：\$\{nextTodo\.text\}/, "The compact manager answer names the Goal and concrete blocking action");
 assert.match(drawer, /查看影响并决定/, "Blocked items preview their decision boundary before any write");
-assert.match(drawer, /还没有运行记录。Agent 尚未开始这次执行/, "An empty Session record explains why there is no timeline yet");
+assert.match(drawer, /const hasProjectedRunActivity = selection\.kind === "run"[\s\S]*selection\.item\.completedSteps > 0/, "Session empty-state copy distinguishes projected progress from a truly idle run");
+assert.match(drawer, /当前没有可展示的逐步运行记录/, "A projected run does not claim that the Agent never started");
+assert.match(drawer, /还没有运行记录。Agent 尚未开始这次执行/, "A truly empty Session still explains why there is no timeline yet");
 assert.match(page, /function ManagerConversationTray/, "Manager home has a dedicated conversation tray instead of burying replies in the board timeline");
 assert.match(page, /managerMessages/, "Manager conversation is derived from the active manager message context");
 assert.match(page, /managerConversationReceiptVisible/, "Manager conversation is a send-triggered receipt instead of permanent history chrome");
@@ -181,9 +183,22 @@ assert.match(page, />查看完整对话</, "The compact manager conversation can
 assert.match(page, /onOpenConversation/, "The compact manager conversation has a dedicated full-chat navigation action");
 assert.match(page, /managerChatOpen/, "Manager full conversation uses a dedicated Chat view instead of stretching the home tray");
 assert.match(page, /managerChatItems/, "Manager Chat only renders conversation and confirmation items");
+assert.match(page, /sessionProposalIds\.includes\(item\.proposal\.previewId\)/, "Manager Chat only shows proposals created in the current UI session");
+assert.match(page, /\["ready", "gated", "deferred", "applying"\]\.includes\(proposal\.status\)/, "Restored proposal history excludes stale and failed write cards from the active Chat");
+assert.doesNotMatch(page, /proposal\.title, proposal\.status/, "Proposal dedupe does not split one action into duplicate cards by lifecycle status");
 assert.match(header, /管家视图/, "Manager Chat exposes explicit overview and Chat navigation");
 assert.match(header, />总览</, "Manager Chat can return to the cross-Goal overview");
-assert.match(page, /selectedChannel === "manager"[\s\S]*<ManagerConversationTray/, "The tray only appears in the manager workspace");
+assert.match(page, /scrollTo\(\{ behavior: "smooth", top: 0 \}\)/, "Returning to the manager overview restores the board's first screen");
+assert.match(header, /onOpenManagerChat/, "Manager overview exposes a stable one-click Chat entry");
+assert.match(header, /aria-current=\{!managerChatOpen \? "page"/, "Manager overview remains visibly selected before Chat opens");
+assert.match(header, /aria-current=\{managerChatOpen \? "page"/, "Manager Chat remains visibly selected after navigation");
+assert.doesNotMatch(sidebar, /personal-manager-channels/, "The sidebar does not expose manager state filters as navigation channels");
+assert.doesNotMatch(sidebar, /onSelectChannel/, "The sidebar only navigates to the manager or a concrete Goal");
+assert.doesNotMatch(page, /selectedChannel|selectChannel\(|__manager_channel__/, "Manager state lanes do not create hidden conversation channels");
+assert.match(page, /personal-digest-stats[\s\S]*<span><b>\{digest\.done\}<\/b>完成<\/span>/, "The away digest is a non-interactive summary");
+assert.match(page, /!selectedGoal && !managerChatOpen && managerConversationReceiptVisible[\s\S]*<ManagerConversationTray/, "The tray only appears on the manager overview after a send");
+assert.match(page, /goal\.needsYou \?\? goal\.nextSentence/, "Needs-you cards keep the source Goal action visible");
+assert.match(page, /onClick=\{\(\) => onSelectGoal\(goal\.goalId\)\}/, "Manager cards open their source Goal instead of a hidden lane channel");
 assert.doesNotMatch(page, /managerConversationActive/, "Sending from the manager never replaces the overview with a separate conversation page");
 assert.match(model, /export type WorkspaceSessionMessage/, "Workspace runs expose Session messages for the execution record");
 assert.match(model, /sessionMessages\?: WorkspaceSessionMessage\[\]/, "Workspace runs carry Session messages into the control plane");
@@ -194,13 +209,13 @@ assert.match(drawer, /selection\.item\.sessionMessages/, "The Session drawer ren
 assert.match(drawer, /收到任务/, "The execution record labels the initiating user request");
 assert.match(drawer, /已完成/, "The execution record labels completed Agent output");
 assert.match(runRow, /查看执行过程与结果/, "Each run row exposes an explicit execution record action");
+assert.match(page, /item\.output\.summary \?\? item\.output\.safePreview/, "Files surfaces explain what each output contains");
 assert.match(dashboard, /executionSessionSnapshots/, "The dashboard preserves polled Session snapshots for the drawer");
 assert.match(page, /<details className="personal-home-history"/, "Completed work is collapsed into history");
 assert.match(page, /function activityTimeLabel/, "Manager cards format raw ISO activity time for people");
 assert.doesNotMatch(page, />接下来</, "The ambiguous 接下来 lane is not rendered");
 assert.match(page, /managerNeedsYouCount[\s\S]*workspaceHomeLaneForGoal\(goal\) === "needs_you"/, "Manager greeting derives attention from the same lane projection");
-assert.match(page, /managerRunningCount[\s\S]*workspaceHomeLaneForGoal\(goal\) === "running"/, "Sidebar running count derives from the same Goal lane projection");
-assert.match(page, /activeRunCount=\{managerRunningCount\}/, "Sidebar receives the Goal-lane running count");
+assert.doesNotMatch(page, /activeRunCount=\{managerRunningCount\}/, "The sidebar no longer duplicates the running lane count");
 assert.match(page, /你有 \{managerNeedsYouCount\} 项需要处理/, "Manager greeting shows the projected needs-you count");
 assert.match(dashboard, /targetContextId === "manager"\s*\? model\s*:\s*targetGoal/, "Manager answers use the full cross-Goal projection");
 assert.match(page, /managerBlockingCount[\s\S]*goal\.needsYouBlocking \|\| goal\.state === "等你"/, "Manager blocking count includes projected user waits without a parsed Todo");

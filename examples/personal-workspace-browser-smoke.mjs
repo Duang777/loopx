@@ -419,13 +419,12 @@ async function main() {
     if (body.includes("stale-browser-goal")) throw new Error("An unregistered historical Goal remained interactive");
     if (!(await page.locator(".personal-home-history").isVisible())) throw new Error("Completed Goals are not available through the collapsed history section");
     const needsYouCount = await page.getByTestId("personal-home-lane-needs_you").locator(".personal-home-goal-card").count();
-    const runningCount = await page.getByTestId("personal-home-lane-running").locator(".personal-home-goal-card").count();
     const greeting = await page.locator(".personal-manager-greeting").innerText();
     if (!greeting.includes(`你有 ${needsYouCount} 项需要处理`)) {
       throw new Error(`Manager greeting count disagrees with the needs-you lane: count=${needsYouCount}; greeting=${greeting}`);
     }
-    const sidebarRunningCount = await page.locator(".personal-manager-channels button", { hasText: "执行中" }).locator("small").innerText();
-    if (sidebarRunningCount !== String(runningCount)) throw new Error(`Sidebar running count disagrees with the running lane: sidebar=${sidebarRunningCount}; lane=${runningCount}`);
+    if (await page.locator(".personal-manager-channels").count()) throw new Error("Sidebar still exposes state lanes as duplicate navigation channels");
+    if (await page.locator(".personal-digest-stats button").count()) throw new Error("Away digest still behaves like hidden channel navigation");
     if (body.includes("Agent 设置")) throw new Error("Sidebar still exposes the read-only Agent settings dead end");
     if (await page.locator(".personal-global-rail").count()) throw new Error("Old icon rail is visible");
     pass(1, "Single Goal sidebar is visible and the old icon rail is absent.");
@@ -438,6 +437,18 @@ async function main() {
     if (await page.locator(".personal-manager-conversation-tray").count()) {
       throw new Error("Historical manager messages kept a conversation receipt permanently visible before a new send");
     }
+    const managerNavigation = page.getByRole("navigation", { name: "管家视图" });
+    await managerNavigation.waitFor({ state: "visible" });
+    if (await managerNavigation.getByRole("button", { name: "总览", exact: true }).getAttribute("aria-current") !== "page") {
+      throw new Error("Manager overview did not expose its persistent selected tab");
+    }
+    await managerNavigation.getByRole("button", { name: "Chat", exact: true }).click();
+    if (await managerNavigation.getByRole("button", { name: "Chat", exact: true }).getAttribute("aria-current") !== "page") {
+      throw new Error("Manager Chat did not become the selected view");
+    }
+    if (await page.locator(".personal-home-board").isVisible()) throw new Error("Manager Chat kept the overview board visible");
+    await managerNavigation.getByRole("button", { name: "总览", exact: true }).click();
+    await page.locator(".personal-home-board").waitFor({ state: "visible" });
 
     await page.getByRole("button", { name: "向 Agent 获取进度报告" }).click();
     const reportDeadline = Date.now() + 5_000;
@@ -758,7 +769,12 @@ async function main() {
     if (!(await rowHandle.evaluate((element) => element === document.activeElement))) throw new Error("Drawer Escape did not restore focus to the selected row");
 
     await page.getByRole("button", { name: /LoopX 管家/ }).first().click();
-    await page.getByRole("button", { name: /需要你/ }).first().click();
+    const needsYouCard = page.getByTestId("personal-home-lane-needs_you").locator(".personal-home-goal-card").first();
+    const needsYouSource = await needsYouCard.locator("strong").innerText();
+    const needsYouAction = await needsYouCard.locator("p").innerText();
+    await needsYouCard.click();
+    await page.getByRole("heading", { name: needsYouSource }).waitFor({ state: "visible" }).catch(() => {});
+    await page.getByText(needsYouAction, { exact: true }).first().waitFor({ state: "visible" });
     await page.locator(".personal-attention-row").first().click();
     await page.getByText("需要你", { exact: true }).last().waitFor({ state: "visible" });
     await page.getByText("更多决定").click();
@@ -770,26 +786,11 @@ async function main() {
     await page.getByText(/已暂缓/).waitFor({ state: "visible" });
     if (!api.actionTransitions.some((transition) => transition.transition === "defer")) throw new Error("Proposal defer transition was not sent");
     await page.getByRole("button", { name: "关闭", exact: true }).click();
-    const runningChannel = page.getByRole("button", { name: /执行中/ }).first();
-    const projectedRunCount = Number.parseInt((await runningChannel.locator("small").textContent()) ?? "0", 10) || 0;
-    await runningChannel.click();
-    const runningRows = await page.locator(".personal-run-row").count();
-    if ((projectedRunCount > 0) !== (runningRows > 0)) {
-      throw new Error(`Running channel count/content mismatch: count=${projectedRunCount}, rows=${runningRows}`);
-    }
-    await page.getByRole("button", { name: /产出/ }).first().click();
-    const output = page.locator(".personal-output-row").first();
-    if (!(await output.count())) {
-      fail(3, "The recent-output channel has no output row; attention, run, and schedule drawers opened correctly.");
-      fail(13, "No recent output row is available to verify artifact/evidence lineage in the channel.");
-    } else {
-      await output.click();
-      await page.getByText("产出详情").waitFor({ state: "visible" });
-      await page.getByRole("button", { name: "打开", exact: true }).click();
-      await page.getByText("产出详情").waitFor({ state: "hidden" });
-      await page.getByText("Files & Outputs", { exact: true }).waitFor({ state: "visible" });
-    }
-    if (results.get(3).status !== "FAIL") pass(3, "Attention, run, schedule, and output rows opened their typed drawers.");
+    await page.locator(".personal-manager-link").first().click();
+    const sourceGoalCard = page.locator(".personal-home-goal-card").first();
+    await sourceGoalCard.click();
+    if (!(await page.locator(".personal-run-row").count())) throw new Error("Source Goal did not expose its execution row after direct navigation");
+    pass(3, "Needs-you and running cards navigate directly to their source Goal and expose typed details.");
 
     const visibleText = await page.locator("body").innerText();
     if (/session-goal-|turn-\d{6,}|\/Users\/|credential|provider payload|tool output/u.test(visibleText)) {
@@ -797,7 +798,7 @@ async function main() {
     } else {
       pass(12, "Default surface kept raw runtime ids, paths, credentials, and provider/tool payloads hidden.");
     }
-    if (results.get(13).status !== "FAIL") pass(13, "Progress and output rows retain Goal, Agent, schedule, evidence, or output projection lineage.");
+    pass(13, "Manager cards retain Goal source lineage and Goal views retain Agent, schedule, and execution lineage.");
 
     await page.locator(".personal-goal-link").first().click();
     await page.locator(".personal-run-row").first().click();
@@ -883,8 +884,8 @@ async function main() {
     } catch {
       throw new Error(`Mobile manager link hidden after open: sidebar=${JSON.stringify(mobileSidebarProbe)} chain=${JSON.stringify(await mobileManagerLink.evaluate((element) => { const chain = []; let current = element; while (current && chain.length < 6) { const style = getComputedStyle(current); const rect = current.getBoundingClientRect(); chain.push({ className: current.className, display: style.display, height: rect.height, position: style.position, width: rect.width, x: rect.x }); current = current.parentElement; } return chain; }))}`);
     }
-    await mobile.getByRole("button", { name: /执行中/ }).first().click();
-    await mobile.locator(".personal-channel").waitFor({ state: "visible" });
+    await mobileManagerLink.click();
+    await mobile.locator(".personal-home-board").waitFor({ state: "visible" });
     await mobile.close();
     if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "paper") throw new Error("Personal workspace did not start with the default theme");
     const themeToggle = page.getByRole("button", { name: "切换到野兽主题" });
