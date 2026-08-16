@@ -25,6 +25,12 @@ from ..goals.goal_vision import normalize_goal_vision_packet
 from ..work_items.delivery_batch_scale import require_delivery_batch_scale
 from ..work_items.delivery_outcome import require_delivery_outcome
 from .driver import selected_turn_todo
+from .session_recovery import (
+    SessionBindingResolver,
+    build_host_recovery_record,
+    reconcile_failed_turn_retry_request,
+    require_host_recovery_kind,
+)
 from .settlement import (
     completion_writeback_outcome,
     execute_turn_driver_settlement,
@@ -100,9 +106,12 @@ TaskValidator = Callable[
 class BuiltInHostError(RuntimeError):
     """A public-safe built-in host failure classification."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, recovery_kind: str | None = None) -> None:
+        if recovery_kind is not None:
+            require_host_recovery_kind(recovery_kind)
         super().__init__(reason)
         self.reason = reason
+        self.recovery_kind = recovery_kind
 
 
 def _normalize_argv(value: Sequence[str], *, label: str) -> list[str]:
@@ -769,7 +778,16 @@ def _run_host_runner(
     try:
         value = runner(request)
     except BuiltInHostError as exc:
-        return {"ok": False, "reason": exc.reason, "returncode": None}
+        return {
+            "ok": False,
+            "reason": exc.reason,
+            "returncode": None,
+            **(
+                {"recovery_kind": exc.recovery_kind}
+                if exc.recovery_kind is not None
+                else {}
+            ),
+        }
     except Exception as exc:  # noqa: BLE001 - host adapters fail closed at boundary
         return {"ok": False, "reason": type(exc).__name__, "returncode": None}
     if not isinstance(value, dict):
@@ -886,6 +904,11 @@ def _host_result_stage(
                 completed_phases=[],
                 result_kind=LoopXTurnResultKind.HOST_FAILURE.value,
             )
+            recovery_kind = host_observation.get("recovery_kind")
+            if recovery_kind is not None:
+                journal["host_recovery"] = build_host_recovery_record(recovery_kind)
+            else:
+                journal.pop("host_recovery", None)
             _write_journal(journal_path, journal)
             return (
                 None,
@@ -1320,6 +1343,7 @@ def run_loopx_turn_once(
     *,
     host_argv: Sequence[str] | None = None,
     host_runner: HostRunner | None = None,
+    session_binding_resolver: SessionBindingResolver | None = None,
     project: Path,
     runtime_root: Path,
     goal_id: str,
@@ -1388,6 +1412,11 @@ def run_loopx_turn_once(
                 effects=empty_effects,
             )
         if journal and journal.get("status") == "failed":
+            request = reconcile_failed_turn_retry_request(
+                request,
+                journal,
+                session_binding_resolver=session_binding_resolver,
+            )
             receipt = journal.get("receipt") if isinstance(journal.get("receipt"), dict) else {}
             if receipt.get("failed_phase") == "validation":
                 if journal.get("validation_stage") != "task_postcondition":
@@ -1402,6 +1431,7 @@ def run_loopx_turn_once(
                 journal.pop("validation_stage", None)
             journal.pop("reason", None)
             journal.pop("receipt", None)
+            journal.pop("host_recovery", None)
             journal["status"] = "in_progress"
             _write_journal(journal_path, journal)
         if journal is None:
