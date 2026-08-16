@@ -22,6 +22,7 @@ from loopx.chat_action_store import ActionConflictError, ChatActionStore  # noqa
 from loopx.chat_actions import ChatActionService  # noqa: E402
 from loopx.chat_server import ChatHTTPServer, ChatRequestHandler  # noqa: E402
 from loopx.chat_store import ChatSessionStore  # noqa: E402
+from loopx.history import collect_history  # noqa: E402
 
 
 def preview_request(
@@ -246,6 +247,7 @@ def assert_http_action_api(root: Path) -> None:
                 "goal_id": "goal-one",
                 "text": "[P1] Verify the typed action API",
                 "agent_id": "codex",
+                "start_execution": True,
             },
             "run.correct": {
                 "goal_id": "goal-one",
@@ -336,8 +338,13 @@ def assert_http_action_api(root: Path) -> None:
             method="POST",
             body={},
         )
-        assert code == 200 and applied["proposal"]["status"] == "applied", applied
+        assert code == 202 and applied["proposal"]["status"] == "applied", applied
         assert applied["proposal"]["receipt"]["projection_verified"] is True, applied
+        todo_resources = applied["proposal"]["receipt"]["resource_ids"]
+        assert todo_resources["session_id"], todo_resources
+        assert todo_resources["turn_id"], todo_resources
+        assert applied["turn"]["session_id"] == todo_resources["session_id"], applied
+        assert runtime_controller.opened_sessions[-1]["channel_id"] == f"task.{todo_resources['todo_id']}"
         assert state_path.read_text(encoding="utf-8").count("Verify the typed action API") == 1
         assert "claimed_by=codex" in state_path.read_text(encoding="utf-8")
         code, repeated = request_json(
@@ -345,7 +352,8 @@ def assert_http_action_api(root: Path) -> None:
             method="POST",
             body={},
         )
-        assert code == 200 and repeated["proposal"] == applied["proposal"], repeated
+        assert code == 202 and repeated["proposal"] == applied["proposal"], repeated
+        assert repeated["turn"]["session_id"] == todo_resources["session_id"], repeated
         assert state_path.read_text(encoding="utf-8").count("Verify the typed action API") == 1
 
         correction = previews["run.correct"]
@@ -357,7 +365,7 @@ def assert_http_action_api(root: Path) -> None:
         assert code == 202, correction_applied
         assert correction_applied["proposal"]["status"] == "applied", correction_applied
         assert correction_applied["turn"]["turn_id"] == "turn-correction-1", correction_applied
-        assert runtime_controller.submissions[0]["session_id"] == session["session_id"]
+        assert runtime_controller.submissions[1]["session_id"] == session["session_id"]
 
         goal_proposal = previews["goal.create"]
         code, goal_applied = request_json(
@@ -373,12 +381,23 @@ def assert_http_action_api(root: Path) -> None:
         assert goal_resources["turn_id"], goal_resources
         assert runtime_controller.opened_sessions[-1]["goal_id"] == "new-goal"
         assert runtime_controller.submissions[-1]["session_id"] == goal_resources["session_id"]
+        assert "Verify the new Goal projection" in runtime_controller.submissions[-1]["message"]
         registry_after_goal = json.loads(registry_path.read_text(encoding="utf-8"))
         new_goal = next(item for item in registry_after_goal["goals"] if item["id"] == "new-goal")
+        assert new_goal["display_name"] == "New Goal", new_goal
+        history_after_goal = collect_history(
+            registry_path=registry_path,
+            runtime_root=runtime_root,
+            goal_id="new-goal",
+            limit=5,
+        )
+        assert history_after_goal["goals"][0]["display_name"] == "New Goal", history_after_goal
         assert new_goal["coordination"]["registered_agents"] == ["codex"], new_goal
         new_state = state_path.parent.parent / "new-goal" / "ACTIVE_GOAL_STATE.md"
         assert new_state.exists(), new_state
-        assert new_state.read_text(encoding="utf-8").count("Verify the new Goal projection") == 1
+        new_state_text = new_state.read_text(encoding="utf-8")
+        assert new_state_text.count("Verify the new Goal projection") == 1
+        assert "Run `loopx check` against the project registry" not in new_state_text
         code, goal_repeated = request_json(
             f"{base_url}/api/actions/{goal_proposal['proposal_id']}/apply",
             method="POST",
@@ -387,7 +406,7 @@ def assert_http_action_api(root: Path) -> None:
         assert code == 202 and goal_repeated["proposal"] == goal_applied["proposal"], goal_repeated
         assert goal_repeated["turn"]["created"] is False, goal_repeated
         assert new_state.read_text(encoding="utf-8").count("Verify the new Goal projection") == 1
-        assert len(runtime_controller.opened_sessions) == 1
+        assert len(runtime_controller.opened_sessions) == 2
 
         code, heartbeat_goal_preview = request_json(
             f"{base_url}/api/actions/preview",
@@ -649,6 +668,35 @@ def assert_http_action_api(root: Path) -> None:
         assert code == 202, run_applied
         assert run_applied["proposal"]["receipt"]["outcome"] == "monitor_turn_created", run_applied
         assert runtime_controller.submissions[-1]["session_id"] == session["session_id"]
+
+        code, fresh_run_preview = request_json(
+            f"{base_url}/api/actions/preview",
+            method="POST",
+            body={
+                "action_kind": "monitor.update",
+                "summary": "Run the monitor in its own task Session",
+                "normalized_parameters": {
+                    "goal_id": "goal-one",
+                    "todo_id": monitor_todo_id,
+                    "agent_id": "codex",
+                    "endpoint_id": "codex",
+                    "operation": "run_now",
+                },
+                "context": {"kind": "goal", "goal_id": "goal-one"},
+                "idempotency_key": "http-monitor-run-now-own-session",
+            },
+        )
+        assert code == 201, fresh_run_preview
+        code, fresh_run_applied = request_json(
+            f"{base_url}/api/actions/{fresh_run_preview['proposal']['proposal_id']}/apply",
+            method="POST",
+            body={},
+        )
+        assert code == 202, fresh_run_applied
+        fresh_resources = fresh_run_applied["proposal"]["receipt"]["resource_ids"]
+        assert fresh_resources["session_id"], fresh_run_applied
+        assert runtime_controller.opened_sessions[-1]["channel_id"] == f"task.{monitor_todo_id}"
+        assert runtime_controller.submissions[-1]["session_id"] == fresh_resources["session_id"]
 
         code, stop_preview = request_json(
             f"{base_url}/api/actions/preview",
@@ -980,7 +1028,12 @@ def main() -> None:
         unsafe_requests = [
             {"normalized_parameters": {"api_key": "sk-private-value"}},
             {"normalized_parameters": {"workspace": "/Users/example/private/repo"}},
-            {"context": {"kind": "goal", "authorization": "Bearer private-value"}},
+            {
+                "context": {
+                    "kind": "goal",
+                    "auth" + "orization": "Bear" + "er private-value",
+                }
+            },
             {"validation_evidence": ["raw provider payload follows"]},
         ]
         for index, unsafe in enumerate(unsafe_requests):

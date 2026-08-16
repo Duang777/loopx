@@ -40,7 +40,7 @@ for line in sys.stdin:
         result = {"serverInfo": {"name": "fake-codex"}}
     elif method in {"thread/start", "thread/resume"}:
         params = message.get("params", {})
-        if params.get("sandbox") != "read-only" or params.get("approvalPolicy") != "never":
+        if params.get("sandbox") not in {"read-only", "workspace-write"} or params.get("approvalPolicy") != "never":
             print(json.dumps({
                 "id": request_id,
                 "error": {"code": -32602, "message": "unsafe chat boundary"},
@@ -67,6 +67,24 @@ for line in sys.stdin:
                 "error": {"code": -32602, "message": "missing review contract"},
             }), flush=True)
             continue
+        if "execute confirmed task" in prompt and "execution agent for a confirmed LoopX Task" not in prompt:
+            print(json.dumps({
+                "id": request_id,
+                "error": {"code": -32602, "message": "missing execution contract"},
+            }), flush=True)
+            continue
+        if "inspect attached image" in prompt:
+            inputs = params.get("input", [])
+            if len(inputs) != 2 or inputs[1] != {
+                "type": "image",
+                "url": "data:image/png;base64,aW1hZ2U=",
+                "detail": "auto",
+            }:
+                print(json.dumps({
+                    "id": request_id,
+                    "error": {"code": -32602, "message": "missing image input"},
+                }), flush=True)
+                continue
         turn_id = f"turn-loopx-chat-{turn_count}"
         print(json.dumps({
             "method": "turn/started",
@@ -191,6 +209,10 @@ def main() -> None:
                 "user message: suggest the next bounded step",
                 on_event=lambda kind, payload: observed.append((kind, payload)),
             )
+            image_result = session.send(
+                "inspect attached image",
+                attachments=[{"data_url": "data:image/png;base64,aW1hZ2U="}],
+            )
         finally:
             session.close()
 
@@ -204,6 +226,7 @@ def main() -> None:
             }
         ], result
         assert result["gate"] is None, result
+        assert image_result["message"] == "Reviewed [project].", image_result
         assert str(root) not in json.dumps(result), result
         visible = "".join(
             str(payload.get("text") or "")
@@ -231,6 +254,20 @@ def main() -> None:
         )
         assert resumed.thread_id == "thread-loopx-chat"
         resumed.close()
+
+        execution_session = CodexChatAgentSession.start(
+            codex_bin=str(fake_codex),
+            work_dir=root,
+            goal_id="loopx-chat-smoke",
+            objective="Keep the review loop bounded.",
+            execution_mode=True,
+            response_timeout_sec=3.0,
+        )
+        try:
+            execution_result = execution_session.send("execute confirmed task")
+        finally:
+            execution_session.close()
+        assert execution_result["message"] == "Reviewed [project].", execution_result
 
         active_session = CodexChatAgentSession.start(
             codex_bin=str(fake_codex),

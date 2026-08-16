@@ -28,6 +28,7 @@ class StatusCollectionContext:
     build_status_contract: StatusCallback
     build_contract_health_projection: StatusCallback
     build_agent_management_projection: StatusCallback
+    build_goal_channel_notification_projection: StatusCallback
     status_control_plane_context_limit: int
     max_todo_index_items: int
 
@@ -144,4 +145,26 @@ def collect_status(
     )
     if agent_management_projection.get("agents"):
         payload["agent_management_projection"] = agent_management_projection
+    try:
+        goal_channel_notification_projection = (
+            context.build_goal_channel_notification_projection(
+                registry_path=registry_path,
+                registry=registry,
+                goal_id=goal_filter,
+            )
+        )
+    except Exception:
+        goal_channel_notification_projection = None
+    notification_rows = (
+        goal_channel_notification_projection.get("goals")
+        if isinstance(goal_channel_notification_projection, dict)
+        else None
+    )
+    if isinstance(notification_rows, list) and any(
+        isinstance(row, dict) and row.get("configured") is True
+        for row in notification_rows
+    ):
+        payload["goal_channel_notification_projection"] = (
+            goal_channel_notification_projection
+        )
     return payload

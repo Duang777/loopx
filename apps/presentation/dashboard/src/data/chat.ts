@@ -426,11 +426,28 @@ export type ChatSessionSummary = {
 };
 
 export type ChatVisibleMessage = {
+  attachments?: ChatImageAttachment[];
   message_id: string;
   turn_id: string | null;
   role: string;
   text: string;
   created_at: string;
+};
+
+export type ChatImageAttachment = {
+  data_url: string;
+  id: string;
+  mime_type: string;
+  name: string;
+  size: number;
+};
+
+export type ChatImageAttachmentInput = {
+  dataUrl: string;
+  id: string;
+  mimeType: string;
+  name: string;
+  size: number;
 };
 
 export type ChatSessionSnapshot = {
@@ -446,13 +463,13 @@ export async function fetchChatSession(sessionId: string) {
 }
 
 export async function fetchChatSessions(options: {
-  agentId: string;
-  channelId: string;
+  agentId?: string;
+  channelId?: string;
   goalId?: string;
 }) {
   const query = new URLSearchParams();
-  query.set("agent_id", options.agentId);
-  query.set("channel_id", options.channelId);
+  if (options.agentId) query.set("agent_id", options.agentId);
+  if (options.channelId) query.set("channel_id", options.channelId);
   if (options.goalId) query.set("goal_id", options.goalId);
   return requestJson<{
     ok: true;
@@ -490,7 +507,12 @@ export async function fetchChatHistory(options: {
   };
 }
 
-export async function acceptChatTurn(sessionId: string, message: string, clientTurnId: string) {
+export async function acceptChatTurn(
+  sessionId: string,
+  message: string,
+  clientTurnId: string,
+  attachments: ChatImageAttachmentInput[] = [],
+) {
   return requestJson<{
     ok: true;
     session_id: string;
@@ -500,7 +522,17 @@ export async function acceptChatTurn(sessionId: string, message: string, clientT
     events_url: string;
   }>(`/api/chat/sessions/${sessionId}/turns`, {
     method: "POST",
-    body: JSON.stringify({ message, client_turn_id: clientTurnId }),
+    body: JSON.stringify({
+      message,
+      client_turn_id: clientTurnId,
+      ...(attachments.length ? { attachments: attachments.map((attachment) => ({
+        data_url: attachment.dataUrl,
+        id: attachment.id,
+        mime_type: attachment.mimeType,
+        name: attachment.name,
+        size: attachment.size,
+      })) } : {}),
+    }),
   });
 }
 
@@ -591,6 +623,7 @@ export async function sendChatTurnStreaming(
   sessionId: string,
   message: string,
   options: {
+    attachments?: ChatImageAttachmentInput[];
     clientTurnId?: string;
     onDelta?: (text: string) => void;
     onActivity?: (label: string) => void;
@@ -602,6 +635,7 @@ export async function sendChatTurnStreaming(
     sessionId,
     message,
     options.clientTurnId ?? crypto.randomUUID(),
+    options.attachments,
   );
   options.onPhase?.("turn.accepted", accepted.turn_id);
   return receiveChatTurnStreaming(
@@ -783,6 +817,237 @@ export function serializeCompletedDecisionHistory(
       schema_version: "loopx_chat_decision_history_v0",
       goal_id: goalId,
       decisions: decisions.slice(0, 24),
+    }),
+  );
+}
+
+export type GoalChannelTarget = {
+  enabled: boolean;
+  provider: string;
+  target_name: string;
+};
+
+const goalChannelTargetsSchema = z.object({
+  ok: z.literal(true),
+  targets: z.array(
+    z.object({
+      enabled: z.boolean(),
+      provider: z.string(),
+      target_name: z.string(),
+    }),
+  ),
+});
+
+export async function fetchGoalChannelTargets() {
+  return goalChannelTargetsSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-channel/targets"),
+  ).targets;
+}
+
+const goalChannelOperationSchema = z.object({
+  ok: z.boolean(),
+  blocker: z.string().optional(),
+  public_summary: z.string().optional(),
+  status: z.string().optional(),
+});
+
+export type GoalChannelOperation = z.infer<typeof goalChannelOperationSchema>;
+
+export async function setupGoalChannel(options: { execute: boolean; goalId: string; target: string }) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-channel/setup", {
+      method: "POST",
+      body: JSON.stringify({
+        execute: options.execute,
+        goal_id: options.goalId,
+        target: options.target,
+      }),
+    }),
+  );
+}
+
+export async function configureGoalChannelAutoNotify(options: { autoNotify: boolean; goalId: string }) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>("/api/chat/goal-channel/configure", {
+      method: "POST",
+      body: JSON.stringify({
+        auto_notify_human_gates: options.autoNotify,
+        goal_id: options.goalId,
+      }),
+    }),
+  );
+}
+
+export type GoalRepositoryContext = {
+  branch: string;
+  identity: string;
+  label: string;
+  read_only: true;
+};
+
+const goalContextsSchema = z.object({
+  ok: z.literal(true),
+  goals: z.array(z.object({
+    goal_id: z.string(),
+    repository: z.object({
+      branch: z.string(),
+      identity: z.string(),
+      label: z.string(),
+      read_only: z.literal(true),
+    }),
+  })),
+});
+
+export async function fetchGoalContexts() {
+  return goalContextsSchema.parse(
+    await requestJson<unknown>("/api/chat/goals/contexts"),
+  ).goals;
+}
+
+export type LarkApp = {
+  active: boolean;
+  app_ref: string;
+  brand: string;
+  label: string;
+  ready: boolean;
+};
+
+const larkAppsSchema = z.object({
+  ok: z.literal(true),
+  apps: z.array(z.object({
+    active: z.boolean(),
+    app_ref: z.string(),
+    brand: z.string(),
+    label: z.string(),
+    ready: z.boolean(),
+  })),
+});
+
+export async function fetchLarkApps() {
+  return larkAppsSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/apps"),
+  ).apps;
+}
+
+export type LarkAppSetup = {
+  app_ref: string;
+  error: string | null;
+  setup_id: string;
+  status: "starting" | "waiting_for_feishu" | "ready" | "failed" | "cancelled";
+  verification_url: string | null;
+};
+
+const larkAppSetupSchema = z.object({
+  ok: z.literal(true),
+  app_ref: z.string(),
+  error: z.string().nullable(),
+  setup_id: z.string(),
+  status: z.enum(["starting", "waiting_for_feishu", "ready", "failed", "cancelled"]),
+  verification_url: z.string().url().nullable(),
+});
+
+export async function startLarkAppSetup(options: { appRef: string; brand: "feishu" | "lark" }) {
+  return larkAppSetupSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/app-setups", {
+      method: "POST",
+      body: JSON.stringify({ app_ref: options.appRef, brand: options.brand }),
+    }),
+  );
+}
+
+export async function fetchLarkAppSetup(setupId: string) {
+  return larkAppSetupSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/app-setups/${encodeURIComponent(setupId)}`),
+  );
+}
+
+export async function cancelLarkAppSetup(setupId: string) {
+  return larkAppSetupSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/app-setups/${encodeURIComponent(setupId)}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+export type LarkGroupChat = { chat_id: string; chat_name: string };
+
+const larkGroupChatsSchema = z.object({
+  ok: z.literal(true),
+  chats: z.array(z.object({ chat_id: z.string(), chat_name: z.string() })),
+});
+
+export async function fetchLarkGroupChats(appRef: string, query?: string) {
+  const params = new URLSearchParams({ app_ref: appRef });
+  if (query) params.set("query", query);
+  return larkGroupChatsSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/chats?${params.toString()}`),
+  ).chats;
+}
+
+export type LarkGoalConnection = {
+  app_label: string;
+  app_ref: string;
+  chat_name: string;
+  enabled: boolean;
+  goal_id: string;
+  goal_title: string;
+  incoming_mode: "mentions" | "all";
+  reply_mode: "topic_reply";
+  target_ref: string;
+  topic_name: string;
+  topic_setup_required: boolean;
+};
+
+const larkConnectionsSchema = z.object({
+  ok: z.literal(true),
+  connections: z.array(z.object({
+    app_label: z.string(),
+    app_ref: z.string(),
+    chat_name: z.string(),
+    enabled: z.boolean(),
+    goal_id: z.string(),
+    goal_title: z.string(),
+    incoming_mode: z.enum(["mentions", "all"]),
+    reply_mode: z.literal("topic_reply"),
+    target_ref: z.string(),
+    topic_name: z.string(),
+    topic_setup_required: z.boolean(),
+  })),
+});
+
+export async function fetchLarkConnections() {
+  return larkConnectionsSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/connections"),
+  ).connections;
+}
+
+export async function connectLarkGoalTopic(options: {
+  appRef: string;
+  chatId: string;
+  chatName: string;
+  execute: boolean;
+  goalId: string;
+  incomingMode: "mentions" | "all";
+}) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>("/api/chat/lark/connections", {
+      method: "POST",
+      body: JSON.stringify({
+        app_ref: options.appRef,
+        chat_id: options.chatId,
+        chat_name: options.chatName,
+        execute: options.execute,
+        goal_id: options.goalId,
+        incoming_mode: options.incomingMode,
+      }),
+    }),
+  );
+}
+
+export async function disconnectLarkGoalTopic(goalId: string) {
+  return goalChannelOperationSchema.parse(
+    await requestJson<unknown>(`/api/chat/lark/connections?goal_id=${encodeURIComponent(goalId)}`, {
+      method: "DELETE",
     }),
   );
 }

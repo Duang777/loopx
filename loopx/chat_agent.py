@@ -102,7 +102,12 @@ def _agent_item_text(message: dict[str, Any]) -> str:
     return str(item.get("text") or "")
 
 
-def _turn_prompt(user_message: str, *, context_summary: str = "") -> str:
+def _turn_prompt(
+    user_message: str,
+    *,
+    context_summary: str = "",
+    execution_mode: bool = False,
+) -> str:
     envelope = {
         "schema_version": CHAT_AGENT_RESPONSE_SCHEMA_VERSION,
         "message": "Short answer for the operator.",
@@ -116,15 +121,28 @@ def _turn_prompt(user_message: str, *, context_summary: str = "") -> str:
         ],
         "gate": None,
     }
-    return (
+    role = (
+        "You are the execution agent for a confirmed LoopX Task. Work only from the project root. "
+        "Execute the operator task now. Inspect the repository, edit files, and run focused validation as needed. "
+        "Use the existing branch and worktree. Commit or push only when the operator task explicitly requests it. "
+        "Keep changes bounded to the confirmed Task and stop at any permission, identity, or destructive-operation gate. "
+        if execution_mode
+        else
         "You are the planning agent inside LoopX Chat. Work only from the project root. "
-        "The operator message below is the current task. Answer it directly and do not replace it "
-        "with an autonomous project task. Use read-only repository commands only when the operator "
-        "explicitly asks for repository facts or when evidence is required to answer accurately. "
-        "Do not use tools for ordinary conversation, exact-wording requests, or status questions "
-        "that can be answered from the supplied LoopX context. "
+    )
+    planning_limits = (
+        "Use read-only repository commands only when the operator explicitly asks for repository facts or when evidence is required to answer accurately. "
+        "Do not use tools for ordinary conversation, exact-wording requests, or status questions that can be answered from the supplied LoopX context. "
         "Do not edit files, mutate LoopX state, create commits, send messages, or request elevated access. "
-        "When the operator requests a durable Goal, Todo, Agent binding, heartbeat, monitor, gate, or correction change, "
+        if not execution_mode
+        else ""
+    )
+    return (
+        role
+        + "The operator message below is the current task. Answer it directly and do not replace it "
+        + "with an autonomous project task. "
+        + planning_limits
+        + "When the operator requests a durable Goal, Todo, Agent binding, heartbeat, monitor, gate, or correction change, "
         "describe the bounded proposal clearly so LoopX can route it through typed preview and explicit apply. "
         "Never claim the change has been written without a verified control-plane receipt. "
         "If you encounter an identity, approval, or host-tool gate, stop and describe it in gate. "
@@ -147,6 +165,7 @@ class CodexChatAgentSession:
     thread_id: str
     work_dir: Path
     context_summary: str = ""
+    execution_mode: bool = False
     response_timeout_sec: float = 30.0
     idle_timeout_sec: float = 180.0
     hard_timeout_sec: float = 900.0
@@ -168,6 +187,7 @@ class CodexChatAgentSession:
         idle_timeout_sec: float = 180.0,
         hard_timeout_sec: float = 900.0,
         resume_thread_id: str | None = None,
+        execution_mode: bool = False,
     ) -> "CodexChatAgentSession":
         resolved = shutil.which(codex_bin)
         if not resolved:
@@ -211,6 +231,7 @@ class CodexChatAgentSession:
             response_timeout_sec=response_timeout_sec,
             idle_timeout_sec=idle_timeout_sec,
             hard_timeout_sec=hard_timeout_sec,
+            execution_mode=execution_mode,
         )
         try:
             session._request(
@@ -231,7 +252,7 @@ class CodexChatAgentSession:
                 {
                     **({"threadId": resume_thread_id, "excludeTurns": True} if resume_thread_id else {}),
                     "cwd": str(root),
-                    "sandbox": "read-only",
+                    "sandbox": "workspace-write" if execution_mode else "read-only",
                     "approvalPolicy": "never",
                 },
                 request_id=2,
@@ -336,6 +357,7 @@ class CodexChatAgentSession:
         self,
         user_message: str,
         *,
+        attachments: list[dict[str, Any]] | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         text = " ".join(str(user_message or "").split())
@@ -344,16 +366,25 @@ class CodexChatAgentSession:
         with self._request_id_lock:
             request_id = self.next_request_id
             self.next_request_id += 1
+        turn_input: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": _turn_prompt(
+                    text,
+                    context_summary=self.context_summary,
+                    execution_mode=self.execution_mode,
+                ),
+            }
+        ]
+        for attachment in attachments or []:
+            image_url = str(attachment.get("data_url") or "")
+            if image_url:
+                turn_input.append({"type": "image", "url": image_url, "detail": "auto"})
         turn_result = self._request(
             "turn/start",
             {
                 "threadId": self.thread_id,
-                "input": [
-                    {
-                        "type": "text",
-                        "text": _turn_prompt(text, context_summary=self.context_summary),
-                    }
-                ],
+                "input": turn_input,
                 "cwd": str(self.work_dir),
                 "approvalPolicy": "never",
             },

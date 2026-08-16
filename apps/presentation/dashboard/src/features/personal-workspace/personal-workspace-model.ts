@@ -6,12 +6,20 @@ export type WorkspaceGoalState =
   | "安静运行"
   | "已完成";
 
+export type WorkspaceHomeLane =
+  | "needs_you"
+  | "running"
+  | "observing"
+  | "scheduled"
+  | "history";
+
 export type WorkspaceAgentTodo = {
   claimedBy?: string | null;
   dependencies?: string[];
   done: boolean;
   evidence?: string | null;
   nextTransition?: string | null;
+  priority?: string | null;
   status?: string | null;
   taskClass?: string | null;
   text: string;
@@ -33,6 +41,13 @@ export type WorkspaceGoalUsage = {
   tokens24h: number;
 };
 
+export type WorkspaceRepositoryContext = {
+  branch: string;
+  identity: string;
+  label: string;
+  readOnly: true;
+};
+
 export type WorkspaceGoal = {
   agentId: string;
   agentLabel?: string;
@@ -43,6 +58,7 @@ export type WorkspaceGoal = {
   needsYou?: string | null;
   needsYouBlocking?: boolean;
   nextSentence: string;
+  repository?: WorkspaceRepositoryContext;
   state: WorkspaceGoalState;
   title: string;
   usage?: WorkspaceGoalUsage | null;
@@ -60,6 +76,13 @@ export type WorkspaceAttention = {
   updatedAt?: string | null;
 };
 
+export type WorkspaceSessionMessage = {
+  createdAt?: string;
+  messageId: string;
+  role: "user" | "assistant" | "error";
+  text: string;
+};
+
 export type WorkspaceRun = {
   agentId: string;
   agentLabel: string;
@@ -71,7 +94,9 @@ export type WorkspaceRun = {
   resumable?: boolean;
   runId: string;
   sessionId?: string;
+  sessionMessages?: WorkspaceSessionMessage[];
   sessionStatus?: string;
+  todoId?: string;
   status: "queued" | "running" | "waiting" | "completed" | "failed" | "interrupted";
   title: string;
   totalSteps: number;
@@ -96,22 +121,6 @@ export type WorkspaceOutput = {
 
 export type WorkspaceChannel = "manager" | "attention" | "running" | "outputs";
 export type WorkspaceGoalTab = "chat" | "tasks" | "files";
-
-export type WorkspaceAgentSettings = {
-  adapterKind?: string;
-  agentId: string;
-  available: boolean;
-  capability?: string;
-  interrupt?: boolean;
-  label: string;
-  location?: string;
-  resume?: boolean;
-  source?: string;
-  streaming?: boolean;
-  toolCalls?: boolean;
-  trustScope?: string;
-  workspaceCompatibility?: string;
-};
 
 export type WorkspaceScheduleKind = "heartbeat" | "monitor";
 
@@ -161,6 +170,7 @@ export type WorkspaceActionPreview = {
   };
   previewId: string;
   primaryLabel?: string;
+  errorMessage?: string;
   status: "draft" | "ready" | "applying" | "applied" | "gated" | "stale" | "error" | "rejected" | "deferred";
   title: string;
   sourceRequest?: WorkspaceActionPreviewRequest;
@@ -169,11 +179,20 @@ export type WorkspaceActionPreview = {
 
 export type WorkspaceMessage = {
   agentLabel?: string;
+  attachments?: WorkspaceImageAttachment[];
   id: string;
   pending?: boolean;
   role: "assistant" | "user" | "system";
   text: string;
   time?: string;
+};
+
+export type WorkspaceImageAttachment = {
+  dataUrl: string;
+  id: string;
+  mimeType: string;
+  name: string;
+  size: number;
 };
 
 export type WorkspaceTimelineItem =
@@ -184,12 +203,32 @@ export type WorkspaceTimelineItem =
   | { id: string; kind: "output"; output: WorkspaceOutput }
   | { id: string; kind: "proposal"; proposal: WorkspaceActionPreview };
 
+export type WorkspaceWorker = {
+  agentId: string;
+  currentTodoGoalId?: string | null;
+  currentTodoText?: string | null;
+  lastActivityAt?: string | null;
+  state?: string | null;
+};
+
+export type WorkspaceGoalNotification = {
+  goalId: string;
+  configured: boolean;
+  enabled: boolean;
+  humanGateAutoNotifyEnabled: boolean;
+  lastNotifiedAt?: string | null;
+  receiptCount: number;
+  targetRef?: string | null;
+};
+
 export type WorkspaceModel = {
   blockingTodoCount: number;
+  goalNotifications?: WorkspaceGoalNotification[];
   goals: WorkspaceGoal[];
   openUserTodoCount: number;
   timeline?: WorkspaceTimelineItem[];
   userTodos: WorkspaceAttention[];
+  workers?: WorkspaceWorker[];
 };
 
 export type WorkspaceAgentOption = {
@@ -215,7 +254,7 @@ export type WorkspaceDrawerSelection =
   | { item: WorkspaceRun; kind: "run" }
   | { item: WorkspaceOutput; kind: "output" }
   | { item: WorkspaceActionPreview; kind: "proposal" }
-  | { item: WorkspaceAgentSettings; kind: "agent" }
+  | { goalId?: string; kind: "notifications" }
   | {
       item: WorkspaceSchedule;
       kind: "schedule";
@@ -223,9 +262,11 @@ export type WorkspaceDrawerSelection =
 
 export type PersonalHomeCompatibleModel = {
   blockingTodoCount: number;
+  goalNotifications?: WorkspaceGoalNotification[];
   goals: WorkspaceGoal[];
   openUserTodoCount: number;
   userTodos: WorkspaceAttention[];
+  workers?: WorkspaceWorker[];
 };
 
 export type PersonalWorkspaceCallbacks = {
@@ -239,19 +280,25 @@ export type PersonalWorkspaceCallbacks = {
   onExplainDecision?: (attention: WorkspaceAttention) => void | Promise<void>;
   onExportOutput?: (output: WorkspaceOutput) => void | Promise<void>;
   onInterruptRun?: (run: WorkspaceRun) => void | Promise<void>;
-  onOpenGoal?: (goalId: string) => void;
+  onOpenGoal?: (goalId: string) => void | Promise<void>;
+  onOpenGoalView?: (tab: WorkspaceGoalTab) => void;
+  onOpenRunSession?: (run: WorkspaceRun) => void | Promise<void>;
   onOpenOutput?: (output: WorkspaceOutput) => void;
-  onRefresh?: () => void;
+  onRefresh?: () => void | Promise<void>;
   onPreviewAction?: (request: WorkspaceActionPreviewRequest) => WorkspaceActionPreview | Promise<WorkspaceActionPreview>;
   onRequestGoalCreate?: () => WorkspaceActionPreview | Promise<WorkspaceActionPreview | void> | void;
   onRequestScheduleConfig?: (kind: WorkspaceScheduleKind, goalId: string | null) => WorkspaceActionPreview | Promise<WorkspaceActionPreview | void> | void;
   onRetryResumeRun?: (run: WorkspaceRun) => void | Promise<void>;
   onStartNewRunSession?: (run: WorkspaceRun) => void | Promise<void>;
   onUpdateSchedule?: (schedule: WorkspaceSchedule, operation: "edit" | "pause" | "resume" | "run_now" | "stop") => void | Promise<void>;
-  onSendMessage?: (message: string, agentId: string, goalId: string | null) => void | Promise<void>;
+  onSendMessage?: (message: string, agentId: string, goalId: string | null, attachments?: WorkspaceImageAttachment[]) => void | Promise<void>;
   onSelectAgent?: (agentId: string) => void;
   onSelectChannel?: (channel: WorkspaceChannel) => void;
   onSelectGoal?: (goalId: string | null) => void;
+  onOpenNotificationSettings?: (goalId?: string) => void;
+  onFetchNotificationTargets?: () => Promise<Array<{ enabled: boolean; provider: string; target_name: string }>>;
+  onSetupGoalChannel?: (options: { execute: boolean; goalId: string; target: string }) => Promise<{ ok: boolean; blocker?: string; public_summary?: string; status?: string }>;
+  onToggleGoalAutoNotify?: (options: { autoNotify: boolean; goalId: string }) => Promise<{ ok: boolean; blocker?: string; public_summary?: string; status?: string }>;
 };
 
 export type WorkspaceActionPreviewRequest = {
@@ -265,14 +312,42 @@ export type WorkspaceActionPreviewRequest = {
 export function normalizePersonalHomeModel(model: PersonalHomeCompatibleModel): WorkspaceModel {
   return {
     blockingTodoCount: model.blockingTodoCount,
+    goalNotifications: model.goalNotifications,
     goals: model.goals,
     openUserTodoCount: model.openUserTodoCount,
     userTodos: model.userTodos,
+    workers: model.workers,
   };
 }
 
 export function goalTitleFor(model: WorkspaceModel, goalId: string) {
   return model.goals.find((goal) => goal.goalId === goalId)?.title ?? goalId;
+}
+
+export function workspaceSessionStatusLabel(status?: string): string {
+  if (!status) return "状态未知";
+  return ({
+    busy: "执行中",
+    completed: "已完成",
+    failed: "需检查",
+    queued: "已安排",
+    ready: "可继续",
+    resume_failed: "恢复失败",
+    running: "执行中",
+    waiting: "等待条件",
+  } as Record<string, string>)[status] ?? status;
+}
+
+/**
+ * Project the detailed Goal lifecycle onto the five manager-home buckets.
+ * The home keeps four active lanes visible and collapses terminal work into history.
+ */
+export function workspaceHomeLaneForGoal(goal: WorkspaceGoal): WorkspaceHomeLane {
+  if (goal.state === "已完成") return "history";
+  if (goal.needsYou || goal.state === "等你") return "needs_you";
+  if (goal.state === "推进中" || goal.state === "需修复") return "running";
+  if (goal.state === "安静运行") return "observing";
+  return "scheduled";
 }
 
 /** Human-readable waiting time for an open attention item; null when under an hour or unknown. */
@@ -315,4 +390,11 @@ export function hasGoalUsage(usage?: WorkspaceGoalUsage | null): usage is Worksp
 export function goalUsageLabel(usage?: WorkspaceGoalUsage | null): string | null {
   if (!hasGoalUsage(usage)) return null;
   return `7d ${formatTokenCount(usage.tokens7d)} tokens · ${formatCostUsd(usage.costUsd7d)}`;
+}
+
+export function workerStateLabel(state?: string | null): string {
+  if (state === "running") return "执行中";
+  if (state === "monitoring") return "监控中";
+  if (state === "blocked") return "受阻";
+  return "待命";
 }

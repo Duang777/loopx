@@ -52,6 +52,7 @@ class CodexAppServerAdapter:
         startup_timeout_sec: float = 30.0,
         idle_timeout_sec: float = 180.0,
         hard_timeout_sec: float = 900.0,
+        execution_mode: bool = False,
     ) -> "CodexAppServerAdapter":
         return cls(
             CodexChatAgentSession.start(
@@ -62,6 +63,7 @@ class CodexAppServerAdapter:
                 response_timeout_sec=startup_timeout_sec,
                 idle_timeout_sec=idle_timeout_sec,
                 hard_timeout_sec=hard_timeout_sec,
+                execution_mode=execution_mode,
                 resume_thread_id=resume_thread_id,
             )
         )
@@ -76,6 +78,14 @@ class CodexAppServerAdapter:
 
     def start_turn(self, message: str, event_sink: EventSink) -> dict[str, Any]:
         return self.session.send(message, on_event=event_sink)
+
+    def start_turn_with_attachments(
+        self,
+        message: str,
+        event_sink: EventSink,
+        attachments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self.session.send(message, attachments=attachments, on_event=event_sink)
 
     def interrupt_turn(self, turn_id: str | None = None) -> None:
         self.session.interrupt(turn_id)
@@ -267,6 +277,7 @@ class ChatRuntimeController:
         objective: str,
         resume_thread_id: str | None = None,
         history: list[dict[str, Any]] | None = None,
+        execution_mode: bool = False,
     ) -> ChatRuntimeAdapter:
         if agent_id == "codex":
             history_context = ""
@@ -287,6 +298,7 @@ class ChatRuntimeController:
                 startup_timeout_sec=self.startup_timeout_sec,
                 idle_timeout_sec=self.idle_timeout_sec,
                 hard_timeout_sec=self.hard_timeout_sec,
+                execution_mode=execution_mode,
             )
         if agent_id == "claude-code":
             return ClaudeCodeAdapter.start(
@@ -354,6 +366,7 @@ class ChatRuntimeController:
                 work_dir=work_dir,
                 goal_id=agent_goal_id or goal_id,
                 objective=objective,
+                execution_mode=selected_channel.startswith("task."),
             )
             persisted = self.store.create_session(
                 goal_id=goal_id,
@@ -442,6 +455,7 @@ class ChatRuntimeController:
                     or session.get("agent_id") in {"anthropic-api", "openai-api"}
                     else None
                 ),
+                execution_mode=str(session.get("channel_id") or "").startswith("task."),
             )
         except Exception as exc:
             self.store.update_session(
@@ -479,6 +493,7 @@ class ChatRuntimeController:
         session_id: str,
         client_turn_id: str,
         message: str,
+        attachments: list[dict[str, Any]] | None = None,
         work_dir: Path,
         objective: str,
     ) -> tuple[dict[str, Any], bool]:
@@ -490,6 +505,7 @@ class ChatRuntimeController:
             session_id,
             client_turn_id=client_turn_id,
             message=message,
+            attachments=attachments,
         )
         if not created:
             return turn, False
@@ -499,6 +515,7 @@ class ChatRuntimeController:
                 "session_id": session_id,
                 "turn_id": str(turn["turn_id"]),
                 "message": message,
+                "attachments": attachments or [],
                 "adapter": adapter,
             },
             daemon=True,
@@ -514,6 +531,7 @@ class ChatRuntimeController:
         session_id: str,
         turn_id: str,
         message: str,
+        attachments: list[dict[str, Any]],
         adapter: ChatRuntimeAdapter,
     ) -> None:
         started = utc_now()
@@ -541,7 +559,12 @@ class ChatRuntimeController:
             event_buffer.emit(kind, payload)
 
         try:
-            response = adapter.start_turn(message, event_sink)
+            if attachments:
+                if not isinstance(adapter, CodexAppServerAdapter):
+                    raise ValueError("image attachments currently require the Codex Agent endpoint")
+                response = adapter.start_turn_with_attachments(message, event_sink, attachments)
+            else:
+                response = adapter.start_turn(message, event_sink)
             event_buffer.close()
             if consume_interrupted():
                 return

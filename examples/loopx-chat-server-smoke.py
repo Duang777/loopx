@@ -306,6 +306,46 @@ def main() -> None:
                 stylesheet = response.read().decode("utf-8")
             assert ".personal-workspace" in stylesheet, "packaged workspace stylesheet is incomplete"
 
+            code, targets_payload = request_json(f"{base_url}/api/chat/goal-channel/targets")
+            assert code == 200 and targets_payload["ok"] is True, targets_payload
+            assert targets_payload["targets"] == [], targets_payload
+
+            code, setup_invalid = request_json(
+                f"{base_url}/api/chat/goal-channel/setup",
+                method="POST",
+                body={"goal_id": GOAL_ID, "target": "ops", "bogus": True},
+            )
+            assert code == 400, setup_invalid
+            assert setup_invalid["error_code"] == "invalid_goal_channel_setup", setup_invalid
+
+            code, setup_blocked = request_json(
+                f"{base_url}/api/chat/goal-channel/setup",
+                method="POST",
+                body={"goal_id": GOAL_ID, "target": "ops"},
+            )
+            assert code == 400, setup_blocked
+            assert setup_blocked["error_code"] in {
+                "extension_unavailable",
+                "provider_target_missing",
+            }, setup_blocked
+
+            code, configure_missing = request_json(
+                f"{base_url}/api/chat/goal-channel/configure",
+                method="POST",
+                body={"goal_id": GOAL_ID, "auto_notify_human_gates": False},
+            )
+            assert code == 400, configure_missing
+            assert configure_missing["ok"] is False, configure_missing
+            assert configure_missing["blocker"] == "channel_binding_missing", configure_missing
+
+            code, configure_invalid = request_json(
+                f"{base_url}/api/chat/goal-channel/configure",
+                method="POST",
+                body={"goal_id": GOAL_ID, "auto_notify_human_gates": "yes"},
+            )
+            assert code == 400, configure_invalid
+            assert configure_invalid["error_code"] == "invalid_goal_channel_configure", configure_invalid
+
             status_payload = wait_for_json(f"{base_url}/status.json")
             assert status_payload["ok"] is True, status_payload
             assert status_payload["goal_count"] == 1, status_payload

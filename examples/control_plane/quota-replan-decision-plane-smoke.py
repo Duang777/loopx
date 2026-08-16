@@ -31,6 +31,7 @@ GOAL_ID = "replan-decision-plane-fixture"
 PRIMARY_AGENT = "codex-main-control"
 SIDE_AGENT = "codex-side-bypass"
 FUTURE_DUE_AT = "2999-01-01T00:00:00+00:00"
+SIDE_AGENT_DEAD_MONITOR_FRONTIER_IDENTITY = "fixture-dead-monitor-frontier"
 APP_SCHEDULER_CONTEXT = scheduler_execution_context_for_runtime_profile(
     "codex_app_heartbeat"
 )
@@ -54,6 +55,7 @@ SIDE_AGENT_REPLAN_OBLIGATION = {
 
 SIDE_AGENT_DEAD_MONITOR_REPLAN_OBLIGATION = {
     **GLOBAL_REPLAN_OBLIGATION,
+    "frontier_identity": SIDE_AGENT_DEAD_MONITOR_FRONTIER_IDENTITY,
     "triggers": [
         {
             "kind": "dead_monitor_repeat",
@@ -69,6 +71,7 @@ def monitor_item(
     *,
     cadence: str | None = "15m",
     next_due_at: str | None = FUTURE_DUE_AT,
+    expires_at: str | None = None,
 ) -> dict:
     item = {
         "index": 1,
@@ -86,6 +89,8 @@ def monitor_item(
         item["cadence"] = cadence
     if next_due_at is not None:
         item["next_due_at"] = next_due_at
+    if expires_at is not None:
+        item["expires_at"] = expires_at
     return item
 
 
@@ -300,7 +305,7 @@ def peer_status_payload(
     return payload
 
 
-def agent_vision_gap_run() -> dict:
+def agent_vision_gap_run(*, vision_todo_ids: list[str] | None = None) -> dict:
     return {
         "classification": "state_refreshed",
         "generated_at": "2026-07-04T00:00:00+00:00",
@@ -314,7 +319,9 @@ def agent_vision_gap_run() -> dict:
                 "acceptance_summary": "Show the next runnable auto-research frontier without owner prompting.",
                 "replan_trigger_summary": "Auto-research evidence is still synthetic and needs a next-round live validation todo.",
             },
-            "todo_delta": [],
+            "todo_delta": [
+                f"activate:{todo_id}" for todo_id in (vision_todo_ids or [])
+            ],
             "vision_budget": {
                 "schema_version": "goal_vision_budget_v0",
                 "status": "ok",
@@ -362,21 +369,33 @@ def agent_vision_acceptance_only_run(
 def watch_lane_continuation_ack_run(
     *,
     delta_kinds: list[str] | None = None,
+    frontier_identity: str | None = None,
+    watch_todo_ids: list[str] | None = None,
 ) -> dict:
+    ack = {
+        "schema_version": "autonomous_replan_ack_v0",
+        "recorded": True,
+        "source": "refresh_state",
+        "delta_contract": {
+            "schema_version": "repair_delta_contract_v0",
+            "delta_present": True,
+            "delta_kinds": delta_kinds or ["watch_lane_continuation"],
+        },
+    }
+    if frontier_identity:
+        ack["frontier_identity"] = frontier_identity
+    if watch_todo_ids:
+        ack["delta_contract"]["auto_evidence"] = [
+            {
+                "kind": "watch_lane_continuation",
+                "todo_ids": watch_todo_ids,
+            }
+        ]
     return {
         "classification": "monitor_poll_autonomous_replan_recorded_v0",
         "agent_id": SIDE_AGENT,
         "progress_scope": "agent_lane",
-        "autonomous_replan_ack": {
-            "schema_version": "autonomous_replan_ack_v0",
-            "recorded": True,
-            "source": "refresh_state",
-            "delta_contract": {
-                "schema_version": "repair_delta_contract_v0",
-                "delta_present": True,
-                "delta_kinds": delta_kinds or ["watch_lane_continuation"],
-            },
-        },
+        "autonomous_replan_ack": ack,
     }
 
 
@@ -1658,12 +1677,15 @@ def assert_explicit_as_needed_vision_gap_uses_watch_lane_continuation_ack() -> N
 def assert_as_needed_watch_ack_covers_repeated_heartbeat_receipts() -> None:
     latest_runs = [
         *unchanged_heartbeat_monitor_runs(),
-        watch_lane_continuation_ack_run(),
-        agent_vision_gap_run(),
+        watch_lane_continuation_ack_run(
+            frontier_identity=SIDE_AGENT_DEAD_MONITOR_FRONTIER_IDENTITY,
+            watch_todo_ids=["todo_monitor_wait"],
+        ),
+        agent_vision_gap_run(vision_todo_ids=["todo_monitor_wait"]),
     ]
     guard = build_quota_should_run(
         status_payload(
-            [monitor_item()],
+            [monitor_item(expires_at="2999-02-01T00:00:00+00:00")],
             replan_obligation=SIDE_AGENT_DEAD_MONITOR_REPLAN_OBLIGATION,
             latest_runs=latest_runs,
         ),
@@ -1677,7 +1699,12 @@ def assert_as_needed_watch_ack_covers_repeated_heartbeat_receipts() -> None:
 
     due_guard = build_quota_should_run(
         status_payload(
-            [monitor_item(next_due_at="2000-01-01T00:00:00+00:00")],
+            [
+                monitor_item(
+                    next_due_at="2000-01-01T00:00:00+00:00",
+                    expires_at="2999-02-01T00:00:00+00:00",
+                )
+            ],
             replan_obligation=SIDE_AGENT_DEAD_MONITOR_REPLAN_OBLIGATION,
             latest_runs=latest_runs,
         ),
