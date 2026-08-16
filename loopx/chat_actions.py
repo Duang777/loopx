@@ -424,6 +424,8 @@ class ChatActionService(ChatMonitorActionMixin):
                     "goal_id",
                     "title",
                     "objective",
+                    "completion_criteria",
+                    "execution_boundary",
                     "agent_id",
                     "workspace_ref",
                     "permission",
@@ -439,7 +441,13 @@ class ChatActionService(ChatMonitorActionMixin):
                 "goal_id": goal_id,
                 "title": _text(values.get("title"), field="title", limit=200),
             }
-            for field in ("objective", "permission", "stop_condition"):
+            for field in (
+                "objective",
+                "completion_criteria",
+                "execution_boundary",
+                "permission",
+                "stop_condition",
+            ):
                 if values.get(field):
                     result[field] = _text(values[field], field=field, limit=1000)
             for field in ("agent_id", "workspace_ref"):
@@ -838,6 +846,8 @@ class ChatActionService(ChatMonitorActionMixin):
                 goal_doc=None,
                 adapter_kind=str((source_goal.get("adapter") or {}).get("kind") or "generic_project_goal_v0"),
                 adapter_status="connected",
+                display_name=str(parameters.get("title") or "").strip() or None,
+                include_connection_validation=False,
                 next_probe=None,
                 spawn_allowed=False,
                 max_children=0,
@@ -963,7 +973,8 @@ class ChatActionService(ChatMonitorActionMixin):
                 client_turn_id=f"goal-start-{proposal_id}",
                 message=(
                     f"开始推进 Goal {goal_id}。先核对目标边界和现有 Todo，"
-                    "然后给出首个可验证进展；遇到权限边界时停止并提出明确 Gate。"
+                    f"首个 Todo：{'；'.join(str(item) for item in (parameters.get('initial_todos') or [])[:3]) or '按目标边界建立首个可验证进展'}。"
+                    "然后直接推进并报告可验证结果；遇到权限边界时停止并提出明确 Gate。"
                 ),
                 work_dir=project,
                 objective=objective,
