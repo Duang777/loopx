@@ -4750,6 +4750,10 @@ function visibleAgentMessage(value: string) {
     .trim();
 }
 
+function isAgentResultMessage(role: string, text: string) {
+  return ["agent", "assistant"].includes(role.trim().toLowerCase()) && text.trim().length > 0;
+}
+
 function personalProjectionSentence(value: string | null | undefined, fallback = "") {
   const cleaned = cleanShareText(value);
   if (!cleaned || cleaned === "暂无") {
@@ -6226,7 +6230,7 @@ function PersonalGoalHome({
       const todo = selectedGoal.agentTodos.find((candidate) => candidate.todoId === todoId);
       const running = Boolean(session.active_turn_id);
       const snapshot = executionSessionSnapshots[session.session_id];
-      const hasResult = snapshot?.messages.some((message) => message.role === "assistant" && message.text.trim().length > 0) === true;
+      const hasResult = snapshot?.messages.some((message) => isAgentResultMessage(message.role, message.text)) === true;
       return {
         id: `run:task:${session.session_id}`,
         kind: "run",
@@ -6248,7 +6252,7 @@ function PersonalGoalHome({
           sessionMessages: snapshot?.messages.map((message) => ({
             createdAt: message.created_at,
             messageId: message.message_id,
-            role: message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : "error",
+            role: message.role === "user" ? "user" : isAgentResultMessage(message.role, message.text) ? "assistant" : "error",
             text: message.role === "user" ? message.text : visibleAgentMessage(message.text),
           })),
           sessionStatus: hasResult ? "completed" : session.status,
@@ -6413,7 +6417,12 @@ function PersonalGoalHome({
           onOpenGoal: openGoalChat,
           onOpenRunSession: async (run) => {
             if (!run.sessionId) return;
-            const snapshot = await fetchChatSession(run.sessionId);
+            const sessionId = run.sessionId;
+            const snapshot = await fetchChatSession(sessionId);
+            setExecutionSessionSnapshots((current) => ({
+              ...current,
+              [sessionId]: snapshot,
+            }));
             openGoalChat(run.goalId);
             setMessagesByContext((current) => ({
               ...current,
@@ -6430,7 +6439,7 @@ function PersonalGoalHome({
             recordRuntimeBinding(run.goalId, {
               agentId: run.agentId,
               resumable: snapshot.session.resumable,
-              sessionId: run.sessionId,
+              sessionId,
               status: snapshot.session.active_turn_id ? "running" : snapshot.session.status,
               turnId: snapshot.session.active_turn_id ?? undefined,
             });

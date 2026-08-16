@@ -629,6 +629,28 @@ export function PersonalWorkspacePage({
       return false;
     });
   }, [activeSessionRun, items]);
+  useEffect(() => {
+    if (!activeSessionRun) return;
+    const latestRun = items.find((item) => item.kind === "run" && item.run.runId === activeSessionRun.runId);
+    if (!latestRun || latestRun.kind !== "run") return;
+    const currentSignature = JSON.stringify({
+      completedSteps: activeSessionRun.completedSteps,
+      latestActivity: activeSessionRun.latestActivity,
+      messages: activeSessionRun.sessionMessages,
+      sessionStatus: activeSessionRun.sessionStatus,
+      status: activeSessionRun.status,
+      totalSteps: activeSessionRun.totalSteps,
+    });
+    const latestSignature = JSON.stringify({
+      completedSteps: latestRun.run.completedSteps,
+      latestActivity: latestRun.run.latestActivity,
+      messages: latestRun.run.sessionMessages,
+      sessionStatus: latestRun.run.sessionStatus,
+      status: latestRun.run.status,
+      totalSteps: latestRun.run.totalSteps,
+    });
+    if (currentSignature !== latestSignature) setActiveSessionRun(latestRun.run);
+  }, [activeSessionRun, items]);
   const managerMessages = useMemo(
     () => items.flatMap((item) => item.kind === "message" ? [item.message] : []),
     [items],
