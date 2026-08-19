@@ -127,6 +127,7 @@ def test_refresh_state_applies_goal_channel_delivery_postcondition(
     )
 
     assert result == expected_exit
+    assert captured["schema_version"] == "loopx_refresh_state_result_v0"
     assert captured["ok"] is expected_ok
     assert captured["goal_channel_gate_sync"] == gate_sync
     if expected_ok:

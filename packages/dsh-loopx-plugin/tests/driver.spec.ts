@@ -21,6 +21,8 @@ import type {
   LoopXStatusValue,
   LoopXTaskBody,
   LoopXTodoClaimRequest,
+  LoopXTodoAddRequest,
+  LoopXTodoAddValue,
   LoopXTodoCompleteRequest,
   LoopXTodoMutationValue,
   LoopXTodoUpdateRequest,
@@ -272,6 +274,14 @@ class FakeService implements LoopXServiceApi {
   ): Promise<LoopXResult<{ readonly detached: true }>> {
     this.rows.delete(session.id)
     return Promise.resolve(success({ detached: true }))
+  }
+
+  todoAdd(
+    _session: LoopXSessionRef,
+    _request: LoopXTodoAddRequest,
+    _signal?: AbortSignal,
+  ): Promise<LoopXResult<LoopXTodoAddValue>> {
+    return Promise.resolve(failure('LOOPX_INVALID_REQUEST', 'todo-add'))
   }
 
   todoClaim(

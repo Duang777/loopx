@@ -1413,7 +1413,9 @@ def test_collection_growth_and_bootstrap_duplication_are_explicit(tmp_path: Path
     bootstrap_payload = small["bootstrap_command_pack"]["json"]["payload"]
     start_duplication = start_payload["packet_summary"]["duplication_measurement"]
     bootstrap_duplication = bootstrap_payload["packet_summary"]["duplication_measurement"]
-    assert start_duplication["objective_content"]["duplicate_occurrences"] <= 11
+    # The versioned connect contract intentionally carries one additional
+    # allowlisted objective copy for the conditional bootstrap mutation.
+    assert start_duplication["objective_content"]["duplicate_occurrences"] <= 12
     assert start_duplication["command_content"]["duplicate_occurrences"] <= 13
     assert bootstrap_duplication["objective_content"]["duplicate_occurrences"] <= 8
     assert bootstrap_duplication["command_content"]["duplicate_occurrences"] <= 9

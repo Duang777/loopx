@@ -194,6 +194,68 @@ def test_default_projection_preserves_host_actions_and_json_anchors(
         _resolve_pointer(projection, ref["json_pointer"])
 
 
+@pytest.mark.parametrize("fine_grained", [False, True])
+def test_connect_contract_is_data_only_and_matches_full_compact_guidance(
+    tmp_path: Path,
+    fine_grained: bool,
+) -> None:
+    project = tmp_path / "fresh-project"
+    project.mkdir()
+    common = {
+        "project": project,
+        "goal_id": GOAL_ID,
+        "agent_id": AGENT_ID,
+        "cli_bin": "loopx",
+        "host_surface": "codex-app",
+        "goal_text": f"  {GOAL_TEXT}  ",
+        "available_capabilities": ["network"],
+        "fine_grained": fine_grained,
+    }
+
+    compact = build_start_goal_guided_packet(
+        **common,
+        include_command_pack_detail=False,
+    )
+    detailed = build_start_goal_guided_packet(
+        **common,
+        include_command_pack_detail=True,
+    )
+
+    compact_step = next(
+        step
+        for step in compact["guided_transaction"]["ordered_steps"]
+        if step["id"] == "connect_if_needed"
+    )
+    detailed_step = next(
+        step
+        for step in detailed["guided_transaction"]["ordered_steps"]
+        if step["id"] == "connect_if_needed"
+    )
+    expected_contract = {
+        "schema_version": "loopx_start_goal_connect_v0",
+        "operation": "bootstrap_connect",
+        "goal_id": GOAL_ID,
+        "objective": GOAL_TEXT,
+        "adapter_kind": "read_only_project_map_v0",
+        "adapter_status": "connected-read-only",
+        "onboarding_scan_enabled": False,
+        "fine_grained": fine_grained,
+    }
+
+    assert compact_step["connect_contract"] == expected_contract
+    assert detailed_step["connect_contract"] == expected_contract
+    assert set(compact_step["connect_contract"]) == set(expected_contract)
+    assert "command" not in compact_step["connect_contract"]
+    assert "argv" not in compact_step["connect_contract"]
+    assert compact_step["command"] == compact["command_pack"]["commands"][
+        "goal_start_connect_if_needed"
+    ]
+    assert detailed_step["command"] == detailed["command_pack"]["commands"][
+        "goal_start_connect_if_needed"
+    ]
+    assert "--no-onboarding-scan" in compact_step["command"]
+
+
 def test_goal_start_packet_is_parity_complete_behavior_authority(
     tmp_path: Path,
 ) -> None:
@@ -625,7 +687,9 @@ def test_projection_materially_reduces_repetition_without_hiding_measurement(
     assert len(compact_json) <= int(len(detailed_json) * 0.65)
     compact_duplication = compact["packet_summary"]["duplication_measurement"]
     detailed_duplication = detailed["packet_summary"]["duplication_measurement"]
-    assert compact_duplication["objective_content"]["duplicate_occurrences"] <= 11
+    # The versioned connect contract intentionally repeats the objective once as
+    # an allowlisted mutation input; keep every other compact duplication bounded.
+    assert compact_duplication["objective_content"]["duplicate_occurrences"] <= 12
     assert compact_duplication["command_content"]["duplicate_occurrences"] <= 13
     assert (
         compact_duplication["objective_content"]["duplicate_occurrences"]
@@ -860,6 +924,36 @@ def test_start_goal_with_unbound_thread_requires_existing_lane_selection(
     assert gate["state"] == "thread_binding_selection_required"
     assert gate["default_action"] == "select_agent_identity"
     assert gate["fresh_agent_registration"] is None
+    assert all(
+        choice["requires_explicit_takeover_intent"] is True
+        for choice in gate["choices"]
+    )
+
+
+def test_dsh_native_start_goal_with_unbound_session_defaults_to_fresh_identity(
+    tmp_path: Path,
+) -> None:
+    project = _write_connected_project(tmp_path)
+    registry_path = project / ".loopx" / "registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["goals"][0]["coordination"]["registered_agents"].append("dsh-existing-peer")
+    registry_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+
+    payload = build_start_goal_guided_packet(
+        project=project,
+        goal_id=GOAL_ID,
+        agent_id=None,
+        thread_id="dsh-session-unbound",
+        cli_bin="loopx",
+        host_surface="deepseek-harness-native",
+        goal_text=GOAL_TEXT,
+        available_capabilities=["network"],
+    )
+
+    gate = payload["guided_transaction"]["identity_selection_gate"]
+    assert gate["state"] == "fresh_agent_registration_required"
+    assert gate["default_action"] == "register_fresh_agent"
+    assert gate["fresh_agent_registration"]["recommended"] is True
     assert all(
         choice["requires_explicit_takeover_intent"] is True
         for choice in gate["choices"]

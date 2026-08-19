@@ -22,6 +22,7 @@ function parseSpecs(argv) {
   const specs = []
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index]
+    if (flag === '--') continue
     if (flag !== '--package-path' && flag !== '--tarball') {
       throw new Error(`unsupported argument: ${flag}`)
     }
@@ -83,6 +84,16 @@ function assertInstalledConfig(dump) {
     assert(dump.includes(`name: ${name}`), `missing bundle module ${name}`)
     previous = position
   }
+  assert.deepEqual(
+    [...dump.matchAll(/^\s*(?:-\s+)?id:\s+(loopx-[^\s]+)\s*$/gmu)].map(match => match[1]),
+    bundleRows.map(([id]) => id),
+    'profile must contain exactly the four LoopX bundle rows',
+  )
+  assert.deepEqual(
+    [...dump.matchAll(/^\s*(?:-\s+)?name:\s+(dsh-loopx-plugin\/[^\s]+)\s*$/gmu)].map(match => match[1]),
+    bundleRows.map(([, module]) => module),
+    'profile must not expose a fifth dsh-loopx-plugin face',
+  )
   assert.match(dump, /id: storage-domain[\s\S]{0,240}backend: json/u)
   assert(!dump.includes('dsh.client: dsh-loopx-plugin'), 'v1 must not add a Client-plane row')
 }
@@ -98,7 +109,7 @@ async function textTree(root) {
 }
 
 const mockLoopXSource = String.raw`#!/usr/bin/env node
-import { appendFile } from 'node:fs/promises'
+import { appendFile, readFile } from 'node:fs/promises'
 
 const args = process.argv.slice(2)
 const state = process.env.LOOPX_SMOKE_STATE
@@ -108,14 +119,47 @@ const value = flag => {
   return index < 0 ? undefined : args[index + 1]
 }
 if (value('--format') !== 'json') throw new Error('JSON format is required')
-const commands = new Set(['start-goal', 'bootstrap-command-pack', 'heartbeat-prompt', 'status', 'quota'])
+const commands = new Set(['start-goal', 'bootstrap', 'bootstrap-command-pack', 'heartbeat-prompt', 'refresh-state', 'status', 'todo', 'quota'])
 const index = args.findIndex(arg => commands.has(arg))
 const command = args[index]
-const goalId = value('--goal-id') ?? 'goal-smoke'
+const subcommand = command === 'todo' || command === 'quota' ? args[index + 1] : undefined
+const goalId = value('--goal-id') ?? value('--fork-goal') ?? 'goal-smoke'
 const agentId = value('--agent-id') ?? 'agent-smoke'
 const threadId = value('--thread-id') ?? 'session-smoke'
 const project = value('--project') ?? process.cwd()
+const registry = project + '/.loopx/registry.json'
+const history = await readFile(state, 'utf8').catch(() => '')
+const connected = history.split('\n').includes('bootstrap')
 await appendFile(state, command + '\n')
+
+const goalStartContract = {
+  schema_version: 'loopx_goal_start_command_v0',
+  goal_text: value('--goal-text'),
+  planner: {
+    required_before_todo_write: true,
+    default_profile: 'clear_bounded_problem',
+    profile_selection: 'Use the minimum sufficient bounded public-safe plan.',
+    profiles: {
+      open_ended_product_direction: {
+        suggested_items_min: 2, suggested_items_max: 5,
+        intent: 'Rank public-safe work before execution.',
+      },
+      clear_bounded_problem: {
+        item_count_policy: 'planner_sized',
+        may_reuse_current_todo_when_it_already_represents_the_plan: true,
+        intent: 'Use the minimum sufficient explicit plan.',
+      },
+    },
+    allowed_priorities: ['P0', 'P1', 'P2'],
+    default_role: 'agent',
+    default_task_class: 'advancement_task',
+    required_fields: ['priority', 'text', 'task_class', 'action_kind'],
+    public_safe_only: true,
+    budget_policy: 'minimum sufficient plan; no fixed-count filler',
+  },
+  activation: { host_loop_required_after_todo_writeback: true },
+  stop_conditions: ['private material is required', 'destructive authority is required'],
+}
 
 let output
 if (command === 'start-goal') {
@@ -124,14 +168,39 @@ if (command === 'start-goal') {
     project, goal_id: goalId, agent_id: agentId,
     host_surface: 'deepseek-harness-native', thread_id: threadId,
     thread_agent_binding: { status: 'bound', agent_id: agentId },
-    project_connection: { registry: project + '/.loopx/registry.json' },
+    project_connection: {
+      project, registry, goal_id: goalId,
+      connection_state: connected ? 'connected' : 'not_connected',
+    },
+    command_pack: {
+      schema_version: 'loopx_bootstrap_command_pack_v0',
+      goal_start_contract: goalStartContract,
+    },
     guided_transaction: {
       schema_version: 'loopx_start_goal_guided_v0',
       ordered_steps: [
         { id: 'inspect', kind: 'read_only' },
+        ...(connected ? [] : [{
+          id: 'connect_if_needed', kind: 'conditional_mutation',
+          command: 'exit 86 # non-authoritative producer hint; never execute',
+          connect_contract: {
+            schema_version: 'loopx_start_goal_connect_v0', operation: 'bootstrap_connect',
+            goal_id: goalId, objective: value('--goal-text'),
+            adapter_kind: 'read_only_project_map_v0', adapter_status: 'connected-read-only',
+            onboarding_scan_enabled: false, fine_grained: false,
+          },
+        }]),
         { id: 'plan', kind: 'model_checkpoint', prompt: 'Plan, refresh bounded Todos, then call loopx_goal_activate.' },
       ],
     },
+  }
+} else if (command === 'bootstrap') {
+  output = {
+    schema_version: 'loopx_bootstrap_result_v0', ok: true,
+    project, goal_id: goalId, registry,
+    state_file: project + '/.loopx/goals/' + goalId + '.json',
+    registry_goal_action: 'created', state_action: 'created',
+    global_sync: { ok: true, synced_goal_ids: [goalId], wrote: true },
   }
 } else if (command === 'bootstrap-command-pack') {
   output = {
@@ -139,7 +208,7 @@ if (command === 'start-goal') {
     project, goal_id: goalId, agent_id: agentId, agent_type: 'deepseek-harness-native',
     host_surface: 'deepseek-harness-native', thread_id: threadId,
     thread_agent_binding: { status: 'bound', agent_id: agentId },
-    project_connection: { registry: project + '/.loopx/registry.json' },
+    project_connection: { project, registry, goal_id: goalId, connection_state: 'connected' },
     host_loop_activation: {
       schema_version: 'loopx_host_loop_activation_v1', agent_type: 'deepseek-harness-native',
       goal_id: goalId, agent_id: agentId, activation_allowed: true,
@@ -161,6 +230,33 @@ if (command === 'start-goal') {
   output = {
     schema_version: 'loopx_heartbeat_prompt_v0', ok: true, goal_id: goalId,
     agent_id: agentId, runtime_profile: 'generic_cli', task_body: 'SMOKE PRIVATE TASK BODY',
+  }
+} else if (command === 'todo' && subcommand === 'add') {
+  const role = value('--role')
+  output = {
+    schema_version: 'loopx_todo_command_v0', ok: true, dry_run: false,
+    added: true, already_exists: false, goal_id: goalId, role,
+    todo: value('--text'), todo_id: 'todo-smoke', status: 'open',
+    task_class: value('--task-class'), action_kind: value('--action-kind'),
+    claimed_by: role === 'agent' ? value('--claimed-by') : null,
+    bound_agent: role === 'user' ? value('--bound-agent') : null,
+    agent_id: role === 'user' ? value('--agent-id') : null,
+    blocks_agent: role === 'user' ? value('--blocks-agent') : null,
+    target_key: value('--target-key') ?? null,
+  }
+} else if (command === 'refresh-state') {
+  const sourceRegistry = value('--registry') ?? registry
+  output = {
+    schema_version: 'loopx_refresh_state_result_v0', ok: true, dry_run: false,
+    appended: true, partial_write: false, registry: sourceRegistry,
+    project: value('--project'), goal_id: goalId, agent_id: agentId,
+    agent_lane: value('--agent-lane'), progress_scope: value('--progress-scope'),
+    external_sink_delivery_authorized: false,
+    global_sync: {
+      ok: true, skipped: false, registry: sourceRegistry,
+      global_registry: project + '/runtime/registry.global.json',
+      synced_goal_ids: [goalId], wrote: true,
+    },
   }
 } else if (command === 'status') {
   output = {
@@ -225,9 +321,27 @@ async function exerciseInstalledPlugin(installedDir, home, mockLoopX, statePath)
   assert(service, 'LoopX service did not activate over storage-domain')
 
   const commands = new Map()
-  commandModule.apply({ loopx: service, commands: { register: value => commands.set(value.name, value) } })
   const tools = new Map()
-  toolsModule.apply({ loopx: service, tools: { register: value => tools.set(value.name, value) } })
+  const pluginContext = {
+    loopx: service,
+    commands: { register: value => commands.set(value.name, value) },
+    tools: { register: value => tools.set(value.name, value) },
+  }
+  commandModule.apply(pluginContext)
+  toolsModule.apply(pluginContext)
+  assert.deepEqual([...tools.keys()].sort(), [
+    'loopx_driver_pause',
+    'loopx_driver_resume',
+    'loopx_goal_activate',
+    'loopx_goal_attach',
+    'loopx_goal_detach',
+    'loopx_goal_start',
+    'loopx_status',
+    'loopx_todo_add',
+    'loopx_todo_claim',
+    'loopx_todo_complete',
+    'loopx_todo_update',
+  ], 'packed plugin must expose exactly eleven bounded model tools')
   const followups = []
   const nextTurn = []
   let status = 'idle'
@@ -235,16 +349,31 @@ async function exerciseInstalledPlugin(installedDir, home, mockLoopX, statePath)
   let agent
   agent = {
     id: 'session-smoke',
-    session: { id: 'session-smoke', header: { version: 0, id: 'session-smoke', createdAt: 7, cwd: project } },
+    session: {
+      id: 'session-smoke',
+      header: { version: 0, id: 'session-smoke', createdAt: 7, cwd: project, seedLength: 0 },
+      events: [],
+      surface: { nodes: [] },
+    },
     get status() { return status },
     inbox: {
       nextTurn,
       nextStep: [],
       get hasPending() { return nextTurn.length > 0 },
+      append(target, message) {
+        if (target !== 'next-turn') throw new Error('smoke only appends next-turn messages')
+        nextTurn.push(message)
+      },
       remove(id) {
         const position = nextTurn.findIndex(message => message.id === id)
         if (position < 0) return false
         nextTurn.splice(position, 1)
+        return true
+      },
+      replace(id, message) {
+        const position = nextTurn.findIndex(value => value.id === id)
+        if (position < 0) return false
+        nextTurn.splice(position, 1, message)
         return true
       },
     },
@@ -263,20 +392,68 @@ async function exerciseInstalledPlugin(installedDir, home, mockLoopX, statePath)
   const command = commands.get('loopx')
   assert(command, '/loopx command was not registered')
   const signal = new AbortController().signal
-  const invoke = rawInput => command.handler({ commandId: 'smoke-command', agent, rawInput, signal })
-  const started = await invoke('start smoke goal')
-  assert.equal(started.kind, 'success')
-  assert.equal(followups.length, 1, 'two-phase start did not enqueue the planning checkpoint')
-  assert.match(followups[0].content[0].text, /loopx_goal_activate/u)
+  let commandOrdinal = 0
+  const invoke = rawInput => command.handler({
+    commandId: `smoke-command-${++commandOrdinal}`, agent, rawInput, signal,
+  })
+  const installedManifest = JSON.parse(await readFile(join(installedDir, 'package.json'), 'utf8'))
+  assert.deepEqual(Object.keys(installedManifest.exports).sort(), [
+    '.', './command', './cordis.patch.yml', './driver', './package.json', './service', './tools',
+  ], 'manifest must expose exactly four runtime faces plus root metadata')
+  const version = await invoke('version')
+  assert.deepEqual(version, {
+    kind: 'success',
+    text: `dsh-loopx-plugin ${installedManifest.version}`,
+  })
+  assert.equal(await readFile(statePath, 'utf8'), '', 'version must not invoke the LoopX CLI')
 
-  const activate = tools.get('loopx_goal_activate')
-  assert(activate, 'activation tool was not registered')
-  const activated = await activate.execute(
-    { goalId: 'goal-smoke', agentId: 'agent-smoke' },
-    { agent, signal },
+  const semanticCommand = await invoke('smoke goal')
+  assert.equal(semanticCommand.kind, 'success')
+  assert.match(semanticCommand.text, /Queued the request/u)
+  assert.equal(followups.length, 1, 'free text must queue exactly one same-Agent semantic follow-up')
+  assert.equal(followups[0].source.kind, 'plugin')
+  assert.equal(followups[0].source.plugin, 'dsh-loopx-plugin')
+  const semanticText = followups[0].content[0].text
+  assert.match(semanticText, /LoopX semantic routing policy/u)
+  assert.match(semanticText, /registered `loopx_\*` tools/u)
+  assert.match(semanticText, /"smoke goal"/u)
+  assert.equal(
+    [...tools.keys()].filter(toolName => semanticText.includes(toolName)).length,
+    0,
+    'semantic follow-up must not duplicate the registered tool-name catalog',
   )
+  assert.equal(await readFile(statePath, 'utf8'), '', 'semantic command entry must not invoke LoopX')
+
+  let toolCallOrdinal = 0
+  const executeTool = async (name, args) => {
+    const definition = tools.get(name)
+    assert(definition, `missing tool ${name}`)
+    const callId = `smoke-tool-${++toolCallOrdinal}`
+    const execution = {
+      name, callId, rootCallId: callId, arguments: args, agent, signal,
+      token: Symbol(callId), concludeTurn() {},
+    }
+    return definition.execute(args, execution)
+  }
+
+  const planned = await executeTool('loopx_goal_start', { goalText: 'smoke goal' })
+  assert.equal(planned.ok, true)
+  assert.equal(planned.value.kind, 'planning')
+  assert.match(planned.value.modelCheckpoint, /dsh_loopx_planning_checkpoint_v0/u)
+  const connectCalls = (await readFile(statePath, 'utf8')).trim().split('\n').slice(0, 3)
+  assert.deepEqual(connectCalls, ['start-goal', 'bootstrap', 'start-goal'])
+
+  const added = await executeTool('loopx_todo_add', {
+    text: 'Validate the packaged semantic planning flow', priority: 'P0',
+  })
+  assert.equal(added.ok, true)
+  assert.equal(added.value.todoId, 'todo-smoke')
+  const activated = await executeTool('loopx_goal_activate', {
+    goalId: 'goal-smoke', agentId: 'agent-smoke',
+  })
   assert.equal(activated.ok, true)
-  const readback = await invoke('status')
+  status = 'idle'
+  const readback = await invoke('')
   assert.equal(readback.kind, 'success')
   assert.match(readback.text, /active_armed/u)
   assert.match(readback.text, /LoopX authoritative state/u)
