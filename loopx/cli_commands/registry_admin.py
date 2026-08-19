@@ -96,6 +96,44 @@ def _fresh_agent_collision_payload(
     requested_agents: list[str],
     collisions: list[str],
 ) -> dict[str, object]:
+    return _agent_registration_failure_payload(
+        execute=execute,
+        goal_id=goal_id,
+        global_path=global_path,
+        source_registry_path=source_registry_path,
+        existing_agents=existing_agents,
+        requested_agents=requested_agents,
+        registered_agents=existing_agents,
+        error_kind="agent_identity_already_registered",
+        error=(
+            "fresh agent registration requires an unused agent id; already "
+            f"registered: {', '.join(collisions)}"
+        ),
+        recommended_action=(
+            "choose a different public-safe agent id and rerun the preview; continue "
+            "only after the execute result reports ok=true, changed=true, and written=true"
+        ),
+    )
+
+
+def _agent_registration_failure_payload(
+    *,
+    execute: bool,
+    goal_id: str,
+    global_path: Path,
+    source_registry_path: Path,
+    existing_agents: list[str],
+    requested_agents: list[str],
+    error_kind: str,
+    error: str,
+    recommended_action: object,
+    registered_agents: list[str] | None = None,
+    changed: bool = False,
+    written: bool = False,
+    partial_write: bool = False,
+    global_sync: dict[str, object] | None = None,
+    registration_readback: dict[str, object] | None = None,
+) -> dict[str, object]:
     return {
         "ok": False,
         "dry_run": not execute,
@@ -105,18 +143,29 @@ def _fresh_agent_collision_payload(
         "source_registry": str(source_registry_path),
         "existing_agents": existing_agents,
         "requested_agents": requested_agents,
-        "registered_agents": existing_agents,
-        "changed": False,
-        "written": False,
-        "error_kind": "agent_identity_already_registered",
-        "error": (
-            "fresh agent registration requires an unused agent id; already "
-            f"registered: {', '.join(collisions)}"
+        "registered_agents": (
+            registered_agents if registered_agents is not None else existing_agents
         ),
-        "recommended_action": (
-            "choose a different public-safe agent id and rerun the preview; continue "
-            "only after the execute result reports ok=true, changed=true, and written=true"
-        ),
+        "changed": changed,
+        "written": written,
+        "partial_write": partial_write,
+        "error_kind": error_kind,
+        "error": error,
+        "recommended_action": recommended_action,
+        "global_sync": global_sync
+        or {
+            "ok": False,
+            "enabled": execute,
+            "wrote": False,
+            "skipped": True,
+            "error_kind": error_kind,
+        },
+        "registration_readback": registration_readback
+        or {
+            "schema_version": "loopx_agent_registration_readback_v0",
+            "performed": False,
+            "verified": False,
+        },
     }
 
 
@@ -187,37 +236,40 @@ def register_agent_via_source_registry(
     if execute:
         global_writability = probe_registry_write_path(global_path, create_parent=True)
         if not global_writability.get("ok"):
-            return {
-                "ok": False,
-                "dry_run": False,
-                "execute": True,
-                "goal_id": goal_id,
-                "global_registry": str(global_path),
-                "source_registry": str(source_registry_path),
-                "existing_agents": existing_agents,
-                "requested_agents": requested_agents,
-                "registered_agents": merged_agents,
-                "changed": merged_agents != existing_agents,
-                "written": False,
-                "host_loop_activation": loop_activation_for_goal(
-                    registry_path=global_path,
-                    runtime_root_arg=runtime_root_arg,
-                    goal_id=goal_id,
+            result = _agent_registration_failure_payload(
+                execute=True,
+                goal_id=goal_id,
+                global_path=global_path,
+                source_registry_path=source_registry_path,
+                existing_agents=existing_agents,
+                requested_agents=requested_agents,
+                error_kind="global_registry_write_denied",
+                error=str(
+                    global_writability.get("error")
+                    or "global registry is not writable"
                 ),
-                "global_registry_writability": global_writability,
-                "global_sync": {
+                recommended_action=global_writability.get("recommended_action"),
+                global_sync={
                     "ok": False,
                     "enabled": True,
+                    "phase": "preflight",
                     "wrote": False,
                     "write_denied": True,
                     "error_kind": "global_registry_write_denied",
                     "global_registry": str(global_path),
                     "global_registry_writability": global_writability,
-                    "recommended_action": global_writability.get("recommended_action"),
+                    "recommended_action": global_writability.get(
+                        "recommended_action"
+                    ),
                 },
-                "error": str(global_writability.get("error") or "global registry is not writable"),
-                "recommended_action": global_writability.get("recommended_action"),
-            }
+            )
+            result["host_loop_activation"] = loop_activation_for_goal(
+                registry_path=global_path,
+                runtime_root_arg=runtime_root_arg,
+                goal_id=goal_id,
+            )
+            result["global_registry_writability"] = global_writability
+            return result
     sync_payload: dict[str, object] | None = None
     readback_payload: dict[str, object] = {
         "schema_version": "loopx_agent_registration_readback_v0",
@@ -249,15 +301,108 @@ def register_agent_via_source_registry(
             for agent_id in requested_agents:
                 if agent_id not in merged_agents:
                     merged_agents.append(agent_id)
-            configure_payload = configure_goal(
-                registry_path=source_registry_path,
-                goal_id=goal_id,
-                registered_agents=merged_agents,
-                agent_model="peer_v1",
-                execute=True,
-            )
-            if configure_payload.get("written"):
-                sync_payload = sync_project_registry_to_global(
+            try:
+                sync_preflight = sync_project_registry_to_global(
+                    registry_path=source_registry_path,
+                    runtime_root_override=str(global_path.parent),
+                    goal_id=goal_id,
+                    dry_run=True,
+                )
+            except Exception as exc:
+                return _agent_registration_failure_payload(
+                    execute=True,
+                    goal_id=goal_id,
+                    global_path=global_path,
+                    source_registry_path=source_registry_path,
+                    existing_agents=existing_agents,
+                    requested_agents=requested_agents,
+                    error_kind="agent_registration_sync_preflight_failed",
+                    error=str(exc),
+                    recommended_action=(
+                        "run sync-global for this goal in dry-run mode and repair the "
+                        "reported source/global registry integrity error before retrying"
+                    ),
+                    global_sync={
+                        "ok": False,
+                        "enabled": True,
+                        "phase": "preflight",
+                        "wrote": False,
+                        "error_kind": "agent_registration_sync_preflight_failed",
+                    },
+                )
+            if not sync_preflight.get("ok"):
+                preflight_error_kind = str(
+                    sync_preflight.get("error_kind")
+                    or "agent_registration_sync_preflight_failed"
+                )
+                return _agent_registration_failure_payload(
+                    execute=True,
+                    goal_id=goal_id,
+                    global_path=global_path,
+                    source_registry_path=source_registry_path,
+                    existing_agents=existing_agents,
+                    requested_agents=requested_agents,
+                    error_kind=preflight_error_kind,
+                    error=str(
+                        sync_preflight.get("error")
+                        or "source/global registry sync preflight failed"
+                    ),
+                    recommended_action=(
+                        sync_preflight.get("recommended_action")
+                        or "repair the source/global registry sync preflight before retrying"
+                    ),
+                    global_sync={
+                        **sync_preflight,
+                        "ok": False,
+                        "enabled": True,
+                        "phase": "preflight",
+                        "wrote": False,
+                        "error_kind": preflight_error_kind,
+                    },
+                )
+            try:
+                configure_payload = configure_goal(
+                    registry_path=source_registry_path,
+                    goal_id=goal_id,
+                    registered_agents=merged_agents,
+                    agent_model="peer_v1",
+                    execute=True,
+                )
+            except Exception as exc:
+                return _agent_registration_failure_payload(
+                    execute=True,
+                    goal_id=goal_id,
+                    global_path=global_path,
+                    source_registry_path=source_registry_path,
+                    existing_agents=existing_agents,
+                    requested_agents=requested_agents,
+                    registered_agents=merged_agents,
+                    error_kind="agent_registration_source_write_failed",
+                    error=str(exc),
+                    recommended_action=(
+                        "read back the source and global registered-agent sets before retrying"
+                    ),
+                    partial_write=True,
+                )
+            if require_new and (
+                not configure_payload.get("changed")
+                or not configure_payload.get("written")
+            ):
+                return _agent_registration_failure_payload(
+                    execute=True,
+                    goal_id=goal_id,
+                    global_path=global_path,
+                    source_registry_path=source_registry_path,
+                    existing_agents=existing_agents,
+                    requested_agents=requested_agents,
+                    error_kind="agent_registration_source_write_not_verified",
+                    error="source registry did not confirm a fresh agent write",
+                    recommended_action=(
+                        "read back the source registered-agent set before retrying"
+                    ),
+                )
+            try:
+                sync_result = sync_project_registry_to_global(
                     registry_path=source_registry_path,
                     # Sync back to the same shared registry that supplied source_registry.
                     # A project-local common_runtime_root must not redirect this write.
@@ -265,11 +410,60 @@ def register_agent_via_source_registry(
                     goal_id=goal_id,
                     dry_run=False,
                 )
+                sync_payload = {**sync_result, "phase": "commit"}
+            except Exception as exc:
+                return _agent_registration_failure_payload(
+                    execute=True,
+                    goal_id=goal_id,
+                    global_path=global_path,
+                    source_registry_path=source_registry_path,
+                    existing_agents=existing_agents,
+                    requested_agents=requested_agents,
+                    registered_agents=merged_agents,
+                    changed=bool(configure_payload.get("changed")),
+                    written=bool(configure_payload.get("written")),
+                    partial_write=True,
+                    error_kind="agent_registration_global_sync_failed",
+                    error=str(exc),
+                    recommended_action=(
+                        "repair global sync, then verify the exact source/global agent "
+                        "sets before binding a host thread"
+                    ),
+                    global_sync={
+                        "ok": False,
+                        "enabled": True,
+                        "phase": "commit",
+                        "wrote": False,
+                        "outcome_uncertain": True,
+                        "error_kind": "agent_registration_global_sync_failed",
+                    },
+                )
+            try:
                 readback_payload = _agent_registration_readback(
                     source_registry_path=source_registry_path,
                     global_path=global_path,
                     goal_id=goal_id,
                     requested_agents=requested_agents,
+                )
+            except Exception as exc:
+                return _agent_registration_failure_payload(
+                    execute=True,
+                    goal_id=goal_id,
+                    global_path=global_path,
+                    source_registry_path=source_registry_path,
+                    existing_agents=existing_agents,
+                    requested_agents=requested_agents,
+                    registered_agents=merged_agents,
+                    changed=bool(configure_payload.get("changed")),
+                    written=bool(configure_payload.get("written")),
+                    partial_write=True,
+                    error_kind="agent_registration_readback_failed",
+                    error=str(exc),
+                    recommended_action=(
+                        "read back the exact source/global registered-agent sets before "
+                        "binding a host thread"
+                    ),
+                    global_sync=sync_payload,
                 )
     else:
         configure_payload = configure_goal(
@@ -285,7 +479,29 @@ def register_agent_via_source_registry(
         if execute and configure_payload.get("written")
         else True
     )
-    overall_ok = sync_ok and readback_ok
+    overall_ok = (
+        sync_ok
+        and readback_ok
+        and (
+            not execute
+            or not require_new
+            or bool(configure_payload.get("changed"))
+        )
+        and (
+            not execute
+            or not require_new
+            or bool(configure_payload.get("written"))
+        )
+    )
+    error_kind = None
+    if execute and not overall_ok:
+        error_kind = (
+            str(sync_payload.get("error_kind"))
+            if isinstance(sync_payload, dict) and sync_payload.get("error_kind")
+            else "agent_registration_readback_failed"
+            if not readback_ok
+            else "agent_registration_write_not_verified"
+        )
     result = {
         "ok": overall_ok,
         "dry_run": not execute,
@@ -310,9 +526,12 @@ def register_agent_via_source_registry(
                 else None
             )
         ),
-        "global_sync": sync_payload or {"enabled": bool(execute), "wrote": False},
+        "global_sync": sync_payload
+        or {"ok": not execute, "enabled": bool(execute), "wrote": False},
         "registration_readback": readback_payload,
     }
+    if error_kind is not None:
+        result["error_kind"] = error_kind
     result["host_loop_activation"] = loop_activation_for_goal(
         registry_path=global_path,
         runtime_root_arg=runtime_root_arg,
@@ -696,6 +915,11 @@ def handle_registry_admin_command(
                 require_new=bool(args.require_new),
             )
         except Exception as exc:
+            lock_error = lock_timeout_error_fields(exc)
+            error_kind = str(
+                lock_error.get("error_kind")
+                or "agent_registration_precondition_failed"
+            )
             payload = {
                 "ok": False,
                 "dry_run": not bool(args.execute),
@@ -703,8 +927,23 @@ def handle_registry_admin_command(
                 "goal_id": args.goal_id,
                 "changed": False,
                 "written": False,
+                "partial_write": False,
+                "error_kind": error_kind,
                 "error": str(exc),
-                **lock_timeout_error_fields(exc),
+                "global_sync": {
+                    "ok": False,
+                    "enabled": bool(args.execute),
+                    "phase": "preflight",
+                    "wrote": False,
+                    "skipped": True,
+                    "error_kind": error_kind,
+                },
+                "registration_readback": {
+                    "schema_version": "loopx_agent_registration_readback_v0",
+                    "performed": False,
+                    "verified": False,
+                },
+                **lock_error,
             }
         payload["schema_version"] = REGISTER_AGENT_SCHEMA_VERSION
         print_payload(payload, args.format, render_register_agent_markdown)
@@ -730,6 +969,7 @@ def handle_registry_admin_command(
             except ValueError as exc:
                 raise ValueError("source_registry is outside the goal repository") from exc
             source_path = source_path_resolved
+            payload: dict[str, object] | None = None
             if args.execute:
                 writability = probe_registry_write_path(global_path, create_parent=True)
                 if not writability.get("ok"):
@@ -744,67 +984,76 @@ def handle_registry_admin_command(
                         "global_registry_writability": writability,
                         "recommended_action": writability.get("recommended_action"),
                     }
-                    print_payload(payload, args.format, render_register_agent_markdown)
-                    return 1
-            binding_operation = (
-                bind_thread_agent_in_registry
-                if args.command == "bind-agent-thread"
-                else unbind_thread_agent_in_registry
-            )
-            payload = binding_operation(
-                registry_path=source_path,
-                goal_id=args.goal_id,
-                host_surface=args.host_surface,
-                thread_id=args.thread_id,
-                agent_id=args.agent_id,
-                execute=bool(args.execute),
-            )
-            payload["global_registry"] = str(global_path)
-            payload["source_registry"] = str(source_path)
-            if args.execute and payload.get("ok"):
-                payload["global_sync"] = sync_project_registry_to_global(
+            if payload is None:
+                binding_operation = (
+                    bind_thread_agent_in_registry
+                    if args.command == "bind-agent-thread"
+                    else unbind_thread_agent_in_registry
+                )
+                payload = binding_operation(
                     registry_path=source_path,
-                    runtime_root_override=str(global_path.parent),
                     goal_id=args.goal_id,
-                    dry_run=False,
-                )
-                source_binding = resolve_thread_agent_binding(
-                    _registry_goal(source_path, args.goal_id),
                     host_surface=args.host_surface,
                     thread_id=args.thread_id,
+                    agent_id=args.agent_id,
+                    execute=bool(args.execute),
                 )
-                global_binding = resolve_thread_agent_binding(
-                    _registry_goal(global_path, args.goal_id),
-                    host_surface=args.host_surface,
-                    thread_id=args.thread_id,
-                )
-                if args.command == "bind-agent-thread":
-                    readback_verified = all(
-                        binding.get("status") == "bound"
-                        and binding.get("agent_id") == args.agent_id
-                        for binding in (source_binding, global_binding)
+                payload["global_registry"] = str(global_path)
+                payload["source_registry"] = str(source_path)
+                if args.execute and payload.get("ok"):
+                    payload["global_sync"] = sync_project_registry_to_global(
+                        registry_path=source_path,
+                        runtime_root_override=str(global_path.parent),
+                        goal_id=args.goal_id,
+                        dry_run=False,
                     )
-                else:
-                    source_agents = _goal_registered_agents(
-                        _registry_goal(source_path, args.goal_id)
+                    source_binding = resolve_thread_agent_binding(
+                        _registry_goal(source_path, args.goal_id),
+                        host_surface=args.host_surface,
+                        thread_id=args.thread_id,
                     )
-                    global_agents = _goal_registered_agents(
-                        _registry_goal(global_path, args.goal_id)
+                    global_binding = resolve_thread_agent_binding(
+                        _registry_goal(global_path, args.goal_id),
+                        host_surface=args.host_surface,
+                        thread_id=args.thread_id,
                     )
-                    readback_verified = (
-                        all(
-                            binding.get("status") == "missing"
+                    if args.command == "bind-agent-thread":
+                        readback_verified = all(
+                            binding.get("status") == "bound"
+                            and binding.get("agent_id") == args.agent_id
                             for binding in (source_binding, global_binding)
                         )
-                        and args.agent_id in source_agents
-                        and args.agent_id in global_agents
+                    else:
+                        source_agents = _goal_registered_agents(
+                            _registry_goal(source_path, args.goal_id)
+                        )
+                        global_agents = _goal_registered_agents(
+                            _registry_goal(global_path, args.goal_id)
+                        )
+                        readback_verified = (
+                            all(
+                                binding.get("status") == "missing"
+                                for binding in (source_binding, global_binding)
+                            )
+                            and args.agent_id in source_agents
+                            and args.agent_id in global_agents
+                        )
+                    payload["registration_readback"] = {
+                        "verified": readback_verified
+                    }
+                    payload["ok"] = (
+                        bool(payload["global_sync"].get("ok"))
+                        and readback_verified
                     )
-                payload["registration_readback"] = {"verified": readback_verified}
-                payload["ok"] = bool(payload["global_sync"].get("ok")) and readback_verified
-                if not payload["ok"]:
-                    payload["error_kind"] = "thread_agent_binding_readback_failed"
-            else:
-                payload["global_sync"] = {"enabled": bool(args.execute), "wrote": False}
+                    if not payload["ok"]:
+                        payload["error_kind"] = (
+                            "thread_agent_binding_readback_failed"
+                        )
+                else:
+                    payload["global_sync"] = {
+                        "enabled": bool(args.execute),
+                        "wrote": False,
+                    }
         except Exception as exc:
             payload = {
                 "ok": False,

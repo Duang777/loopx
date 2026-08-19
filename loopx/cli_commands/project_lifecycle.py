@@ -75,6 +75,8 @@ PROJECT_LIFECYCLE_COMMANDS = {
     "operator-gate",
 }
 
+REFRESH_STATE_RESULT_SCHEMA_VERSION = "loopx_refresh_state_result_v0"
+
 INLINE_VISION_FIELDS = {
     "vision_summary": "vision_summary",
     "vision_role_scope": "role_scope",
@@ -618,6 +620,7 @@ def handle_project_lifecycle_command(
             progress_observation = _inline_progress_observation(args)
         except Exception as exc:
             payload = {
+                "schema_version": REFRESH_STATE_RESULT_SCHEMA_VERSION,
                 "ok": False,
                 "registry": str(registry_path),
                 "runtime_root": args.runtime_root,
@@ -674,6 +677,7 @@ def handle_project_lifecycle_command(
                 "dry_run": bool(args.dry_run),
                 "error": str(exc),
             }
+        payload["schema_version"] = REFRESH_STATE_RESULT_SCHEMA_VERSION
         projected_capabilities = runtime_capabilities_for_cli_projection(
             args.available_capabilities
         )

@@ -62,6 +62,9 @@ export type LoopXFailureCode =
   | 'LOOPX_SESSION_LIFECYCLE_MISMATCH'
   | 'LOOPX_IDENTITY_CONFLICT'
   | 'LOOPX_SELECTION_REQUIRED'
+  | 'LOOPX_BOOTSTRAP_FAILED'
+  | 'LOOPX_SWITCH_CONFIRMATION_INVALID'
+  | 'LOOPX_SWITCH_INCOMPLETE'
   | 'LOOPX_DRIVER_NOT_ARMED'
   | 'LOOPX_INVALID_REQUEST'
   | 'LOOPX_SCHEMA_UNSUPPORTED'
@@ -71,6 +74,7 @@ export type LoopXFailureCode =
   | 'LOOPX_CLI_OUTPUT_LIMIT'
   | 'LOOPX_CLI_FAILED'
   | 'LOOPX_READBACK_FAILED'
+  | 'LOOPX_REGISTRY_INTEGRITY'
   | 'LOOPX_WRITE_UNCERTAIN'
   | 'LOOPX_SERVICE_CLOSED'
 
@@ -100,6 +104,78 @@ export interface LoopXIdentitySelection {
   readonly freshAgentSuggestedId?: string | undefined
 }
 
+export interface LoopXStartOptions {
+  readonly goalId?: string | undefined
+  readonly agentId?: string | undefined
+  readonly newPeer?: boolean | undefined
+  readonly newIndependent?: boolean | undefined
+  readonly switchConfirmation?: string | undefined
+}
+
+export interface LoopXPlanningCheckpoint {
+  readonly schemaVersion: 'dsh_loopx_planning_checkpoint_v0'
+  readonly goalId: string
+  readonly agentId: string
+  readonly goalText: string
+  readonly planner: {
+    readonly defaultProfile: string
+    readonly profileSelection: string
+    readonly openEndedProductDirection: {
+      readonly suggestedItemsMin: number
+      readonly suggestedItemsMax: number
+      readonly intent: string
+    }
+    readonly clearBoundedProblem: {
+      readonly itemCountPolicy: string
+      readonly mayReuseCurrentTodoWhenItAlreadyRepresentsThePlan: boolean
+      readonly intent: string
+    }
+    readonly allowedPriorities: readonly ['P0', 'P1', 'P2']
+    readonly defaultRole: 'agent'
+    readonly defaultTaskClass: 'advancement_task'
+    readonly requiredFields: readonly string[]
+    readonly publicSafeOnly: true
+    readonly budgetPolicy: string
+    readonly fineGrainedPlanHorizon?: string | undefined
+  }
+  readonly writeback: {
+    readonly todoTool: 'loopx_todo_add'
+    readonly minimumTodos: 1
+    readonly maximumTodos: number
+    readonly ordering: 'priority_then_tool_call_order'
+    readonly activationTool: 'loopx_goal_activate'
+    readonly activationArguments: {
+      readonly goalId: string
+      readonly agentId: string
+    }
+  }
+  readonly stopConditions: readonly string[]
+  readonly forbidden: readonly [
+    'shell_or_bash',
+    'raw_loopx_cli',
+    'registry_edit',
+    'ctx.goals',
+  ]
+}
+
+export interface LoopXSwitchRequired {
+  readonly kind: 'switch_required'
+  readonly confirmationToken: string
+  readonly requiresUserConfirmation: true
+  readonly expiresAt: number
+  readonly current: {
+    readonly goalId: string
+    readonly agentId: string
+  }
+  readonly requested: {
+    readonly operation: 'start' | 'attach'
+    readonly goalId?: string | undefined
+    readonly agentId?: string | undefined
+    readonly newPeer?: true | undefined
+    readonly newIndependent?: true | undefined
+  }
+}
+
 export type LoopXStartValue =
   | {
     readonly kind: 'selection_required'
@@ -109,13 +185,16 @@ export type LoopXStartValue =
   | {
     readonly kind: 'planning'
     readonly binding: LoopXBindingRow
+    readonly planning: LoopXPlanningCheckpoint
     readonly modelCheckpoint: string
   }
+  | LoopXSwitchRequired
 
 export interface LoopXAttachRequest {
   readonly goalId: string
   readonly agentId?: string | undefined
   readonly newPeer?: boolean | undefined
+  readonly switchConfirmation?: string | undefined
 }
 
 export type LoopXAttachValue =
@@ -125,6 +204,7 @@ export type LoopXAttachValue =
     readonly selection: LoopXIdentitySelection
   }
   | { readonly kind: 'attached'; readonly binding: LoopXBindingRow }
+  | LoopXSwitchRequired
 
 export interface LoopXHostStatus {
   readonly binarySource: 'config' | 'environment' | 'path'
@@ -139,6 +219,22 @@ export interface LoopXStatusValue {
 export interface LoopXTodoClaimRequest {
   readonly todoId: string
   readonly role?: 'user' | 'agent' | undefined
+}
+
+export interface LoopXTodoAddRequest {
+  readonly text: string
+  readonly priority: 'P0' | 'P1' | 'P2'
+  readonly role?: 'user' | 'agent' | undefined
+  readonly actionKind?: string | undefined
+  readonly targetKey?: string | undefined
+}
+
+export interface LoopXTodoAddValue {
+  readonly todoId: string
+  readonly status: 'open'
+  readonly priority: 'P0' | 'P1' | 'P2'
+  readonly role: 'user' | 'agent'
+  readonly payload: Readonly<Record<string, unknown>>
 }
 
 export interface LoopXTodoUpdateRequest {
@@ -194,13 +290,14 @@ export interface LoopXTaskBody {
 
 export interface LoopXServiceApi {
   getBinding(session: LoopXSessionRef): LoopXResult<LoopXBindingRow | undefined>
-  start(session: LoopXSessionRef, goalText: string, signal?: AbortSignal): Promise<LoopXResult<LoopXStartValue>>
+  start(session: LoopXSessionRef, goalText: string, signal?: AbortSignal, options?: LoopXStartOptions): Promise<LoopXResult<LoopXStartValue>>
   attach(session: LoopXSessionRef, request: LoopXAttachRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXAttachValue>>
   activate(session: LoopXSessionRef, goalId: string, agentId?: string, signal?: AbortSignal): Promise<LoopXResult<LoopXBindingRow>>
   status(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<LoopXStatusValue>>
   pause(session: LoopXSessionRef, reason?: LoopXBindingReason, expectedFence?: LoopXBindingFence): Promise<LoopXResult<LoopXBindingRow>>
   resume(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<LoopXBindingRow>>
   detach(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<{ readonly detached: true }>>
+  todoAdd(session: LoopXSessionRef, request: LoopXTodoAddRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoAddValue>>
   todoClaim(session: LoopXSessionRef, request: LoopXTodoClaimRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoMutationValue>>
   todoUpdate(session: LoopXSessionRef, request: LoopXTodoUpdateRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoMutationValue>>
   todoComplete(session: LoopXSessionRef, request: LoopXTodoCompleteRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoMutationValue>>

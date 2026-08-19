@@ -72,7 +72,7 @@ export const identitySelectionGateSchema = z.looseObject({
   choices: z.array(selectionChoiceSchema).default([]),
   fresh_agent_registration: z.looseObject({
     agent_id: nonEmpty.optional(),
-  }).optional(),
+  }).nullish(),
 })
 
 export const goalSelectionGateSchema = z.looseObject({
@@ -86,38 +86,119 @@ export const goalSelectionGateSchema = z.looseObject({
 
 export const threadBindingProjectionSchema = z.looseObject({
   status: z.enum(['bound', 'missing', 'conflict', 'unavailable']),
-  agent_id: publicAgentId.optional(),
+  agent_id: publicAgentId.nullish(),
+})
+
+export const startGoalConnectContractSchema = z.looseObject({
+  schema_version: z.literal('loopx_start_goal_connect_v0'),
+  operation: z.literal('bootstrap_connect'),
+  goal_id: nonEmpty.max(256),
+  objective: nonEmpty,
+  adapter_kind: z.literal('read_only_project_map_v0'),
+  adapter_status: z.literal('connected-read-only'),
+  onboarding_scan_enabled: z.literal(false),
+  fine_grained: z.boolean(),
+})
+
+const goalStartPlannerSchema = z.looseObject({
+  required_before_todo_write: z.literal(true),
+  default_profile: nonEmpty,
+  profile_selection: nonEmpty,
+  profiles: z.looseObject({
+    open_ended_product_direction: z.looseObject({
+      suggested_items_min: safeInteger.min(1),
+      suggested_items_max: safeInteger.min(1),
+      intent: nonEmpty,
+    }),
+    clear_bounded_problem: z.looseObject({
+      item_count_policy: nonEmpty,
+      may_reuse_current_todo_when_it_already_represents_the_plan: z.boolean(),
+      intent: nonEmpty,
+    }),
+  }),
+  allowed_priorities: z.tuple([
+    z.literal('P0'),
+    z.literal('P1'),
+    z.literal('P2'),
+  ]),
+  default_role: z.literal('agent'),
+  default_task_class: z.literal('advancement_task'),
+  required_fields: z.array(nonEmpty).min(1),
+  public_safe_only: z.literal(true),
+  budget_policy: nonEmpty,
+  fine_grained_plan_horizon: nonEmpty.optional(),
+  maximum_runnable_todos_written_ahead: safeInteger.min(1).optional(),
+})
+
+export const goalStartCommandContractSchema = z.looseObject({
+  schema_version: z.literal('loopx_goal_start_command_v0'),
+  goal_text: nonEmpty.nullable(),
+  planner: goalStartPlannerSchema,
+  activation: z.looseObject({
+    host_loop_required_after_todo_writeback: z.literal(true),
+  }),
+  stop_conditions: z.array(nonEmpty).min(1),
+})
+
+const guidedCommandPackSchema = z.looseObject({
+  schema_version: z.literal('loopx_bootstrap_command_pack_v0'),
+  goal_start_contract: goalStartCommandContractSchema,
 })
 
 const guidedStepSchema = z.looseObject({
   id: nonEmpty,
   kind: nonEmpty,
   prompt: nonEmpty.optional(),
+  connect_contract: startGoalConnectContractSchema.optional(),
 })
 
-export const startGoalGuidedSchema = z.looseObject({
+export const projectConnectionSchema = z.looseObject({
+  project: nonEmpty,
+  registry: nonEmpty,
+  goal_id: nonEmpty.nullish(),
+  connection_state: z.enum([
+    'not_connected',
+    'registry_without_goal',
+    'registry_invalid',
+    'registry_goal_missing_state_file',
+    'state_file_missing',
+    'connected',
+    'goal_selection_required',
+  ]),
+})
+
+const startGoalGuidedSuccessSchema = z.looseObject({
   schema_version: z.literal('loopx_start_goal_guided_v0'),
-  ok: z.boolean(),
+  ok: z.literal(true),
   read_only: z.literal(true).optional(),
   guided: z.literal(true).optional(),
   project: nonEmpty.optional(),
-  goal_id: nonEmpty.optional(),
+  goal_id: nonEmpty.nullish(),
   agent_id: publicAgentId.nullish(),
   host_surface: z.literal('deepseek-harness-native').optional(),
   thread_id: nonEmpty.optional(),
   thread_agent_binding: threadBindingProjectionSchema.optional(),
   goal_selection_gate: goalSelectionGateSchema.optional(),
   host_surface_selection_gate: z.looseObject({}).optional(),
-  project_connection: z.looseObject({
-    registry: nonEmpty.optional(),
-  }).optional(),
+  project_connection: projectConnectionSchema.optional(),
+  command_pack: guidedCommandPackSchema.optional(),
   guided_transaction: z.looseObject({
     schema_version: z.literal('loopx_start_goal_guided_v0'),
     blocked_by: nonEmpty.optional(),
-    identity_selection_gate: identitySelectionGateSchema.optional(),
+    identity_selection_gate: identitySelectionGateSchema.nullish(),
     ordered_steps: z.array(guidedStepSchema),
   }).optional(),
 })
+
+export const startGoalGuidedSchema = z.discriminatedUnion('ok', [
+  startGoalGuidedSuccessSchema,
+  z.looseObject({
+    schema_version: z.literal('loopx_start_goal_guided_v0'),
+    ok: z.literal(false),
+    error: nonEmpty,
+    suggested_command: nonEmpty.optional(),
+  }),
+])
 
 const nativeActivationFields = {
   host_surface: z.literal('deepseek_harness_native_session'),
@@ -139,9 +220,9 @@ const nativeActivationFields = {
   }),
 } as const
 
-export const bootstrapCommandPackSchema = z.looseObject({
+const bootstrapCommandPackSuccessSchema = z.looseObject({
   schema_version: z.literal('loopx_bootstrap_command_pack_v0'),
-  ok: z.boolean(),
+  ok: z.literal(true),
   read_only: z.literal(true),
   project: nonEmpty,
   goal_id: nonEmpty,
@@ -150,9 +231,7 @@ export const bootstrapCommandPackSchema = z.looseObject({
   host_surface: z.literal('deepseek-harness-native'),
   thread_id: nonEmpty.optional(),
   thread_agent_binding: threadBindingProjectionSchema.optional(),
-  project_connection: z.looseObject({
-    registry: nonEmpty.optional(),
-  }).optional(),
+  project_connection: projectConnectionSchema.optional(),
   host_loop_activation: z.looseObject({
     schema_version: z.literal('loopx_host_loop_activation_v1'),
     agent_type: z.literal('deepseek-harness-native'),
@@ -168,14 +247,34 @@ export const bootstrapCommandPackSchema = z.looseObject({
   }),
 })
 
-export const heartbeatPromptSchema = z.looseObject({
-  schema_version: z.literal('loopx_heartbeat_prompt_v0'),
-  ok: z.boolean(),
-  goal_id: nonEmpty,
-  agent_id: publicAgentId.nullish(),
-  runtime_profile: z.literal('generic_cli').optional(),
-  task_body: nonEmpty.nullish(),
-})
+export const bootstrapCommandPackSchema = z.discriminatedUnion('ok', [
+  bootstrapCommandPackSuccessSchema,
+  z.looseObject({
+    schema_version: z.literal('loopx_bootstrap_command_pack_v0'),
+    ok: z.literal(false),
+    error: nonEmpty,
+    error_kind: nonEmpty.optional(),
+  }),
+])
+
+export const heartbeatPromptSchema = z.discriminatedUnion('ok', [
+  z.looseObject({
+    schema_version: z.literal('loopx_heartbeat_prompt_v0'),
+    ok: z.literal(true),
+    goal_id: nonEmpty,
+    agent_id: publicAgentId.nullish(),
+    runtime_profile: z.literal('generic_cli').optional(),
+    task_body: nonEmpty,
+  }),
+  z.looseObject({
+    schema_version: z.literal('loopx_heartbeat_prompt_v0'),
+    ok: z.literal(false),
+    goal_id: nonEmpty,
+    agent_id: publicAgentId.nullish(),
+    error: nonEmpty,
+    task_body: z.null(),
+  }),
+])
 
 export const statusSchema = z.looseObject({
   schema_version: z.literal('loopx_status_v0'),
@@ -247,47 +346,226 @@ export const quotaShouldRunSchema = z.looseObject({
   }).optional(),
 })
 
-export const todoCommandSchema = z.looseObject({
-  schema_version: z.literal('loopx_todo_command_v0'),
+export const todoCommandSchema = z.discriminatedUnion('ok', [
+  z.looseObject({
+    schema_version: z.literal('loopx_todo_command_v0'),
+    ok: z.literal(true),
+    goal_id: nonEmpty,
+    todo_id: nonEmpty,
+    status: nonEmpty.optional(),
+    written: z.boolean().optional(),
+  }),
+  z.looseObject({
+    schema_version: z.literal('loopx_todo_command_v0'),
+    ok: z.literal(false),
+    goal_id: nonEmpty,
+    error: nonEmpty.optional(),
+    error_code: nonEmpty.optional(),
+  }),
+])
+
+export const todoAddCommandSchema = z.discriminatedUnion('ok', [
+  z.looseObject({
+    schema_version: z.literal('loopx_todo_command_v0'),
+    ok: z.literal(true),
+    dry_run: z.boolean(),
+    added: z.boolean(),
+    already_exists: z.boolean(),
+    goal_id: nonEmpty,
+    role: z.enum(['user', 'agent']),
+    todo: nonEmpty,
+    todo_id: nonEmpty.nullable(),
+    status: z.enum(['open', 'done', 'blocked', 'deferred']).nullable(),
+    task_class: nonEmpty.nullable(),
+    action_kind: nonEmpty.nullable(),
+    claimed_by: publicAgentId.nullable(),
+    bound_agent: publicAgentId.nullable(),
+    agent_id: publicAgentId.nullable(),
+    blocks_agent: publicAgentId.nullable(),
+    target_key: nonEmpty.nullable(),
+  }),
+  z.looseObject({
+    schema_version: z.literal('loopx_todo_command_v0'),
+    ok: z.literal(false),
+    dry_run: z.boolean(),
+    added: z.literal(false),
+    already_exists: z.literal(false),
+    goal_id: nonEmpty,
+    role: z.enum(['user', 'agent']).nullish(),
+    todo: z.string(),
+    error: nonEmpty,
+    error_kind: nonEmpty.optional(),
+    error_code: nonEmpty.optional(),
+  }),
+])
+
+const refreshGlobalSyncSchema = z.looseObject({
   ok: z.boolean(),
-  goal_id: nonEmpty,
-  todo_id: nonEmpty.optional(),
-  status: nonEmpty.optional(),
-  written: z.boolean().optional(),
+  skipped: z.boolean().optional(),
+  reason: nonEmpty.optional(),
+  registry: nonEmpty.optional(),
+  global_registry: nonEmpty,
+  synced_goal_ids: z.array(nonEmpty),
+  wrote: z.boolean().optional(),
 })
 
-export const registerAgentSchema = z.looseObject({
-  schema_version: z.literal('loopx_register_agent_v0'),
-  ok: z.boolean(),
-  goal_id: nonEmpty,
-  changed: z.boolean(),
-  written: z.boolean(),
-  registration_readback: z.looseObject({ verified: z.boolean() }).optional(),
-  global_sync: z.looseObject({ ok: z.boolean().optional() }).optional(),
+const refreshStateResultSuccessSchema = z.looseObject({
+    schema_version: z.literal('loopx_refresh_state_result_v0'),
+    ok: z.literal(true),
+    dry_run: z.boolean(),
+    appended: z.boolean(),
+    idempotent_replay: z.boolean().optional(),
+    partial_write: z.boolean().optional(),
+    registry: nonEmpty,
+    project: nonEmpty,
+    goal_id: nonEmpty,
+    agent_id: publicAgentId,
+    agent_lane: publicAgentId,
+    progress_scope: z.literal('agent_lane'),
+    external_sink_delivery_authorized: z.boolean(),
+    global_sync: refreshGlobalSyncSchema,
+  })
+
+export const refreshStateResultSchema = z.discriminatedUnion('ok', [
+  refreshStateResultSuccessSchema,
+  z.looseObject({
+    schema_version: z.literal('loopx_refresh_state_result_v0'),
+    ok: z.literal(false),
+    dry_run: z.boolean(),
+    appended: z.boolean(),
+    registry: nonEmpty,
+    runtime_root: z.string().nullish(),
+    goal_id: nonEmpty,
+    classification: nonEmpty.optional(),
+    project: nonEmpty.optional(),
+    agent_id: publicAgentId.optional(),
+    agent_lane: publicAgentId.optional(),
+    progress_scope: z.literal('agent_lane').optional(),
+    external_sink_delivery_authorized: z.boolean().optional(),
+    global_sync: refreshGlobalSyncSchema.optional(),
+    idempotent_replay: z.boolean().optional(),
+    error: nonEmpty.optional(),
+    error_kind: nonEmpty.optional(),
+    partial_write: z.boolean().optional(),
+  }),
+])
+
+const agentRegistrationReadbackSchema = z.looseObject({
+  schema_version: z.literal('loopx_agent_registration_readback_v0'),
+  performed: z.boolean(),
+  verified: z.boolean(),
+  requested_agents: z.array(publicAgentId).optional(),
+  source_registered_agents: z.array(publicAgentId).optional(),
+  global_registered_agents: z.array(publicAgentId).optional(),
 })
 
-export const threadBindingCommandSchema = z.looseObject({
-  schema_version: z.literal('loopx_thread_agent_binding_command_v0'),
+const agentRegistrationGlobalSyncSchema = z.looseObject({
   ok: z.boolean(),
-  goal_id: nonEmpty,
-  thread_id: nonEmpty.optional(),
-  host_surface: z.literal('deepseek-harness-native').optional(),
-  agent_id: publicAgentId.optional(),
-  changed: z.boolean(),
-  written: z.boolean(),
-  binding: z.looseObject({
-    schema_version: z.literal('loopx_thread_agent_binding_v0'),
-    status: z.enum(['bound', 'missing', 'conflict', 'unavailable']),
+  wrote: z.boolean().optional(),
+  phase: z.enum(['preflight', 'commit']).optional(),
+  error_kind: nonEmpty.optional(),
+})
+
+export const registerAgentSchema = z.discriminatedUnion('ok', [
+  z.looseObject({
+    schema_version: z.literal('loopx_register_agent_v0'),
+    ok: z.literal(true),
+    goal_id: nonEmpty,
+    changed: z.literal(true),
+    written: z.literal(true),
+    partial_write: z.literal(false),
+    requested_agents: z.array(publicAgentId).min(1),
+    registered_agents: z.array(publicAgentId),
+    registration_readback: agentRegistrationReadbackSchema.extend({
+      performed: z.literal(true),
+      verified: z.literal(true),
+      requested_agents: z.array(publicAgentId).min(1),
+      source_registered_agents: z.array(publicAgentId),
+      global_registered_agents: z.array(publicAgentId),
+    }),
+    global_sync: agentRegistrationGlobalSyncSchema.extend({
+      ok: z.literal(true),
+    }),
+  }),
+  z.looseObject({
+    schema_version: z.literal('loopx_register_agent_v0'),
+    ok: z.literal(false),
+    goal_id: nonEmpty,
+    changed: z.boolean(),
+    written: z.boolean(),
+    partial_write: z.boolean(),
+    error_kind: nonEmpty,
+    requested_agents: z.array(publicAgentId).optional(),
+    registered_agents: z.array(publicAgentId).optional(),
+    registration_readback: agentRegistrationReadbackSchema,
+    global_sync: agentRegistrationGlobalSyncSchema,
+  }),
+])
+
+export const threadBindingCommandSchema = z.discriminatedUnion('ok', [
+  z.looseObject({
+    schema_version: z.literal('loopx_thread_agent_binding_command_v0'),
+    ok: z.literal(true),
+    goal_id: nonEmpty,
     thread_id: nonEmpty,
     host_surface: z.literal('deepseek-harness-native'),
-    agent_id: publicAgentId.nullish(),
-  }).optional(),
-  global_sync: z.looseObject({ ok: z.boolean().optional() }).optional(),
-  registration_readback: z.looseObject({ verified: z.boolean() }).optional(),
+    agent_id: publicAgentId,
+    changed: z.boolean(),
+    written: z.boolean(),
+    binding: z.looseObject({
+      schema_version: z.literal('loopx_thread_agent_binding_v0'),
+      status: z.enum(['bound', 'missing']),
+      thread_id: nonEmpty,
+      host_surface: z.literal('deepseek-harness-native'),
+      agent_id: publicAgentId.nullish(),
+    }),
+    global_sync: z.looseObject({ ok: z.literal(true) }),
+    registration_readback: z.looseObject({ verified: z.literal(true) }),
+  }),
+  z.looseObject({
+    schema_version: z.literal('loopx_thread_agent_binding_command_v0'),
+    ok: z.literal(false),
+    goal_id: nonEmpty,
+    changed: z.boolean(),
+    written: z.boolean(),
+    error: nonEmpty.optional(),
+    error_kind: nonEmpty.optional(),
+  }),
+])
+
+const bootstrapGlobalSyncSchema = z.looseObject({
+  ok: z.literal(true),
+  synced_goal_ids: z.array(nonEmpty),
+  wrote: z.boolean().optional(),
 })
 
+export const bootstrapResultSchema = z.discriminatedUnion('ok', [
+  z.looseObject({
+    schema_version: z.literal('loopx_bootstrap_result_v0'),
+    ok: z.literal(true),
+    project: nonEmpty,
+    goal_id: nonEmpty,
+    registry: nonEmpty,
+    state_file: nonEmpty,
+    registry_goal_action: nonEmpty,
+    state_action: nonEmpty,
+    global_sync: bootstrapGlobalSyncSchema,
+  }),
+  z.looseObject({
+    schema_version: z.literal('loopx_bootstrap_result_v0'),
+    ok: z.literal(false),
+    error_kind: nonEmpty,
+  }),
+])
+
 export type StartGoalGuidedPayload = z.infer<typeof startGoalGuidedSchema>
+export type StartGoalGuidedSuccessPayload = z.infer<typeof startGoalGuidedSuccessSchema>
 export type BootstrapCommandPackPayload = z.infer<typeof bootstrapCommandPackSchema>
+export type BootstrapCommandPackSuccessPayload = z.infer<typeof bootstrapCommandPackSuccessSchema>
+export type BootstrapResultPayload = z.infer<typeof bootstrapResultSchema>
 export type HeartbeatPromptPayload = z.infer<typeof heartbeatPromptSchema>
 export type QuotaShouldRunPayload = z.infer<typeof quotaShouldRunSchema>
 export type TodoCommandPayload = z.infer<typeof todoCommandSchema>
+export type TodoAddCommandPayload = z.infer<typeof todoAddCommandSchema>
+export type RefreshStateResultPayload = z.infer<typeof refreshStateResultSchema>
+export type RefreshStateResultSuccessPayload = z.infer<typeof refreshStateResultSuccessSchema>

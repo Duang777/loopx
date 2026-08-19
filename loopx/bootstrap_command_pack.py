@@ -41,6 +41,7 @@ from .thread_agent_binding import normalize_thread_id, resolve_thread_agent_bind
 SCHEMA_VERSION = "loopx_bootstrap_command_pack_v0"
 CANONICAL_SLASH_COMMAND = "/loopx"
 GUIDED_START_SCHEMA_VERSION = "loopx_start_goal_guided_v0"
+START_GOAL_CONNECT_SCHEMA_VERSION = "loopx_start_goal_connect_v0"
 PACKET_SUMMARY_SCHEMA_VERSION = "loopx_start_goal_packet_summary_v0"
 PACKET_MEASUREMENT_SCHEMA_VERSION = "loopx_packet_duplication_measurement_v0"
 GUIDED_COMMAND_PACK_PROJECTION_SCHEMA_VERSION = (
@@ -653,6 +654,26 @@ def _goal_start_bootstrap_command(
     return "\n".join(lines)
 
 
+def _goal_start_connect_contract(
+    *,
+    goal_id: str,
+    objective: str,
+    fine_grained: bool,
+) -> dict[str, Any]:
+    """Return the allowlisted data contract for the conditional bootstrap."""
+
+    return {
+        "schema_version": START_GOAL_CONNECT_SCHEMA_VERSION,
+        "operation": "bootstrap_connect",
+        "goal_id": goal_id,
+        "objective": objective,
+        "adapter_kind": DEFAULT_HANDOFF_ADAPTER_KIND,
+        "adapter_status": DEFAULT_HANDOFF_ADAPTER_STATUS,
+        "onboarding_scan_enabled": False,
+        "fine_grained": fine_grained,
+    }
+
+
 def _selected_goal_capability_route(
     capability_route: str | None,
 ) -> dict[str, Any] | None:
@@ -765,7 +786,15 @@ def build_loopx_bootstrap_command_pack(
 
     fresh_agent_default = bool(
         explicit_goal_start
-        and (new_peer or not has_registered_agents)
+        and (
+            new_peer
+            or not has_registered_agents
+            or (
+                host_surface == "deepseek-harness-native"
+                and normalized_thread_id
+                and binding_missing
+            )
+        )
     )
 
     bootstrap_preview_command = _bootstrap_command(
@@ -1485,6 +1514,11 @@ def build_start_goal_guided_packet(
                 "id": "connect_if_needed",
                 "kind": "conditional_mutation",
                 "command": commands.get("goal_start_connect_if_needed"),
+                "connect_contract": _goal_start_connect_contract(
+                    goal_id=str(command_pack.get("goal_id") or ""),
+                    objective=str(command_pack.get("goal_text") or goal_text),
+                    fine_grained=fine_grained,
+                ),
                 "purpose": "create or reuse project-local LoopX state only when no matching goal exists",
             },
             *bind_thread_steps,

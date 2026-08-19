@@ -142,7 +142,7 @@ function schemaFailure(
 ): LoopXCliError {
   return new LoopXCliError(failure(
     'LOOPX_SCHEMA_UNSUPPORTED',
-    'LoopX returned JSON that does not match the supported contract version.',
+    'LoopX returned JSON outside the supported contract version; upgrade the installed LoopX CLI before retrying.',
     {
       operation,
       outcomeUncertain: outcomeUncertain(kind),

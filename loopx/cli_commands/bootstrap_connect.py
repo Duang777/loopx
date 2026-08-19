@@ -14,6 +14,23 @@ PrintPayload = Callable[
     [dict[str, object], str, Callable[[dict[str, object]], str]],
     None,
 ]
+BOOTSTRAP_RESULT_SCHEMA_VERSION = "loopx_bootstrap_result_v0"
+
+
+def _version_bootstrap_result(payload: dict[str, object]) -> dict[str, object]:
+    result = {**payload, "schema_version": BOOTSTRAP_RESULT_SCHEMA_VERSION}
+    if result.get("ok") is not False:
+        return result
+
+    error_kind = result.get("error_kind")
+    if not isinstance(error_kind, str) or not error_kind.strip():
+        global_sync = result.get("global_sync")
+        if isinstance(global_sync, dict):
+            error_kind = global_sync.get("error_kind")
+    if not isinstance(error_kind, str) or not error_kind.strip():
+        error_kind = "bootstrap_connect_failed"
+    result["error_kind"] = error_kind
+    return result
 
 
 def register_bootstrap_connect_command(subparsers: argparse._SubParsersAction) -> None:
@@ -182,12 +199,21 @@ def handle_bootstrap_connect_command(
 ) -> int | None:
     if args.command not in {"bootstrap", "connect"}:
         return None
+    if args.fork_goal and args.goal_id and args.fork_goal != args.goal_id:
+        payload = _version_bootstrap_result(
+            {
+                "ok": False,
+                "registry": str(registry_path),
+                "error_kind": "invalid_bootstrap_request",
+                "error": "--fork-goal cannot be combined with a different --goal-id",
+            }
+        )
+        print_payload(payload, args.format, render_bootstrap_markdown)
+        return 1
     try:
         runtime_root = Path(args.runtime_root).expanduser() if args.runtime_root else None
         state_file = Path(args.state_file).expanduser() if args.state_file else None
         goal_doc = Path(args.goal_doc).expanduser() if args.goal_doc else None
-        if args.fork_goal and args.goal_id and args.fork_goal != args.goal_id:
-            raise ValueError("--fork-goal cannot be combined with a different --goal-id")
         goal_id = args.fork_goal or args.goal_id
         payload = bootstrap_project(
             project=Path(args.project),
@@ -232,7 +258,9 @@ def handle_bootstrap_connect_command(
         payload = {
             "ok": False,
             "registry": str(registry_path),
+            "error_kind": "bootstrap_connect_failed",
             "error": str(exc),
         }
+    payload = _version_bootstrap_result(payload)
     print_payload(payload, args.format, render_bootstrap_markdown)
     return 0 if payload.get("ok") else 1

@@ -3,14 +3,21 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { deriveLoopXSessionRef } from './command.ts'
 import type {
+  LoopXAttachRequest,
+  LoopXAttachValue,
   LoopXBindingFence,
   LoopXBindingRow,
   LoopXFailure,
+  LoopXIdentitySelection,
   LoopXResult,
   LoopXServiceApi,
   LoopXSessionRef,
+  LoopXStartOptions,
+  LoopXStartValue,
   LoopXStatusValue,
+  LoopXSwitchRequired,
   LoopXTodoMutationValue,
+  LoopXTodoAddValue,
 } from './types.ts'
 
 export const name = 'dsh-loopx-tools'
@@ -89,7 +96,7 @@ function invalidRequest(message: string, operation: string): LoopXFailure {
 function notBound(operation: string): LoopXFailure {
   return Object.freeze({
     code: 'LOOPX_SESSION_NOT_BOUND',
-    message: 'The current DSH Session has no LoopX binding.',
+    message: 'The current DSH Session has no LoopX binding. Call loopx_goal_start with an objective or loopx_goal_attach with an existing Goal id; do not use Bash or edit registries.',
     operation,
     retryable: false,
     outcomeUncertain: false,
@@ -147,6 +154,104 @@ function safeTodo(value: LoopXTodoMutationValue): JsonValue {
     status: value.status ?? null,
     loopxAuthority: value.payload as JsonValue,
   }
+}
+
+function safeTodoAdd(value: LoopXTodoAddValue): JsonValue {
+  return {
+    todoId: value.todoId,
+    status: value.status,
+    priority: value.priority,
+    role: value.role,
+  }
+}
+
+function safeSelection(selection: LoopXIdentitySelection): JsonValue {
+  return {
+    kind: selection.kind,
+    defaultAction: selection.defaultAction,
+    ...(selection.reason === undefined ? {} : { reason: selection.reason }),
+    choices: selection.choices.map(choice => ({
+      ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
+      ...(choice.agentId === undefined ? {} : { agentId: choice.agentId }),
+      ...(choice.label === undefined ? {} : { label: choice.label }),
+    })),
+    ...(selection.freshAgentSuggestedId === undefined
+      ? {}
+      : { freshAgentSuggestedId: selection.freshAgentSuggestedId }),
+  }
+}
+
+function safeSwitch(value: LoopXSwitchRequired): JsonValue {
+  return {
+    kind: value.kind,
+    confirmationToken: value.confirmationToken,
+    requiresUserConfirmation: value.requiresUserConfirmation,
+    expiresAt: value.expiresAt,
+    current: {
+      goalId: value.current.goalId,
+      agentId: value.current.agentId,
+    },
+    requested: {
+      operation: value.requested.operation,
+      ...(value.requested.goalId === undefined ? {} : { goalId: value.requested.goalId }),
+      ...(value.requested.agentId === undefined ? {} : { agentId: value.requested.agentId }),
+      ...(value.requested.newPeer === true ? { newPeer: true } : {}),
+      ...(value.requested.newIndependent === true ? { newIndependent: true } : {}),
+    },
+  }
+}
+
+function safeStart(value: LoopXStartValue): JsonValue {
+  if (value.kind === 'planning') {
+    return {
+      kind: value.kind,
+      binding: safeBinding(value.binding),
+      planning: value.planning as unknown as JsonValue,
+      modelCheckpoint: value.modelCheckpoint,
+    }
+  }
+  if (value.kind === 'selection_required') {
+    return {
+      kind: value.kind,
+      ...(value.goalId === undefined ? {} : { goalId: value.goalId }),
+      selection: safeSelection(value.selection),
+    }
+  }
+  return safeSwitch(value)
+}
+
+function safeAttach(value: LoopXAttachValue): JsonValue {
+  if (value.kind === 'attached') {
+    return {
+      kind: value.kind,
+      binding: safeBinding(value.binding),
+    }
+  }
+  if (value.kind === 'selection_required') {
+    return {
+      kind: value.kind,
+      goalId: value.goalId,
+      selection: safeSelection(value.selection),
+    }
+  }
+  return safeSwitch(value)
+}
+
+/**
+ * `defineTool` intentionally compiles an open implicit argument root. Entry
+ * tools additionally publish a closed raw schema, while retaining an execute-
+ * time allowlist for direct callers that bypass the registry in tests.
+ */
+function strictInput(
+  definition: ReturnType<typeof defineTool>,
+): ReturnType<typeof defineTool> {
+  return Object.freeze({
+    ...definition,
+    parameters: Object.freeze({
+      ...definition.parameters,
+      additionalProperties: false,
+    }),
+  })
 }
 
 /**
@@ -237,12 +342,18 @@ function boundSession(
 
 function invalidKeys(operation: string): LoopXFailure {
   return invalidRequest(
-    'Unsupported arguments are forbidden; Session, Goal authority, locators, task body, and command arguments are derived by the plugin.',
+    'Unsupported arguments are forbidden; the current Session and authority locators are derived by the plugin, and raw task bodies, argv, or shell commands are never accepted.',
     operation,
   )
 }
 
+const START_KEYS = new Set([
+  'goalText', 'goalId', 'agentId', 'newPeer', 'newIndependent', 'switchConfirmation',
+])
+const ATTACH_KEYS = new Set(['goalId', 'agentId', 'newPeer', 'switchConfirmation'])
 const ACTIVATE_KEYS = new Set(['goalId', 'agentId'])
+const TODO_ADD_KEYS = new Set(['text', 'priority', 'role', 'actionKind', 'targetKey'])
+const EMPTY_KEYS = new Set<string>()
 const CLAIM_KEYS = new Set(['todoId', 'role'])
 const UPDATE_KEYS = new Set([
   'todoId', 'status', 'note', 'evidence', 'reason', 'taskClass', 'clearClaim',
@@ -256,9 +367,105 @@ const COMPLETE_KEYS = new Set([
 function loopXToolDefinitions(
   service: LoopXServiceApi,
 ): readonly ReturnType<typeof defineTool>[] {
-  const goalActivate = defineTool({
+  const goalStart = strictInput(defineTool({
+    name: 'loopx_goal_start',
+    description: 'Start or continue a LoopX Goal workflow from an objective in the current DSH Session. Use exact selections or switch confirmation returned by this tool. This typed tool owns the binding transition; never use Bash, raw LoopX CLI arguments, or registry edits for it.',
+    parameters: {
+      goalText: {
+        type: 'string',
+        required: true,
+        description: 'Non-empty objective for the LoopX planning workflow.',
+      },
+      goalId: {
+        type: 'string',
+        description: 'Optional exact Goal id returned by the immediately preceding selection step.',
+      },
+      agentId: {
+        type: 'string',
+        description: 'Optional exact agent id returned by the immediately preceding selection step.',
+      },
+      newPeer: {
+        type: 'boolean',
+        description: 'Request a fresh peer only when the authoritative guided contract permits it.',
+      },
+      newIndependent: {
+        type: 'boolean',
+        description: 'Request a distinct independent Goal instead of continuing the project Goal.',
+      },
+      switchConfirmation: {
+        type: 'string',
+        description: 'Opaque token from a preceding switch_required result after explicit user confirmation.',
+      },
+    },
+    output: TOOL_OUTPUT,
+    async execute(args, exec): Promise<ToolEnvelope> {
+      const current = deriveLoopXSessionRef(exec.agent, 'goal-start')
+      if (!current.ok) return rejected(current.error)
+      if (!hasOnlyKeys(args, START_KEYS)) return rejected(invalidKeys('goal-start'))
+      const options: LoopXStartOptions = Object.freeze({
+        ...(args.goalId === undefined ? {} : { goalId: args.goalId }),
+        ...(args.agentId === undefined ? {} : { agentId: args.agentId }),
+        ...(args.newPeer === true ? { newPeer: true } : {}),
+        ...(args.newIndependent === true ? { newIndependent: true } : {}),
+        ...(args.switchConfirmation === undefined
+          ? {}
+          : { switchConfirmation: args.switchConfirmation }),
+      })
+      const result = await service.start(
+        current.value,
+        args.goalText,
+        exec.signal,
+        options,
+      )
+      if (!result.ok) return rejected(result.error)
+      return success(safeStart(result.value))
+    },
+  }))
+
+  const goalAttach = strictInput(defineTool({
+    name: 'loopx_goal_attach',
+    description: 'Attach the current DSH Session to one explicitly selected existing LoopX Goal. Use exact selection or switch confirmation returned by this tool. This typed tool owns the binding transition; never use Bash, raw LoopX CLI arguments, alternate locators, or registry edits for it.',
+    parameters: {
+      goalId: {
+        type: 'string',
+        required: true,
+        description: 'Exact existing LoopX Goal id to attach.',
+      },
+      agentId: {
+        type: 'string',
+        description: 'Optional exact registered agent id selected for this Goal.',
+      },
+      newPeer: {
+        type: 'boolean',
+        description: 'Request a fresh peer only when the authoritative guided contract permits it.',
+      },
+      switchConfirmation: {
+        type: 'string',
+        description: 'Opaque token from a preceding switch_required result after explicit user confirmation.',
+      },
+    },
+    output: TOOL_OUTPUT,
+    async execute(args, exec): Promise<ToolEnvelope> {
+      const current = deriveLoopXSessionRef(exec.agent, 'goal-attach')
+      if (!current.ok) return rejected(current.error)
+      if (!hasOnlyKeys(args, ATTACH_KEYS)) return rejected(invalidKeys('goal-attach'))
+      const request: LoopXAttachRequest = Object.freeze({
+        goalId: args.goalId,
+        ...(args.agentId === undefined ? {} : { agentId: args.agentId }),
+        ...(args.newPeer === true ? { newPeer: true } : {}),
+        ...(args.switchConfirmation === undefined
+          ? {}
+          : { switchConfirmation: args.switchConfirmation }),
+      })
+      const result = await service.attach(current.value, request, exec.signal)
+      if (!result.ok) return rejected(result.error)
+      return success(safeAttach(result.value))
+    },
+  }))
+
+  const goalActivate = strictInput(defineTool({
     name: 'loopx_goal_activate',
-    description: 'Activate only the exact pending LoopX Goal binding in the current DSH Session after planning and Todo refresh are complete.',
+    description: 'Activate only the exact pending LoopX Goal binding, normally after Todo writeback. Activation owns suppressed refresh and authoritative readback.',
     parameters: {
       goalId: { type: 'string', required: true, description: 'Exact pending Goal id.' },
       agentId: { type: 'string', description: 'Optional exact pending agent id.' },
@@ -293,9 +500,9 @@ function loopXToolDefinitions(
       }
       return success(safeBinding(result.value))
     },
-  })
+  }))
 
-  const loopxStatus = defineTool({
+  const loopxStatus = strictInput(defineTool({
     name: 'loopx_status',
     description: 'Read live LoopX authoritative state together with the current DSH Host sidecar state; accepts no alternate identity.',
     parameters: {},
@@ -324,9 +531,141 @@ function loopXToolDefinitions(
       }
       return success(safeStatus(result.value))
     },
-  })
+  }))
 
-  const todoClaim = defineTool({
+  const goalDetach = strictInput(defineTool({
+    name: 'loopx_goal_detach',
+    description: 'Detach only the current DSH Session from its exact LoopX Host binding. This does not delete or mutate Goal, Todo, quota, or scheduler authority.',
+    parameters: {},
+    output: TOOL_OUTPUT,
+    async execute(args, exec): Promise<ToolEnvelope> {
+      const current = deriveLoopXSessionRef(exec.agent, 'goal-detach')
+      if (!current.ok) return rejected(current.error)
+      if (!hasOnlyKeys(args, EMPTY_KEYS)) {
+        return toolFailure(
+          service,
+          current.value,
+          invalidKeys('goal-detach'),
+          currentFence(service, current.value),
+        )
+      }
+      const bound = boundSession(service, exec, 'goal-detach')
+      if (!bound.ok) return toolFailure(service, current.value, bound.error)
+      const result = await service.detach(bound.value.session, exec.signal)
+      if (!result.ok) {
+        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
+      }
+      return success({ detached: true })
+    },
+  }))
+
+  const driverPause = strictInput(defineTool({
+    name: 'loopx_driver_pause',
+    description: 'Pause only the local continuation driver for the exact current LoopX binding; Goal and Todo authority are unchanged.',
+    parameters: {},
+    output: TOOL_OUTPUT,
+    async execute(args, exec): Promise<ToolEnvelope> {
+      const current = deriveLoopXSessionRef(exec.agent, 'driver-pause')
+      if (!current.ok) return rejected(current.error)
+      if (!hasOnlyKeys(args, EMPTY_KEYS)) {
+        return toolFailure(
+          service,
+          current.value,
+          invalidKeys('driver-pause'),
+          currentFence(service, current.value),
+        )
+      }
+      const bound = boundSession(service, exec, 'driver-pause')
+      if (!bound.ok) return toolFailure(service, current.value, bound.error)
+      const result = await service.pause(
+        bound.value.session,
+        'user_pause',
+        bound.value.fence,
+      )
+      if (!result.ok) {
+        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
+      }
+      return success(safeBinding(result.value))
+    },
+  }))
+
+  const driverResume = strictInput(defineTool({
+    name: 'loopx_driver_resume',
+    description: 'Resume the local continuation driver only after authoritative reread of the exact current LoopX binding.',
+    parameters: {},
+    output: TOOL_OUTPUT,
+    async execute(args, exec): Promise<ToolEnvelope> {
+      const current = deriveLoopXSessionRef(exec.agent, 'driver-resume')
+      if (!current.ok) return rejected(current.error)
+      if (!hasOnlyKeys(args, EMPTY_KEYS)) {
+        return toolFailure(
+          service,
+          current.value,
+          invalidKeys('driver-resume'),
+          currentFence(service, current.value),
+        )
+      }
+      const bound = boundSession(service, exec, 'driver-resume')
+      if (!bound.ok) return toolFailure(service, current.value, bound.error)
+      const result = await service.resume(bound.value.session, exec.signal)
+      if (!result.ok) {
+        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
+      }
+      return success(safeBinding(result.value))
+    },
+  }))
+
+  const todoAdd = strictInput(defineTool({
+    name: 'loopx_todo_add',
+    description: 'Add one bounded public-safe Todo to the exact pending planning generation. Goal, agent, project, registry, task class, and claim/block fields are derived by the plugin.',
+    parameters: {
+      text: {
+        type: 'string',
+        required: true,
+        description: 'Non-empty Todo text without a priority prefix.',
+      },
+      priority: {
+        type: 'string',
+        required: true,
+        enum: ['P0', 'P1', 'P2'],
+      },
+      role: {
+        type: 'string',
+        enum: ['agent', 'user'],
+        description: 'Agent advancement work or a User gate; defaults to agent.',
+      },
+      actionKind: {
+        type: 'string',
+        description: 'Optional public action-kind atom.',
+      },
+      targetKey: {
+        type: 'string',
+        description: 'Optional stable public target for Agent work only.',
+      },
+    },
+    output: TOOL_OUTPUT,
+    async execute(args, exec): Promise<ToolEnvelope> {
+      const current = deriveLoopXSessionRef(exec.agent, 'todo-add')
+      if (!current.ok) return rejected(current.error)
+      if (!hasOnlyKeys(args, TODO_ADD_KEYS)) {
+        return toolFailure(
+          service,
+          current.value,
+          invalidKeys('todo-add'),
+          currentFence(service, current.value),
+        )
+      }
+      const bound = boundSession(service, exec, 'todo-add')
+      if (!bound.ok) return toolFailure(service, current.value, bound.error)
+      const result = await service.todoAdd(bound.value.session, args, exec.signal)
+      if (!result.ok) {
+        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
+      }
+      return success(safeTodoAdd(result.value))
+    },
+  }))
+
+  const todoClaim = strictInput(defineTool({
     name: 'loopx_todo_claim',
     description: 'Claim one Todo for the exact Goal and agent bound to the current DSH Session.',
     parameters: {
@@ -358,9 +697,9 @@ function loopXToolDefinitions(
       }
       return success(safeTodo(result.value))
     },
-  })
+  }))
 
-  const todoUpdate = defineTool({
+  const todoUpdate = strictInput(defineTool({
     name: 'loopx_todo_update',
     description: 'Update the stable bounded fields of one Todo for the exact current LoopX binding.',
     parameters: {
@@ -400,9 +739,9 @@ function loopXToolDefinitions(
       }
       return success(safeTodo(result.value))
     },
-  })
+  }))
 
-  const todoComplete = defineTool({
+  const todoComplete = strictInput(defineTool({
     name: 'loopx_todo_complete',
     description: 'Complete one Todo through LoopX with bounded evidence and exact turn/lease identity for the current binding.',
     parameters: {
@@ -439,14 +778,25 @@ function loopXToolDefinitions(
       }
       return success(safeTodo(result.value))
     },
-  })
+  }))
 
-  return Object.freeze([goalActivate, loopxStatus, todoClaim, todoUpdate, todoComplete])
+  return Object.freeze([
+    goalStart,
+    goalAttach,
+    goalActivate,
+    loopxStatus,
+    goalDetach,
+    driverPause,
+    driverResume,
+    todoAdd,
+    todoClaim,
+    todoUpdate,
+    todoComplete,
+  ])
 }
 
-/** Register five bounded model tools over the current `ctx.loopx` service. */
+/** Register the frozen eleven-tool model catalog over the current Host service. */
 export function apply(ctx: Context): void {
-  for (const definition of loopXToolDefinitions(ctx.loopx)) {
-    ctx.tools.register(definition)
-  }
+  const definitions = loopXToolDefinitions(ctx.loopx)
+  for (const definition of definitions) ctx.tools.register(definition)
 }

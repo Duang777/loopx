@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
@@ -16,20 +16,29 @@ import { LoopXCliClient, LoopXCliError } from './cli-client.ts'
 import { failure, rejected, success } from './errors.ts'
 import {
   bootstrapCommandPackSchema,
+  bootstrapResultSchema,
   heartbeatPromptSchema,
   loopxBindingDomainSpec,
   quotaShouldRunSchema,
+  refreshStateResultSchema,
   registerAgentSchema,
   startGoalGuidedSchema,
   statusSchema,
   threadBindingCommandSchema,
+  todoAddCommandSchema,
   todoCommandSchema,
 } from './schemas.ts'
 import type {
   BootstrapCommandPackPayload,
+  BootstrapCommandPackSuccessPayload,
+  BootstrapResultPayload,
   HeartbeatPromptPayload,
   QuotaShouldRunPayload,
+  RefreshStateResultPayload,
+  RefreshStateResultSuccessPayload,
   StartGoalGuidedPayload,
+  StartGoalGuidedSuccessPayload,
+  TodoAddCommandPayload,
   TodoCommandPayload,
 } from './schemas.ts'
 import type {
@@ -41,15 +50,20 @@ import type {
   LoopXFailure,
   LoopXHostStatus,
   LoopXIdentitySelection,
+  LoopXPlanningCheckpoint,
   LoopXQuotaDecision,
   LoopXResult,
   LoopXSchedulerHint,
   LoopXServiceApi,
   LoopXSessionRef,
   LoopXStartValue,
+  LoopXStartOptions,
+  LoopXSwitchRequired,
   LoopXStatusValue,
   LoopXTaskBody,
   LoopXTodoClaimRequest,
+  LoopXTodoAddRequest,
+  LoopXTodoAddValue,
   LoopXTodoCompleteRequest,
   LoopXTodoMutationValue,
   LoopXTodoUpdateRequest,
@@ -59,6 +73,12 @@ const HOST_SURFACE = 'deepseek-harness-native'
 const RUNTIME_PROFILE = 'generic_cli'
 const AGENT_SCOPE = 'DeepSeek Harness same-session LoopX plugin gated by LoopX'
 const PUBLIC_AGENT_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/u
+const SWITCH_CONFIRMATION_TTL_MS = 2 * 60 * 1000
+const PLANNING_TODO_LIMIT_CAP = 5
+const PUBLIC_ACTION_KIND = /^[a-z][a-z0-9._:-]{0,63}$/u
+const PUBLIC_TARGET_KEY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u
+const PRIORITY_PREFIX = /^\[P[012]\](?:\s|$)/iu
+const UNSAFE_TODO_TEXT = /[\u0000-\u001F\u007F]/u
 const FORBIDDEN_ACTIVATION_ARGUMENTS = new Set([
   'sessionId',
   'registryPath',
@@ -94,15 +114,64 @@ interface TaskBodyCacheEntry {
   readonly body: string
 }
 
+interface SwitchConfirmationRecord {
+  readonly token: string
+  readonly session: LoopXSessionRef['identity']
+  readonly currentGoalId: string
+  readonly currentAgentId: string
+  readonly digest: string
+  readonly operation: 'start' | 'attach'
+  readonly requestedGoalId?: string | undefined
+  readonly requestedAgentId?: string | undefined
+  readonly newPeer: boolean
+  readonly newIndependent: boolean
+  readonly expiresAt: number
+}
+
+interface NormalizedStartOptions {
+  readonly goalId?: string | undefined
+  readonly agentId?: string | undefined
+  readonly newPeer: boolean
+  readonly newIndependent: boolean
+  readonly switchConfirmation?: string | undefined
+}
+
+interface ConnectedStartPacket {
+  readonly packet: StartGoalGuidedSuccessPayload
+  readonly connectedNow: boolean
+}
+
+interface NormalizedTodoAddRequest {
+  readonly text: string
+  readonly priority: 'P0' | 'P1' | 'P2'
+  readonly role: 'user' | 'agent'
+  readonly actionKind: string
+  readonly targetKey?: string | undefined
+  readonly normalizedTodo: string
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     loopx: LoopXService
   }
 }
 
-function present(value: string | undefined): string | undefined {
+function present(value: string | null | undefined): string | undefined {
   const normalized = value?.trim()
   return normalized ? normalized : undefined
+}
+
+function normalizedGoalText(value: string): string | undefined {
+  const normalized = value.trim().replace(/\s+/gu, ' ')
+  return normalized.length === 0 ? undefined : normalized
+}
+
+function validGoalId(value: string | undefined): value is string {
+  return value !== undefined && value.length <= 256 && !value.includes('\0')
+}
+
+function operationDigest(value: Readonly<Record<string, unknown>>): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
 
 function optional<T extends object>(condition: boolean, value: T): T | Record<never, never> {
@@ -128,6 +197,39 @@ function safeFailure(error: unknown, operation: string): LoopXFailure {
 
 function readbackFailure(operation: string, message: string): LoopXFailure {
   return failure('LOOPX_READBACK_FAILED', message, { operation })
+}
+
+function sameAgentSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every(agentId => right.includes(agentId))
+}
+
+function deterministicRegistrationFailure(errorKind: string): LoopXFailure {
+  if (errorKind === 'agent_identity_already_registered') {
+    return failure(
+      'LOOPX_IDENTITY_CONFLICT',
+      'The generated fresh LoopX identity already exists; retry Goal start to generate another.',
+      { operation: 'register-agent', retryable: true },
+    )
+  }
+  if (errorKind === 'agent_registration_sync_preflight_failed') {
+    return failure(
+      'LOOPX_REGISTRY_INTEGRITY',
+      'LoopX rejected fresh-agent registration during source/global registry preflight. Run sync-global for the Goal in dry-run mode and repair the reported integrity error before retrying.',
+      { operation: 'register-agent' },
+    )
+  }
+  if (errorKind === 'global_registry_write_denied') {
+    return failure(
+      'LOOPX_CLI_FAILED',
+      'LoopX could not write its global registry; repair the configured registry permissions before retrying.',
+      { operation: 'register-agent' },
+    )
+  }
+  return failure(
+    'LOOPX_CLI_FAILED',
+    'LoopX rejected fresh-agent registration before confirming any source write.',
+    { operation: 'register-agent' },
+  )
 }
 
 function driverFenceFailure(operation: string): LoopXFailure {
@@ -159,11 +261,45 @@ function validateSession(session: LoopXSessionRef): LoopXFailure | undefined {
   return undefined
 }
 
+function normalizeStartOptions(
+  options: LoopXStartOptions | undefined,
+): LoopXResult<NormalizedStartOptions> {
+  const goalId = present(options?.goalId)
+  const agentId = present(options?.agentId)
+  const switchConfirmation = present(options?.switchConfirmation)
+  const newPeer = options?.newPeer === true
+  const newIndependent = options?.newIndependent === true
+  if ((options?.goalId !== undefined && !validGoalId(goalId))
+    || (agentId !== undefined && !PUBLIC_AGENT_ID.test(agentId))
+    || (options?.agentId !== undefined && agentId === undefined)
+    || (options?.switchConfirmation !== undefined && switchConfirmation === undefined)
+    || (switchConfirmation !== undefined && switchConfirmation.length > 128)
+    || (newPeer && agentId !== undefined)
+    || (newIndependent && (goalId !== undefined || agentId !== undefined))) {
+    return rejected(failure(
+      'LOOPX_INVALID_REQUEST',
+      'Goal start selections, peer intent, independent intent, or confirmation are incompatible.',
+      { operation: 'start' },
+    ))
+  }
+  return success(Object.freeze({
+    ...optional(goalId !== undefined, { goalId: goalId as string }),
+    ...optional(agentId !== undefined, { agentId: agentId as string }),
+    newPeer,
+    newIndependent,
+    ...optional(switchConfirmation !== undefined, {
+      switchConfirmation: switchConfirmation as string,
+    }),
+  }))
+}
+
 function identitySelection(gate: {
   readonly default_action: string
   readonly reason?: string | undefined
   readonly choices: readonly { readonly agent_id: string; readonly label?: string | undefined }[]
-  readonly fresh_agent_registration?: { readonly agent_id?: string | undefined } | undefined
+  readonly fresh_agent_registration?: {
+    readonly agent_id?: string | undefined
+  } | null | undefined
 }): LoopXIdentitySelection {
   const suggested = present(gate.fresh_agent_registration?.agent_id)
   return Object.freeze({
@@ -194,10 +330,123 @@ function goalSelection(gate: {
   })
 }
 
-function modelCheckpoint(payload: StartGoalGuidedPayload): string | undefined {
+function modelCheckpoint(payload: StartGoalGuidedSuccessPayload): string | undefined {
   const checkpoints = (payload.guided_transaction?.ordered_steps ?? [])
     .filter(step => step.kind === 'model_checkpoint' && present(step.prompt) !== undefined)
   return checkpoints.length === 1 ? present(checkpoints[0]?.prompt) : undefined
+}
+
+function planningCheckpoint(
+  payload: StartGoalGuidedSuccessPayload,
+  goalText: string,
+  goalId: string,
+  agentId: string,
+): LoopXPlanningCheckpoint | undefined {
+  if (modelCheckpoint(payload) === undefined) return undefined
+  const contract = payload.command_pack?.goal_start_contract
+  const planner = contract?.planner
+  const profiles = planner?.profiles
+  const openEnded = profiles?.open_ended_product_direction
+  const bounded = profiles?.clear_bounded_problem
+  const required = planner?.required_fields ?? []
+  if (contract === undefined || planner === undefined
+    || contract.goal_text !== goalText
+    || openEnded === undefined || bounded === undefined
+    || openEnded.suggested_items_min > openEnded.suggested_items_max
+    || !['priority', 'text', 'task_class', 'action_kind']
+      .every(field => required.includes(field))) return undefined
+  const limit = Math.min(
+    planner.maximum_runnable_todos_written_ahead ?? PLANNING_TODO_LIMIT_CAP,
+    PLANNING_TODO_LIMIT_CAP,
+  )
+  return Object.freeze({
+    schemaVersion: 'dsh_loopx_planning_checkpoint_v0' as const,
+    goalId,
+    agentId,
+    goalText,
+    planner: Object.freeze({
+      defaultProfile: planner.default_profile,
+      profileSelection: planner.profile_selection,
+      openEndedProductDirection: Object.freeze({
+        suggestedItemsMin: openEnded.suggested_items_min,
+        suggestedItemsMax: openEnded.suggested_items_max,
+        intent: openEnded.intent,
+      }),
+      clearBoundedProblem: Object.freeze({
+        itemCountPolicy: bounded.item_count_policy,
+        mayReuseCurrentTodoWhenItAlreadyRepresentsThePlan:
+          bounded.may_reuse_current_todo_when_it_already_represents_the_plan,
+        intent: bounded.intent,
+      }),
+      allowedPriorities: Object.freeze(['P0', 'P1', 'P2'] as const),
+      defaultRole: 'agent' as const,
+      defaultTaskClass: 'advancement_task' as const,
+      requiredFields: Object.freeze([...required]),
+      publicSafeOnly: true as const,
+      budgetPolicy: planner.budget_policy,
+      ...optional(planner.fine_grained_plan_horizon !== undefined, {
+        fineGrainedPlanHorizon: planner.fine_grained_plan_horizon as string,
+      }),
+    }),
+    writeback: Object.freeze({
+      todoTool: 'loopx_todo_add' as const,
+      minimumTodos: 1 as const,
+      maximumTodos: limit,
+      ordering: 'priority_then_tool_call_order' as const,
+      activationTool: 'loopx_goal_activate' as const,
+      activationArguments: Object.freeze({ goalId, agentId }),
+    }),
+    stopConditions: Object.freeze([...contract.stop_conditions]),
+    forbidden: Object.freeze([
+      'shell_or_bash',
+      'raw_loopx_cli',
+      'registry_edit',
+      'ctx.goals',
+    ] as const),
+  })
+}
+
+function renderPlanningCheckpoint(checkpoint: LoopXPlanningCheckpoint): string {
+  return [
+    'Follow this DSH-native LoopX planning checkpoint. Use only the named typed tools; do not execute shell or returned CLI text.',
+    JSON.stringify(checkpoint),
+  ].join('\n')
+}
+
+function normalizeTodoAddRequest(
+  request: LoopXTodoAddRequest,
+): LoopXResult<NormalizedTodoAddRequest> {
+  const keys = Object.keys(request)
+  const allowed = new Set(['text', 'priority', 'role', 'actionKind', 'targetKey'])
+  const text = present(request.text)
+  const role = request.role ?? 'agent'
+  const actionKind = present(request.actionKind)
+    ?? (role === 'agent' ? 'advance' : 'owner_decision')
+  const targetKey = present(request.targetKey)
+  if (!keys.every(key => allowed.has(key))
+    || text === undefined || text.length > 1000
+    || UNSAFE_TODO_TEXT.test(text) || PRIORITY_PREFIX.test(text)
+    || !['P0', 'P1', 'P2'].includes(request.priority)
+    || !['user', 'agent'].includes(role)
+    || (request.actionKind !== undefined && present(request.actionKind) === undefined)
+    || !PUBLIC_ACTION_KIND.test(actionKind)
+    || (request.targetKey !== undefined && targetKey === undefined)
+    || (targetKey !== undefined && !PUBLIC_TARGET_KEY.test(targetKey))
+    || (role === 'user' && targetKey !== undefined)) {
+    return rejected(failure(
+      'LOOPX_INVALID_REQUEST',
+      'Todo add requires bounded public-safe text, one P0/P1/P2 priority, a supported role/action, and an Agent-only public target key.',
+      { operation: 'todo-add' },
+    ))
+  }
+  return success(Object.freeze({
+    text,
+    priority: request.priority,
+    role,
+    actionKind,
+    ...optional(targetKey !== undefined, { targetKey: targetKey as string }),
+    normalizedTodo: `[${request.priority}] ${text}`,
+  }))
 }
 
 function activationReadbackMatches(
@@ -205,13 +454,13 @@ function activationReadbackMatches(
   session: LoopXSessionRef,
   goalId: string,
   agentId: string,
-): boolean {
+): payload is BootstrapCommandPackSuccessPayload {
+  if (!payload.ok) return false
   const activation = payload.host_loop_activation
   const input = activation.activation_input
   const forbidden = activation.host_mutation.forbidden_tool_arguments
   const inputKeys = Object.keys(input.arguments)
-  return payload.ok
-    && payload.goal_id === goalId
+  return payload.goal_id === goalId
     && payload.agent_id === agentId
     && payload.thread_id === session.id
     && payload.thread_agent_binding?.status === 'bound'
@@ -332,6 +581,88 @@ function boundedTodoProjection(payload: TodoCommandPayload): Readonly<Record<str
   return Object.freeze(projected)
 }
 
+function todoAddReadbackMatches(
+  payload: TodoAddCommandPayload,
+  row: LoopXBindingRow,
+  request: NormalizedTodoAddRequest,
+): payload is TodoAddCommandPayload & { readonly todo_id: string; readonly status: 'open' } {
+  const agentFieldsMatch = request.role === 'agent'
+    ? payload.claimed_by === row.agentId
+      && payload.bound_agent === null
+      && payload.agent_id === null
+      && payload.blocks_agent === null
+    : payload.claimed_by === null
+      && payload.bound_agent === row.agentId
+      && payload.agent_id === row.agentId
+      && payload.blocks_agent === row.agentId
+  return payload.ok
+    && payload.dry_run === false
+    && (payload.added || payload.already_exists)
+    && payload.goal_id === row.goalId
+    && payload.role === request.role
+    && payload.todo === request.normalizedTodo
+    && typeof payload.todo_id === 'string'
+    && payload.todo_id.length > 0
+    && payload.status === 'open'
+    && payload.task_class === (request.role === 'agent' ? 'advancement_task' : 'user_gate')
+    && payload.action_kind === request.actionKind
+    && payload.target_key === (request.targetKey ?? null)
+    && agentFieldsMatch
+}
+
+function boundedTodoAddProjection(
+  payload: TodoAddCommandPayload,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    schema_version: payload.schema_version,
+    ok: payload.ok,
+    dry_run: payload.dry_run,
+    added: payload.added,
+    already_exists: payload.already_exists,
+    goal_id: payload.goal_id,
+    role: payload.role,
+    todo: payload.todo,
+    todo_id: payload.todo_id,
+    status: payload.status,
+    task_class: payload.task_class,
+    action_kind: payload.action_kind,
+    claimed_by: payload.claimed_by,
+    bound_agent: payload.bound_agent,
+    blocks_agent: payload.blocks_agent,
+    target_key: payload.target_key,
+  })
+}
+
+function refreshStateReadbackMatches(
+  payload: RefreshStateResultPayload,
+  row: LoopXBindingRow,
+): payload is RefreshStateResultSuccessPayload {
+  if (!payload.ok) return false
+  const registry = row.registryLocator
+  if (registry === undefined) return false
+  const sync = payload.global_sync
+  const sourceIsGlobal = sync.skipped === true
+    && sync.reason === 'source registry is already the global registry'
+    && sync.registry === registry
+    && sync.global_registry === registry
+    && sync.synced_goal_ids.length === 0
+  const syncedGoal = sync.skipped !== true
+    && sync.registry === registry
+    && sync.synced_goal_ids.includes(row.goalId)
+  return payload.dry_run === false
+    && (payload.appended || payload.idempotent_replay === true)
+    && payload.partial_write !== true
+    && payload.registry === registry
+    && payload.project === row.projectLocator
+    && payload.goal_id === row.goalId
+    && payload.agent_id === row.agentId
+    && payload.agent_lane === row.agentId
+    && payload.progress_scope === 'agent_lane'
+    && payload.external_sink_delivery_authorized === false
+    && sync.ok
+    && (sourceIsGlobal || syncedGoal)
+}
+
 function boundedQuotaProjection(payload: QuotaShouldRunPayload): Readonly<Record<string, unknown>> {
   const projected: Record<string, unknown> = {
     schema_version: payload.schema_version,
@@ -367,6 +698,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
   private table: KvTable<string, LoopXBindingRow> | undefined
   private readonly operationTails = new Map<string, Promise<void>>()
   private readonly taskBodies = new Map<string, TaskBodyCacheEntry>()
+  private readonly switchConfirmations = new Map<string, SwitchConfirmationRecord>()
   private mutationAdmissionOpen = true
 
   constructor(ctx: Context, config: Config) {
@@ -393,6 +725,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
       await this.cli.close()
       await Promise.all(this.operationTails.values())
       this.taskBodies.clear()
+      this.switchConfirmations.clear()
       await domain.close()
       this.table = undefined
     }, 'dsh-loopx-plugin.domainClose')
@@ -420,8 +753,9 @@ export class LoopXService extends Service implements LoopXServiceApi {
     session: LoopXSessionRef,
     goalText: string,
     signal?: AbortSignal,
+    options?: LoopXStartOptions,
   ): Promise<LoopXResult<LoopXStartValue>> {
-    const normalizedGoal = present(goalText)
+    const normalizedGoal = normalizedGoalText(goalText)
     if (normalizedGoal === undefined) {
       return Promise.resolve(rejected(failure(
         'LOOPX_INVALID_REQUEST',
@@ -429,94 +763,74 @@ export class LoopXService extends Service implements LoopXServiceApi {
         { operation: 'start' },
       )))
     }
+    const normalizedOptions = normalizeStartOptions(options)
+    if (!normalizedOptions.ok) return Promise.resolve(normalizedOptions)
     return this.queued(session, 'start', async () => {
-      if (this.currentRow(session) !== undefined) {
-        return rejected(failure(
-          'LOOPX_INVALID_REQUEST',
-          'This DSH Session already has a LoopX binding or planning transaction.',
-          { operation: 'start' },
-        ))
-      }
-      const project = this.projectFor(session)
-      if (project === undefined) return rejected(this.projectRequired('start'))
+      const row = this.currentRow(session)
+      const request = normalizedOptions.value
+      const digest = operationDigest({
+        operation: 'start',
+        goalText: normalizedGoal,
+        goalId: request.goalId ?? null,
+        agentId: request.agentId ?? null,
+        newPeer: request.newPeer,
+        newIndependent: request.newIndependent,
+      })
+      if (row !== undefined) {
+        const pending = this.validSwitchRecord(session, request.switchConfirmation, digest)
+        const requestedGoalId = request.newIndependent
+          ? pending?.requestedGoalId ?? this.freshGoalId()
+          : request.goalId ?? row.goalId
+        const requestedAgentId = request.agentId
+          ?? (requestedGoalId === row.goalId && !request.newPeer ? row.agentId : undefined)
+        const changesIdentity = request.newIndependent
+          || request.newPeer
+          || requestedGoalId !== row.goalId
+          || (requestedAgentId !== undefined && requestedAgentId !== row.agentId)
 
-      let packet: StartGoalGuidedPayload
-      try {
-        packet = await this.readStartPacket(session, project, normalizedGoal, undefined, signal)
-      } catch (error) {
-        return rejected(safeFailure(error, 'start'))
-      }
-      if (!packet.ok) return rejected(readbackFailure('start', 'LoopX rejected the guided Goal start.'))
-      if (packet.goal_selection_gate !== undefined) {
-        return success({
-          kind: 'selection_required',
-          selection: goalSelection(packet.goal_selection_gate),
-        })
-      }
-
-      const gate = packet.guided_transaction?.identity_selection_gate
-      if (gate?.default_action === 'register_fresh_agent' && present(packet.goal_id) !== undefined) {
-        const agentId = this.freshAgentId()
-        const registered = await this.registerFreshAgent(
-          session,
-          project,
-          packet.goal_id as string,
-          agentId,
-          signal,
-        )
-        if (!registered.ok) return registered
-        try {
-          packet = await this.readStartPacket(
+        if (changesIdentity) {
+          if (request.switchConfirmation === undefined) {
+            return success(this.prepareSwitch(session, row, {
+              digest,
+              operation: 'start',
+              requestedGoalId,
+              requestedAgentId,
+              newPeer: request.newPeer,
+              newIndependent: request.newIndependent,
+            }))
+          }
+          if (pending === undefined || pending.requestedGoalId !== requestedGoalId) {
+            return rejected(this.invalidSwitchConfirmation('start'))
+          }
+          return await this.commitStartSwitch(
             session,
-            project,
+            row,
             normalizedGoal,
-            agentId,
+            request,
+            pending,
             signal,
           )
-        } catch (error) {
-          return rejected(safeFailure(error, 'start-readback'))
         }
+        if (request.switchConfirmation !== undefined) {
+          return rejected(this.invalidSwitchConfirmation('start'))
+        }
+        this.switchConfirmations.delete(session.id)
+        return await this.startInsideQueue(session, normalizedGoal, {
+          ...request,
+          goalId: row.goalId,
+          agentId: row.agentId,
+        }, signal, row)
       }
-      const remainingGate = packet.guided_transaction?.identity_selection_gate
-      if (remainingGate !== undefined) {
-        return success({
-          kind: 'selection_required',
-          ...optional(packet.goal_id !== undefined, { goalId: packet.goal_id as string }),
-          selection: identitySelection(remainingGate),
-        })
+      if (request.switchConfirmation !== undefined) {
+        return rejected(this.invalidSwitchConfirmation('start'))
       }
-      const goalId = present(packet.goal_id)
-      const agentId = present(packet.agent_id ?? undefined)
-      const checkpoint = modelCheckpoint(packet)
-      if (goalId === undefined || agentId === undefined || checkpoint === undefined
-        || packet.host_surface !== HOST_SURFACE
-        || packet.thread_id !== session.id
-        || packet.thread_agent_binding?.status !== 'bound'
-        || packet.thread_agent_binding.agent_id !== agentId) {
-        return rejected(readbackFailure(
-          'start',
-          'LoopX did not return one exact bound identity and model checkpoint.',
-        ))
-      }
-      if (this.currentRow(session) !== undefined) {
-        return rejected(readbackFailure('start', 'The Session binding changed during Goal start.'))
-      }
-      const row = createBinding({
+      this.switchConfirmations.delete(session.id)
+      return await this.startInsideQueue(
         session,
-        goalId,
-        agentId,
-        projectLocator: packet.project ?? project,
-        ...optional(packet.project_connection?.registry !== undefined, {
-          registryLocator: packet.project_connection?.registry as string,
-        }),
-        ...optional(present(this.config.runtimeRoot) !== undefined, {
-          runtimeRootLocator: present(this.config.runtimeRoot) as string,
-        }),
-        phase: 'planning',
-        now: Date.now(),
-      })
-      await this.requireTable().put(session.id, row)
-      return success({ kind: 'planning', binding: row, modelCheckpoint: checkpoint })
+        normalizedGoal,
+        request.newIndependent ? { ...request, goalId: this.freshGoalId() } : request,
+        signal,
+      )
     })
   }
 
@@ -527,24 +841,100 @@ export class LoopXService extends Service implements LoopXServiceApi {
   ): Promise<LoopXResult<LoopXAttachValue>> {
     const goalId = present(request.goalId)
     const requestedAgent = present(request.agentId)
+    const switchConfirmation = present(request.switchConfirmation)
     if (goalId === undefined || (request.newPeer === true && requestedAgent !== undefined)
-      || (requestedAgent !== undefined && !PUBLIC_AGENT_ID.test(requestedAgent))) {
+      || !validGoalId(goalId)
+      || (requestedAgent !== undefined && !PUBLIC_AGENT_ID.test(requestedAgent))
+      || (request.agentId !== undefined && requestedAgent === undefined)
+      || (request.switchConfirmation !== undefined && switchConfirmation === undefined)
+      || (switchConfirmation !== undefined && switchConfirmation.length > 128)) {
       return Promise.resolve(rejected(failure(
         'LOOPX_INVALID_REQUEST',
-        'Attach requires a Goal id and either one public-safe agent id or --new-peer.',
+        'Attach requires a Goal id, one compatible agent selection, and a valid confirmation when supplied.',
         { operation: 'attach' },
       )))
     }
-    this.cli.abortScope(session.id)
     return this.queued(session, 'attach', async () => {
-      if (this.currentRow(session) !== undefined) {
-        return rejected(failure(
-          'LOOPX_INVALID_REQUEST',
-          'Detach the current LoopX binding before attaching another one.',
-          { operation: 'attach' },
-        ))
+      const row = this.currentRow(session)
+      const digest = operationDigest({
+        operation: 'attach',
+        goalId,
+        agentId: requestedAgent ?? null,
+        newPeer: request.newPeer === true,
+      })
+      if (row !== undefined) {
+        const targetAgent = requestedAgent
+          ?? (goalId === row.goalId && request.newPeer !== true ? row.agentId : undefined)
+        const changesIdentity = goalId !== row.goalId
+          || request.newPeer === true
+          || (targetAgent !== undefined && targetAgent !== row.agentId)
+        if (changesIdentity) {
+          if (switchConfirmation === undefined) {
+            return success(this.prepareSwitch(session, row, {
+              digest,
+              operation: 'attach',
+              requestedGoalId: goalId,
+              requestedAgentId: targetAgent,
+              newPeer: request.newPeer === true,
+              newIndependent: false,
+            }))
+          }
+          const pending = this.validSwitchRecord(session, switchConfirmation, digest)
+          if (pending === undefined || pending.requestedGoalId !== goalId) {
+            return rejected(this.invalidSwitchConfirmation('attach'))
+          }
+          return await this.commitAttachSwitch(
+            session,
+            row,
+            goalId,
+            requestedAgent,
+            request.newPeer === true,
+            pending,
+            signal,
+          )
+        }
+        if (switchConfirmation !== undefined) {
+          return rejected(this.invalidSwitchConfirmation('attach'))
+        }
+        this.switchConfirmations.delete(session.id)
+        this.cli.abortScope(session.id)
+        return await this.attachInsideQueue(
+          session,
+          goalId,
+          row.agentId,
+          false,
+          signal,
+          row,
+          true,
+        )
       }
-      const project = this.projectFor(session)
+      if (switchConfirmation !== undefined) {
+        return rejected(this.invalidSwitchConfirmation('attach'))
+      }
+      this.switchConfirmations.delete(session.id)
+      this.cli.abortScope(session.id)
+      return await this.attachInsideQueue(
+        session,
+        goalId,
+        requestedAgent,
+        request.newPeer === true,
+        signal,
+        undefined,
+        true,
+      )
+    })
+  }
+
+  private async attachInsideQueue(
+    session: LoopXSessionRef,
+    goalId: string,
+    requestedAgent: string | undefined,
+    newPeer: boolean,
+    signal: AbortSignal | undefined,
+    existingRow: LoopXBindingRow | undefined,
+    persistFailure: boolean,
+  ): Promise<LoopXResult<LoopXAttachValue>> {
+      const project = existingRow?.projectLocator ?? this.projectFor(session)
       if (project === undefined) return rejected(this.projectRequired('attach'))
       let packet: BootstrapCommandPackPayload
       try {
@@ -553,15 +943,50 @@ export class LoopXService extends Service implements LoopXServiceApi {
           project,
           goalId,
           requestedAgent,
-          request.newPeer === true,
+          newPeer,
           signal,
         )
       } catch (error) {
-        return rejected(safeFailure(error, 'attach'))
+        return await this.attachFailure(
+          session,
+          existingRow,
+          persistFailure,
+          project,
+          undefined,
+          goalId,
+          requestedAgent,
+          safeFailure(error, 'attach'),
+        )
       }
-      if (!packet.ok) return rejected(readbackFailure('attach', 'LoopX rejected the attach readback.'))
+      if (!packet.ok) {
+        return await this.attachFailure(
+          session,
+          existingRow,
+          persistFailure,
+          project,
+          undefined,
+          goalId,
+          requestedAgent,
+          readbackFailure('attach', 'LoopX rejected the attach target.'),
+        )
+      }
+      if (packet.goal_id !== goalId
+        || packet.project_connection?.connection_state !== 'connected'
+        || packet.project_connection.goal_id !== goalId
+        || packet.project_connection.project !== packet.project) {
+        return await this.attachFailure(
+          session,
+          existingRow,
+          persistFailure,
+          project,
+          packet.project_connection?.registry,
+          goalId,
+          requestedAgent,
+          readbackFailure('attach', 'LoopX rejected or could not verify the attach target.'),
+        )
+      }
 
-      if (requestedAgent === undefined && request.newPeer !== true) {
+      if (requestedAgent === undefined && !newPeer) {
         const gate = packet.host_loop_activation.identity_selection_gate
         if (gate !== null && gate !== undefined) {
           return success({
@@ -588,7 +1013,16 @@ export class LoopXService extends Service implements LoopXServiceApi {
       }
 
       let agentId = requestedAgent
-      if (request.newPeer === true) {
+      if (newPeer) {
+        const fresh = packet.host_loop_activation.identity_selection_gate
+          ?.fresh_agent_registration
+        if (fresh === null || fresh === undefined) {
+          return rejected(failure(
+            'LOOPX_IDENTITY_CONFLICT',
+            'LoopX did not authorize fresh peer registration for this Goal.',
+            { operation: 'attach' },
+          ))
+        }
         agentId = this.freshAgentId()
         const registered = await this.registerFreshAgent(
           session,
@@ -599,16 +1033,16 @@ export class LoopXService extends Service implements LoopXServiceApi {
           false,
         )
         if (!registered.ok) {
-          return registered.error.outcomeUncertain
-            ? await this.persistAttachFailure(
-                session,
-                project,
-                packet.project_connection?.registry,
-                goalId,
-                agentId,
-                registered.error,
-              )
-            : registered
+          return await this.attachFailure(
+            session,
+            existingRow,
+            persistFailure && registered.error.outcomeUncertain,
+            project,
+            packet.project_connection?.registry,
+            goalId,
+            agentId,
+            registered.error,
+          )
         }
         try {
           packet = await this.readCommandPack(
@@ -621,6 +1055,21 @@ export class LoopXService extends Service implements LoopXServiceApi {
           )
         } catch (error) {
           return rejected(safeFailure(error, 'attach-registration-readback'))
+        }
+        if (!packet.ok) {
+          return await this.attachFailure(
+            session,
+            existingRow,
+            persistFailure,
+            project,
+            undefined,
+            goalId,
+            agentId,
+            readbackFailure(
+              'attach-registration-readback',
+              'LoopX rejected the fresh-agent authoritative reread.',
+            ),
+          )
         }
       }
       agentId ??= present(packet.agent_id ?? undefined)
@@ -656,16 +1105,16 @@ export class LoopXService extends Service implements LoopXServiceApi {
           signal,
         )
         if (!unbound.ok) {
-          return unbound.error.outcomeUncertain
-            ? await this.persistAttachFailure(
-                session,
-                project,
-                packet.project_connection?.registry,
-                goalId,
-                agentId,
-                unbound.error,
-              )
-            : unbound
+          return await this.attachFailure(
+            session,
+            existingRow,
+            persistFailure && unbound.error.outcomeUncertain,
+            project,
+            packet.project_connection?.registry,
+            goalId,
+            agentId,
+            unbound.error,
+          )
         }
       }
       if (priorAgent !== agentId) {
@@ -678,33 +1127,54 @@ export class LoopXService extends Service implements LoopXServiceApi {
           signal,
         )
         if (!bound.ok) {
-          return bound.error.outcomeUncertain
-            ? await this.persistAttachFailure(
-                session,
-                project,
-                packet.project_connection?.registry,
-                goalId,
-                agentId,
-                bound.error,
-              )
-            : bound
+          return await this.attachFailure(
+            session,
+            existingRow,
+            persistFailure && bound.error.outcomeUncertain,
+            project,
+            packet.project_connection?.registry,
+            goalId,
+            agentId,
+            bound.error,
+          )
         }
       }
+      const registryBeforeAttachReread = packet.project_connection?.registry
       try {
         packet = await this.readCommandPack(session, project, goalId, agentId, false, signal)
       } catch (error) {
-        return await this.persistAttachFailure(
+        return await this.attachFailure(
           session,
+          existingRow,
+          persistFailure,
           project,
-          packet.project_connection?.registry,
+          registryBeforeAttachReread,
           goalId,
           agentId,
           safeFailure(error, 'attach-readback'),
         )
       }
-      if (!activationReadbackMatches(packet, session, goalId, agentId)) {
-        return await this.persistAttachFailure(
+      if (!packet.ok) {
+        return await this.attachFailure(
           session,
+          existingRow,
+          persistFailure,
+          project,
+          undefined,
+          goalId,
+          agentId,
+          readbackFailure('attach-readback', 'LoopX rejected the authoritative attach reread.'),
+        )
+      }
+      const finalConnection = packet.project_connection
+      if (finalConnection?.connection_state !== 'connected'
+        || finalConnection.goal_id !== goalId
+        || finalConnection.project !== packet.project
+        || !activationReadbackMatches(packet, session, goalId, agentId)) {
+        return await this.attachFailure(
+          session,
+          existingRow,
+          persistFailure,
           project,
           packet.project_connection?.registry,
           goalId,
@@ -727,8 +1197,10 @@ export class LoopXService extends Service implements LoopXServiceApi {
           signal,
         )
       } catch (error) {
-        return await this.persistAttachFailure(
+        return await this.attachFailure(
           session,
+          existingRow,
+          persistFailure,
           packet.project,
           packet.project_connection?.registry,
           goalId,
@@ -736,27 +1208,555 @@ export class LoopXService extends Service implements LoopXServiceApi {
           safeFailure(error, 'attach-task-body'),
         )
       }
-      if (this.currentRow(session) !== undefined) {
+      const current = this.currentRow(session)
+      if ((existingRow === undefined && current !== undefined)
+        || (existingRow !== undefined
+          && (current === undefined
+            || current.goalId !== existingRow.goalId
+            || current.agentId !== existingRow.agentId))) {
         return rejected(readbackFailure('attach', 'The Session binding changed during attach.'))
       }
-      const row = createBinding({
-        session,
-        goalId,
-        agentId,
-        projectLocator: packet.project,
-        ...optional(packet.project_connection?.registry !== undefined, {
-          registryLocator: packet.project_connection?.registry as string,
-        }),
-        ...optional(present(this.config.runtimeRoot) !== undefined, {
-          runtimeRootLocator: present(this.config.runtimeRoot) as string,
-        }),
-        phase: 'active_armed',
-        now: Date.now(),
-      })
+      const row = existingRow === undefined
+        ? createBinding({
+            session,
+            goalId,
+            agentId,
+            projectLocator: packet.project,
+            registryLocator: finalConnection.registry,
+            ...optional(present(this.config.runtimeRoot) !== undefined, {
+              runtimeRootLocator: present(this.config.runtimeRoot) as string,
+            }),
+            phase: 'active_armed',
+            now: Date.now(),
+          })
+        : transitionBinding(existingRow, 'active_armed', undefined, Date.now())
       await this.requireTable().put(session.id, row)
       this.taskBodies.set(session.id, { generation: row.generation, body })
       return success({ kind: 'attached', binding: row })
+  }
+
+  private async startInsideQueue(
+    session: LoopXSessionRef,
+    goalText: string,
+    options: NormalizedStartOptions,
+    signal: AbortSignal | undefined,
+    existingRow?: LoopXBindingRow,
+  ): Promise<LoopXResult<LoopXStartValue>> {
+    const project = existingRow?.projectLocator ?? this.projectFor(session)
+    if (project === undefined) return rejected(this.projectRequired('start'))
+
+    let packet: StartGoalGuidedPayload
+    try {
+      packet = await this.readStartPacket(
+        session,
+        project,
+        goalText,
+        options.goalId,
+        options.agentId,
+        options.newPeer,
+        signal,
+      )
+    } catch (error) {
+      return rejected(safeFailure(error, 'start'))
+    }
+    const connected = await this.ensureStartConnection(
+      session,
+      project,
+      goalText,
+      options,
+      packet,
+      signal,
+    )
+    if (!connected.ok) return connected
+    packet = connected.value.packet
+
+    if (packet.goal_selection_gate !== undefined) {
+      return success({
+        kind: 'selection_required',
+        selection: goalSelection(packet.goal_selection_gate),
+      })
+    }
+    const connection = packet.project_connection
+    const goalId = present(packet.goal_id ?? undefined)
+    if (!packet.ok || connection?.connection_state !== 'connected'
+      || goalId === undefined || connection.goal_id !== goalId
+      || connection.project !== packet.project
+      || (options.goalId !== undefined && options.goalId !== goalId)
+      || (options.newIndependent && !connected.value.connectedNow)) {
+      return rejected(readbackFailure(
+        'start',
+        'LoopX did not return one connected authoritative Goal target.',
+      ))
+    }
+
+    let agentId = options.agentId
+    let changedThread = false
+    const gate = packet.guided_transaction?.identity_selection_gate ?? undefined
+    if (agentId !== undefined) {
+      const allowed = packet.agent_id === agentId
+        || gate?.choices.some(choice => choice.agent_id === agentId) === true
+      if (!allowed) {
+        return rejected(failure(
+          'LOOPX_IDENTITY_CONFLICT',
+          'The selected LoopX agent is not present in the authoritative selection contract.',
+          { operation: 'start' },
+        ))
+      }
+    } else if (options.newPeer || gate?.default_action === 'register_fresh_agent') {
+      if (gate?.fresh_agent_registration === null
+        || gate?.fresh_agent_registration === undefined) {
+        return rejected(failure(
+          'LOOPX_IDENTITY_CONFLICT',
+          'LoopX did not authorize fresh peer registration for this Goal.',
+          { operation: 'start' },
+        ))
+      }
+      agentId = this.freshAgentId()
+      const registered = await this.registerFreshAgent(
+        session,
+        project,
+        goalId,
+        agentId,
+        signal,
+        false,
+      )
+      if (!registered.ok) return registered
+      changedThread = true
+    } else if (gate !== undefined) {
+      return success({
+        kind: 'selection_required',
+        goalId,
+        selection: identitySelection(gate),
+      })
+    } else {
+      agentId = present(packet.agent_id ?? undefined)
+    }
+
+    if (agentId === undefined || !PUBLIC_AGENT_ID.test(agentId)) {
+      return rejected(readbackFailure('start', 'LoopX did not resolve an exact agent identity.'))
+    }
+    const priorAgent = packet.thread_agent_binding?.status === 'bound'
+      ? present(packet.thread_agent_binding.agent_id)
+      : undefined
+    if (packet.thread_agent_binding?.status === 'conflict') {
+      return rejected(failure(
+        'LOOPX_IDENTITY_CONFLICT',
+        'The LoopX thread binding is conflicted and must be repaired before Goal start.',
+        { operation: 'start' },
+      ))
+    }
+    if (priorAgent !== agentId) {
+      if (priorAgent !== undefined) {
+        const unbound = await this.writeThreadBinding(
+          session,
+          project,
+          goalId,
+          priorAgent,
+          false,
+          signal,
+        )
+        if (!unbound.ok) return unbound
+      }
+      const bound = await this.writeThreadBinding(
+        session,
+        project,
+        goalId,
+        agentId,
+        true,
+        signal,
+      )
+      if (!bound.ok) return bound
+      changedThread = true
+    }
+    if (changedThread) {
+      try {
+        packet = await this.readStartPacket(
+          session,
+          project,
+          goalText,
+          goalId,
+          agentId,
+          false,
+          signal,
+        )
+      } catch (error) {
+        return rejected(safeFailure(error, 'start-readback'))
+      }
+    }
+    if (!packet.ok) {
+      return rejected(readbackFailure(
+        'start-readback',
+        'LoopX rejected the authoritative Goal-start reread.',
+      ))
+    }
+
+    const finalConnection = packet.project_connection
+    const finalGoalId = present(packet.goal_id ?? undefined)
+    const finalAgentId = present(packet.agent_id ?? undefined)
+    const planning = finalGoalId === undefined || finalAgentId === undefined
+      ? undefined
+      : planningCheckpoint(packet, goalText, finalGoalId, finalAgentId)
+    if (finalConnection?.connection_state !== 'connected'
+      || finalConnection.goal_id !== goalId
+      || finalConnection.project !== packet.project
+      || finalGoalId !== goalId || finalAgentId !== agentId
+      || planning === undefined
+      || packet.guided_transaction?.identity_selection_gate != null
+      || packet.host_surface !== HOST_SURFACE
+      || packet.thread_id !== session.id
+      || packet.thread_agent_binding?.status !== 'bound'
+      || packet.thread_agent_binding.agent_id !== agentId) {
+      return rejected(readbackFailure(
+        'start-readback',
+        'LoopX did not return one exact bound identity and model checkpoint.',
+      ))
+    }
+    const current = this.currentRow(session)
+    if ((existingRow === undefined && current !== undefined)
+      || (existingRow !== undefined
+        && (current === undefined
+          || current.goalId !== existingRow.goalId
+          || current.agentId !== existingRow.agentId))) {
+      return rejected(readbackFailure('start', 'The Session binding changed during Goal start.'))
+    }
+    const row = existingRow === undefined
+      ? createBinding({
+          session,
+          goalId,
+          agentId,
+          projectLocator: packet.project,
+          registryLocator: finalConnection.registry,
+          ...optional(present(this.config.runtimeRoot) !== undefined, {
+            runtimeRootLocator: present(this.config.runtimeRoot) as string,
+          }),
+          phase: 'planning',
+          now: Date.now(),
+        })
+      : transitionBinding(existingRow, 'planning', undefined, Date.now())
+    await this.requireTable().put(session.id, row)
+    this.taskBodies.delete(session.id)
+    return success({
+      kind: 'planning',
+      binding: row,
+      planning,
+      modelCheckpoint: renderPlanningCheckpoint(planning),
     })
+  }
+
+  private async ensureStartConnection(
+    session: LoopXSessionRef,
+    project: string,
+    goalText: string,
+    options: NormalizedStartOptions,
+    initial: StartGoalGuidedPayload,
+    signal: AbortSignal | undefined,
+  ): Promise<LoopXResult<ConnectedStartPacket>> {
+    if (!initial.ok) {
+      return rejected(readbackFailure('start', 'LoopX rejected the guided Goal start.'))
+    }
+    const connection = initial.project_connection
+    if (connection === undefined || connection.project !== initial.project) {
+      return rejected(readbackFailure('start', 'LoopX omitted the project connection contract.'))
+    }
+    if (connection.connection_state === 'connected'
+      || connection.connection_state === 'goal_selection_required') {
+      return success({ packet: initial, connectedNow: false })
+    }
+    if (connection.connection_state !== 'not_connected'
+      && connection.connection_state !== 'registry_without_goal') {
+      return rejected(readbackFailure(
+        'start',
+        'LoopX reported malformed project state that requires explicit repair.',
+      ))
+    }
+
+    const goalId = present(initial.goal_id ?? undefined)
+    const connectSteps = (initial.guided_transaction?.ordered_steps ?? [])
+      .filter(step => step.id === 'connect_if_needed')
+    const contract = connectSteps.length === 1 ? connectSteps[0]?.connect_contract : undefined
+    if (goalId === undefined || connection.goal_id !== goalId
+      || contract === undefined
+      || contract.goal_id !== goalId
+      || contract.objective !== goalText) {
+      return rejected(readbackFailure(
+        'bootstrap-connect',
+        'LoopX did not return one exact structured connect contract.',
+      ))
+    }
+    const bootstrapped = await this.bootstrapConnect(
+      session,
+      project,
+      connection.project,
+      connection.registry,
+      contract,
+      options.newIndependent,
+      signal,
+    )
+    if (!bootstrapped.ok) return bootstrapped
+
+    let reread: StartGoalGuidedPayload
+    try {
+      reread = await this.readStartPacket(
+        session,
+        project,
+        goalText,
+        goalId,
+        options.agentId,
+        options.newPeer,
+        signal,
+      )
+    } catch (error) {
+      return rejected(safeFailure(error, 'start-authoritative-reread'))
+    }
+    if (!reread.ok || reread.goal_id !== goalId
+      || reread.project_connection?.connection_state !== 'connected'
+      || reread.project_connection.goal_id !== goalId
+      || reread.project_connection.registry !== connection.registry
+      || reread.project_connection.project !== connection.project) {
+      return rejected(readbackFailure(
+        'start-authoritative-reread',
+        'LoopX did not verify the connected Goal after bootstrap.',
+      ))
+    }
+    return success({ packet: reread, connectedNow: true })
+  }
+
+  private async bootstrapConnect(
+    session: LoopXSessionRef,
+    cwd: string,
+    expectedProject: string,
+    expectedRegistry: string,
+    contract: NonNullable<StartGoalGuidedSuccessPayload['guided_transaction']>['ordered_steps'][number]['connect_contract'],
+    forkGoal: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<LoopXResult<undefined>> {
+    if (contract === undefined) {
+      return rejected(readbackFailure('bootstrap-connect', 'The connect contract is missing.'))
+    }
+    let payload: BootstrapResultPayload
+    try {
+      payload = await this.cli.runJson({
+        operation: 'bootstrap-connect',
+        kind: 'idempotent-write',
+        args: [
+          ...this.runtimeArgs(),
+          'bootstrap',
+          '--project', cwd,
+          forkGoal ? '--fork-goal' : '--goal-id', contract.goal_id,
+          '--objective', contract.objective,
+          '--adapter-kind', contract.adapter_kind,
+          '--adapter-status', contract.adapter_status,
+          '--no-onboarding-scan',
+          '--codex-app-heartbeat', 'ask',
+          ...argsWhen(contract.fine_grained, '--fine-grained'),
+        ],
+        cwd,
+        schema: bootstrapResultSchema,
+        signal,
+        scopeKey: session.id,
+      })
+    } catch (error) {
+      return rejected(safeFailure(error, 'bootstrap-connect'))
+    }
+    if (!payload.ok) {
+      return rejected(failure(
+        'LOOPX_BOOTSTRAP_FAILED',
+        'LoopX rejected the typed project connection request; resolve the LoopX project or global-registry gate, then call loopx_goal_start again.',
+        { operation: 'bootstrap-connect' },
+      ))
+    }
+    if (payload.project !== expectedProject
+      || payload.goal_id !== contract.goal_id
+      || payload.registry !== expectedRegistry
+      || !payload.global_sync.synced_goal_ids.includes(contract.goal_id)) {
+      return rejected(readbackFailure(
+        'bootstrap-connect',
+        'LoopX did not verify the requested project, Goal, registry, and global synchronization.',
+      ))
+    }
+    return success(undefined)
+  }
+
+  private prepareSwitch(
+    session: LoopXSessionRef,
+    row: LoopXBindingRow,
+    request: Omit<SwitchConfirmationRecord, 'token' | 'session' | 'currentGoalId' | 'currentAgentId' | 'expiresAt'>,
+  ): LoopXSwitchRequired {
+    const record: SwitchConfirmationRecord = Object.freeze({
+      token: randomUUID(),
+      session: Object.freeze({ ...session.identity }),
+      currentGoalId: row.goalId,
+      currentAgentId: row.agentId,
+      ...request,
+      expiresAt: Date.now() + SWITCH_CONFIRMATION_TTL_MS,
+    })
+    this.switchConfirmations.set(session.id, record)
+    return Object.freeze({
+      kind: 'switch_required',
+      confirmationToken: record.token,
+      requiresUserConfirmation: true,
+      expiresAt: record.expiresAt,
+      current: Object.freeze({ goalId: row.goalId, agentId: row.agentId }),
+      requested: Object.freeze({
+        operation: record.operation,
+        ...optional(record.requestedGoalId !== undefined, {
+          goalId: record.requestedGoalId as string,
+        }),
+        ...optional(record.requestedAgentId !== undefined, {
+          agentId: record.requestedAgentId as string,
+        }),
+        ...optional(record.newPeer, { newPeer: true as const }),
+        ...optional(record.newIndependent, { newIndependent: true as const }),
+      }),
+    })
+  }
+
+  private validSwitchRecord(
+    session: LoopXSessionRef,
+    token: string | undefined,
+    digest: string,
+  ): SwitchConfirmationRecord | undefined {
+    const record = this.switchConfirmations.get(session.id)
+    if (record === undefined) return undefined
+    if (record.expiresAt <= Date.now()
+      || !sameSessionIdentity(record.session, session.identity)
+      || record.digest !== digest) {
+      this.switchConfirmations.delete(session.id)
+      return undefined
+    }
+    if (token === undefined || record.token !== token) return undefined
+    const row = this.currentRow(session)
+    if (row === undefined || row.goalId !== record.currentGoalId
+      || row.agentId !== record.currentAgentId) {
+      this.switchConfirmations.delete(session.id)
+      return undefined
+    }
+    return record
+  }
+
+  private async commitStartSwitch(
+    session: LoopXSessionRef,
+    row: LoopXBindingRow,
+    goalText: string,
+    request: NormalizedStartOptions,
+    confirmation: SwitchConfirmationRecord,
+    signal: AbortSignal | undefined,
+  ): Promise<LoopXResult<LoopXStartValue>> {
+    this.switchConfirmations.delete(session.id)
+    const detached = await this.detachForSwitch(session, row, signal)
+    if (!detached.ok) return detached
+    const result = await this.startInsideQueue(session, goalText, {
+      ...request,
+      goalId: confirmation.requestedGoalId,
+      agentId: confirmation.requestedAgentId,
+      switchConfirmation: undefined,
+    }, signal)
+    if (!result.ok) return rejected(this.switchIncomplete('start', result.error))
+    return result
+  }
+
+  private async commitAttachSwitch(
+    session: LoopXSessionRef,
+    row: LoopXBindingRow,
+    goalId: string,
+    requestedAgent: string | undefined,
+    newPeer: boolean,
+    confirmation: SwitchConfirmationRecord,
+    signal: AbortSignal | undefined,
+  ): Promise<LoopXResult<LoopXAttachValue>> {
+    this.switchConfirmations.delete(session.id)
+    const detached = await this.detachForSwitch(session, row, signal)
+    if (!detached.ok) return detached
+    const result = await this.attachInsideQueue(
+      session,
+      goalId,
+      requestedAgent ?? confirmation.requestedAgentId,
+      newPeer,
+      signal,
+      undefined,
+      false,
+    )
+    if (!result.ok) return rejected(this.switchIncomplete('attach', result.error))
+    return result
+  }
+
+  private async detachForSwitch(
+    session: LoopXSessionRef,
+    row: LoopXBindingRow,
+    signal: AbortSignal | undefined,
+  ): Promise<LoopXResult<undefined>> {
+    this.cli.abortScope(session.id)
+    this.taskBodies.delete(session.id)
+    const detached = await this.writeThreadBinding(
+      session,
+      row.projectLocator,
+      row.goalId,
+      row.agentId,
+      false,
+      signal,
+    )
+    if (!detached.ok) {
+      if (detached.error.outcomeUncertain) {
+        const current = this.currentRow(session)
+        if (current !== undefined && current.goalId === row.goalId
+          && current.agentId === row.agentId) {
+          await this.requireTable().put(
+            session.id,
+            transitionBinding(current, 'uncertain', 'uncertain_write', Date.now()),
+          )
+        }
+      }
+      return detached
+    }
+    await this.requireTable().delete(session.id)
+    return success(undefined)
+  }
+
+  private async attachFailure(
+    session: LoopXSessionRef,
+    existingRow: LoopXBindingRow | undefined,
+    persistFailure: boolean,
+    project: string,
+    registry: string | undefined,
+    goalId: string,
+    agentId: string | undefined,
+    cause: LoopXFailure,
+    reason?: LoopXBindingReason,
+  ): Promise<LoopXResult<LoopXAttachValue>> {
+    if (existingRow !== undefined) {
+      return await this.disarmInsideQueue(session, existingRow, cause)
+    }
+    if (persistFailure && agentId !== undefined) {
+      return await this.persistAttachFailure(
+        session,
+        project,
+        registry,
+        goalId,
+        agentId,
+        cause,
+        reason,
+      )
+    }
+    return rejected(cause)
+  }
+
+  private invalidSwitchConfirmation(operation: 'start' | 'attach'): LoopXFailure {
+    return failure(
+      'LOOPX_SWITCH_CONFIRMATION_INVALID',
+      'The LoopX switch confirmation is missing, expired, stale, or bound to another operation; repeat the same typed request without a token to prepare a new confirmation.',
+      { operation },
+    )
+  }
+
+  private switchIncomplete(operation: 'start' | 'attach', cause: LoopXFailure): LoopXFailure {
+    return failure(
+      'LOOPX_SWITCH_INCOMPLETE',
+      'The old LoopX binding was detached, but the requested replacement did not complete; this DSH Session is unbound, so call loopx_goal_start or loopx_goal_attach again.',
+      {
+        operation: `switch-${operation}`,
+        outcomeUncertain: cause.outcomeUncertain,
+      },
+    )
   }
 
   activate(
@@ -779,7 +1779,38 @@ export class LoopXService extends Service implements LoopXServiceApi {
       const before = fenceOf(session.id, row)
       let packet: BootstrapCommandPackPayload
       let body: string
+      let refreshVerified = false
       try {
+        const refresh = await this.cli.runJson({
+          operation: 'refresh-state',
+          kind: 'write',
+          args: [
+            ...this.locatorArgs(row),
+            'refresh-state',
+            '--goal-id', row.goalId,
+            '--project', row.projectLocator,
+            '--agent-id', row.agentId,
+            '--agent-lane', row.agentId,
+            '--progress-scope', 'agent_lane',
+            '--suppress-external-sinks',
+          ],
+          cwd: row.projectLocator,
+          schema: refreshStateResultSchema,
+          signal,
+          scopeKey: session.id,
+        })
+        if (!refreshStateReadbackMatches(refresh, row)) {
+          return await this.disarmInsideQueue(
+            session,
+            row,
+            failure(
+              'LOOPX_WRITE_UNCERTAIN',
+              'LoopX refresh-state did not verify the exact suppressed-sink planning commit.',
+              { operation: 'activate-refresh', outcomeUncertain: true },
+            ),
+          )
+        }
+        refreshVerified = true
         packet = await this.readCommandPack(
           session,
           row.projectLocator,
@@ -792,7 +1823,11 @@ export class LoopXService extends Service implements LoopXServiceApi {
           return await this.disarmInsideQueue(
             session,
             row,
-            readbackFailure('activate', 'LoopX activation readback did not match the pending binding.'),
+            failure(
+              'LOOPX_WRITE_UNCERTAIN',
+              'LoopX refresh-state succeeded, but activation readback did not match the pending binding.',
+              { operation: 'activate-readback', outcomeUncertain: true },
+            ),
           )
         }
         body = await this.readTaskBody(
@@ -804,7 +1839,18 @@ export class LoopXService extends Service implements LoopXServiceApi {
           signal,
         )
       } catch (error) {
-        return await this.disarmInsideQueue(session, row, safeFailure(error, 'activate'))
+        const cause = safeFailure(error, refreshVerified ? 'activate-readback' : 'activate-refresh')
+        return await this.disarmInsideQueue(
+          session,
+          row,
+          refreshVerified && !cause.outcomeUncertain
+            ? failure(
+                'LOOPX_WRITE_UNCERTAIN',
+                'LoopX refresh-state succeeded, but authoritative activation readback failed.',
+                { operation: 'activate-readback', outcomeUncertain: true },
+              )
+            : cause,
+        )
       }
       if (!this.fenceIsCurrent(before)) {
         return rejected(readbackFailure('activate', 'The pending binding changed during activation.'))
@@ -944,6 +1990,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
   ): Promise<LoopXResult<{ readonly detached: true }>> {
     this.cli.abortScope(session.id)
     this.taskBodies.delete(session.id)
+    this.switchConfirmations.delete(session.id)
     return this.queued(session, 'detach', async () => {
       const row = this.currentRow(session)
       if (row === undefined) return rejected(this.notBound('detach'))
@@ -960,6 +2007,90 @@ export class LoopXService extends Service implements LoopXServiceApi {
       }
       await this.requireTable().delete(session.id)
       return success(Object.freeze({ detached: true as const }))
+    })
+  }
+
+  todoAdd(
+    session: LoopXSessionRef,
+    request: LoopXTodoAddRequest,
+    signal?: AbortSignal,
+  ): Promise<LoopXResult<LoopXTodoAddValue>> {
+    const normalized = normalizeTodoAddRequest(request)
+    if (!normalized.ok) return Promise.resolve(normalized)
+    return this.queued(session, 'todo-add', async () => {
+      const row = this.currentRow(session)
+      if (row === undefined) return rejected(this.notBound('todo-add'))
+      if (row.phase !== 'planning') {
+        return rejected(failure(
+          'LOOPX_DRIVER_NOT_ARMED',
+          'Todo add requires the current planning binding; call loopx_goal_start to create a new plan.',
+          { operation: 'todo-add' },
+        ))
+      }
+      const before = fenceOf(session.id, row)
+      const todo = normalized.value
+      const taskClass = todo.role === 'agent' ? 'advancement_task' : 'user_gate'
+      const roleArgs = todo.role === 'agent'
+        ? ['--claimed-by', row.agentId]
+        : [
+            '--agent-id', row.agentId,
+            '--bound-agent', row.agentId,
+            '--blocks-agent', row.agentId,
+          ]
+      try {
+        const payload = await this.cli.runJson({
+          operation: 'todo-add',
+          kind: 'write',
+          args: [
+            ...this.locatorArgs(row),
+            'todo', 'add',
+            '--goal-id', row.goalId,
+            '--project', row.projectLocator,
+            '--role', todo.role,
+            '--text', todo.normalizedTodo,
+            '--status', 'open',
+            '--task-class', taskClass,
+            '--action-kind', todo.actionKind,
+            ...roleArgs,
+            ...argsWhen(todo.targetKey !== undefined, '--target-key', todo.targetKey ?? ''),
+          ],
+          cwd: row.projectLocator,
+          schema: todoAddCommandSchema,
+          signal,
+          scopeKey: session.id,
+        })
+        if (!todoAddReadbackMatches(payload, row, todo)) {
+          return await this.disarmInsideQueue(
+            session,
+            row,
+            failure(
+              'LOOPX_WRITE_UNCERTAIN',
+              'LoopX did not verify the exact typed Todo add postcondition.',
+              { operation: 'todo-add', outcomeUncertain: true },
+            ),
+          )
+        }
+        if (!this.fenceIsCurrent(before)) {
+          return await this.disarmInsideQueue(
+            session,
+            row,
+            failure(
+              'LOOPX_WRITE_UNCERTAIN',
+              'The planning binding changed after LoopX admitted the Todo write.',
+              { operation: 'todo-add', outcomeUncertain: true },
+            ),
+          )
+        }
+        return success(Object.freeze({
+          todoId: payload.todo_id,
+          status: 'open' as const,
+          priority: todo.priority,
+          role: todo.role,
+          payload: boundedTodoAddProjection(payload),
+        }))
+      } catch (error) {
+        return await this.disarmInsideQueue(session, row, safeFailure(error, 'todo-add'))
+      }
     })
   }
 
@@ -1207,6 +2338,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
   async disposeSession(session: LoopXSessionRef): Promise<void> {
     this.cli.abortScope(session.id)
     this.taskBodies.delete(session.id)
+    this.switchConfirmations.delete(session.id)
     if (!this.mutationAdmissionOpen || validateSession(session) !== undefined) return
     await this.enqueue(session.id, async () => {
       const row = this.currentRow(session)
@@ -1223,7 +2355,9 @@ export class LoopXService extends Service implements LoopXServiceApi {
     session: LoopXSessionRef,
     project: string,
     goalText: string,
+    goalId: string | undefined,
     agentId: string | undefined,
+    newPeer: boolean,
     signal: AbortSignal | undefined,
   ): Promise<StartGoalGuidedPayload> {
     return await this.cli.runJson({
@@ -1235,7 +2369,9 @@ export class LoopXService extends Service implements LoopXServiceApi {
         '--project', project,
         '--thread-id', session.id,
         '--host-surface', HOST_SURFACE,
+        ...argsWhen(goalId !== undefined, '--goal-id', goalId ?? ''),
         ...argsWhen(agentId !== undefined, '--agent-id', agentId ?? ''),
+        ...argsWhen(newPeer, '--new-peer'),
         '--goal-text', goalText,
       ],
       cwd: project,
@@ -1333,12 +2469,32 @@ export class LoopXService extends Service implements LoopXServiceApi {
         signal,
         scopeKey: session.id,
       })
-      if (!payload.ok || payload.goal_id !== goalId || !payload.changed || !payload.written
-        || payload.global_sync?.ok !== true
-        || payload.registration_readback?.verified !== true) {
+      if (!payload.ok) {
+        if (!payload.written && !payload.partial_write) {
+          return rejected(deterministicRegistrationFailure(payload.error_kind))
+        }
         return rejected(failure(
           'LOOPX_WRITE_UNCERTAIN',
-          'LoopX did not verify the fresh agent registration.',
+          'LoopX may have written the fresh agent to its source registry, but global sync or authoritative readback was not verified. Repair source/global registry consistency before retrying; do not create another fresh identity.',
+          { operation: 'register-agent', outcomeUncertain: true },
+        ))
+      }
+      const readback = payload.registration_readback
+      if (payload.goal_id !== goalId
+        || payload.requested_agents.length !== 1
+        || payload.requested_agents[0] !== agentId
+        || !payload.registered_agents.includes(agentId)
+        || readback.requested_agents.length !== 1
+        || readback.requested_agents[0] !== agentId
+        || !readback.source_registered_agents.includes(agentId)
+        || !readback.global_registered_agents.includes(agentId)
+        || !sameAgentSet(
+          readback.source_registered_agents,
+          readback.global_registered_agents,
+        )) {
+        return rejected(failure(
+          'LOOPX_WRITE_UNCERTAIN',
+          'LoopX did not verify the exact fresh agent across source and global readback.',
           { operation: 'register-agent', outcomeUncertain: true },
         ))
       }
@@ -1596,10 +2752,14 @@ export class LoopXService extends Service implements LoopXServiceApi {
     return `dsh-${randomUUID().replaceAll('-', '').slice(0, 20)}`
   }
 
+  private freshGoalId(): string {
+    return `dsh-goal-${randomUUID().replaceAll('-', '').slice(0, 20)}`
+  }
+
   private notBound(operation: string): LoopXFailure {
     return failure(
       'LOOPX_SESSION_NOT_BOUND',
-      'The current DSH Session is not bound to a LoopX Goal.',
+      'The current DSH Session is not bound to a LoopX Goal; call loopx_goal_start or loopx_goal_attach first.',
       { operation },
     )
   }
