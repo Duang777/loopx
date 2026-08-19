@@ -1,6 +1,6 @@
 {
   "name": "dsh-loopx-plugin",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Same-session LoopX host integration for DeepSeek Harness",
   "private": true,
   "type": "module",

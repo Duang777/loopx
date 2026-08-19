@@ -29,7 +29,7 @@ export const PLUGIN_VERSION = manifest.version
 const USAGE = 'Usage: /loopx [version|<request>]'
 const SEMANTIC_ROUTING_POLICY = [
   'Complete the quoted user request through the registered `loopx_*` tools; do not invoke a raw LoopX CLI or edit registries.',
-  'If this Session is unbound, attach only when the user explicitly supplied a Goal id and explicitly requested binding; otherwise start a new Goal from the original request.',
+  'If this Session is unbound, attach only when the user explicitly supplied a Goal id and explicitly requested binding; otherwise start a new Goal **with newIndependent set to true** from the original request.',
   'If this Session is already bound, keep the current Goal unless the user explicitly supplied a different exact Goal id and requested switching, or explicitly requested detaching the current binding.',
   'Do not guess a Goal id or fuzzy-match an earlier Goal.',
   'The registered tools may be composed in this one model turn. If no safe operation can be determined, ask the user for clarification without mutating state.',
