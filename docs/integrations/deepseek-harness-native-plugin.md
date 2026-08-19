@@ -80,17 +80,67 @@ byte caps, or a minimal child-only environment. The defaults are read timeout
 
 ## Same-Session lifecycle
 
-Start through the visible DSH command surface:
+Send any task-bearing request through the visible DSH command surface:
 
 ```text
 /loopx implement the bounded change
+/loopx attach Goal goal-123 and continue it here
+/loopx status
 ```
 
-LoopX returns an exact thread/Goal/agent identity and a formal planning
-checkpoint. The checkpoint is queued to the same Agent. Only after planning
-and Todo refresh does the bounded `loopx_goal_activate` Host tool read the
-canonical activation packet, fetch the heartbeat task body into memory, and
-arm the driver.
+Every non-empty suffix except exact `/loopx version` uses the same semantic
+entry, including words such as `start`, `attach`, `status`, `pause`, `resume`,
+and `detach`. The plugin queues one plugin-owned follow-up in the same Session,
+preserving the original suffix as quoted user text plus compact routing
+guidance. The current main DSH model handles one ordinary turn and may compose
+the registered `loopx_*` typed tools. The command does not mutate LoopX before
+that turn, run a classifier, create another Agent, or invoke a second model.
+
+If the Session is unbound, attachment requires both an explicit Goal id and
+explicit binding intent; otherwise the model starts a new Goal from the
+original request. If the Session is already bound, the current Goal remains
+selected. Switching requires a different exact Goal id plus explicit switching
+intent; detaching the current binding requires explicit detach intent but no
+Goal id. The model never guesses or fuzzy-matches a Goal id. If it cannot
+choose a safe operation, it asks for clarification without changing state.
+
+The routing text is prompt guidance rather than a machine-enforced hard
+allowlist. Other DSH tools may remain visible; LoopX mutations are still bounded
+by the registered typed schemas and authoritative service readback. Ordinary
+language without `/loopx` retains DSH's normal model/tool-selection behavior.
+
+When the semantic turn selects `loopx_goal_start`, LoopX returns the exact
+thread/Goal/agent identity and the structured `loopx_goal_start_command_v0`
+planning contract. The tool projects it to
+`dsh_loopx_planning_checkpoint_v0` and returns it directly to the model. The
+model writes the bounded plan only through `loopx_todo_add`; then
+`loopx_goal_activate` performs a suppressed-sink refresh and authoritative
+reread, fetches the heartbeat task body into memory, and arms the driver. The
+plugin keeps no parallel Todo receipt ledger; LoopX remains authoritative for
+the Todo and refreshed task state.
+
+A stable DSH Session with no prior binding defaults to a distinct public-safe
+LoopX peer identity, so both `/loopx <task>` and semantic start can enter the
+planning checkpoint without choosing an existing lane. Verified same-Session
+bindings are reused; takeover of an existing peer remains explicit, while a
+host without a stable Session id fails closed.
+
+For a fresh project, the plugin validates the structured
+`loopx_start_goal_connect_v0` packet, constructs a locally owned and allowlisted
+`loopx bootstrap` argv, validates `loopx_bootstrap_result_v0`, and rereads the
+authoritative guided projection. It never executes packet command text, accepts
+model-supplied argv, or edits a registry directly. Unknown versions and
+malformed legacy connection states fail closed with actionable upgrade or
+repair guidance.
+
+Fresh-agent registration runs the same source-to-global sync as a read-only
+preflight before changing the source registry. A
+`LOOPX_REGISTRY_INTEGRITY` result is therefore a deterministic pre-write
+failure; run `loopx sync-global --goal-id <goal-id> --dry-run` and repair the
+reported registry contract before retrying. A `LOOPX_WRITE_UNCERTAIN` result
+instead means the source write may exist while global sync or exact readback is
+unverified. Do not generate another peer: reconcile the source/global agent
+sets before binding the Session.
 
 Existing Goals require an explicit lane decision:
 
@@ -99,10 +149,24 @@ Existing Goals require an explicit lane decision:
 /loopx attach <goal-id> --new-peer
 ```
 
-The model-facing surface contains exactly five tools:
+Natural-language attach requests use `loopx_goal_attach` with an exact Goal
+selection. If start or attach targets a different Goal from the one historically
+bound to this Session, the first call returns `switch_required` without
+mutation. Only after explicit user confirmation may the model repeat the same
+typed operation with its `switchConfirmation` token. The token is short-lived,
+operation-bound, process-memory-only, and revalidated against the exact current
+Goal and agent inside the per-Session queue.
 
+The model-facing surface contains exactly eleven tools:
+
+- `loopx_goal_start`
+- `loopx_goal_attach`
 - `loopx_goal_activate`
 - `loopx_status`
+- `loopx_goal_detach`
+- `loopx_driver_pause`
+- `loopx_driver_resume`
+- `loopx_todo_add`
 - `loopx_todo_claim`
 - `loopx_todo_update`
 - `loopx_todo_complete`
@@ -120,17 +184,28 @@ write, pause, uncertain transition, reload, disposal, and foreign-input path.
 ## Observe, pause, resume, and detach
 
 ```text
+/loopx
+/loopx version
 /loopx status
 /loopx pause
 /loopx resume
 /loopx detach
 ```
 
-The status output separates the DSH Host sidecar projection from live LoopX
+Empty `/loopx` retains the local status/help response. Exact `/loopx version`
+returns only the installed `dsh-loopx-plugin` package version; it does not
+invoke the LoopX CLI or inspect Goal, Todo, or Host binding state. `version`
+with additional text and the other examples above enter the semantic path.
+Their corresponding typed operations keep Host state separate from live LoopX
 authority. Pause changes only driver state. Resume revalidates LoopX identity
 and refetches task text before arming a fresh generation. Detach removes the
 current Session binding and performs authoritative unbind readback; it does
 not alter the Goal or Todo lifecycle.
+
+An uncertain detach stops a requested switch before the new Goal is started or
+attached. If exact detach succeeds but the new operation fails, the Session is
+reported honestly as unbound; the plugin does not claim to have restored the
+old binding.
 
 Human messages, foreign plugin messages, and command runs preempt automatic
 continuation. The driver owns at most one evaluation, AbortController, timer,
@@ -150,15 +225,26 @@ delete LoopX state or purge the DSH storage-domain sidecar. v1 has no implicit
 purge command. On reinstall, a stored armed binding cold-restores paused and
 requires exact lifecycle readback plus explicit resume.
 
+Existing control words remain usable through the semantic `/loopx` entry, and
+the prior five tools remain compatible. Typed start, attach, detach, driver
+pause/resume, and Todo add are additive. Older consumers
+may ignore the additive Python fields, but this
+plugin fails closed when a required guided-connect, planning, refresh-state, or
+bootstrap-result schema is unavailable. Roll back by removing the plugin or
+installing the preceding package version; neither action migrates or rewrites
+LoopX Goal/Todo authority.
+
 ## Authority and privacy
 
 `ctx.loopx` and `ctx.goals` are fully isolated. DSH retains only Host binding
 identity, locators, lifecycle phase/generation, scheduler bookkeeping, and a
-bounded reason. Goal text and task bodies stay in memory. Raw transcripts,
-raw command output, Todo evidence, environment values, credentials, and local
-logs are neither stored in the sidecar nor published as LoopX evidence.
+bounded reason. Goal text, task bodies, and normal conversation content are not
+copied into that sidecar or published as LoopX evidence; they still follow DSH
+Session persistence. Raw command output, environment values, credentials, and
+local logs are not projected into model output.
 
-Installing the provider exposes interfaces but grants no new file, shell,
+Installing the provider grants only typed LoopX operations against derived
+authoritative locators; it grants no arbitrary filesystem path, argv, shell,
 network, credential, production, or cross-Session authority. Multi-Host
 processes sharing one storage root, cross-machine scheduling, and hostile
 local callers are outside the v1 threat model.
@@ -175,10 +261,12 @@ node smoke/dsh-profile-smoke.mjs \
 ```
 
 The smoke performs real DSH plugin add/dump/remove operations, uses a mock
-LoopX executable, and checks `/loopx status`, two-phase activation, one idle
-continuation, foreign-input pause, sidecar privacy, and tarball contents. It
-does not start a model, access the network, require credentials, or touch the
-user's existing DSH Profile.
+LoopX executable, and checks all eleven registered tools, the versioned fresh
+connect/bootstrap exchange, single-follow-up semantic command entry, typed Todo
+writeback plus two-phase activation, one idle continuation,
+foreign-input pause, sidecar privacy, and tarball contents. It does not start a
+model, access the network, require credentials, or touch the user's existing
+DSH Profile.
 
 ## Related contracts
 
