@@ -102,6 +102,7 @@ def handle_loopx_bootstrap_command_pack_command(
         new_peer=bool(getattr(args, "new_peer", False)),
         cli_bin=args.cli_bin,
         host_surface=args.host_surface,
+        runtime_root_override=args.runtime_root,
         goal_text=args.goal_text,
         available_capabilities=args.available_capabilities,
         capability_route=args.capability_route,

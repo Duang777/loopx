@@ -25,6 +25,7 @@ from loopx.cli_commands.todo_argument_validation import (
     validate_shared_todo_options,
     validate_todo_add_options,
 )
+from loopx.thread_agent_binding import resolve_dsh_thread_agent_binding
 
 GOAL_ID = "guided-projection-goal"
 AGENT_ID = "codex-guided-projection"
@@ -1380,6 +1381,7 @@ def test_cli_without_host_returns_read_only_host_selection_gate(
         "pi",
         "gemini-cli",
         "cursor-agent",
+        "dsh",
         "deepseek-harness-native",
         "deepseek-harness",
         "ark-managed-agent",
@@ -1595,6 +1597,253 @@ def test_dsh_native_alias_is_canonical_before_thread_lookup_and_binding(
         "canonical_cli_command"
     ]
     assert "dsh-native" not in json.dumps(payload)
+
+
+def test_dsh_v1_bootstrap_projects_the_global_binding_and_cas_command(
+    tmp_path: Path,
+) -> None:
+    project = _write_connected_project(tmp_path)
+    source_path = project / ".loopx" / "registry.json"
+    runtime_root = tmp_path / "runtime"
+    global_path = runtime_root / "registry.global.json"
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source["common_runtime_root"] = str(runtime_root)
+    source_path.write_text(json.dumps(source, indent=2) + "\n", encoding="utf-8")
+    global_goal = {
+        **source["goals"][0],
+        "source_registry": str(source_path),
+    }
+    tombstone = {
+        "schema_version": "loopx_host_thread_binding_v1",
+        "host_surface": "dsh",
+        "thread_id": "dsh-session-v1",
+        "revision": 7,
+        "state": "unbound",
+    }
+    global_path.parent.mkdir(parents=True)
+    global_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "registry_role": "global-local",
+                "goals": [global_goal],
+                "dsh_host_thread_bindings": {
+                    "schema_version": "loopx_dsh_host_thread_bindings_v1",
+                    "records": {"dsh-session-v1": tombstone},
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_start_goal_guided_packet(
+        project=project,
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+        thread_id="dsh-session-v1",
+        cli_bin="loopx",
+        host_surface="dsh",
+        goal_text=GOAL_TEXT,
+        include_command_pack_detail=True,
+    )
+
+    command_pack = payload["command_pack"]
+    assert payload["host_surface"] == "dsh"
+    assert command_pack["host_surface"] == "dsh"
+    assert command_pack["agent_type"] == "deepseek-harness-native"
+    assert command_pack["host_thread_binding"] == tombstone
+    resolved = resolve_dsh_thread_agent_binding(
+        global_path=global_path,
+        host_surface="dsh",
+        thread_id="dsh-session-v1",
+    )
+    assert resolved["binding"] == command_pack["host_thread_binding"]
+    assert "thread_agent_binding" not in command_pack
+    bind_command = command_pack["commands"]["goal_start_bind_thread"]
+    assert "--host-surface dsh" in bind_command
+    assert "--expected-revision 7" in bind_command
+    assert command_pack["canonical_cli_command"].count("--host-surface dsh") == 1
+    binding_step = next(
+        step
+        for step in payload["guided_transaction"]["ordered_steps"]
+        if step["id"] == "bind_thread_identity"
+    )
+    assert binding_step["result_contract"] == {
+        "schema_version": "loopx_host_thread_binding_command_v1",
+        "required_result": {
+            "ok": True,
+            "application": "yes",
+            "binding": {
+                "schema_version": "loopx_host_thread_binding_v1",
+                "host_surface": "dsh",
+                "state": "bound",
+            },
+        },
+    }
+
+    bound = {
+        **tombstone,
+        "revision": 8,
+        "state": "bound",
+        "target": {"goal_id": GOAL_ID, "agent_id": AGENT_ID},
+    }
+    authority = json.loads(global_path.read_text(encoding="utf-8"))
+    authority["dsh_host_thread_bindings"]["records"]["dsh-session-v1"] = bound
+    global_path.write_text(json.dumps(authority) + "\n", encoding="utf-8")
+    activated = build_loopx_bootstrap_command_pack(
+        project=project,
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+        thread_id="dsh-session-v1",
+        cli_bin="loopx",
+        host_surface="dsh",
+        goal_text=GOAL_TEXT,
+    )
+    assert activated["ok"] is True
+    assert activated["agent_id"] == AGENT_ID
+    assert activated["host_thread_binding"] == bound
+    assert activated["host_loop_activation"]["activation_allowed"] is True
+    assert activated["commands"]["goal_start_bind_thread"] is None
+
+
+def test_dsh_v1_bootstrap_projects_a_bounded_authority_failure(tmp_path: Path) -> None:
+    project = _write_connected_project(tmp_path)
+    source_path = project / ".loopx" / "registry.json"
+    missing_runtime = tmp_path / "missing-runtime"
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source["common_runtime_root"] = str(missing_runtime)
+    source_path.write_text(json.dumps(source) + "\n", encoding="utf-8")
+
+    payload = build_start_goal_guided_packet(
+        project=project,
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+        thread_id="dsh-session-missing-home",
+        cli_bin="loopx",
+        host_surface="dsh",
+        goal_text=GOAL_TEXT,
+        include_command_pack_detail=True,
+    )
+
+    expected_resolution = {
+        "schema_version": "loopx_host_thread_binding_command_v1",
+        "ok": False,
+        "changed": False,
+        "application": "no",
+        "error_kind": "binding_home_unavailable",
+    }
+    assert payload["ok"] is False
+    assert payload["error_kind"] == "binding_home_unavailable"
+    assert payload["error"] == "DSH Host binding authority could not be resolved"
+    assert payload["host_thread_binding_resolution"] == expected_resolution
+    assert payload["command_pack"]["host_thread_binding_resolution"] == expected_resolution
+    assert str(missing_runtime) not in json.dumps(expected_resolution)
+
+
+def test_dsh_v1_explicit_runtime_root_wins_for_resolve_bootstrap_and_start(
+    tmp_path: Path,
+) -> None:
+    project = _write_connected_project(tmp_path)
+    source_path = project / ".loopx" / "registry.json"
+    project_runtime = tmp_path / "project-runtime"
+    explicit_runtime = tmp_path / "explicit-runtime"
+    thread_id = "dsh-explicit-root-session"
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source["common_runtime_root"] = str(project_runtime)
+    source_path.write_text(json.dumps(source) + "\n", encoding="utf-8")
+    global_goal = {**source["goals"][0], "source_registry": str(source_path)}
+    decoy = {
+        "schema_version": "loopx_host_thread_binding_v1",
+        "host_surface": "dsh",
+        "thread_id": thread_id,
+        "revision": 4,
+        "state": "unbound",
+    }
+    expected = {
+        **decoy,
+        "revision": 9,
+        "state": "bound",
+        "target": {"goal_id": GOAL_ID, "agent_id": AGENT_ID},
+    }
+    for runtime_root, binding in (
+        (project_runtime, decoy),
+        (explicit_runtime, expected),
+    ):
+        runtime_root.mkdir(parents=True)
+        (runtime_root / "registry.global.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "0.1",
+                    "registry_role": "global-local",
+                    "goals": [global_goal],
+                    "dsh_host_thread_bindings": {
+                        "schema_version": "loopx_dsh_host_thread_bindings_v1",
+                        "records": {thread_id: binding},
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def invoke(*argv: str) -> dict[str, Any]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = cli_main(
+                [
+                    "--format",
+                    "json",
+                    "--runtime-root",
+                    str(explicit_runtime),
+                    *argv,
+                ]
+            )
+        assert exit_code == 0, output.getvalue()
+        return json.loads(output.getvalue())
+
+    resolved = invoke(
+        "resolve-agent-thread",
+        "--host-surface",
+        "dsh",
+        "--thread-id",
+        thread_id,
+    )
+    bootstrapped = invoke(
+        "bootstrap-command-pack",
+        "--project",
+        str(project),
+        "--goal-id",
+        GOAL_ID,
+        "--agent-id",
+        AGENT_ID,
+        "--thread-id",
+        thread_id,
+        "--host-surface",
+        "dsh",
+    )
+    started = invoke(
+        "start-goal",
+        "--guided",
+        "--project",
+        str(project),
+        "--goal-id",
+        GOAL_ID,
+        "--agent-id",
+        AGENT_ID,
+        "--thread-id",
+        thread_id,
+        "--host-surface",
+        "dsh",
+        "--goal-text",
+        GOAL_TEXT,
+    )
+
+    assert resolved["binding"] == expected
+    assert bootstrapped["host_thread_binding"] == expected
+    assert started["host_thread_binding"] == expected
+    assert started["command_pack"]["host_thread_binding"] == expected
 
 
 def _runnable_todo_add_argv(command_template: str) -> list[str]:

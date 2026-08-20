@@ -1,64 +1,62 @@
 import { z } from 'zod'
-import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
-import type { LoopXBindingRow } from './types.ts'
 
 const safeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const nonEmpty = z.string().min(1)
 const publicAgentId = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/u)
+const publicThreadId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u)
+const publicGoalId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u)
 
-export const loopxSessionIdentitySchema = z.object({
-  createdAt: safeInteger,
-  cwd: nonEmpty.optional(),
-})
+const hostThreadBindingBase = {
+  schema_version: z.literal('loopx_host_thread_binding_v1'),
+  host_surface: z.literal('dsh'),
+  thread_id: publicThreadId,
+  revision: safeInteger.min(1),
+} as const
 
-export const loopxBindingPhaseSchema = z.enum([
-  'planning',
-  'active_paused',
-  'active_armed',
-  'uncertain',
+export const hostThreadBindingSchema = z.discriminatedUnion('state', [
+  z.object({
+    ...hostThreadBindingBase,
+    state: z.literal('bound'),
+    target: z.object({
+      goal_id: publicGoalId,
+      agent_id: publicAgentId,
+    }),
+  }),
+  z.object({
+    ...hostThreadBindingBase,
+    state: z.literal('unbound'),
+  }),
 ])
 
-export const loopxBindingReasonSchema = z.enum([
-  'cold_restore',
-  'user_pause',
-  'foreign_input',
-  'loopx_terminal_observed',
-  'identity_conflict',
-  'readback_failed',
-  'uncertain_write',
-  'session_disposed',
-  'manual_resume_required',
+const bindingApplicationSchema = z.enum(['yes', 'no', 'unknown'])
+const bindingErrorKindSchema = z.enum([
+  'binding_not_found',
+  'revision_conflict',
+  'invalid_target',
+  'binding_home_uninitialized',
+  'binding_home_unavailable',
+  'authority_corrupt',
+  'authority_unhealthy',
+  'authority_exhausted',
 ])
 
-export const loopxBindingRowSchema = z.object({
-  schemaVersion: z.literal('loopx_dsh_binding_row_v0'),
-  session: loopxSessionIdentitySchema,
-  hostSurface: z.literal('deepseek-harness-native'),
-  goalId: nonEmpty.max(256),
-  agentId: publicAgentId,
-  projectLocator: nonEmpty.max(4096),
-  registryLocator: nonEmpty.max(4096).optional(),
-  runtimeRootLocator: nonEmpty.max(4096).optional(),
-  phase: loopxBindingPhaseSchema,
-  generation: safeInteger.min(1),
-  schedulerResetToken: nonEmpty.max(256).optional(),
-  unchangedPollCount: safeInteger,
-  nextCheckAt: safeInteger.optional(),
-  reason: loopxBindingReasonSchema.optional(),
-  bindingCreatedAt: safeInteger,
-  updatedAt: safeInteger,
-}).refine(row => row.updatedAt >= row.bindingCreatedAt, {
-  path: ['updatedAt'],
-  message: 'updatedAt must not precede bindingCreatedAt',
-}) satisfies z.ZodType<LoopXBindingRow>
-
-export const loopxBindingDomainSpec = defineDomain({
-  name: 'dsh_loopx_plugin',
-  version: 0,
-  tables: {
-    sessions: domainTable<string, LoopXBindingRow>(loopxBindingRowSchema),
-  },
-})
+export const hostThreadBindingCommandSchema = z.discriminatedUnion('ok', [
+  z.object({
+    schema_version: z.literal('loopx_host_thread_binding_command_v1'),
+    ok: z.literal(true),
+    changed: z.boolean(),
+    application: z.enum(['yes', 'no']),
+    binding: hostThreadBindingSchema,
+  }),
+  z.object({
+    schema_version: z.literal('loopx_host_thread_binding_command_v1'),
+    ok: z.literal(false),
+    changed: z.literal(false),
+    application: bindingApplicationSchema,
+    error_kind: bindingErrorKindSchema,
+    binding: hostThreadBindingSchema.optional(),
+  }),
+])
 
 const selectionChoiceSchema = z.looseObject({
   agent_id: publicAgentId,
@@ -82,11 +80,6 @@ export const goalSelectionGateSchema = z.looseObject({
   choices: z.array(z.looseObject({
     goal_id: nonEmpty,
   })),
-})
-
-export const threadBindingProjectionSchema = z.looseObject({
-  status: z.enum(['bound', 'missing', 'conflict', 'unavailable']),
-  agent_id: publicAgentId.nullish(),
 })
 
 export const startGoalConnectContractSchema = z.looseObject({
@@ -175,9 +168,9 @@ const startGoalGuidedSuccessSchema = z.looseObject({
   project: nonEmpty.optional(),
   goal_id: nonEmpty.nullish(),
   agent_id: publicAgentId.nullish(),
-  host_surface: z.literal('deepseek-harness-native').optional(),
+  host_surface: z.literal('dsh').optional(),
   thread_id: nonEmpty.optional(),
-  thread_agent_binding: threadBindingProjectionSchema.optional(),
+  host_thread_binding: hostThreadBindingSchema.optional(),
   goal_selection_gate: goalSelectionGateSchema.optional(),
   host_surface_selection_gate: z.looseObject({}).optional(),
   project_connection: projectConnectionSchema.optional(),
@@ -228,9 +221,9 @@ const bootstrapCommandPackSuccessSchema = z.looseObject({
   goal_id: nonEmpty,
   agent_id: publicAgentId.nullish(),
   agent_type: z.literal('deepseek-harness-native'),
-  host_surface: z.literal('deepseek-harness-native'),
+  host_surface: z.literal('dsh'),
   thread_id: nonEmpty.optional(),
-  thread_agent_binding: threadBindingProjectionSchema.optional(),
+  host_thread_binding: hostThreadBindingSchema.optional(),
   project_connection: projectConnectionSchema.optional(),
   host_loop_activation: z.looseObject({
     schema_version: z.literal('loopx_host_loop_activation_v1'),
@@ -350,15 +343,18 @@ export const todoCommandSchema = z.discriminatedUnion('ok', [
   z.looseObject({
     schema_version: z.literal('loopx_todo_command_v0'),
     ok: z.literal(true),
+    dry_run: z.literal(false),
     goal_id: nonEmpty,
     todo_id: nonEmpty,
     status: nonEmpty.optional(),
-    written: z.boolean().optional(),
+    changed: z.boolean(),
   }),
   z.looseObject({
     schema_version: z.literal('loopx_todo_command_v0'),
     ok: z.literal(false),
     goal_id: nonEmpty,
+    changed: z.boolean().optional(),
+    partial_write: z.boolean().optional(),
     error: nonEmpty.optional(),
     error_code: nonEmpty.optional(),
   }),
@@ -368,7 +364,7 @@ export const todoAddCommandSchema = z.discriminatedUnion('ok', [
   z.looseObject({
     schema_version: z.literal('loopx_todo_command_v0'),
     ok: z.literal(true),
-    dry_run: z.boolean(),
+    dry_run: z.literal(false),
     added: z.boolean(),
     already_exists: z.boolean(),
     goal_id: nonEmpty,
@@ -502,37 +498,6 @@ export const registerAgentSchema = z.discriminatedUnion('ok', [
   }),
 ])
 
-export const threadBindingCommandSchema = z.discriminatedUnion('ok', [
-  z.looseObject({
-    schema_version: z.literal('loopx_thread_agent_binding_command_v0'),
-    ok: z.literal(true),
-    goal_id: nonEmpty,
-    thread_id: nonEmpty,
-    host_surface: z.literal('deepseek-harness-native'),
-    agent_id: publicAgentId,
-    changed: z.boolean(),
-    written: z.boolean(),
-    binding: z.looseObject({
-      schema_version: z.literal('loopx_thread_agent_binding_v0'),
-      status: z.enum(['bound', 'missing']),
-      thread_id: nonEmpty,
-      host_surface: z.literal('deepseek-harness-native'),
-      agent_id: publicAgentId.nullish(),
-    }),
-    global_sync: z.looseObject({ ok: z.literal(true) }),
-    registration_readback: z.looseObject({ verified: z.literal(true) }),
-  }),
-  z.looseObject({
-    schema_version: z.literal('loopx_thread_agent_binding_command_v0'),
-    ok: z.literal(false),
-    goal_id: nonEmpty,
-    changed: z.boolean(),
-    written: z.boolean(),
-    error: nonEmpty.optional(),
-    error_kind: nonEmpty.optional(),
-  }),
-])
-
 const bootstrapGlobalSyncSchema = z.looseObject({
   ok: z.literal(true),
   synced_goal_ids: z.array(nonEmpty),
@@ -569,3 +534,5 @@ export type TodoCommandPayload = z.infer<typeof todoCommandSchema>
 export type TodoAddCommandPayload = z.infer<typeof todoAddCommandSchema>
 export type RefreshStateResultPayload = z.infer<typeof refreshStateResultSchema>
 export type RefreshStateResultSuccessPayload = z.infer<typeof refreshStateResultSuccessSchema>
+export type HostThreadBindingPayload = z.infer<typeof hostThreadBindingSchema>
+export type HostThreadBindingCommandPayload = z.infer<typeof hostThreadBindingCommandSchema>

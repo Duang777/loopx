@@ -1,72 +1,62 @@
-/** Public Host-only contract shared by the LoopX service, commands, tools, and driver. */
+/** Public Host authority and receipt contracts shared by the plugin surfaces. */
 
-export const LOOPX_HOST_SURFACE = 'deepseek-harness-native' as const
-export const LOOPX_HOST_MODE = 'deepseek_harness_native_session' as const
-
-export type LoopXBindingPhase =
-  | 'planning'
-  | 'active_paused'
-  | 'active_armed'
-  | 'uncertain'
-
-export type LoopXBindingReason =
-  | 'cold_restore'
-  | 'user_pause'
-  | 'foreign_input'
-  | 'loopx_terminal_observed'
-  | 'identity_conflict'
-  | 'readback_failed'
-  | 'uncertain_write'
-  | 'session_disposed'
-  | 'manual_resume_required'
+export const LOOPX_HOST_SURFACE = 'dsh' as const
 
 export interface LoopXSessionIdentity {
   readonly createdAt: number
   readonly cwd?: string | undefined
 }
 
+/** `session` is the exact live DSH Session object and is never serialized. */
 export interface LoopXSessionRef {
   readonly id: string
+  readonly session: object
   readonly identity: LoopXSessionIdentity
 }
 
-export interface LoopXBindingRow {
-  readonly schemaVersion: 'loopx_dsh_binding_row_v0'
-  readonly session: LoopXSessionIdentity
-  readonly hostSurface: typeof LOOPX_HOST_SURFACE
+export interface LoopXGoalAgentRef {
   readonly goalId: string
   readonly agentId: string
-  readonly projectLocator: string
-  readonly registryLocator?: string | undefined
-  readonly runtimeRootLocator?: string | undefined
-  readonly phase: LoopXBindingPhase
-  readonly generation: number
-  readonly schedulerResetToken?: string | undefined
-  readonly unchangedPollCount: number
-  readonly nextCheckAt?: number | undefined
-  readonly reason?: LoopXBindingReason | undefined
-  readonly bindingCreatedAt: number
-  readonly updatedAt: number
 }
 
-export interface LoopXBindingFence {
-  readonly sessionId: string
-  readonly session: LoopXSessionIdentity
-  readonly goalId: string
-  readonly agentId: string
-  readonly generation: number
+interface LoopXHostThreadBindingBase {
+  readonly schemaVersion: 'loopx_host_thread_binding_v1'
+  readonly hostSurface: typeof LOOPX_HOST_SURFACE
+  readonly threadId: string
+  readonly revision: number
 }
+
+export interface LoopXBoundHostThreadBindingV1 extends LoopXHostThreadBindingBase {
+  readonly state: 'bound'
+  readonly target: LoopXGoalAgentRef
+}
+
+export interface LoopXUnboundHostThreadBindingV1 extends LoopXHostThreadBindingBase {
+  readonly state: 'unbound'
+}
+
+export type LoopXHostThreadBindingV1 =
+  | LoopXBoundHostThreadBindingV1
+  | LoopXUnboundHostThreadBindingV1
 
 export type LoopXFailureCode =
   | 'LOOPX_SESSION_NOT_BOUND'
   | 'LOOPX_SESSION_LIFECYCLE_MISMATCH'
   | 'LOOPX_IDENTITY_CONFLICT'
   | 'LOOPX_SELECTION_REQUIRED'
-  | 'LOOPX_BOOTSTRAP_FAILED'
   | 'LOOPX_SWITCH_CONFIRMATION_INVALID'
-  | 'LOOPX_SWITCH_INCOMPLETE'
-  | 'LOOPX_DRIVER_NOT_ARMED'
   | 'LOOPX_INVALID_REQUEST'
+  | 'LOOPX_INVALID_TARGET'
+  | 'LOOPX_BINDING_NOT_FOUND'
+  | 'LOOPX_REVISION_CONFLICT'
+  | 'LOOPX_BINDING_HOME_UNINITIALIZED'
+  | 'LOOPX_BINDING_HOME_UNAVAILABLE'
+  | 'LOOPX_AUTHORITY_CORRUPT'
+  | 'LOOPX_AUTHORITY_UNHEALTHY'
+  | 'LOOPX_AUTHORITY_EXHAUSTED'
+  | 'LOOPX_DRIVER_NOT_ARMED'
+  | 'LOOPX_FOREIGN_COMMAND_ACTIVE'
+  | 'LOOPX_AUTOMATION_SUPPRESSED'
   | 'LOOPX_SCHEMA_UNSUPPORTED'
   | 'LOOPX_CLI_NOT_FOUND'
   | 'LOOPX_CLI_TIMEOUT'
@@ -75,7 +65,6 @@ export type LoopXFailureCode =
   | 'LOOPX_CLI_FAILED'
   | 'LOOPX_READBACK_FAILED'
   | 'LOOPX_REGISTRY_INTEGRITY'
-  | 'LOOPX_WRITE_UNCERTAIN'
   | 'LOOPX_SERVICE_CLOSED'
 
 export interface LoopXFailure {
@@ -86,34 +75,71 @@ export interface LoopXFailure {
   readonly outcomeUncertain: boolean
 }
 
+export interface LoopXAppliedSubEffect {
+  readonly operation: string
+  readonly application: 'yes'
+  readonly target?: LoopXGoalAgentRef | undefined
+}
+
 export type LoopXResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: LoopXFailure }
+  | {
+    readonly ok: true
+    readonly value: T
+    readonly application: LoopXApplication
+    readonly subEffects?: readonly LoopXAppliedSubEffect[] | undefined
+  }
+  | {
+    readonly ok: false
+    readonly error: LoopXFailure
+    readonly application: LoopXApplication
+    readonly subEffects?: readonly LoopXAppliedSubEffect[] | undefined
+  }
+
+export type LoopXReceiptKind = 'typed_intent' | 'operation_result' | 'semantic_request'
+export type LoopXExecution = 'succeeded' | 'rejected' | 'indeterminate' | 'not_attempted'
+export type LoopXApplication = 'yes' | 'no' | 'unknown'
+export type LoopXDelivery = 'steered' | 'followup_queued' | 'failed' | 'not_needed'
+export type LoopXRecoveryAction =
+  | 'none'
+  | 'retry_same_tool'
+  | 'read_authority_then_decide'
+  | 'correct_request'
+  | 'ask_user'
+  | 'stop'
+
+export interface LoopXOperationReceipt {
+  readonly schemaVersion: 'dsh_loopx_operation_receipt_v1'
+  readonly kind: LoopXReceiptKind
+  readonly operation: string
+  readonly request?: string | undefined
+  readonly arguments?: Readonly<Record<string, unknown>> | undefined
+  readonly execution: LoopXExecution
+  readonly application: LoopXApplication
+  readonly delivery: LoopXDelivery
+  readonly recovery: LoopXRecoveryAction
+  readonly value?: Readonly<Record<string, unknown>> | undefined
+  readonly error?: LoopXFailure | undefined
+  readonly subEffects?: readonly LoopXAppliedSubEffect[] | undefined
+}
 
 export interface LoopXIdentitySelectionChoice {
   readonly agentId?: string | undefined
   readonly goalId?: string | undefined
-  readonly label?: string | undefined
 }
 
 export interface LoopXIdentitySelection {
   readonly kind: 'agent' | 'goal'
   readonly defaultAction: string
-  readonly reason?: string | undefined
   readonly choices: readonly LoopXIdentitySelectionChoice[]
   readonly freshAgentSuggestedId?: string | undefined
 }
 
 export interface LoopXStartOptions {
-  readonly goalId?: string | undefined
-  readonly agentId?: string | undefined
-  readonly newPeer?: boolean | undefined
-  readonly newIndependent?: boolean | undefined
   readonly switchConfirmation?: string | undefined
 }
 
 export interface LoopXPlanningCheckpoint {
-  readonly schemaVersion: 'dsh_loopx_planning_checkpoint_v0'
+  readonly schemaVersion: 'dsh_loopx_planning_checkpoint_v1'
   readonly goalId: string
   readonly agentId: string
   readonly goalText: string
@@ -144,10 +170,7 @@ export interface LoopXPlanningCheckpoint {
     readonly maximumTodos: number
     readonly ordering: 'priority_then_tool_call_order'
     readonly activationTool: 'loopx_goal_activate'
-    readonly activationArguments: {
-      readonly goalId: string
-      readonly agentId: string
-    }
+    readonly activationArguments: LoopXGoalAgentRef
   }
   readonly stopConditions: readonly string[]
   readonly forbidden: readonly [
@@ -163,28 +186,20 @@ export interface LoopXSwitchRequired {
   readonly confirmationToken: string
   readonly requiresUserConfirmation: true
   readonly expiresAt: number
-  readonly current: {
-    readonly goalId: string
-    readonly agentId: string
-  }
+  readonly expectedRevision: number
+  readonly current: LoopXGoalAgentRef
   readonly requested: {
     readonly operation: 'start' | 'attach'
     readonly goalId?: string | undefined
     readonly agentId?: string | undefined
     readonly newPeer?: true | undefined
-    readonly newIndependent?: true | undefined
   }
 }
 
 export type LoopXStartValue =
   | {
-    readonly kind: 'selection_required'
-    readonly goalId?: string | undefined
-    readonly selection: LoopXIdentitySelection
-  }
-  | {
     readonly kind: 'planning'
-    readonly binding: LoopXBindingRow
+    readonly binding: LoopXBoundHostThreadBindingV1
     readonly planning: LoopXPlanningCheckpoint
     readonly modelCheckpoint: string
   }
@@ -203,17 +218,33 @@ export type LoopXAttachValue =
     readonly goalId: string
     readonly selection: LoopXIdentitySelection
   }
-  | { readonly kind: 'attached'; readonly binding: LoopXBindingRow }
+  | { readonly kind: 'attached'; readonly binding: LoopXBoundHostThreadBindingV1 }
   | LoopXSwitchRequired
 
 export interface LoopXHostStatus {
   readonly binarySource: 'config' | 'environment' | 'path'
-  readonly binding?: LoopXBindingRow | undefined
+  readonly binding?: LoopXHostThreadBindingV1 | undefined
+  readonly activation: 'armed' | 'disarmed'
+  readonly automaticFollowupSuppressed: boolean
+}
+
+export interface LoopXStatusAttentionItem {
+  readonly goalId: string
+  readonly status?: string | undefined
+  readonly severity?: string | undefined
+  readonly lifecyclePhase?: string | undefined
+}
+
+export interface LoopXStatusAuthority {
+  readonly schemaVersion: 'loopx_status_projection_v1'
+  readonly ok: true
+  readonly goalId: string
+  readonly attention: readonly LoopXStatusAttentionItem[]
 }
 
 export interface LoopXStatusValue {
   readonly host: LoopXHostStatus
-  readonly authority?: Readonly<Record<string, unknown>> | undefined
+  readonly authority?: LoopXStatusAuthority | undefined
 }
 
 export interface LoopXTodoClaimRequest {
@@ -234,7 +265,19 @@ export interface LoopXTodoAddValue {
   readonly status: 'open'
   readonly priority: 'P0' | 'P1' | 'P2'
   readonly role: 'user' | 'agent'
-  readonly payload: Readonly<Record<string, unknown>>
+  readonly payload: LoopXTodoAddAuthority
+}
+
+export interface LoopXTodoAddAuthority {
+  readonly schemaVersion: 'loopx_todo_projection_v1'
+  readonly goalId: string
+  readonly todoId: string
+  readonly status: 'open'
+  readonly role: 'user' | 'agent'
+  readonly taskClass: string
+  readonly actionKind: string
+  readonly added: boolean
+  readonly alreadyExists: boolean
 }
 
 export interface LoopXTodoUpdateRequest {
@@ -260,7 +303,18 @@ export interface LoopXTodoCompleteRequest {
 export interface LoopXTodoMutationValue {
   readonly todoId: string
   readonly status?: string | undefined
-  readonly payload: Readonly<Record<string, unknown>>
+  readonly payload: LoopXTodoMutationAuthority
+}
+
+export interface LoopXTodoMutationAuthority {
+  readonly schemaVersion: 'loopx_todo_projection_v1'
+  readonly goalId: string
+  readonly todoId: string
+  readonly status?: string | undefined
+  readonly changed?: boolean | undefined
+  readonly claimedBy?: string | undefined
+  readonly taskClass?: string | undefined
+  readonly settlementResult?: string | undefined
 }
 
 export interface LoopXSchedulerHint {
@@ -269,10 +323,10 @@ export interface LoopXSchedulerHint {
   readonly resetToken?: string | undefined
   readonly recommendedIntervalMinutes?: number | undefined
   readonly unchangedPollLimit?: number | undefined
-  readonly afterLimit?: string | undefined
 }
 
 export interface LoopXQuotaDecision {
+  readonly binding: LoopXBoundHostThreadBindingV1
   readonly goalId: string
   readonly agentId: string
   readonly turnInstanceId: string
@@ -280,42 +334,47 @@ export interface LoopXQuotaDecision {
   readonly effectiveAction: string
   readonly schedulerHint: LoopXSchedulerHint
   readonly terminalNoFollowup: boolean
-  readonly payload: Readonly<Record<string, unknown>>
+  readonly payload: LoopXQuotaAuthority
+}
+
+export interface LoopXQuotaAuthority {
+  readonly schemaVersion: 'loopx_quota_projection_v1'
+  readonly goalId: string
+  readonly shouldRun: boolean
+  readonly effectiveAction: string
+  readonly decision?: string | undefined
+  readonly state?: string | undefined
 }
 
 export interface LoopXTaskBody {
-  readonly fence: LoopXBindingFence
+  readonly binding: LoopXBoundHostThreadBindingV1
   readonly body: string
 }
 
-export interface LoopXPlanningContinuation {
-  readonly kind: 'planning'
-  readonly fence: LoopXBindingFence
-  readonly body: string
+export interface LoopXPauseValue {
+  readonly paused: true
+  readonly binding?: LoopXHostThreadBindingV1 | undefined
+}
+
+export interface LoopXDetachValue {
+  readonly detached: true
+  readonly binding: LoopXUnboundHostThreadBindingV1
 }
 
 export interface LoopXServiceApi {
-  getBinding(session: LoopXSessionRef): LoopXResult<LoopXBindingRow | undefined>
+  resolveBinding(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<LoopXHostThreadBindingV1>>
   start(session: LoopXSessionRef, goalText: string, signal?: AbortSignal, options?: LoopXStartOptions): Promise<LoopXResult<LoopXStartValue>>
   attach(session: LoopXSessionRef, request: LoopXAttachRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXAttachValue>>
-  activate(session: LoopXSessionRef, goalId: string, agentId?: string, signal?: AbortSignal): Promise<LoopXResult<LoopXBindingRow>>
+  activate(session: LoopXSessionRef, goalId: string, agentId?: string, signal?: AbortSignal): Promise<LoopXResult<LoopXBoundHostThreadBindingV1>>
   status(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<LoopXStatusValue>>
-  pause(session: LoopXSessionRef, reason?: LoopXBindingReason, expectedFence?: LoopXBindingFence): Promise<LoopXResult<LoopXBindingRow>>
-  resume(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<LoopXBindingRow>>
-  detach(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<{ readonly detached: true }>>
+  pause(session: LoopXSessionRef): Promise<LoopXResult<LoopXPauseValue>>
+  resume(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<LoopXBoundHostThreadBindingV1>>
+  detach(session: LoopXSessionRef, signal?: AbortSignal): Promise<LoopXResult<LoopXDetachValue>>
   todoAdd(session: LoopXSessionRef, request: LoopXTodoAddRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoAddValue>>
   todoClaim(session: LoopXSessionRef, request: LoopXTodoClaimRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoMutationValue>>
   todoUpdate(session: LoopXSessionRef, request: LoopXTodoUpdateRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoMutationValue>>
   todoComplete(session: LoopXSessionRef, request: LoopXTodoCompleteRequest, signal?: AbortSignal): Promise<LoopXResult<LoopXTodoMutationValue>>
   quotaShouldRun(session: LoopXSessionRef, turnInstanceId: string, signal?: AbortSignal): Promise<LoopXResult<LoopXQuotaDecision>>
-  taskBody(session: LoopXSessionRef, generation: number, refresh?: boolean, signal?: AbortSignal): Promise<LoopXResult<LoopXTaskBody>>
-  updateScheduler(session: LoopXSessionRef, fence: LoopXBindingFence, hint: LoopXSchedulerHint, unchangedPollCount: number, nextCheckAt?: number): Promise<LoopXResult<LoopXBindingRow>>
-  fence(session: LoopXSessionRef): LoopXResult<LoopXBindingFence>
-  fenceIsCurrent(fence: LoopXBindingFence): boolean
-  markUncertain(session: LoopXSessionRef, reason?: LoopXBindingReason, expectedFence?: LoopXBindingFence): Promise<LoopXResult<LoopXBindingRow>>
+  taskBody(session: LoopXSessionRef, refresh?: boolean, signal?: AbortSignal): Promise<LoopXResult<LoopXTaskBody>>
   disposeSession(session: LoopXSessionRef): Promise<void>
-}
-
-export interface LoopXContinuationServiceApi extends LoopXServiceApi {
-  planningContinuation(session: LoopXSessionRef, generation: number): LoopXResult<LoopXPlanningContinuation>
 }

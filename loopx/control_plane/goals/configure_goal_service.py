@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from ...configure_goal import configure_goal
+from ...file_lock import exclusive_file_lock
 from ...global_registry import (
+    GlobalRegistryReduction,
+    assert_dsh_agent_membership_retained,
+    mutate_global_registry,
     sanitize_goal_for_global,
     sync_project_registry_to_global,
 )
@@ -225,7 +229,55 @@ def _sync_plan(
     }
 
 
+def _dsh_membership_guard_reduction(
+    current: dict[str, Any],
+    *,
+    goal_id: str,
+    registered_agents: list[str],
+) -> GlobalRegistryReduction:
+    assert_dsh_agent_membership_retained(
+        current,
+        goal_id=goal_id,
+        registered_agents=registered_agents,
+    )
+    return GlobalRegistryReduction(
+        payload=current,
+        receipt={"ok": True},
+    )
+
+
 def configure_goal_with_global_sync(
+    *,
+    registry_path: Path,
+    goal_id: str,
+    runtime_root_override: str | None,
+    execute: bool,
+    **configure_options: Any,
+) -> dict[str, Any]:
+    """Serialize membership changes before the global DSH reference check."""
+
+    if not execute:
+        return _configure_goal_with_global_sync_under_source_lock(
+            registry_path=registry_path,
+            goal_id=goal_id,
+            runtime_root_override=runtime_root_override,
+            execute=False,
+            **configure_options,
+        )
+    with exclusive_file_lock(
+        registry_path.expanduser(),
+        operation="configure_goal_global_sync",
+    ):
+        return _configure_goal_with_global_sync_under_source_lock(
+            registry_path=registry_path,
+            goal_id=goal_id,
+            runtime_root_override=runtime_root_override,
+            execute=True,
+            **configure_options,
+        )
+
+
+def _configure_goal_with_global_sync_under_source_lock(
     *,
     registry_path: Path,
     goal_id: str,
@@ -295,6 +347,19 @@ def configure_goal_with_global_sync(
             }
         )
         return preview
+
+    before_agents = list(preview.get("before", {}).get("registered_agents") or [])
+    after_agents = list(preview.get("after", {}).get("registered_agents") or [])
+    if before_agents != after_agents:
+        mutate_global_registry(
+            target_registry,
+            "configure_goal_dsh_membership_guard",
+            lambda current: _dsh_membership_guard_reduction(
+                current,
+                goal_id=goal_id,
+                registered_agents=after_agents,
+            ),
+        )
 
     applied = configure_goal(
         registry_path=registry_path,

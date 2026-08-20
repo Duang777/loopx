@@ -2,6 +2,7 @@ import { execFile as nodeExecFile } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import type { ChildProcess, ExecFileException, ExecFileOptionsWithStringEncoding } from 'node:child_process'
 import type { ZodType } from 'zod'
+import type { LoopXBindingHome } from './coordinator.ts'
 import { failure } from './errors.ts'
 import type { LoopXFailure } from './types.ts'
 
@@ -28,6 +29,16 @@ export interface LoopXCliRequest<T> {
   readonly kind: LoopXCliOperationKind
   readonly args: readonly string[]
   readonly cwd: string
+  readonly schema: ZodType<T>
+  readonly signal?: AbortSignal | undefined
+  readonly scopeKey?: string | undefined
+}
+
+export interface LoopXCliBindingRequest<T> {
+  readonly operation: string
+  readonly kind: LoopXCliOperationKind
+  readonly args: readonly string[]
+  readonly home: LoopXBindingHome
   readonly schema: ZodType<T>
   readonly signal?: AbortSignal | undefined
   readonly scopeKey?: string | undefined
@@ -62,6 +73,13 @@ class ShutdownReason extends Error {
   constructor() {
     super('loopx CLI client is closing')
     this.name = 'LoopXCliShutdown'
+  }
+}
+
+class ScopeInvalidatedReason extends Error {
+  constructor() {
+    super('LoopX Session operation invalidated')
+    this.name = 'LoopXCliScopeInvalidated'
   }
 }
 
@@ -108,7 +126,7 @@ function childEnvironment(
 }
 
 function outcomeUncertain(kind: LoopXCliOperationKind): boolean {
-  return kind === 'write'
+  return kind !== 'read'
 }
 
 function abortFailure(
@@ -119,7 +137,7 @@ function abortFailure(
   if (reason instanceof TimeoutReason) {
     return failure('LOOPX_CLI_TIMEOUT', 'LoopX did not finish within the configured timeout.', {
       operation,
-      retryable: kind !== 'write',
+      retryable: kind === 'read',
       outcomeUncertain: outcomeUncertain(kind),
     })
   }
@@ -129,9 +147,15 @@ function abortFailure(
       outcomeUncertain: outcomeUncertain(kind),
     })
   }
+  if (reason instanceof ScopeInvalidatedReason) {
+    return failure('LOOPX_DRIVER_NOT_ARMED', 'The LoopX operation was fenced locally.', {
+      operation,
+      outcomeUncertain: outcomeUncertain(kind),
+    })
+  }
   return failure('LOOPX_CLI_ABORTED', 'The LoopX operation was cancelled.', {
     operation,
-    retryable: kind !== 'write',
+    retryable: kind === 'read',
     outcomeUncertain: outcomeUncertain(kind),
   })
 }
@@ -218,7 +242,47 @@ export class LoopXCliClient {
     }
   }
 
-  abortScope(scopeKey: string, reason: Error = new Error('LoopX Session operation invalidated')): void {
+  /**
+   * Run one v1 DSH binding command in exactly one selected binding home.
+   * The canonical home remains process-local and is never copied into errors.
+   */
+  runBindingJson<T>(request: LoopXCliBindingRequest<T>): Promise<T> {
+    const command = request.args[0]
+    const supported = command === 'bind-agent-thread'
+      || command === 'unbind-agent-thread'
+      || command === 'resolve-agent-thread'
+    const hostIndexes = request.args.flatMap((value, index) => (
+      value === '--host-surface' ? [index] : []
+    ))
+    const callerLocator = request.args.some(value => (
+      value === '--runtime-root' || value.startsWith('--runtime-root=')
+      || value === '--registry' || value.startsWith('--registry=')
+      || value === '--project' || value.startsWith('--project=')
+    ))
+    if (!supported || callerLocator
+      || hostIndexes.length !== 1
+      || request.args[hostIndexes[0] as number + 1] !== 'dsh') {
+      return Promise.reject(new LoopXCliError(failure(
+        'LOOPX_INVALID_REQUEST',
+        'A DSH binding operation requires one exact Host surface and binding home.',
+        { operation: request.operation },
+      )))
+    }
+    const args = request.home.runtimeRoot === undefined
+      ? request.args
+      : ['--runtime-root', request.home.runtimeRoot, ...request.args]
+    return this.runJson({
+      operation: request.operation,
+      kind: request.kind,
+      args,
+      cwd: request.home.cwd,
+      schema: request.schema,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.scopeKey === undefined ? {} : { scopeKey: request.scopeKey }),
+    })
+  }
+
+  abortScope(scopeKey: string, reason: Error = new ScopeInvalidatedReason()): void {
     for (const controller of this.scopeControllers.get(scopeKey) ?? []) controller.abort(reason)
   }
 
@@ -273,7 +337,7 @@ export class LoopXCliClient {
                 'LoopX exceeded the configured output limit.',
                 {
                   operation: request.operation,
-                  retryable: request.kind !== 'write',
+                  retryable: request.kind === 'read',
                   outcomeUncertain: outcomeUncertain(request.kind),
                 },
               )))
@@ -321,7 +385,7 @@ export class LoopXCliClient {
       'LoopX did not return a valid result for this operation.',
       {
         operation: request.operation,
-        retryable: request.kind !== 'write',
+        retryable: request.kind === 'read',
         outcomeUncertain: outcomeUncertain(request.kind),
       },
     ))

@@ -3,442 +3,275 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { CoordinatorRegistry, installCoordinator } from '../src/coordinator.ts'
 import { apply as applyTools } from '../src/tools.ts'
 import type {
   LoopXAttachRequest,
   LoopXAttachValue,
-  LoopXBindingRow,
+  LoopXBoundHostThreadBindingV1,
   LoopXFailure,
-  LoopXPlanningCheckpoint,
   LoopXResult,
-  LoopXServiceApi,
   LoopXSessionRef,
   LoopXStartOptions,
   LoopXStartValue,
+  LoopXStatusValue,
 } from '../src/types.ts'
 
 const signal = new AbortController().signal
 
-function success<T>(value: T): LoopXResult<T> {
-  return { ok: true, value }
+function ok<T>(value: T, application: 'yes' | 'no' = 'no'): LoopXResult<T> {
+  return { ok: true, value, application }
 }
 
-function failure(
-  code: LoopXFailure['code'],
-  operation: string,
-): LoopXResult<never> {
+function rejected(operation: string): LoopXResult<never> {
+  const error: LoopXFailure = {
+    code: 'LOOPX_AUTHORITY_UNHEALTHY',
+    message: `safe ${operation} failure`,
+    operation,
+    retryable: false,
+    outcomeUncertain: false,
+  }
+  return { ok: false, error, application: 'no' }
+}
+
+function binding(): LoopXBoundHostThreadBindingV1 {
   return {
-    ok: false,
-    error: {
-      code,
-      message: `safe ${operation} failure`,
-      operation,
-      retryable: false,
-      outcomeUncertain: false,
-    },
+    schemaVersion: 'loopx_host_thread_binding_v1',
+    hostSurface: 'dsh',
+    threadId: 'session-a',
+    revision: 1,
+    state: 'bound',
+    target: { goalId: 'goal-a', agentId: 'agent-a' },
   }
 }
 
-function binding(
-  phase: LoopXBindingRow['phase'],
-  overrides: Partial<LoopXBindingRow> = {},
-): LoopXBindingRow {
+function planning(): LoopXStartValue {
   return {
-    schemaVersion: 'loopx_dsh_binding_row_v0',
-    session: { createdAt: 42, cwd: 'SENSITIVE_SESSION_CWD' },
-    hostSurface: 'deepseek-harness-native',
-    goalId: 'goal-a',
-    agentId: 'agent-a',
-    projectLocator: 'SENSITIVE_PROJECT_LOCATOR',
-    registryLocator: 'SENSITIVE_REGISTRY_LOCATOR',
-    runtimeRootLocator: 'SENSITIVE_RUNTIME_LOCATOR',
-    phase,
-    generation: 3,
-    unchangedPollCount: 0,
-    bindingCreatedAt: 40,
-    updatedAt: 42,
-    ...overrides,
-  }
-}
-
-function planning(): LoopXPlanningCheckpoint {
-  return {
-    schemaVersion: 'dsh_loopx_planning_checkpoint_v0',
-    goalId: 'goal-a',
-    agentId: 'agent-a',
-    goalText: 'plan the bounded work',
-    planner: {
-      defaultProfile: 'clear_bounded_problem',
-      profileSelection: 'select the matching profile',
-      openEndedProductDirection: { suggestedItemsMin: 2, suggestedItemsMax: 5, intent: 'rank work' },
-      clearBoundedProblem: {
-        itemCountPolicy: 'planner_sized',
-        mayReuseCurrentTodoWhenItAlreadyRepresentsThePlan: true,
-        intent: 'minimum sufficient plan',
+    kind: 'planning',
+    binding: binding(),
+    planning: {
+      schemaVersion: 'dsh_loopx_planning_checkpoint_v1',
+      goalId: 'goal-a',
+      agentId: 'agent-a',
+      goalText: 'bounded objective',
+      planner: {
+        defaultProfile: 'clear_bounded_problem', profileSelection: 'select',
+        openEndedProductDirection: { suggestedItemsMin: 2, suggestedItemsMax: 5, intent: 'rank' },
+        clearBoundedProblem: {
+          itemCountPolicy: 'planner_sized',
+          mayReuseCurrentTodoWhenItAlreadyRepresentsThePlan: true,
+          intent: 'plan',
+        },
+        allowedPriorities: ['P0', 'P1', 'P2'], defaultRole: 'agent',
+        defaultTaskClass: 'advancement_task', requiredFields: ['text'],
+        publicSafeOnly: true, budgetPolicy: 'minimum',
       },
-      allowedPriorities: ['P0', 'P1', 'P2'],
-      defaultRole: 'agent',
-      defaultTaskClass: 'advancement_task',
-      requiredFields: ['priority', 'text', 'task_class', 'action_kind'],
-      publicSafeOnly: true,
-      budgetPolicy: 'minimum sufficient plan',
+      writeback: {
+        todoTool: 'loopx_todo_add', minimumTodos: 1, maximumTodos: 5,
+        ordering: 'priority_then_tool_call_order', activationTool: 'loopx_goal_activate',
+        activationArguments: { goalId: 'goal-a', agentId: 'agent-a' },
+      },
+      stopConditions: ['user gate'],
+      forbidden: ['shell_or_bash', 'raw_loopx_cli', 'registry_edit', 'ctx.goals'],
     },
-    writeback: {
-      todoTool: 'loopx_todo_add',
-      minimumTodos: 1,
-      maximumTodos: 5,
-      ordering: 'priority_then_tool_call_order',
-      activationTool: 'loopx_goal_activate',
-      activationArguments: { goalId: 'goal-a', agentId: 'agent-a' },
-    },
-    stopConditions: ['stop at a user gate'],
-    forbidden: ['shell_or_bash', 'raw_loopx_cli', 'registry_edit', 'ctx.goals'],
+    modelCheckpoint: '<loopx_planning>plan</loopx_planning>',
   }
 }
 
-interface StubAgent {
-  readonly agent: Agent
-  readonly followups: unknown[]
-}
-
-function stubAgent(
-  id = 'session-current',
-  createdAt = 42,
-  cwd = 'SENSITIVE_SESSION_CWD',
-): StubAgent {
-  const followups: unknown[] = []
-  const session = { id, header: { version: 0, id, createdAt, cwd } }
+function agent(id = 'session-a'): Agent {
   return {
-    agent: {
-      id,
-      session,
-      followup(message: unknown) { followups.push(message) },
-    } as unknown as Agent,
-    followups,
-  }
-}
-
-interface StartCall {
-  readonly session: LoopXSessionRef
-  readonly goalText: string
-  readonly options?: LoopXStartOptions | undefined
-}
-
-interface AttachCall {
-  readonly session: LoopXSessionRef
-  readonly request: LoopXAttachRequest
+    id,
+    session: { id, header: { version: 0, id, createdAt: 77, cwd: '/SENSITIVE/CWD' } },
+  } as unknown as Agent
 }
 
 class EntryService {
-  startResult: LoopXResult<LoopXStartValue> = success({
-    kind: 'planning',
-    binding: binding('planning'),
-    planning: planning(),
-    modelCheckpoint: '<loopx_planning>write the plan and Todos</loopx_planning>',
+  readonly coordinator = new CoordinatorRegistry()
+  readonly starts: Array<{
+    readonly session: LoopXSessionRef
+    readonly objective: string
+    readonly options?: LoopXStartOptions
+  }> = []
+  readonly attaches: Array<{ readonly session: LoopXSessionRef; readonly request: LoopXAttachRequest }> = []
+  startResult: LoopXResult<LoopXStartValue> = ok(planning(), 'yes')
+  attachResult: LoopXResult<LoopXAttachValue> = ok({ kind: 'attached', binding: binding() }, 'yes')
+  statusResult: LoopXResult<LoopXStatusValue> = ok({
+    host: {
+      binarySource: 'path', binding: binding(), activation: 'disarmed',
+      automaticFollowupSuppressed: false,
+    },
   })
 
-  attachResult: LoopXResult<LoopXAttachValue> = success({
-    kind: 'attached',
-    binding: binding('active_armed'),
-  })
-
-  readonly starts: StartCall[] = []
-  readonly attaches: AttachCall[] = []
+  constructor() { installCoordinator(this, this.coordinator) }
 
   start(
     session: LoopXSessionRef,
-    goalText: string,
+    objective: string,
     _signal?: AbortSignal,
     options?: LoopXStartOptions,
-  ): Promise<LoopXResult<LoopXStartValue>> {
-    this.starts.push({ session, goalText, ...(options === undefined ? {} : { options }) })
+  ) {
+    this.starts.push({ session, objective, ...(options === undefined ? {} : { options }) })
     return Promise.resolve(this.startResult)
   }
 
-  attach(
-    session: LoopXSessionRef,
-    request: LoopXAttachRequest,
-  ): Promise<LoopXResult<LoopXAttachValue>> {
+  attach(session: LoopXSessionRef, request: LoopXAttachRequest) {
     this.attaches.push({ session, request })
+    if (this.attachResult.ok && this.attachResult.value.kind === 'attached') {
+      const home = { key: 'home-a', cwd: '/SENSITIVE/CWD', runtimeRoot: '/SENSITIVE/RUNTIME' }
+      this.coordinator.observeBinding(session, home, this.attachResult.value.binding)
+      this.coordinator.arm(session, home, this.attachResult.value.binding)
+    }
     return Promise.resolve(this.attachResult)
   }
+
+  status() { return Promise.resolve(this.statusResult) }
 }
 
-function registerTools(service: EntryService): ReadonlyMap<string, ToolDefinition> {
-  const definitions = new Map<string, ToolDefinition>()
-  const ctx = {
-    loopx: service as unknown as LoopXServiceApi,
-    tools: { register(value: ToolDefinition) { definitions.set(value.name, value) } },
-  } as unknown as Context
-  applyTools(ctx)
-  return definitions
+function tools(service: EntryService): ReadonlyMap<string, ToolDefinition> {
+  const found = new Map<string, ToolDefinition>()
+  applyTools({
+    loopx: service,
+    tools: { register(definition: ToolDefinition) { found.set(definition.name, definition) } },
+  } as unknown as Context)
+  return found
 }
 
-async function callTool(
-  definitions: ReadonlyMap<string, ToolDefinition>,
+async function call(
+  service: EntryService,
   name: string,
   args: unknown,
-  agent: Agent,
+  current = agent(),
 ): Promise<Record<string, unknown>> {
-  const definition = definitions.get(name)
-  if (definition === undefined) throw new Error(`missing tool ${name}`)
-  const exec = {
+  const definition = tools(service).get(name)
+  if (definition === undefined) throw new Error(`missing ${name}`)
+  const value = await definition.execute(args, {
     name,
     arguments: args,
-    agent,
+    agent: current,
     signal,
     callId: `call-${name}`,
     rootCallId: `call-${name}`,
     token: Symbol(name),
     deferContext() {},
     concludeTurn() {},
-  } as unknown as ToolRunContext
-  const value = await definition.execute(args, exec)
+  } as unknown as ToolRunContext)
   expect(validateJsonSchemaValue(definition.output.schema, value, '')).toEqual([])
   return value as Record<string, unknown>
 }
 
-function errorCode(value: Record<string, unknown>): unknown {
-  return (value.error as Record<string, unknown> | undefined)?.code
-}
-
-describe('semantic LoopX entry tools', () => {
-  it('publishes closed schemas for all eleven tools and only typed entry inputs', () => {
-    const tools = registerTools(new EntryService())
-    expect(tools.size).toBe(11)
-    for (const definition of tools.values()) {
-      expect(definition.parameters).toMatchObject({
-        type: 'object',
-        additionalProperties: false,
-      })
-    }
-    const start = tools.get('loopx_goal_start')
-    const attach = tools.get('loopx_goal_attach')
+describe('semantic entry tools', () => {
+  it('publishes a closed fresh-start surface without obsolete identity selectors', () => {
+    const definitions = tools(new EntryService())
+    const start = definitions.get('loopx_goal_start')
     expect(start?.parameters).toMatchObject({
-      type: 'object',
-      required: ['goalText'],
-      additionalProperties: false,
-    })
-    expect(attach?.parameters).toMatchObject({
-      type: 'object',
-      required: ['goalId'],
-      additionalProperties: false,
+      type: 'object', required: ['goalText'], additionalProperties: false,
     })
     expect(Object.keys(start?.parameters.properties ?? {})).toEqual([
-      'goalText',
-      'goalId',
-      'agentId',
-      'newPeer',
-      'newIndependent',
-      'switchConfirmation',
+      'goalText', 'switchConfirmation',
     ])
-    expect(Object.keys(attach?.parameters.properties ?? {})).toEqual([
-      'goalId',
-      'agentId',
-      'newPeer',
-      'switchConfirmation',
-    ])
-    expect(start?.description).toContain('current DSH Session')
-    expect(start?.description).toContain('never use Bash')
-    expect(attach?.description).toContain('existing LoopX Goal')
-    expect(attach?.description).toContain('never use Bash')
+    expect(definitions.get('loopx_status')?.parameters).toMatchObject({
+      type: 'object', additionalProperties: false,
+    })
   })
 
-  it('returns the planning checkpoint directly without queuing a command follow-up', async () => {
+  it('passes the exact live Session object and leaves fresh start disarmed', async () => {
     const service = new EntryService()
-    const current = stubAgent('session-exact', 777, 'SENSITIVE_EXACT_CWD')
-    const result = await callTool(registerTools(service), 'loopx_goal_start', {
-      goalText: 'Implement the bounded semantic entry',
-      goalId: 'goal-a',
-      agentId: 'agent-a',
-      switchConfirmation: 'opaque-confirmation',
-    }, current.agent)
-
-    expect(result).toMatchObject({
-      schemaVersion: 'dsh_loopx_tool_result_v0',
-      ok: true,
-      value: {
-        kind: 'planning',
-        binding: { goalId: 'goal-a', agentId: 'agent-a', phase: 'planning' },
-        modelCheckpoint: '<loopx_planning>write the plan and Todos</loopx_planning>',
-      },
-    })
-    expect(service.starts).toEqual([{
-      session: {
-        id: 'session-exact',
-        identity: { createdAt: 777, cwd: 'SENSITIVE_EXACT_CWD' },
-      },
-      goalText: 'Implement the bounded semantic entry',
-      options: {
-        goalId: 'goal-a',
-        agentId: 'agent-a',
-        switchConfirmation: 'opaque-confirmation',
-      },
-    }])
-    expect(current.followups).toEqual([])
-    expect(JSON.stringify(result)).not.toContain('SENSITIVE_')
-  })
-
-  it('attaches only the current Session and returns a locator-free binding', async () => {
-    const service = new EntryService()
-    service.attachResult = success({
-      kind: 'attached',
-      binding: binding('active_armed', { goalId: 'goal-existing', agentId: 'fresh-peer' }),
-    })
-    const current = stubAgent('session-attach', 888, 'SENSITIVE_ATTACH_CWD')
-    const result = await callTool(registerTools(service), 'loopx_goal_attach', {
-      goalId: 'goal-existing',
-      newPeer: true,
-      switchConfirmation: 'opaque-attach-confirmation',
-    }, current.agent)
-
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        kind: 'attached',
-        binding: { goalId: 'goal-existing', agentId: 'fresh-peer', phase: 'active_armed' },
-      },
-    })
-    expect(service.attaches).toEqual([{
-      session: {
-        id: 'session-attach',
-        identity: { createdAt: 888, cwd: 'SENSITIVE_ATTACH_CWD' },
-      },
-      request: {
-        goalId: 'goal-existing',
-        newPeer: true,
-        switchConfirmation: 'opaque-attach-confirmation',
-      },
-    }])
-    expect(JSON.stringify(result)).not.toContain('SENSITIVE_')
-  })
-
-  it('forwards typed independent-Goal and fresh-peer start intent without command inputs', async () => {
-    const service = new EntryService()
-    const tools = registerTools(service)
-    const current = stubAgent().agent
-    await callTool(tools, 'loopx_goal_start', {
-      goalText: 'Start one independent Goal',
-      newIndependent: true,
+    const current = agent()
+    const result = await call(service, 'loopx_goal_start', {
+      goalText: 'implement the bounded change',
+      switchConfirmation: 'confirmed-revision-token',
     }, current)
-    await callTool(tools, 'loopx_goal_start', {
-      goalText: 'Resume with a fresh peer',
-      newPeer: true,
-    }, current)
-    expect(service.starts.map(call => call.options)).toEqual([
-      { newIndependent: true },
-      { newPeer: true },
+    expect(result).toMatchObject({
+      kind: 'operation_result', execution: 'succeeded', application: 'yes',
+      value: { kind: 'planning', binding: { hostSurface: 'dsh', revision: 1 } },
+    })
+    expect(service.starts[0]).toMatchObject({
+      objective: 'implement the bounded change',
+      options: { switchConfirmation: 'confirmed-revision-token' },
+    })
+    expect(service.starts[0]?.session.session).toBe(current.session)
+    expect(service.coordinator.snapshot(current.session)?.activation).toBe('disarmed')
+    expect(JSON.stringify(result)).not.toContain('/SENSITIVE/CWD')
+  })
+
+  it('forwards exact attach and fresh-peer intent only', async () => {
+    const service = new EntryService()
+    await call(service, 'loopx_goal_attach', {
+      goalId: 'goal-a', agentId: 'agent-a', switchConfirmation: 'token-a',
+    })
+    await call(service, 'loopx_goal_attach', { goalId: 'goal-a', newPeer: true })
+    expect(service.attaches.map(entry => entry.request)).toEqual([
+      { goalId: 'goal-a', agentId: 'agent-a', switchConfirmation: 'token-a' },
+      { goalId: 'goal-a', newPeer: true },
     ])
   })
 
-  it('projects exact selection and no-mutation switch results for model re-entry', async () => {
+  it('projects selection and confirmed-switch readback as no application', async () => {
     const service = new EntryService()
-    const tools = registerTools(service)
-    const current = stubAgent().agent
-    service.startResult = success({
+    service.attachResult = ok({
       kind: 'selection_required',
       goalId: 'goal-a',
       selection: {
-        kind: 'agent',
-        defaultAction: 'select_agent_identity',
-        reason: 'Choose one exact registered identity.',
-        choices: [{ agentId: 'agent-a', label: 'Primary peer' }],
-        freshAgentSuggestedId: 'agent-fresh',
+        kind: 'agent', defaultAction: 'select_agent',
+        choices: [{ agentId: 'agent-a' }],
       },
-    })
-    const selected = await callTool(tools, 'loopx_goal_start', {
-      goalText: 'Continue the selected lane',
-    }, current)
-    expect(selected).toMatchObject({
-      ok: true,
-      value: {
-        kind: 'selection_required',
-        goalId: 'goal-a',
-        selection: {
-          choices: [{ agentId: 'agent-a', label: 'Primary peer' }],
-          freshAgentSuggestedId: 'agent-fresh',
-        },
-      },
+    }, 'no')
+    expect(await call(service, 'loopx_goal_attach', { goalId: 'goal-a' })).toMatchObject({
+      application: 'no', value: { kind: 'selection_required' },
     })
 
-    service.attachResult = success({
-      kind: 'switch_required',
-      confirmationToken: 'opaque-switch-token',
-      requiresUserConfirmation: true,
-      expiresAt: 9000,
+    service.attachResult = ok({
+      kind: 'switch_required', confirmationToken: 'opaque', requiresUserConfirmation: true,
+      expiresAt: 9000, expectedRevision: 7,
       current: { goalId: 'goal-old', agentId: 'agent-old' },
       requested: { operation: 'attach', goalId: 'goal-new', agentId: 'agent-new' },
-    })
-    const switched = await callTool(tools, 'loopx_goal_attach', {
-      goalId: 'goal-new',
-      agentId: 'agent-new',
-    }, current)
-    expect(switched).toMatchObject({
-      ok: true,
-      value: {
-        kind: 'switch_required',
-        confirmationToken: 'opaque-switch-token',
-        requiresUserConfirmation: true,
-        current: { goalId: 'goal-old', agentId: 'agent-old' },
-        requested: { operation: 'attach', goalId: 'goal-new', agentId: 'agent-new' },
-      },
+    }, 'no')
+    expect(await call(service, 'loopx_goal_attach', {
+      goalId: 'goal-new', agentId: 'agent-new',
+    })).toMatchObject({
+      application: 'no',
+      value: { kind: 'switch_required', expectedRevision: 7 },
     })
   })
 
-  it('preserves typed service failures and does not invent a successful binding', async () => {
+  it('rejects alternate Session/locator/shell arguments before Service entry', async () => {
     const service = new EntryService()
-    service.startResult = failure('LOOPX_SCHEMA_UNSUPPORTED', 'start')
-    const result = await callTool(registerTools(service), 'loopx_goal_start', {
-      goalText: 'Start only through the supported contract',
-    }, stubAgent().agent)
-    expect(result).toMatchObject({
-      schemaVersion: 'dsh_loopx_tool_result_v0',
-      ok: false,
-      error: {
-        code: 'LOOPX_SCHEMA_UNSUPPORTED',
-        operation: 'start',
-        retryable: false,
-        outcomeUncertain: false,
-      },
-    })
-  })
-
-  it('rejects alternate Sessions, locators, argv, and shell commands before service entry', async () => {
-    const service = new EntryService()
-    const tools = registerTools(service)
-    const current = stubAgent().agent
-    const cases: readonly [string, Record<string, unknown>][] = [
-      ['loopx_goal_start', { goalText: 'start safely', sessionId: 'session-other' }],
-      ['loopx_goal_start', { goalText: 'start safely', projectLocator: 'PRIVATE_LOCATOR' }],
-      ['loopx_goal_start', { goalText: 'start safely', argv: ['bootstrap'] }],
-      ['loopx_goal_start', { goalText: 'start safely', command: 'loopx bootstrap' }],
-      ['loopx_goal_start', { goalText: 'start safely', shell: 'loopx bootstrap' }],
-      ['loopx_goal_attach', { goalId: 'goal-a', session: { id: 'session-other' } }],
-      ['loopx_goal_attach', { goalId: 'goal-a', registryPath: 'PRIVATE_LOCATOR' }],
-      ['loopx_goal_attach', { goalId: 'goal-a', locator: 'PRIVATE_LOCATOR' }],
-      ['loopx_goal_attach', { goalId: 'goal-a', argv: ['start-goal'] }],
-      ['loopx_goal_attach', { goalId: 'goal-a', shellCommand: 'loopx start-goal' }],
-    ]
-
-    for (const [name, args] of cases) {
-      const definition = tools.get(name)
-      if (definition === undefined) throw new Error(`missing tool ${name}`)
-      expect(validateJsonSchemaValue(definition.parameters, args, ''), name).not.toEqual([])
-      const result = await callTool(tools, name, args, current)
-      expect(errorCode(result), name).toBe('LOOPX_INVALID_REQUEST')
+    for (const args of [
+      { goalText: 'safe', goalId: 'old-goal' },
+      { goalText: 'safe', sessionId: 'other' },
+      { goalText: 'safe', runtimeRoot: '/SENSITIVE/RUNTIME' },
+      { goalText: 'safe', shell: 'loopx start-goal' },
+    ]) {
+      expect(await call(service, 'loopx_goal_start', args)).toMatchObject({
+        execution: 'rejected', application: 'no',
+        error: { code: 'LOOPX_INVALID_REQUEST' },
+      })
     }
     expect(service.starts).toEqual([])
-    expect(service.attaches).toEqual([])
   })
 
-  it('rejects a mismatched DSH Agent and Session lifecycle before service entry', async () => {
+  it('rejects mismatched Agent/Session identity before Service entry', async () => {
     const service = new EntryService()
-    const mismatched = stubAgent('session-a')
-    Object.defineProperty(mismatched.agent, 'id', { value: 'session-b' })
-    const result = await callTool(registerTools(service), 'loopx_goal_start', {
-      goalText: 'Must stay in this Session',
-    }, mismatched.agent)
-    expect(errorCode(result)).toBe('LOOPX_SESSION_LIFECYCLE_MISMATCH')
+    const mismatched = agent('session-a')
+    Object.defineProperty(mismatched, 'id', { value: 'session-b' })
+    expect(await call(service, 'loopx_goal_start', { goalText: 'safe' }, mismatched)).toMatchObject({
+      error: { code: 'LOOPX_SESSION_LIFECYCLE_MISMATCH' }, application: 'no',
+    })
     expect(service.starts).toEqual([])
+  })
+
+  it('lets successful explicit attach arm and clear eighth-failure suppression', async () => {
+    const service = new EntryService()
+    const current = agent()
+    service.startResult = rejected('goal-start')
+    for (let count = 1; count <= 8; count += 1) {
+      await call(service, 'loopx_goal_start', { goalText: 'safe' }, current)
+      expect(service.coordinator.snapshot(current.session)?.failureCount).toBe(count)
+    }
+    expect(service.coordinator.snapshot(current.session)?.automaticFollowupSuppressed).toBe(true)
+    await call(service, 'loopx_goal_attach', { goalId: 'goal-a', agentId: 'agent-a' }, current)
+    expect(service.coordinator.snapshot(current.session)).toMatchObject({
+      activation: 'armed', failureCount: 0, automaticFollowupSuppressed: false,
+    })
   })
 })

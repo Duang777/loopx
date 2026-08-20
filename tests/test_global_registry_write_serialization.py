@@ -11,13 +11,22 @@ import pytest
 
 from loopx import global_registry
 from loopx import project_uninstall as project_uninstall_module
+from loopx import thread_agent_binding as thread_agent_binding_module
+from loopx.control_plane.goals import configure_goal_service
 from loopx.file_lock import fcntl
 from loopx.global_registry import (
     global_registry_path,
     retire_global_registry_goals,
     sync_project_registry_to_global,
 )
+from loopx.control_plane.goals.configure_goal_service import (
+    configure_goal_with_global_sync,
+)
 from loopx.project_uninstall import uninstall_project
+from loopx.thread_agent_binding import (
+    bind_dsh_thread_agent_in_global_registry,
+    unbind_dsh_thread_agent_in_global_registry,
+)
 
 
 GOAL_COUNT = 6
@@ -62,6 +71,35 @@ def _project_registry(root: Path, name: str, runtime_root: Path) -> Path:
         encoding="utf-8",
     )
     return registry_path
+
+
+def _bound_dsh_project(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    runtime_root = tmp_path / "runtime"
+    registry_path = _project_registry(tmp_path, "alpha", runtime_root)
+    payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    payload["goals"][0]["coordination"] = {
+        "registered_agents": ["agent-a", "agent-b"]
+    }
+    registry_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    sync_project_registry_to_global(
+        registry_path=registry_path,
+        runtime_root_override=str(runtime_root),
+        dry_run=False,
+    )
+    global_path = global_registry_path(runtime_root)
+    result = bind_dsh_thread_agent_in_global_registry(
+        global_path=global_path,
+        host_surface="dsh",
+        thread_id="session-a",
+        goal_id="goal-alpha",
+        agent_id="agent-a",
+        expected_revision=0,
+        execute=True,
+    )
+    assert result["ok"] is True, result
+    return runtime_root, registry_path, global_path
 
 
 def test_sync_reads_and_writes_inside_the_global_registry_lock(
@@ -380,6 +418,218 @@ def test_project_uninstall_preserves_a_goal_committed_after_preview(
     assert result["global_registry_goal_count_after"] == 1
     remaining = json.loads(global_path.read_text(encoding="utf-8"))["goals"]
     assert [goal.get("id") for goal in remaining] == ["goal-beta"]
+
+
+def test_global_sync_preserves_the_dsh_binding_collection_exactly(
+    tmp_path: Path,
+) -> None:
+    runtime_root, registry_path, global_path = _bound_dsh_project(tmp_path)
+    before = json.loads(global_path.read_text(encoding="utf-8"))[
+        "dsh_host_thread_bindings"
+    ]
+    source = json.loads(registry_path.read_text(encoding="utf-8"))
+    source["goals"][0]["objective"] = "updated without touching Host authority"
+    registry_path.write_text(json.dumps(source) + "\n", encoding="utf-8")
+
+    result = sync_project_registry_to_global(
+        registry_path=registry_path,
+        runtime_root_override=str(runtime_root),
+        dry_run=False,
+    )
+
+    assert result["ok"] is True
+    after = json.loads(global_path.read_text(encoding="utf-8"))[
+        "dsh_host_thread_bindings"
+    ]
+    assert after == before
+
+
+def test_configure_goal_rejects_bound_agent_removal_before_source_write(
+    tmp_path: Path,
+) -> None:
+    runtime_root, registry_path, _global_path = _bound_dsh_project(tmp_path)
+    before = registry_path.read_bytes()
+
+    with pytest.raises(ValueError, match="DSH Host binding blocks Agent membership"):
+        configure_goal_with_global_sync(
+            registry_path=registry_path,
+            goal_id="goal-alpha",
+            runtime_root_override=str(runtime_root),
+            registered_agents=["agent-b"],
+            execute=True,
+        )
+
+    assert registry_path.read_bytes() == before
+
+
+def test_dsh_bind_and_membership_change_hold_source_before_global(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root, registry_path, global_path = _bound_dsh_project(tmp_path)
+    held: list[str] = []
+    events: list[str] = []
+
+    @contextmanager
+    def source_lock(_path: Path, **_kwargs: Any) -> Iterator[Path]:
+        assert not held
+        held.append("source")
+        events.append("source-enter")
+        try:
+            yield registry_path
+        finally:
+            assert held.pop() == "source"
+            events.append("source-exit")
+
+    @contextmanager
+    def global_lock(_path: Path, **_kwargs: Any) -> Iterator[Path]:
+        assert held == ["source"]
+        held.append("global")
+        events.append("global-enter")
+        try:
+            yield global_path
+        finally:
+            assert held.pop() == "global"
+            events.append("global-exit")
+
+    monkeypatch.setattr(configure_goal_service, "exclusive_file_lock", source_lock)
+    monkeypatch.setattr(thread_agent_binding_module, "exclusive_file_lock", source_lock)
+    monkeypatch.setattr(global_registry, "exclusive_file_lock", global_lock)
+
+    configured = configure_goal_with_global_sync(
+        registry_path=registry_path,
+        goal_id="goal-alpha",
+        runtime_root_override=str(runtime_root),
+        registered_agents=["agent-a"],
+        execute=True,
+    )
+    assert configured["ok"] is True
+    bound = bind_dsh_thread_agent_in_global_registry(
+        global_path=global_path,
+        host_surface="dsh",
+        thread_id="session-lock-order",
+        goal_id="goal-alpha",
+        agent_id="agent-a",
+        expected_revision=0,
+        execute=True,
+    )
+    assert bound["ok"] is True
+    assert held == []
+    assert events.count("source-enter") == 2
+    assert events.count("global-enter") >= 3
+
+
+def test_route_replacement_and_project_uninstall_are_blocked_while_dsh_bound(
+    tmp_path: Path,
+) -> None:
+    runtime_root, registry_path, global_path = _bound_dsh_project(tmp_path)
+    source_before = registry_path.read_bytes()
+    global_before = global_path.read_bytes()
+    source = json.loads(registry_path.read_text(encoding="utf-8"))
+    source["goals"][0]["repo"] = str(tmp_path / "replacement")
+    registry_path.write_text(json.dumps(source) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="DSH Host binding blocks Goal route"):
+        sync_project_registry_to_global(
+            registry_path=registry_path,
+            runtime_root_override=str(runtime_root),
+            dry_run=False,
+            allow_route_replacement=True,
+        )
+    assert global_path.read_bytes() == global_before
+
+    registry_path.write_bytes(source_before)
+    with pytest.raises(ValueError, match="DSH Host binding blocks Goal route"):
+        uninstall_project(
+            registry_path=registry_path,
+            runtime_root_override=str(runtime_root),
+            goal_ids=["goal-alpha"],
+            archive_state=False,
+            remove_empty_registry=False,
+            execute=True,
+        )
+    assert registry_path.read_bytes() == source_before
+    assert global_path.read_bytes() == global_before
+
+
+@pytest.mark.skipif(fcntl is None, reason="POSIX flock is required")
+def test_dsh_concurrent_process_cas_has_one_winner_and_one_stale_loser(
+    tmp_path: Path,
+) -> None:
+    _runtime_root, _registry_path, global_path = _bound_dsh_project(tmp_path)
+    script = """
+import json, sys
+from pathlib import Path
+from loopx.thread_agent_binding import bind_dsh_thread_agent_in_global_registry
+print(json.dumps(bind_dsh_thread_agent_in_global_registry(
+    global_path=Path(sys.argv[1]), host_surface="dsh", thread_id="session-race",
+    goal_id="goal-alpha", agent_id=sys.argv[2], expected_revision=0, execute=True,
+)))
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(global_path), agent_id],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for agent_id in ("agent-a", "agent-b")
+    ]
+    results = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=30)
+        assert process.returncode == 0, stderr
+        results.append(json.loads(stdout))
+
+    winners = [result for result in results if result.get("ok") is True]
+    losers = [
+        result
+        for result in results
+        if result.get("error_kind") == "revision_conflict"
+    ]
+    assert len(winners) == 1, results
+    assert len(losers) == 1, results
+    assert winners[0]["binding"]["revision"] == 1
+    assert losers[0]["binding"] == winners[0]["binding"]
+
+
+def test_retirement_requires_unbind_and_preserves_the_tombstone(
+    tmp_path: Path,
+) -> None:
+    runtime_root, registry_path, global_path = _bound_dsh_project(tmp_path)
+    state_path = tmp_path / "alpha" / "ACTIVE_GOAL_STATE.md"
+    registry_path.unlink()
+    state_path.unlink()
+    before = global_path.read_bytes()
+
+    with pytest.raises(ValueError, match="DSH Host binding blocks Goal route"):
+        retire_global_registry_goals(
+            runtime_root_override=str(runtime_root),
+            goal_ids=["goal-alpha"],
+            execute=True,
+        )
+    assert global_path.read_bytes() == before
+
+    unbound = unbind_dsh_thread_agent_in_global_registry(
+        global_path=global_path,
+        host_surface="dsh",
+        thread_id="session-a",
+        expected_revision=1,
+        execute=True,
+    )
+    assert unbound["ok"] is True
+    retired = retire_global_registry_goals(
+        runtime_root_override=str(runtime_root),
+        goal_ids=["goal-alpha"],
+        execute=True,
+    )
+    assert retired["ok"] is True
+    payload = json.loads(global_path.read_text(encoding="utf-8"))
+    assert payload["goals"] == []
+    assert payload["dsh_host_thread_bindings"]["records"]["session-a"] == unbound[
+        "binding"
+    ]
 
 
 _CONCURRENT_SYNC_SCRIPT = """

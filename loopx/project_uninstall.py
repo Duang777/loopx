@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .control_plane.runtime.time import now_local_iso, utc_timestamp
-from .global_registry import GlobalRegistryReduction, mutate_global_registry
+from .file_lock import exclusive_file_lock
+from .global_registry import (
+    GlobalRegistryReduction,
+    assert_dsh_binding_targets_retained,
+    mutate_global_registry,
+)
 from .history import load_registry
 from .paths import DEFAULT_RUNTIME_ROOT, global_registry_path, resolve_runtime_root
 from .registry import registry_goals
@@ -182,6 +187,10 @@ def _remove_global_goals(
     source_registry: Path,
     target_goal_ids: set[str],
 ) -> tuple[dict[str, Any], list[str], list[str], int, int]:
+    assert_dsh_binding_targets_retained(
+        global_registry,
+        removed_goal_ids=target_goal_ids,
+    )
     goals = global_registry.get("goals")
     before = len(registry_goals(global_registry))
     if not isinstance(goals, list):
@@ -240,6 +249,40 @@ def _uninstall_global_registry_reduction(
 
 
 def uninstall_project(
+    *,
+    registry_path: Path,
+    runtime_root_override: str | None,
+    goal_ids: list[str] | None,
+    archive_state: bool,
+    remove_empty_registry: bool,
+    execute: bool,
+) -> dict[str, Any]:
+    """Run uninstall under the source lock before acquiring the global lock."""
+
+    if not execute:
+        return _uninstall_project_under_source_lock(
+            registry_path=registry_path,
+            runtime_root_override=runtime_root_override,
+            goal_ids=goal_ids,
+            archive_state=archive_state,
+            remove_empty_registry=remove_empty_registry,
+            execute=False,
+        )
+    with exclusive_file_lock(
+        registry_path.expanduser(),
+        operation="project_uninstall_source_registry",
+    ):
+        return _uninstall_project_under_source_lock(
+            registry_path=registry_path,
+            runtime_root_override=runtime_root_override,
+            goal_ids=goal_ids,
+            archive_state=archive_state,
+            remove_empty_registry=remove_empty_registry,
+            execute=True,
+        )
+
+
+def _uninstall_project_under_source_lock(
     *,
     registry_path: Path,
     runtime_root_override: str | None,

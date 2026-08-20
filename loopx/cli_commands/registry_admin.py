@@ -32,8 +32,14 @@ from ..state_migration import (
     render_state_migration_markdown,
 )
 from ..thread_agent_binding import (
+    DSH_HOST_SURFACE,
+    HOST_THREAD_BINDING_COMMAND_SCHEMA_VERSION,
+    DshBindingAuthorityError,
+    bind_dsh_thread_agent_in_global_registry,
     bind_thread_agent_in_registry,
+    resolve_dsh_thread_agent_binding,
     resolve_thread_agent_binding,
+    unbind_dsh_thread_agent_in_global_registry,
     unbind_thread_agent_in_registry,
 )
 from ..upgrade import build_upgrade_plan
@@ -60,6 +66,7 @@ REGISTRY_ADMIN_COMMANDS = {
     "register-agent",
     "bind-agent-thread",
     "unbind-agent-thread",
+    "resolve-agent-thread",
     "archive-runtime",
     "retire-global-goal",
     "uninstall-project",
@@ -71,6 +78,47 @@ REGISTRY_ADMIN_COMMANDS = {
 def explicit_global_registry(runtime_root_arg: str | None) -> Path:
     runtime_root = Path(runtime_root_arg).expanduser() if runtime_root_arg else DEFAULT_RUNTIME_ROOT
     return global_registry_path(runtime_root)
+
+
+def dsh_binding_global_registry(
+    *,
+    registry_path: Path,
+    runtime_root_arg: str | None,
+) -> Path:
+    """Select exactly one DSH binding home without scanning runtime roots."""
+
+    if runtime_root_arg:
+        return global_registry_path(Path(runtime_root_arg).expanduser())
+    expanded_registry = registry_path.expanduser()
+    if expanded_registry.name == global_registry_path(Path(".")).name:
+        return expanded_registry.parent / expanded_registry.name
+    if not expanded_registry.exists():
+        raise DshBindingAuthorityError("binding_home_unavailable")
+    try:
+        registry = load_registry(expanded_registry)
+    except OSError as exc:
+        raise DshBindingAuthorityError("binding_home_unavailable") from exc
+    except ValueError as exc:
+        raise DshBindingAuthorityError("authority_corrupt") from exc
+    declared_root = registry.get("common_runtime_root")
+    if declared_root is not None and not isinstance(declared_root, str):
+        raise DshBindingAuthorityError("binding_home_unavailable")
+    runtime_root = resolve_runtime_root(
+        registry,
+        None,
+        registry_path=expanded_registry,
+    )
+    return global_registry_path(runtime_root)
+
+
+def _dsh_binding_failure(error_kind: str) -> dict[str, object]:
+    return {
+        "schema_version": HOST_THREAD_BINDING_COMMAND_SCHEMA_VERSION,
+        "ok": False,
+        "changed": False,
+        "application": "no",
+        "error_kind": error_kind,
+    }
 
 
 def _registry_goal(path: Path, goal_id: str) -> dict[str, object]:
@@ -623,21 +671,42 @@ def register_registry_admin_commands(subparsers: argparse._SubParsersAction) -> 
         "bind-agent-thread",
         help="Bind a stable host thread to one already registered LoopX agent.",
     )
-    bind_thread_parser.add_argument("--goal-id", required=True, help="Goal id already present in the global registry.")
+    bind_thread_parser.add_argument("--goal-id", help="Goal id already present in the global registry.")
     bind_thread_parser.add_argument("--thread-id", required=True, help="Stable opaque host thread id.")
     bind_thread_parser.add_argument("--host-surface", required=True, help="Host surface such as codex-app.")
-    bind_thread_parser.add_argument("--agent-id", required=True, help="Already registered public-safe agent id.")
+    bind_thread_parser.add_argument("--agent-id", help="Already registered public-safe agent id.")
+    bind_thread_parser.add_argument(
+        "--expected-revision",
+        type=int,
+        help="Mandatory CAS revision for host-surface=dsh; zero selects an absent key.",
+    )
     bind_thread_parser.add_argument("--execute", action="store_true", help="Write the binding; otherwise preview only.")
 
     unbind_thread_parser = subparsers.add_parser(
         "unbind-agent-thread",
         help="Remove one exact host-thread binding from its expected LoopX agent.",
     )
-    unbind_thread_parser.add_argument("--goal-id", required=True, help="Goal id already present in the global registry.")
+    unbind_thread_parser.add_argument("--goal-id", help="Expected Goal id for non-DSH Goal-local bindings.")
     unbind_thread_parser.add_argument("--thread-id", required=True, help="Stable opaque host thread id.")
     unbind_thread_parser.add_argument("--host-surface", required=True, help="Host surface such as codex-app.")
-    unbind_thread_parser.add_argument("--agent-id", required=True, help="Expected registered public-safe agent id.")
+    unbind_thread_parser.add_argument("--agent-id", help="Expected registered public-safe agent id for non-DSH bindings.")
+    unbind_thread_parser.add_argument(
+        "--expected-revision",
+        type=int,
+        help="Mandatory CAS revision for host-surface=dsh.",
+    )
     unbind_thread_parser.add_argument("--execute", action="store_true", help="Remove the binding; otherwise preview only.")
+
+    resolve_thread_parser = subparsers.add_parser(
+        "resolve-agent-thread",
+        help="Resolve one exact DSH Host-thread binding from the selected runtime root.",
+    )
+    resolve_thread_parser.add_argument("--thread-id", required=True, help="Stable opaque DSH thread id.")
+    resolve_thread_parser.add_argument(
+        "--host-surface",
+        required=True,
+        help="The v1 global authority accepts exactly dsh.",
+    )
 
     archive_runtime_parser = subparsers.add_parser(
         "archive-runtime",
@@ -949,8 +1018,77 @@ def handle_registry_admin_command(
         print_payload(payload, args.format, render_register_agent_markdown)
         return 0 if payload.get("ok") else 1
 
-    if args.command in {"bind-agent-thread", "unbind-agent-thread"}:
+    if args.command == "resolve-agent-thread":
         try:
+            if str(args.host_surface or "").strip().lower() != DSH_HOST_SURFACE:
+                raise DshBindingAuthorityError("invalid_target")
+            global_path = dsh_binding_global_registry(
+                registry_path=registry_path,
+                runtime_root_arg=args.runtime_root,
+            )
+            payload = resolve_dsh_thread_agent_binding(
+                global_path=global_path,
+                host_surface=args.host_surface,
+                thread_id=args.thread_id,
+            )
+        except DshBindingAuthorityError as exc:
+            payload = _dsh_binding_failure(exc.error_kind)
+        except OSError:
+            payload = _dsh_binding_failure("binding_home_unavailable")
+        except ValueError:
+            payload = _dsh_binding_failure("authority_corrupt")
+        print_payload(payload, args.format, render_register_agent_markdown)
+        return 0 if payload.get("ok") else 1
+
+    if args.command in {"bind-agent-thread", "unbind-agent-thread"}:
+        if str(args.host_surface or "").strip().lower() == DSH_HOST_SURFACE:
+            try:
+                if args.expected_revision is None:
+                    raise DshBindingAuthorityError("invalid_target")
+                global_path = dsh_binding_global_registry(
+                    registry_path=registry_path,
+                    runtime_root_arg=args.runtime_root,
+                )
+                if args.command == "bind-agent-thread":
+                    if not args.goal_id or not args.agent_id:
+                        raise DshBindingAuthorityError("invalid_target")
+                    payload = bind_dsh_thread_agent_in_global_registry(
+                        global_path=global_path,
+                        host_surface=args.host_surface,
+                        thread_id=args.thread_id,
+                        goal_id=args.goal_id,
+                        agent_id=args.agent_id,
+                        expected_revision=args.expected_revision,
+                        execute=bool(args.execute),
+                    )
+                else:
+                    if args.goal_id is not None or args.agent_id is not None:
+                        raise DshBindingAuthorityError("invalid_target")
+                    payload = unbind_dsh_thread_agent_in_global_registry(
+                        global_path=global_path,
+                        host_surface=args.host_surface,
+                        thread_id=args.thread_id,
+                        expected_revision=args.expected_revision,
+                        execute=bool(args.execute),
+                    )
+            except DshBindingAuthorityError as exc:
+                payload = _dsh_binding_failure(exc.error_kind)
+            except OSError:
+                payload = _dsh_binding_failure("binding_home_unavailable")
+            except ValueError:
+                payload = _dsh_binding_failure("authority_corrupt")
+            print_payload(payload, args.format, render_register_agent_markdown)
+            return 0 if payload.get("ok") else 1
+
+        try:
+            if not args.goal_id or not args.agent_id:
+                raise ValueError(
+                    "non-DSH thread bindings require --goal-id and --agent-id"
+                )
+            if args.expected_revision is not None:
+                raise ValueError(
+                    "--expected-revision is only valid with --host-surface dsh"
+                )
             global_path = explicit_global_registry(args.runtime_root)
             global_goal = _registry_goal(global_path, args.goal_id)
             source_registry = global_goal.get("source_registry")

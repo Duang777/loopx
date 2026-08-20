@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from .agent_registry import normalize_registered_agents
 from .authority import compact_authority_registry
 from .control_plane.projects.contract import validate_project_record_bindings
 from .control_plane.runtime.time import now_local_iso
@@ -27,6 +28,103 @@ ATTENTION_OVERRIDE_FIELDS = (
 )
 
 ROUTE_FIELDS = ("source_registry", "repo", "state_file")
+
+
+def _goal_by_id(
+    goals: list[Any],
+    goal_id: str,
+) -> dict[str, Any] | None:
+    matches = [
+        item
+        for item in goals
+        if isinstance(item, dict) and str(item.get("id") or "") == goal_id
+    ]
+    if len(matches) > 1:
+        raise ValueError(f"global registry contains duplicate goal ids: {goal_id}")
+    return matches[0] if matches else None
+
+
+def assert_dsh_binding_targets_retained(
+    payload: dict[str, Any],
+    *,
+    removed_goal_ids: set[str] | None = None,
+    replacement_goals: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """Reject Goal route or membership removal while a DSH Host is bound."""
+
+    from .thread_agent_binding import live_dsh_binding_references
+
+    removed_goal_ids = removed_goal_ids or set()
+    replacement_goals = replacement_goals or {}
+    current_goals = payload.get("goals")
+    current_goals = current_goals if isinstance(current_goals, list) else []
+    conflicts: list[dict[str, Any]] = []
+    for reference in live_dsh_binding_references(payload):
+        goal_id = str(reference["goal_id"])
+        agent_id = str(reference["agent_id"])
+        reason: str | None = None
+        if goal_id in removed_goal_ids:
+            reason = "goal_removal"
+        elif goal_id in replacement_goals:
+            current_goal = _goal_by_id(current_goals, goal_id)
+            replacement = replacement_goals[goal_id]
+            if current_goal is None or route_snapshot(current_goal) != route_snapshot(
+                replacement
+            ):
+                reason = "goal_route_replacement"
+            else:
+                coordination = replacement.get("coordination")
+                raw_agents = (
+                    coordination.get("registered_agents")
+                    if isinstance(coordination, dict)
+                    else None
+                )
+                agents = normalize_registered_agents(raw_agents)
+                if (
+                    not isinstance(raw_agents, list)
+                    or raw_agents != agents
+                    or agent_id not in agents
+                ):
+                    reason = "agent_membership_removal"
+        if reason:
+            conflicts.append({**reference, "reason": reason})
+    if conflicts:
+        summary = ", ".join(
+            f"{item['goal_id']}/{item['agent_id']}@{item['thread_id']}"
+            for item in conflicts
+        )
+        raise ValueError(
+            "DSH Host binding blocks Goal route or Agent membership removal; "
+            f"CAS-unbind or switch the Host first: {summary}"
+        )
+
+
+def assert_dsh_agent_membership_retained(
+    payload: dict[str, Any],
+    *,
+    goal_id: str,
+    registered_agents: list[str],
+) -> None:
+    """Reject removal of a Goal-Agent lane referenced by a live DSH Host."""
+
+    from .thread_agent_binding import live_dsh_binding_references
+
+    retained = set(registered_agents)
+    conflicts = [
+        reference
+        for reference in live_dsh_binding_references(payload)
+        if reference["goal_id"] == goal_id
+        and reference["agent_id"] not in retained
+    ]
+    if conflicts:
+        summary = ", ".join(
+            f"{item['goal_id']}/{item['agent_id']}@{item['thread_id']}"
+            for item in conflicts
+        )
+        raise ValueError(
+            "DSH Host binding blocks Agent membership removal; "
+            f"CAS-unbind or switch the Host first: {summary}"
+        )
 
 
 def now_local() -> str:
@@ -356,6 +454,15 @@ def _merge_global_registry_payload(
     existing_goals = existing.get("goals")
     if not isinstance(existing_goals, list):
         existing_goals = []
+    incoming_by_id = {
+        str(goal.get("id")): goal
+        for goal in incoming
+        if str(goal.get("id") or "")
+    }
+    assert_dsh_binding_targets_retained(
+        existing,
+        replacement_goals=incoming_by_id,
+    )
     merged_goals, actions, synced_ids, collisions = merge_goal_entries(
         existing_goals,
         incoming,
@@ -493,6 +600,10 @@ def _retire_global_registry_reduction(
         )
 
     retired = set(requested_ids)
+    assert_dsh_binding_targets_retained(
+        current,
+        removed_goal_ids=retired,
+    )
     retained_goals = [
         goal
         for goal in current_goals

@@ -34,9 +34,16 @@ from .project_prompt import (
     render_scheduler_execution_args,
     shell_arg,
 )
+from .paths import global_registry_path, resolve_runtime_root
 from .registry import registry_goals, resolve_state_file
 from .slash_commands import build_slash_command_catalog
-from .thread_agent_binding import normalize_thread_id, resolve_thread_agent_binding
+from .thread_agent_binding import (
+    DSH_HOST_SURFACE,
+    HOST_THREAD_BINDING_COMMAND_SCHEMA_VERSION,
+    normalize_thread_id,
+    resolve_dsh_thread_agent_binding,
+    resolve_thread_agent_binding,
+)
 
 SCHEMA_VERSION = "loopx_bootstrap_command_pack_v0"
 CANONICAL_SLASH_COMMAND = "/loopx"
@@ -62,6 +69,7 @@ START_GOAL_HOST_SURFACES = (
     "pi",
     "gemini-cli",
     "cursor-agent",
+    "dsh",
     "deepseek-harness-native",
     "deepseek-harness",
     "ark-managed-agent",
@@ -280,6 +288,14 @@ def _guided_command_pack_projection(
         "safety_contract": command_pack.get("safety_contract"),
         "detail_command": detail_command,
     }
+    for field in (
+        "host_thread_binding",
+        "host_thread_binding_resolution",
+        "error_kind",
+        "error",
+    ):
+        if command_pack.get(field) is not None:
+            projection[field] = command_pack[field]
     projection["packet_summary"] = _build_packet_summary(
         projection,
         packet_kind="bootstrap_command_pack_projection",
@@ -326,6 +342,7 @@ def build_start_goal_host_surface_selection_packet(
         "pi": "Pi LoopX goal extension",
         "gemini-cli": "Gemini CLI driving its own loop through the LoopX skill facade",
         "cursor-agent": "cursor-agent driving its own loop through the LoopX skill facade and MCP server",
+        "dsh": "DeepSeek Harness same-session LoopX plugin using global Host binding v1",
         "deepseek-harness-native": "DeepSeek Harness same-session LoopX plugin",
         "deepseek-harness": "DeepSeek Harness automation loop through scripts/dsh_turn_host_adapter.py",
         "ark-managed-agent": "Ark Managed Agent with one-shot Goal submission",
@@ -730,6 +747,7 @@ def build_loopx_bootstrap_command_pack(
     agent_id: str | None,
     cli_bin: str,
     host_surface: str,
+    runtime_root_override: str | None = None,
     goal_text: str | None = None,
     thread_id: str | None = None,
     new_peer: bool = False,
@@ -738,7 +756,12 @@ def build_loopx_bootstrap_command_pack(
     fine_grained: bool = False,
     resolve_linked_worktree_alias: bool = True,
 ) -> dict[str, Any]:
-    host_surface = normalize_host_surface(host_surface)
+    dsh_global_binding = str(host_surface or "").strip().lower() == DSH_HOST_SURFACE
+    host_surface = (
+        DSH_HOST_SURFACE
+        if dsh_global_binding
+        else normalize_host_surface(host_surface)
+    )
     inspection = inspect_bootstrap_connection(
         project,
         goal_id=goal_id,
@@ -755,9 +778,13 @@ def build_loopx_bootstrap_command_pack(
         cli_bin=cli_bin,
         goal_id="<goal-id>",
     )
-    agent_type = agent_type_for_host_surface(host_surface)
+    agent_type = (
+        "deepseek-harness-native"
+        if dsh_global_binding
+        else agent_type_for_host_surface(host_surface)
+    )
     registry_path = Path(str(inspection["registry"]))
-    registry_payload, _registry_error = _read_registry(registry_path)
+    registry_payload, registry_error = _read_registry(registry_path)
     registry_goal = next(
         (
             goal
@@ -767,11 +794,78 @@ def build_loopx_bootstrap_command_pack(
         None,
     )
     registered_agents = registered_agent_ids_for_goal(registry_goal)
-    thread_binding = resolve_thread_agent_binding(
-        registry_goal,
-        host_surface=host_surface,
-        thread_id=normalized_thread_id,
-    )
+    dsh_binding_result: dict[str, Any] | None = None
+    if dsh_global_binding and normalized_thread_id:
+        if runtime_root_override:
+            runtime_root = Path(runtime_root_override).expanduser()
+        else:
+            declared_root = (
+                registry_payload.get("common_runtime_root")
+                if registry_payload is not None
+                else None
+            )
+            if registry_payload is None or (
+                declared_root is not None and not isinstance(declared_root, str)
+            ):
+                dsh_binding_result = {
+                    "schema_version": HOST_THREAD_BINDING_COMMAND_SCHEMA_VERSION,
+                    "ok": False,
+                    "changed": False,
+                    "application": "no",
+                    "error_kind": (
+                        "authority_corrupt"
+                        if registry_error is not None
+                        else "binding_home_unavailable"
+                    ),
+                }
+                runtime_root = None
+            else:
+                runtime_root = resolve_runtime_root(
+                    registry_payload,
+                    None,
+                    registry_path=registry_path,
+                )
+        if runtime_root is not None:
+            dsh_binding_result = resolve_dsh_thread_agent_binding(
+                global_path=global_registry_path(runtime_root),
+                host_surface=DSH_HOST_SURFACE,
+                thread_id=normalized_thread_id,
+            )
+        dsh_binding = (
+            dsh_binding_result.get("binding")
+            if dsh_binding_result.get("ok")
+            and isinstance(dsh_binding_result.get("binding"), dict)
+            else None
+        )
+        dsh_target = (
+            dsh_binding.get("target")
+            if isinstance(dsh_binding, dict)
+            and isinstance(dsh_binding.get("target"), dict)
+            else {}
+        )
+        dsh_bound_here = bool(
+            dsh_binding
+            and dsh_binding.get("state") == "bound"
+            and dsh_target.get("goal_id") == resolved_goal_id
+        )
+        thread_binding = {
+            "status": (
+                "bound"
+                if dsh_bound_here
+                else "missing"
+                if dsh_binding_result.get("error_kind")
+                in {"binding_not_found", "binding_home_uninitialized"}
+                or (dsh_binding and dsh_binding.get("state") == "unbound")
+                else "unavailable"
+            ),
+            "agent_id": dsh_target.get("agent_id") if dsh_bound_here else None,
+        }
+    else:
+        thread_binding = resolve_thread_agent_binding(
+            registry_goal,
+            host_surface=host_surface,
+            thread_id=normalized_thread_id,
+        )
     has_registered_agents = bool(registered_agents)
     binding_missing = thread_binding.get("status") == "missing"
     thread_binding["selection_required"] = bool(
@@ -790,7 +884,7 @@ def build_loopx_bootstrap_command_pack(
             new_peer
             or not has_registered_agents
             or (
-                host_surface == "deepseek-harness-native"
+                host_surface in {DSH_HOST_SURFACE, "deepseek-harness-native"}
                 and normalized_thread_id
                 and binding_missing
             )
@@ -825,6 +919,40 @@ def build_loopx_bootstrap_command_pack(
     thread_binding_projection = {"status": thread_binding.get("status")}
     if thread_binding.get("agent_id"):
         thread_binding_projection["agent_id"] = thread_binding["agent_id"]
+    dsh_authoritative_binding = (
+        dsh_binding_result.get("binding")
+        if dsh_binding_result
+        and dsh_binding_result.get("ok")
+        and isinstance(dsh_binding_result.get("binding"), dict)
+        else None
+    )
+    dsh_authoritative_target = (
+        dsh_authoritative_binding.get("target")
+        if isinstance(dsh_authoritative_binding, dict)
+        and isinstance(dsh_authoritative_binding.get("target"), dict)
+        else {}
+    )
+    dsh_expected_revision = (
+        int(dsh_authoritative_binding["revision"])
+        if isinstance(dsh_authoritative_binding, dict)
+        else 0
+        if dsh_binding_result
+        and dsh_binding_result.get("error_kind")
+        in {"binding_not_found", "binding_home_uninitialized"}
+        else None
+    )
+    dsh_bind_required = bool(
+        dsh_global_binding
+        and normalized_thread_id
+        and selected_agent_id
+        and dsh_expected_revision is not None
+        and (
+            not dsh_authoritative_binding
+            or dsh_authoritative_binding.get("state") != "bound"
+            or dsh_authoritative_target.get("goal_id") != resolved_goal_id
+            or dsh_authoritative_target.get("agent_id") != selected_agent_id
+        )
+    )
     issue_fix_commands = build_issue_fix_goal_command_templates(
         cli_bin=cli_bin,
         goal_id=resolved_goal_id,
@@ -998,11 +1126,21 @@ def build_loopx_bootstrap_command_pack(
             "goal_start_bind_thread": (
                 f"{shell_arg(cli_bin)} bind-agent-thread --goal-id {shell_arg(resolved_goal_id)} "
                 f"--thread-id {shell_arg(normalized_thread_id)} --host-surface {shell_arg(host_surface)} "
-                f"--agent-id {shell_arg(str(selected_agent_id))} --execute"
+                f"--agent-id {shell_arg(str(selected_agent_id))}"
+                + (
+                    f" --expected-revision {dsh_expected_revision}"
+                    if dsh_global_binding
+                    else ""
+                )
+                + " --execute"
                 if (
                     normalized_thread_id
                     and selected_agent_id
-                    and thread_binding.get("status") == "missing"
+                    and (
+                        dsh_bind_required
+                        if dsh_global_binding
+                        else thread_binding.get("status") == "missing"
+                    )
                 )
                 else None
             ),
@@ -1054,7 +1192,20 @@ def build_loopx_bootstrap_command_pack(
     }
     if normalized_thread_id:
         payload["thread_id"] = normalized_thread_id
-        payload["thread_agent_binding"] = thread_binding_projection
+        if dsh_global_binding:
+            if dsh_authoritative_binding is not None:
+                payload["host_thread_binding"] = dsh_authoritative_binding
+            elif dsh_binding_result is not None:
+                payload["host_thread_binding_resolution"] = dsh_binding_result
+                if dsh_binding_result.get("error_kind") not in {
+                    "binding_not_found",
+                    "binding_home_uninitialized",
+                }:
+                    payload["ok"] = False
+                    payload["error_kind"] = dsh_binding_result.get("error_kind")
+                    payload["error"] = "DSH Host binding authority could not be resolved"
+        else:
+            payload["thread_agent_binding"] = thread_binding_projection
     if new_peer:
         payload["new_peer"] = True
     payload["message"] = render_loopx_bootstrap_command_pack_message(payload)
@@ -1103,6 +1254,11 @@ def _build_multi_goal_start_selection_packet(
     normalized_goal_text = " ".join(goal_text.split())
     normalized_thread_id = normalize_thread_id(thread_id)
     resolved_project = str(inspection["project"])
+    agent_type = (
+        "deepseek-harness-native"
+        if host_surface == DSH_HOST_SURFACE
+        else agent_type_for_host_surface(host_surface)
+    )
     issue_fix_commands = build_issue_fix_goal_command_templates(
         cli_bin=cli_bin,
         goal_id="<selected-goal-id>",
@@ -1189,7 +1345,7 @@ def _build_multi_goal_start_selection_packet(
         "goal_id": None,
         "agent_id": None,
         "requested_agent_id": agent_id,
-        "agent_type": agent_type_for_host_surface(host_surface),
+        "agent_type": agent_type,
         "host_surface": host_surface,
         "project_connection": connection,
         "goal_selection_gate": goal_selection_gate,
@@ -1207,7 +1363,7 @@ def _build_multi_goal_start_selection_packet(
                 capability_route
             ),
             connected=True,
-            agent_type=agent_type_for_host_surface(host_surface),
+            agent_type=agent_type,
             issue_fix_commands=issue_fix_commands,
             fine_grained=fine_grained,
         ),
@@ -1349,6 +1505,7 @@ def build_start_goal_guided_packet(
     cli_bin: str,
     host_surface: str,
     goal_text: str,
+    runtime_root_override: str | None = None,
     thread_id: str | None = None,
     new_peer: bool = False,
     available_capabilities: list[str] | None = None,
@@ -1356,7 +1513,11 @@ def build_start_goal_guided_packet(
     fine_grained: bool = False,
     include_command_pack_detail: bool = False,
 ) -> dict[str, Any]:
-    host_surface = normalize_host_surface(host_surface)
+    host_surface = (
+        DSH_HOST_SURFACE
+        if str(host_surface or "").strip().lower() == DSH_HOST_SURFACE
+        else normalize_host_surface(host_surface)
+    )
     if goal_id is None:
         selection_packet = _build_multi_goal_start_selection_packet(
             project=project,
@@ -1381,6 +1542,7 @@ def build_start_goal_guided_packet(
         new_peer=new_peer,
         cli_bin=cli_bin,
         host_surface=host_surface,
+        runtime_root_override=runtime_root_override,
         goal_text=goal_text,
         available_capabilities=available_capabilities,
         capability_route=capability_route,
@@ -1457,12 +1619,28 @@ def build_start_goal_guided_packet(
                 "purpose": "bind thread; verify readback before Todo writeback",
                 "must_stop_on_failure": True,
                 "result_contract": {
-                    "schema_version": "loopx_thread_agent_binding_continuation_v0",
-                    "required_result": {
-                        "ok": True,
-                        "global_sync": {"ok": True},
-                        "registration_readback": {"verified": True},
-                    },
+                    "schema_version": (
+                        HOST_THREAD_BINDING_COMMAND_SCHEMA_VERSION
+                        if host_surface == DSH_HOST_SURFACE
+                        else "loopx_thread_agent_binding_continuation_v0"
+                    ),
+                    "required_result": (
+                        {
+                            "ok": True,
+                            "application": "yes",
+                            "binding": {
+                                "schema_version": "loopx_host_thread_binding_v1",
+                                "host_surface": DSH_HOST_SURFACE,
+                                "state": "bound",
+                            },
+                        }
+                        if host_surface == DSH_HOST_SURFACE
+                        else {
+                            "ok": True,
+                            "global_sync": {"ok": True},
+                            "registration_readback": {"verified": True},
+                        }
+                    ),
                 },
             }
         ]
@@ -1712,7 +1890,23 @@ def build_start_goal_guided_packet(
     }
     if command_pack.get("thread_id"):
         payload["thread_id"] = command_pack["thread_id"]
-        payload["thread_agent_binding"] = command_pack.get("thread_agent_binding")
+        if command_pack.get("host_surface") == DSH_HOST_SURFACE:
+            if command_pack.get("host_thread_binding") is not None:
+                payload["host_thread_binding"] = command_pack.get(
+                    "host_thread_binding"
+                )
+            if command_pack.get("host_thread_binding_resolution") is not None:
+                payload["host_thread_binding_resolution"] = command_pack.get(
+                    "host_thread_binding_resolution"
+                )
+            if command_pack.get("error_kind") is not None:
+                payload["error_kind"] = command_pack.get("error_kind")
+                payload["error"] = command_pack.get("error")
+                payload["ok"] = False
+        else:
+            payload["thread_agent_binding"] = command_pack.get(
+                "thread_agent_binding"
+            )
     if command_pack.get("new_peer"):
         payload["new_peer"] = True
     payload["message"] = render_start_goal_guided_markdown(payload)

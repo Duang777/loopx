@@ -1,4 +1,10 @@
-import type { LoopXFailure, LoopXFailureCode, LoopXResult } from './types.ts'
+import type {
+  LoopXApplication,
+  LoopXAppliedSubEffect,
+  LoopXFailure,
+  LoopXFailureCode,
+  LoopXResult,
+} from './types.ts'
 
 export interface LoopXFailureOptions {
   readonly operation?: string
@@ -21,12 +27,30 @@ export function failure(
   })
 }
 
-export function rejected<T>(error: LoopXFailure): LoopXResult<T> {
-  return Object.freeze({ ok: false, error })
+export function rejected<T>(
+  error: LoopXFailure,
+  application: LoopXApplication = error.outcomeUncertain ? 'unknown' : 'no',
+  subEffects?: readonly LoopXAppliedSubEffect[],
+): LoopXResult<T> {
+  return Object.freeze({
+    ok: false,
+    error,
+    application,
+    ...(subEffects === undefined ? {} : { subEffects: Object.freeze([...subEffects]) }),
+  })
 }
 
-export function success<T>(value: T): LoopXResult<T> {
-  return Object.freeze({ ok: true, value })
+export function success<T>(
+  value: T,
+  application: LoopXApplication = 'no',
+  subEffects?: readonly LoopXAppliedSubEffect[],
+): LoopXResult<T> {
+  return Object.freeze({
+    ok: true,
+    value,
+    application,
+    ...(subEffects === undefined ? {} : { subEffects: Object.freeze([...subEffects]) }),
+  })
 }
 
 /** Render a locator only as a non-reversible presence label. */

@@ -1,406 +1,302 @@
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import type { Context } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
+import { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import type { CommandDefinition, CommandInvocation } from '@deepseek-ai/dsh-commands'
+import { SessionId, SessionStore } from '@deepseek-ai/dsh-session'
+import type { UserMessage } from '@deepseek-ai/dsh-session'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { PLUGIN_VERSION, apply as applyCommand } from '../src/command.ts'
+import {
+  CoordinatorRegistry,
+  installCoordinator,
+} from '../src/coordinator.ts'
+import { LoopXContinuationDriver } from '../src/driver.ts'
 import { apply as applyTools } from '../src/tools.ts'
 import type {
-  LoopXAttachRequest,
+  LoopXAppliedSubEffect,
   LoopXAttachValue,
-  LoopXBindingFence,
-  LoopXBindingPhase,
-  LoopXBindingReason,
-  LoopXBindingRow,
+  LoopXBoundHostThreadBindingV1,
   LoopXFailure,
-  LoopXPlanningCheckpoint,
-  LoopXQuotaDecision,
   LoopXResult,
-  LoopXSchedulerHint,
   LoopXServiceApi,
-  LoopXSessionRef,
   LoopXStartValue,
   LoopXStatusValue,
-  LoopXTaskBody,
-  LoopXTodoClaimRequest,
-  LoopXTodoAddRequest,
-  LoopXTodoAddValue,
-  LoopXTodoCompleteRequest,
   LoopXTodoMutationValue,
-  LoopXTodoUpdateRequest,
 } from '../src/types.ts'
 
 const signal = new AbortController().signal
 
-function success<T>(value: T): LoopXResult<T> {
-  return { ok: true, value }
+function success<T>(
+  value: T,
+  application: 'yes' | 'no' = 'no',
+): LoopXResult<T> {
+  return { ok: true, value, application }
 }
 
 function failure(
   code: LoopXFailure['code'],
   operation: string,
-  outcomeUncertain = false,
+  application: 'yes' | 'no' | 'unknown' = 'no',
+  subEffects?: readonly LoopXAppliedSubEffect[],
 ): LoopXResult<never> {
   return {
     ok: false,
+    application,
     error: {
       code,
       message: `safe ${operation} failure`,
       operation,
       retryable: false,
-      outcomeUncertain,
+      outcomeUncertain: application === 'unknown',
     },
+    ...(subEffects === undefined ? {} : { subEffects }),
   }
 }
 
-function binding(
-  phase: LoopXBindingPhase = 'active_armed',
-  overrides: Partial<LoopXBindingRow> = {},
-): LoopXBindingRow {
-  return {
-    schemaVersion: 'loopx_dsh_binding_row_v0',
-    session: { createdAt: 42, cwd: 'SENSITIVE_SESSION_CWD' },
-    hostSurface: 'deepseek-harness-native',
-    goalId: 'goal-a',
-    agentId: 'agent-a',
-    projectLocator: 'SENSITIVE_PROJECT_LOCATOR',
-    registryLocator: 'SENSITIVE_REGISTRY_LOCATOR',
-    runtimeRootLocator: 'SENSITIVE_RUNTIME_LOCATOR',
-    phase,
-    generation: 3,
-    unchangedPollCount: 0,
-    bindingCreatedAt: 40,
-    updatedAt: 42,
-    ...overrides,
-  }
+function bound(revision = 3): LoopXBoundHostThreadBindingV1 {
+  return Object.freeze({
+    schemaVersion: 'loopx_host_thread_binding_v1',
+    hostSurface: 'dsh',
+    threadId: 'session-a',
+    revision,
+    state: 'bound',
+    target: Object.freeze({ goalId: 'goal-a', agentId: 'agent-a' }),
+  })
 }
 
-function planning(goalId = 'goal-a', agentId = 'agent-a'): LoopXPlanningCheckpoint {
+function planning(binding = bound()): LoopXStartValue {
   return {
-    schemaVersion: 'dsh_loopx_planning_checkpoint_v0',
-    goalId,
-    agentId,
-    goalText: 'plan the bounded work',
-    planner: {
-      defaultProfile: 'clear_bounded_problem',
-      profileSelection: 'select the matching profile',
-      openEndedProductDirection: { suggestedItemsMin: 2, suggestedItemsMax: 5, intent: 'rank work' },
-      clearBoundedProblem: {
-        itemCountPolicy: 'planner_sized',
-        mayReuseCurrentTodoWhenItAlreadyRepresentsThePlan: true,
-        intent: 'minimum sufficient plan',
+    kind: 'planning',
+    binding,
+    planning: {
+      schemaVersion: 'dsh_loopx_planning_checkpoint_v1',
+      goalId: binding.target.goalId,
+      agentId: binding.target.agentId,
+      goalText: 'bounded objective',
+      planner: {
+        defaultProfile: 'clear_bounded_problem',
+        profileSelection: 'select',
+        openEndedProductDirection: { suggestedItemsMin: 2, suggestedItemsMax: 5, intent: 'rank' },
+        clearBoundedProblem: {
+          itemCountPolicy: 'planner_sized',
+          mayReuseCurrentTodoWhenItAlreadyRepresentsThePlan: true,
+          intent: 'plan',
+        },
+        allowedPriorities: ['P0', 'P1', 'P2'],
+        defaultRole: 'agent',
+        defaultTaskClass: 'advancement_task',
+        requiredFields: ['priority', 'text'],
+        publicSafeOnly: true,
+        budgetPolicy: 'minimum',
       },
-      allowedPriorities: ['P0', 'P1', 'P2'],
-      defaultRole: 'agent',
-      defaultTaskClass: 'advancement_task',
-      requiredFields: ['priority', 'text', 'task_class', 'action_kind'],
-      publicSafeOnly: true,
-      budgetPolicy: 'minimum sufficient plan',
+      writeback: {
+        todoTool: 'loopx_todo_add',
+        minimumTodos: 1,
+        maximumTodos: 5,
+        ordering: 'priority_then_tool_call_order',
+        activationTool: 'loopx_goal_activate',
+        activationArguments: { ...binding.target },
+      },
+      stopConditions: ['user gate'],
+      forbidden: ['shell_or_bash', 'raw_loopx_cli', 'registry_edit', 'ctx.goals'],
     },
-    writeback: {
-      todoTool: 'loopx_todo_add',
-      minimumTodos: 1,
-      maximumTodos: 5,
-      ordering: 'priority_then_tool_call_order',
-      activationTool: 'loopx_goal_activate',
-      activationArguments: { goalId, agentId },
+    modelCheckpoint: '<loopx_planning>plan</loopx_planning>',
+  }
+}
+
+function statusValue(binding = bound()): LoopXStatusValue {
+  return {
+    host: {
+      binarySource: 'path',
+      binding,
+      activation: 'disarmed',
+      automaticFollowupSuppressed: false,
     },
-    stopConditions: ['stop at a user gate'],
-    forbidden: ['shell_or_bash', 'raw_loopx_cli', 'registry_edit', 'ctx.goals'],
+    authority: {
+      schemaVersion: 'loopx_status_projection_v1',
+      ok: true,
+      goalId: binding.target.goalId,
+      attention: [{
+        goalId: binding.target.goalId,
+        status: 'active',
+      }],
+    },
   }
 }
 
 interface StubAgent {
-  readonly agent: Agent
-  readonly followups: unknown[]
-  readonly sends: unknown[]
-  readonly toolDefinitions: Map<string, ToolDefinition>
+  agent: Agent
+  readonly followups: UserMessage[]
+  readonly steers: UserMessage[]
+  readonly nextTurn: UserMessage[]
+  maintenanceClaims: number
+  whenIdleCalls: number
+  maintenanceCollisions: number
+  throwDelivery: boolean
+  setStatus(value: 'idle' | 'running'): void
 }
 
-function stubAgent(
-  id = 'session-current',
-  createdAt = 42,
-  cwd = 'SENSITIVE_SESSION_CWD',
-): StubAgent {
-  const followups: unknown[] = []
-  const sends: unknown[] = []
-  const toolDefinitions = new Map<string, ToolDefinition>()
-  const nextTurn: UserMessage[] = []
-  const session = {
-    id,
-    header: { version: 0, id, createdAt, cwd },
+interface CommandScope {
+  readonly ctx: Context
+  dispose(): Promise<void>
+}
+
+async function createCommandScope(ctx: Context, key: object): Promise<CommandScope> {
+  const require = createRequire(import.meta.url)
+  const commandsManifest = require.resolve('@deepseek-ai/dsh-commands/package.json')
+  const commandsRequire = createRequire(commandsManifest)
+  const scopeEntry = commandsRequire.resolve('@deepseek-ai/dsh-scope')
+  const scopeModule = await import(/* @vite-ignore */ pathToFileURL(scopeEntry).href) as {
+    createScope(context: Context, scopeKey: object): CommandScope
   }
-  const agent = {
+  return scopeModule.createScope(ctx, key)
+}
+
+function stubAgent(id = 'session-a'): StubAgent {
+  let status: 'idle' | 'running' = 'idle'
+  const followups: UserMessage[] = []
+  const steers: UserMessage[] = []
+  const nextTurn: UserMessage[] = []
+  const stub: StubAgent = {
+    agent: undefined as unknown as Agent,
+    followups,
+    steers,
+    nextTurn,
+    maintenanceClaims: 0,
+    whenIdleCalls: 0,
+    maintenanceCollisions: 0,
+    throwDelivery: false,
+    setStatus(value) { status = value },
+  }
+  const session = { id, header: { version: 0, id, createdAt: 42, cwd: '/PRIVATE/CWD' } }
+  stub.agent = {
     id,
     session,
-    status: 'idle',
+    get status() { return status },
     inbox: {
-      nextTurn,
+      get nextTurn() { return nextTurn },
       nextStep: [],
       get hasPending() { return nextTurn.length > 0 },
+      remove(messageId: UserMessage['id']) {
+        const index = nextTurn.findIndex(message => message.id === messageId)
+        if (index < 0) return false
+        nextTurn.splice(index, 1)
+        return true
+      },
     },
-    ctx: { tools: { get(name: string) { return toolDefinitions.get(name) } } },
-    followup(message: UserMessage) { followups.push(message); nextTurn.push(message) },
-    send(message: UserMessage) { sends.push(message); nextTurn.push(message) },
+    runMaintenance<T>(task: (taskSignal: AbortSignal) => Promise<T>): Promise<T> {
+      stub.maintenanceClaims += 1
+      if (stub.maintenanceCollisions > 0) {
+        stub.maintenanceCollisions -= 1
+        throw new Error('hidden maintenance owns idle')
+      }
+      return task(new AbortController().signal)
+    },
+    whenIdle() {
+      stub.whenIdleCalls += 1
+      return Promise.resolve()
+    },
+    followup(message: UserMessage) {
+      if (stub.throwDelivery) throw new Error('followup failed')
+      followups.push(message)
+      nextTurn.push(message)
+    },
+    steer(message: UserMessage) {
+      if (stub.throwDelivery) throw new Error('steer failed')
+      steers.push(message)
+    },
+    send() {},
     cancel() {},
-    whenIdle() { return Promise.resolve() },
   } as unknown as Agent
-  return { agent, followups, sends, toolDefinitions }
+  return stub
 }
 
-class FakeService implements LoopXServiceApi {
-  binding: LoopXBindingRow | undefined
-  startResult: LoopXResult<LoopXStartValue> | undefined
-  attachResult: LoopXResult<LoopXAttachValue> | undefined
-  activateResult: LoopXResult<LoopXBindingRow> | undefined
-  statusResult: LoopXResult<LoopXStatusValue> | undefined
-  detachResult: LoopXResult<{ readonly detached: true }> | undefined
-  todoFailure: LoopXResult<never> | undefined
-  readonly sessions: LoopXSessionRef[] = []
-  readonly starts: string[] = []
-  readonly attaches: LoopXAttachRequest[] = []
-  readonly activations: { goalId: string; agentId?: string }[] = []
-  readonly claims: LoopXTodoClaimRequest[] = []
-  readonly additions: LoopXTodoAddRequest[] = []
-  readonly updates: LoopXTodoUpdateRequest[] = []
-  readonly completions: LoopXTodoCompleteRequest[] = []
-  readonly pauses: LoopXBindingReason[] = []
-  readonly pauseFences: Array<LoopXBindingFence | undefined> = []
-  readonly uncertainFences: Array<LoopXBindingFence | undefined> = []
-  uncertainCalls = 0
-  statusCalls = 0
+class FakeService {
+  readonly coordinator = new CoordinatorRegistry()
+  readonly calls: string[] = []
+  startResult: LoopXResult<LoopXStartValue> = success(planning(), 'yes')
+  attachResult: LoopXResult<LoopXAttachValue> = success({ kind: 'attached', binding: bound() }, 'yes')
+  statusResult: LoopXResult<LoopXStatusValue> = success(statusValue())
+  detachResult = success({
+    detached: true as const,
+    binding: {
+      schemaVersion: 'loopx_host_thread_binding_v1' as const,
+      hostSurface: 'dsh' as const,
+      threadId: 'session-a',
+      revision: 4,
+      state: 'unbound' as const,
+    },
+  }, 'yes')
 
-  constructor(initial: LoopXBindingRow | null = binding()) {
-    this.binding = initial ?? undefined
+  constructor() {
+    installCoordinator(this, this.coordinator)
   }
 
-  getBinding(session: LoopXSessionRef): LoopXResult<LoopXBindingRow | undefined> {
-    this.sessions.push(session)
-    return success(this.binding)
+  status(): Promise<LoopXResult<LoopXStatusValue>> {
+    this.calls.push('status')
+    return Promise.resolve(this.statusResult)
   }
 
-  start(
-    session: LoopXSessionRef,
-    goalText: string,
-    _signal?: AbortSignal,
-  ): Promise<LoopXResult<LoopXStartValue>> {
-    this.sessions.push(session)
-    this.starts.push(goalText)
-    const planned = binding('planning')
-    this.binding = planned
-    return Promise.resolve(this.startResult ?? success({
-      kind: 'planning',
-      binding: planned,
-      planning: planning(planned.goalId, planned.agentId),
-      modelCheckpoint: '<loopx_planning>write the plan and Todos</loopx_planning>',
-    }))
+  start(): Promise<LoopXResult<LoopXStartValue>> {
+    this.calls.push('start')
+    return Promise.resolve(this.startResult)
   }
 
-  attach(
-    session: LoopXSessionRef,
-    request: LoopXAttachRequest,
-    _signal?: AbortSignal,
-  ): Promise<LoopXResult<LoopXAttachValue>> {
-    this.sessions.push(session)
-    this.attaches.push(request)
-    const attached = binding('active_armed', {
-      goalId: request.goalId,
-      agentId: request.agentId ?? (request.newPeer === true ? 'fresh-peer' : 'agent-a'),
-    })
-    this.binding = attached
-    return Promise.resolve(this.attachResult ?? success({ kind: 'attached', binding: attached }))
+  attach(): Promise<LoopXResult<LoopXAttachValue>> {
+    this.calls.push('attach')
+    return Promise.resolve(this.attachResult)
   }
 
-  activate(
-    session: LoopXSessionRef,
-    goalId: string,
-    agentId?: string,
-    _signal?: AbortSignal,
-  ): Promise<LoopXResult<LoopXBindingRow>> {
-    this.sessions.push(session)
-    this.activations.push({ goalId, ...(agentId === undefined ? {} : { agentId }) })
-    if (this.activateResult !== undefined) return Promise.resolve(this.activateResult)
-    if (this.binding === undefined || this.binding.goalId !== goalId
-      || (agentId !== undefined && this.binding.agentId !== agentId)) {
-      return Promise.resolve(failure('LOOPX_IDENTITY_CONFLICT', 'goal-activate'))
-    }
-    this.binding = binding('active_armed', {
-      goalId: this.binding.goalId,
-      agentId: this.binding.agentId,
-      generation: this.binding.generation + 1,
-    })
-    return Promise.resolve(success(this.binding))
+  resume() {
+    this.calls.push('resume')
+    return Promise.resolve(success(bound(), 'no'))
   }
 
-  status(
-    session: LoopXSessionRef,
-    _signal?: AbortSignal,
-  ): Promise<LoopXResult<LoopXStatusValue>> {
-    this.sessions.push(session)
-    this.statusCalls += 1
-    return Promise.resolve(this.statusResult ?? success({
-      host: {
-        binarySource: 'path',
-        ...(this.binding === undefined ? {} : { binding: this.binding }),
+  detach() {
+    this.calls.push('detach')
+    return Promise.resolve(this.detachResult)
+  }
+
+  pause() {
+    this.calls.push('pause')
+    return Promise.resolve(success({ paused: true as const, binding: bound() }, 'no'))
+  }
+
+  activate() {
+    this.calls.push('activate')
+    return Promise.resolve(success(bound(), 'yes'))
+  }
+
+  todoAdd() {
+    this.calls.push('todoAdd')
+    return Promise.resolve(success({
+      todoId: 'todo-a', status: 'open' as const, priority: 'P0' as const, role: 'agent' as const,
+      payload: {
+        schemaVersion: 'loopx_todo_projection_v1' as const,
+        goalId: 'goal-a', todoId: 'todo-a', status: 'open' as const, role: 'agent' as const,
+        taskClass: 'advancement_task', actionKind: 'implement', added: true, alreadyExists: false,
       },
-      ...(this.binding === undefined ? {} : {
-        authority: {
-          schema_version: 'loopx_status_v0',
-          ok: true,
-          goal_filter: this.binding.goalId,
-          attention_queue: { items: [{ goal_id: this.binding.goalId, status: 'active' }] },
-        },
-      }),
-    }))
+    }, 'yes'))
   }
 
-  pause(
-    session: LoopXSessionRef,
-    reason: LoopXBindingReason = 'user_pause',
-    expectedFence?: LoopXBindingFence,
-  ): Promise<LoopXResult<LoopXBindingRow>> {
-    this.sessions.push(session)
-    this.pauses.push(reason)
-    this.pauseFences.push(expectedFence)
-    if (this.binding === undefined) return Promise.resolve(failure('LOOPX_SESSION_NOT_BOUND', 'pause'))
-    this.binding = binding(this.binding.phase === 'planning' ? 'planning' : 'active_paused', {
-      goalId: this.binding.goalId,
-      agentId: this.binding.agentId,
-      generation: this.binding.generation + 1,
-      reason,
-    })
-    return Promise.resolve(success(this.binding))
-  }
+  todoClaim() { return this.todoMutation('todoClaim') }
+  todoUpdate() { return this.todoMutation('todoUpdate') }
+  todoComplete() { return this.todoMutation('todoComplete') }
 
-  resume(session: LoopXSessionRef): Promise<LoopXResult<LoopXBindingRow>> {
-    this.sessions.push(session)
-    if (this.binding === undefined) return Promise.resolve(failure('LOOPX_SESSION_NOT_BOUND', 'resume'))
-    this.binding = binding('active_armed', {
-      goalId: this.binding.goalId,
-      agentId: this.binding.agentId,
-      generation: this.binding.generation + 1,
-    })
-    return Promise.resolve(success(this.binding))
-  }
-
-  detach(session: LoopXSessionRef): Promise<LoopXResult<{ readonly detached: true }>> {
-    this.sessions.push(session)
-    if (this.detachResult !== undefined) {
-      if (!this.detachResult.ok && this.detachResult.error.outcomeUncertain && this.binding !== undefined) {
-        this.binding = binding('uncertain', {
-          goalId: this.binding.goalId,
-          agentId: this.binding.agentId,
-          reason: 'uncertain_write',
-        })
-      }
-      return Promise.resolve(this.detachResult)
-    }
-    this.binding = undefined
-    return Promise.resolve(success({ detached: true }))
-  }
-
-  todoAdd(
-    session: LoopXSessionRef,
-    request: LoopXTodoAddRequest,
-  ): Promise<LoopXResult<LoopXTodoAddValue>> {
-    this.sessions.push(session)
-    this.additions.push(request)
-    if (this.todoFailure !== undefined) return Promise.resolve(this.todoFailure)
+  private todoMutation(name: string) {
+    this.calls.push(name)
     return Promise.resolve(success({
-      todoId: 'todo-added',
-      status: 'open',
-      priority: request.priority,
-      role: request.role ?? 'agent',
-      payload: { schema_version: 'loopx_todo_command_v0', ok: true },
-    }))
-  }
-
-  todoClaim(
-    session: LoopXSessionRef,
-    request: LoopXTodoClaimRequest,
-  ): Promise<LoopXResult<LoopXTodoMutationValue>> {
-    this.sessions.push(session)
-    this.claims.push(request)
-    if (this.todoFailure !== undefined) return Promise.resolve(this.todoFailure)
-    return Promise.resolve(success({
-      todoId: request.todoId,
-      status: 'claimed',
-      payload: { schema_version: 'loopx_todo_command_v0', ok: true, todo_id: request.todoId },
-    }))
-  }
-
-  todoUpdate(
-    session: LoopXSessionRef,
-    request: LoopXTodoUpdateRequest,
-  ): Promise<LoopXResult<LoopXTodoMutationValue>> {
-    this.sessions.push(session)
-    this.updates.push(request)
-    if (this.todoFailure !== undefined) return Promise.resolve(this.todoFailure)
-    return Promise.resolve(success({
-      todoId: request.todoId,
-      status: request.status,
-      payload: { schema_version: 'loopx_todo_command_v0', ok: true, todo_id: request.todoId },
-    }))
-  }
-
-  todoComplete(
-    session: LoopXSessionRef,
-    request: LoopXTodoCompleteRequest,
-  ): Promise<LoopXResult<LoopXTodoMutationValue>> {
-    this.sessions.push(session)
-    this.completions.push(request)
-    if (this.todoFailure !== undefined) return Promise.resolve(this.todoFailure)
-    return Promise.resolve(success({
-      todoId: request.todoId,
-      status: 'done',
-      payload: { schema_version: 'loopx_todo_command_v0', ok: true, todo_id: request.todoId },
-    }))
-  }
-
-  quotaShouldRun(): Promise<LoopXResult<LoopXQuotaDecision>> {
-    return Promise.resolve(failure('LOOPX_DRIVER_NOT_ARMED', 'quota'))
-  }
-
-  taskBody(): Promise<LoopXResult<LoopXTaskBody>> {
-    return Promise.resolve(failure('LOOPX_DRIVER_NOT_ARMED', 'task-body'))
-  }
-
-  updateScheduler(
-    _session: LoopXSessionRef,
-    _fence: LoopXBindingFence,
-    _hint: LoopXSchedulerHint,
-    _unchangedPollCount: number,
-    _nextCheckAt?: number,
-  ): Promise<LoopXResult<LoopXBindingRow>> {
-    return Promise.resolve(failure('LOOPX_DRIVER_NOT_ARMED', 'scheduler'))
-  }
-
-  fence(): LoopXResult<LoopXBindingFence> {
-    return failure('LOOPX_DRIVER_NOT_ARMED', 'fence')
-  }
-
-  fenceIsCurrent(): boolean {
-    return false
-  }
-
-  markUncertain(
-    session: LoopXSessionRef,
-    reason: LoopXBindingReason = 'uncertain_write',
-    expectedFence?: LoopXBindingFence,
-  ): Promise<LoopXResult<LoopXBindingRow>> {
-    this.sessions.push(session)
-    this.uncertainCalls += 1
-    this.uncertainFences.push(expectedFence)
-    if (this.binding === undefined) return Promise.resolve(failure('LOOPX_SESSION_NOT_BOUND', 'uncertain'))
-    this.binding = binding('uncertain', {
-      goalId: this.binding.goalId,
-      agentId: this.binding.agentId,
-      generation: this.binding.generation + 1,
-      reason,
-    })
-    return Promise.resolve(success(this.binding))
+      todoId: 'todo-a', status: 'done',
+      payload: {
+        schemaVersion: 'loopx_todo_projection_v1' as const,
+        goalId: 'goal-a', todoId: 'todo-a', status: 'done', changed: true,
+      },
+    }, 'yes'))
   }
 
   disposeSession(): Promise<void> {
@@ -408,44 +304,63 @@ class FakeService implements LoopXServiceApi {
   }
 }
 
-function invocation(agent: Agent, rawInput: string): CommandInvocation {
-  return { commandId: 'command-test', agent, rawInput, signal } as unknown as CommandInvocation
-}
-
-function registerCommand(service: LoopXServiceApi): CommandDefinition {
+function registerCommand(service: FakeService): CommandDefinition {
   let definition: CommandDefinition | undefined
-  const ctx = {
+  applyCommand({
     loopx: service,
     commands: { register(value: CommandDefinition) { definition = value } },
-  } as unknown as Context
-  applyCommand(ctx)
-  if (definition === undefined) throw new Error('command was not registered')
+  } as unknown as Context)
+  if (definition === undefined) throw new Error('command missing')
   return definition
 }
 
-function runCommand(service: LoopXServiceApi, agent: Agent, rawInput: string) {
-  return registerCommand(service).handler(invocation(agent, rawInput))
+async function runCommand(
+  service: FakeService,
+  current: StubAgent,
+  rawInput: string,
+  commandId = `cmd-${randomId++}`,
+) {
+  service.coordinator.commandRun(commandId, current.agent.session, current.agent)
+  return registerCommand(service).handler({
+    commandId,
+    agent: current.agent,
+    rawInput,
+    signal,
+  } as unknown as CommandInvocation)
 }
 
-function registerTools(service: LoopXServiceApi): ReadonlyMap<string, ToolDefinition> {
-  const definitions = new Map<string, ToolDefinition>()
-  const ctx = {
+let randomId = 1
+
+function receiptFrom(message: UserMessage): Record<string, unknown> {
+  const text = (message.content[0] as { readonly text: string }).text
+  const start = text.indexOf('{"schemaVersion"')
+  if (start < 0) throw new Error('receipt missing')
+  return JSON.parse(text.slice(start)) as Record<string, unknown>
+}
+
+function receiptFromResult(result: { readonly text?: string }): Record<string, unknown> {
+  if (result.text === undefined) throw new Error('command text missing')
+  return JSON.parse(result.text.split('\n\nUsage:')[0] as string) as Record<string, unknown>
+}
+
+function registerTools(service: FakeService): ReadonlyMap<string, ToolDefinition> {
+  const tools = new Map<string, ToolDefinition>()
+  applyTools({
     loopx: service,
-    tools: { register(value: ToolDefinition) { definitions.set(value.name, value) } },
-  } as unknown as Context
-  applyTools(ctx)
-  return definitions
+    tools: { register(value: ToolDefinition) { tools.set(value.name, value) } },
+  } as unknown as Context)
+  return tools
 }
 
 async function callTool(
-  definitions: ReadonlyMap<string, ToolDefinition>,
+  service: FakeService,
   name: string,
   args: unknown,
-  agent?: Agent,
+  agent: Agent,
 ): Promise<Record<string, unknown>> {
-  const definition = definitions.get(name)
+  const definition = registerTools(service).get(name)
   if (definition === undefined) throw new Error(`missing tool ${name}`)
-  const exec = {
+  const value = await definition.execute(args, {
     name,
     arguments: args,
     agent,
@@ -455,459 +370,462 @@ async function callTool(
     token: Symbol(name),
     deferContext() {},
     concludeTurn() {},
-  } as unknown as ToolRunContext
-  const value = await definition.execute(args, exec)
+  } as unknown as ToolRunContext)
   expect(validateJsonSchemaValue(definition.output.schema, value, '')).toEqual([])
   return value as Record<string, unknown>
 }
 
-function errorCode(value: Record<string, unknown>): unknown {
-  return (value.error as Record<string, unknown> | undefined)?.code
-}
-
-function semanticFollowupText(current: StubAgent): string {
-  expect(current.followups).toHaveLength(1)
-  expect(current.sends).toEqual([])
-  const message = current.followups[0] as {
-    readonly role?: unknown
-    readonly source?: unknown
-    readonly content?: readonly { readonly type?: unknown; readonly text?: unknown }[]
-  }
-  expect(message).toMatchObject({
-    role: 'user',
-    source: { kind: 'plugin', plugin: 'dsh-loopx-plugin' },
-  })
-  expect(message.content).toHaveLength(1)
-  expect(message.content?.[0]).toMatchObject({ type: 'text' })
-  const text = message.content?.[0]?.text
-  if (typeof text !== 'string') throw new TypeError('semantic follow-up text is missing')
-  return text
-}
-
-function expectNoCommandServiceCalls(service: FakeService): void {
-  expect(service.sessions).toEqual([])
-  expect(service.statusCalls).toBe(0)
-  expect(service.starts).toEqual([])
-  expect(service.attaches).toEqual([])
-  expect(service.activations).toEqual([])
-  expect(service.additions).toEqual([])
-  expect(service.claims).toEqual([])
-  expect(service.updates).toEqual([])
-  expect(service.completions).toEqual([])
-  expect(service.pauses).toEqual([])
-  expect(service.uncertainCalls).toBe(0)
-}
-
-describe('/loopx command', () => {
-  it('returns exact version locally without a follow-up or LoopX service call', async () => {
+describe('/loopx closed grammar and routing', () => {
+  it('returns exact version locally under an owned barrier', async () => {
     const service = new FakeService()
     const current = stubAgent()
-    Object.defineProperty(current.agent, 'id', { value: 'mismatched-agent' })
-
-    expect(await runCommand(service, current.agent, ' version ')).toEqual({
-      kind: 'success',
-      text: `dsh-loopx-plugin ${PLUGIN_VERSION}`,
+    expect(await runCommand(service, current, ' version ')).toEqual({
+      kind: 'success', text: `dsh-loopx-plugin ${PLUGIN_VERSION}`,
     })
+    expect(service.calls).toEqual([])
     expect(current.followups).toEqual([])
-    expect(current.sends).toEqual([])
-    expectNoCommandServiceCalls(service)
-  })
-
-  it('keeps empty input on the local status/help path without a follow-up', async () => {
-    const service = new FakeService()
-    const current = stubAgent()
-    const definition = registerCommand(service)
-    expect(definition.name).toBe('loopx')
-
-    const result = await definition.handler(invocation(current.agent, ''))
-    expect(result.kind).toBe('success')
-    expect(result.text).toContain('DSH Host sidecar (Host binding/driver state; not Goal or Todo authority)')
-    expect(result.text).toContain('LoopX authoritative state (live CLI readback)')
-    expect(result.text).not.toContain('SENSITIVE_PROJECT_LOCATOR')
-    expect(result.text).not.toContain('SENSITIVE_REGISTRY_LOCATOR')
-    expect(result.text).toContain('Usage: /loopx')
-    expect(current.followups).toEqual([])
-    expect(current.sends).toEqual([])
-    expect(service.statusCalls).toBe(1)
-    expect(service.starts).toEqual([])
-    expect(service.attaches).toEqual([])
-  })
-
-  it('queues one plugin-owned semantic follow-up for an unbound natural-language request', async () => {
-    const service = new FakeService(null)
-    const current = stubAgent('semantic-session')
-    const request = '梳理数据模型并画一张 ER 图'
-
-    const result = await runCommand(service, current.agent, request)
-    expect(result).toMatchObject({ kind: 'success' })
-    expect(semanticFollowupText(current)).toContain(request)
-    expectNoCommandServiceCalls(service)
-  })
-
-  it('uses the identical semantic queue path for a bound natural-language request', async () => {
-    const request = 'summarize the current work and add the next safe Todo'
-    const unboundService = new FakeService(null)
-    const unbound = stubAgent('unbound-session')
-    const existingBinding = binding('active_paused', { reason: 'user_pause' })
-    const boundService = new FakeService(existingBinding)
-    const bound = stubAgent('bound-session')
-
-    expect(await runCommand(unboundService, unbound.agent, request)).toMatchObject({ kind: 'success' })
-    expect(await runCommand(boundService, bound.agent, request)).toMatchObject({ kind: 'success' })
-    expect(semanticFollowupText(bound)).toBe(semanticFollowupText(unbound))
-    expectNoCommandServiceCalls(unboundService)
-    expectNoCommandServiceCalls(boundService)
-    expect(boundService.binding).toBe(existingBinding)
   })
 
   it.each([
-    'start ship the adapter',
-    'attach goal-123',
-    'status',
-    'pause',
-    'resume',
-    'detach',
-    'version with details',
-  ])('routes former command-shaped input %j through the semantic follow-up', async (request) => {
+    ['', true],
+    ['status', false],
+  ] as const)('routes exact read %j through idle maintenance and followup', async (input, usage) => {
     const service = new FakeService()
     const current = stubAgent()
-
-    expect(await runCommand(service, current.agent, request)).toMatchObject({ kind: 'success' })
-    expect(semanticFollowupText(current)).toContain(request)
-    expectNoCommandServiceCalls(service)
+    const result = await runCommand(service, current, input)
+    expect(service.calls).toEqual(['status'])
+    expect(current.maintenanceClaims).toBe(1)
+    expect(current.followups).toHaveLength(1)
+    expect(receiptFrom(current.followups[0] as UserMessage)).toMatchObject({
+      kind: 'operation_result', operation: 'status', execution: 'succeeded',
+      application: 'no', delivery: 'followup_queued',
+    })
+    expect(result.text?.includes('Usage: /loopx')).toBe(usage)
+    expect(JSON.stringify(result)).not.toContain('/PRIVATE/CWD')
   })
 
-  it('preserves original Unicode and internal whitespace as quoted request data', async () => {
-    const service = new FakeService(null)
+  it.each([
+    ['start ship it', 'start'],
+    ['attach goal-a', 'attach'],
+    ['attach goal-a agent-a', 'attach'],
+    ['attach goal-a --new-peer', 'attach'],
+    ['resume', 'resume'],
+    ['detach', 'detach'],
+  ] as const)('executes exact idle write %j once', async (input, call) => {
+    const service = new FakeService()
     const current = stubAgent()
-    const request = '继续目标「甲」：保留\u3000全角空格、\t制表符和  双空格 🧭'
-
-    expect(await runCommand(service, current.agent, request)).toMatchObject({ kind: 'success' })
-    const text = semanticFollowupText(current)
-    const quotedRequest = JSON.stringify(request)
-    expect(text).toContain(quotedRequest)
-    expect(text.slice(0, text.indexOf(quotedRequest))).toMatch(/quoted|user[\s_-]*(?:controlled[\s_-]*)?request/i)
-    expectNoCommandServiceCalls(service)
+    await runCommand(service, current, input)
+    expect(service.calls).toEqual([call])
+    expect(current.maintenanceClaims).toBe(1)
+    expect(current.followups).toHaveLength(1)
+    expect(receiptFrom(current.followups[0] as UserMessage)).toMatchObject({
+      kind: 'operation_result', execution: 'succeeded', delivery: 'followup_queued',
+    })
   })
 
-  it('references the registered tool family without copying its eleven-name catalog', async () => {
-    const service = new FakeService(null)
+  it.each([
+    'start', 'attach', 'attach --new-peer', 'attach --new-peer goal-a',
+    'attach goal-a --new-peer extra', 'attach goal-a agent-a extra',
+    'status now', 'pause please', 'resume later', 'detach goal-a',
+    'version with details', 'please status', 'start\nobjective',
+    'status\n', 'attach goal-a\r\n', 'start objective\n',
+  ])('preserves non-grammar input %j as semantic data', async (input) => {
+    const service = new FakeService()
     const current = stubAgent()
-
-    await runCommand(service, current.agent, 'advance the current request safely')
-    const text = semanticFollowupText(current)
-    const policy = text.toLowerCase()
-    expect(policy).toMatch(/registered\s+`?loopx_\*`?\s+tools/)
-    expect(policy).toMatch(/raw loopx cli/)
-    expect(policy).toMatch(/edit\w*\s+(?:the\s+)?registr/)
-    expect(policy).toContain('unbound')
-    expect(policy).toMatch(/explicit(?:ly)?[\s\S]{0,100}goal id/)
-    expect(policy).toMatch(/attach[\s\S]{0,180}(?:otherwise|else)[\s\S]{0,80}start/)
-    expect(policy).toMatch(/(?:already\s+)?bound[\s\S]{0,160}keep[\s\S]{0,80}current goal/)
-    expect(policy).toMatch(/switch|detach/)
-    expect(policy).toMatch(/(?:do not|never)[\s\S]{0,40}guess[\s\S]{0,80}goal id/)
-    expect(policy).toMatch(/fuzzy/)
-    expect(policy).toMatch(/compos/)
-    expect(policy).toMatch(/clarif[\s\S]{0,160}without mutating/)
-
-    const registeredNames = [...registerTools(service).keys()]
-    expect(registeredNames).toHaveLength(11)
-    expect(registeredNames.filter(name => text.includes(name))).toEqual([])
-    expectNoCommandServiceCalls(service)
+    await runCommand(service, current, input)
+    expect(service.calls).toEqual([])
+    const receipt = receiptFrom(current.followups[0] as UserMessage)
+    expect(receipt).toMatchObject({
+      kind: 'semantic_request', request: input, execution: 'not_attempted', application: 'no',
+    })
   })
 
-  it('returns a bounded error when follow-up delivery throws synchronously', async () => {
-    const service = new FakeService(null)
+  it('uses running steer for reads and typed not-attempted intent for writes', async () => {
+    const service = new FakeService()
     const current = stubAgent()
-    Object.defineProperty(current.agent, 'followup', {
-      value() { throw new Error('SENSITIVE_SYNCHRONOUS_DELIVERY_DETAIL') },
+    current.setStatus('running')
+    await runCommand(service, current, 'status')
+    expect(service.calls).toEqual(['status'])
+    expect(receiptFrom(current.steers[0] as UserMessage)).toMatchObject({
+      kind: 'operation_result', delivery: 'steered',
     })
 
-    const result = await runCommand(service, current.agent, 'ship the semantic entry')
-    expect(result.kind).toBe('error')
-    const errorText = result.text ?? ''
-    expect(errorText).toMatch(/^LOOPX_SEMANTIC_DELIVERY_FAILED:/)
-    expect(errorText).not.toContain('SENSITIVE_SYNCHRONOUS_DELIVERY_DETAIL')
-    expect(errorText.length).toBeLessThan(300)
-    expect(current.followups).toEqual([])
-    expect(current.sends).toEqual([])
-    expectNoCommandServiceCalls(service)
+    service.calls.length = 0
+    await runCommand(service, current, 'attach goal-a --new-peer')
+    expect(service.calls).toEqual([])
+    expect(receiptFrom(current.steers[1] as UserMessage)).toMatchObject({
+      kind: 'typed_intent', operation: 'goal-attach', execution: 'not_attempted',
+      arguments: { goalId: 'goal-a', newPeer: true }, delivery: 'steered',
+    })
   })
 
-  it('rejects a mismatched Agent and Session lifecycle before queueing', async () => {
+  it('pauses synchronously without Service admission and only steers while running', async () => {
     const service = new FakeService()
-    const current = stubAgent('session-a')
-    Object.defineProperty(current.agent, 'id', { value: 'session-b' })
-
-    const result = await runCommand(service, current.agent, 'continue safely')
-    expect(result).toMatchObject({ kind: 'error' })
-    expect(result.text).toContain('LOOPX_SESSION_LIFECYCLE_MISMATCH')
+    const current = stubAgent()
+    const ref = {
+      id: 'session-a', session: current.agent.session,
+      identity: { createdAt: 42, cwd: '/PRIVATE/CWD' },
+    }
+    service.coordinator.observeBinding(ref, { key: 'home', cwd: '/PRIVATE/CWD' }, bound())
+    service.coordinator.arm(ref, { key: 'home', cwd: '/PRIVATE/CWD' }, bound())
+    expect((await runCommand(service, current, 'pause')).kind).toBe('success')
+    expect(service.calls).toEqual([])
+    expect(service.coordinator.snapshot(ref)?.activation).toBe('disarmed')
     expect(current.followups).toEqual([])
-    expect(current.sends).toEqual([])
-    expectNoCommandServiceCalls(service)
+
+    service.coordinator.arm(ref, { key: 'home', cwd: '/PRIVATE/CWD' }, bound())
+    current.setStatus('running')
+    await runCommand(service, current, 'pause')
+    expect(receiptFrom(current.steers[0] as UserMessage)).toMatchObject({
+      operation: 'driver-pause', application: 'no', delivery: 'steered',
+    })
+  })
+
+  it('waits for a hidden maintenance owner without busy-running the Service', async () => {
+    const service = new FakeService()
+    const current = stubAgent()
+    current.maintenanceCollisions = 1
+    await runCommand(service, current, 'status')
+    expect(current.maintenanceClaims).toBe(2)
+    expect(current.whenIdleCalls).toBe(1)
+    expect(service.calls).toEqual(['status'])
+  })
+
+  it('keeps an applied write receipt non-retryable when delivery fails', async () => {
+    const service = new FakeService()
+    const current = stubAgent()
+    current.throwDelivery = true
+    const result = await runCommand(service, current, 'detach')
+    expect(result.kind).toBe('error')
+    expect(receiptFromResult(result)).toMatchObject({
+      execution: 'succeeded', application: 'yes', delivery: 'failed', recovery: 'none',
+    })
+    expect(service.calls).toEqual(['detach'])
+  })
+
+  it('does not release an owned barrier on early command/done', async () => {
+    const service = new FakeService()
+    const current = stubAgent()
+    const pending = Promise.withResolvers<LoopXResult<LoopXStatusValue>>()
+    service.status = () => pending.promise
+    const commandId = 'early-done'
+    service.coordinator.commandRun(commandId, current.agent.session, current.agent)
+    const operation = registerCommand(service).handler({
+      commandId, agent: current.agent, rawInput: 'status', signal,
+    } as unknown as CommandInvocation)
+    service.coordinator.commandDone(commandId, current.agent.session)
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(true)
+    pending.resolve(success(statusValue()))
+    await operation
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(false)
+  })
+
+  it('settles a synchronous Service throw once and releases its owned barrier', async () => {
+    const service = new FakeService()
+    const current = stubAgent()
+    current.setStatus('running')
+    service.status = () => { throw new Error('synchronous Service failure') }
+    let releases = 0
+    const stop = service.coordinator.onInvalidated(event => {
+      if (event.kind === 'barrier_released') releases += 1
+    })
+    const commandId = 'synchronous-throw'
+    service.coordinator.commandRun(commandId, current.agent.session, current.agent)
+    const operation = registerCommand(service).handler({
+      commandId, agent: current.agent, rawInput: 'status', signal,
+    } as unknown as CommandInvocation)
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(true)
+    await operation
+    stop()
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(false)
+    expect(service.coordinator.snapshot(current.agent.session)?.failureCount).toBe(1)
+    expect(releases).toBe(1)
+  })
+
+  it('keeps overlapping owned command ids isolated within one Session', async () => {
+    const service = new FakeService()
+    const current = stubAgent()
+    current.setStatus('running')
+    const first = Promise.withResolvers<LoopXResult<LoopXStatusValue>>()
+    const second = Promise.withResolvers<LoopXResult<LoopXStatusValue>>()
+    const pending = [first, second]
+    service.status = () => {
+      const operation = pending.shift()
+      if (operation === undefined) throw new Error('unexpected status call')
+      return operation.promise
+    }
+    const handler = registerCommand(service).handler
+    service.coordinator.commandRun('overlap-a', current.agent.session, current.agent)
+    const operationA = handler({
+      commandId: 'overlap-a', agent: current.agent, rawInput: 'status', signal,
+    } as unknown as CommandInvocation)
+    service.coordinator.commandRun('overlap-b', current.agent.session, current.agent)
+    const operationB = handler({
+      commandId: 'overlap-b', agent: current.agent, rawInput: 'status', signal,
+    } as unknown as CommandInvocation)
+
+    service.coordinator.commandDone('overlap-a', current.agent.session)
+    first.resolve(success(statusValue()))
+    await operationA
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(true)
+
+    service.coordinator.commandDone('overlap-b', current.agent.session)
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(true)
+    second.resolve(success(statusValue()))
+    await operationB
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(false)
+  })
+
+  it('keeps an owned barrier through UI abort until raw cancellation settles', async () => {
+    const service = new FakeService()
+    const current = stubAgent()
+    current.setStatus('running')
+    const controller = new AbortController()
+    const pending = Promise.withResolvers<LoopXResult<LoopXStatusValue>>()
+    service.status = (...args: unknown[]) => {
+      expect(args[1]).toBe(controller.signal)
+      return pending.promise
+    }
+    const commandId = 'ui-abort'
+    service.coordinator.commandRun(commandId, current.agent.session, current.agent)
+    const operation = registerCommand(service).handler({
+      commandId, agent: current.agent, rawInput: 'status', signal: controller.signal,
+    } as unknown as CommandInvocation)
+
+    controller.abort(new Error('UI request cancelled'))
+    service.coordinator.commandDone(commandId, current.agent.session)
+    await Promise.resolve()
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(true)
+    expect(service.coordinator.snapshot(current.agent.session)?.failureCount).toBe(0)
+
+    pending.resolve(failure('LOOPX_CLI_ABORTED', 'status'))
+    await operation
+    expect(service.coordinator.hasBarrier(current.agent.session)).toBe(false)
+    expect(service.coordinator.snapshot(current.agent.session)?.failureCount).toBe(0)
+    expect(receiptFrom(current.steers[0] as UserMessage)).toMatchObject({
+      error: { code: 'LOOPX_CLI_ABORTED' },
+    })
+  })
+
+  it('does not count a coordinator-cancelled command as a breaker failure', async () => {
+    const service = new FakeService()
+    const current = stubAgent()
+    service.statusResult = failure('LOOPX_DRIVER_NOT_ARMED', 'status')
+    await runCommand(service, current, ' status ')
+    expect(service.coordinator.snapshot(current.agent.session)?.failureCount).toBe(0)
+    expect(receiptFrom(current.followups[0] as UserMessage)).toMatchObject({
+      request: ' status ',
+      error: { code: 'LOOPX_DRIVER_NOT_ARMED' },
+    })
+  })
+
+  it('uses real CommandRuntime ownership for global /loopx and an agent-scoped shadow', async () => {
+    const ctx = new Context()
+    const service = new FakeService()
+    let driver: LoopXContinuationDriver | undefined
+    let agentScope: CommandScope | undefined
+    let stopEvents: (() => void) | undefined
+    try {
+      await ctx.plugin(SessionStore)
+      await ctx.plugin(CommandRuntime)
+      let commandsCtx: Context | undefined
+      await ctx.inject(['commands'], injected => { commandsCtx = injected })
+      if (commandsCtx === undefined) throw new Error('commands dependency context missing')
+      const session = ctx.sessions.create(SessionId('session-a'), { meta: { cwd: '/workspace' } })
+      const agent = {} as Agent
+      agentScope = await createCommandScope(commandsCtx, agent)
+      const inbox = new Inbox(session, {
+        inserted() {},
+        discarded() {},
+        claimed() {},
+      })
+      Object.assign(agent, {
+        id: session.id,
+        options: Object.freeze({}),
+        session,
+        inbox,
+        status: 'running' as const,
+        ctx: agentScope.ctx,
+        cancel() {},
+        whenIdle: () => Promise.resolve(),
+        runMaintenance: <T>(task: (taskSignal: AbortSignal) => Promise<T>) =>
+          task(new AbortController().signal),
+        send() {},
+        followup() {},
+        steer() {},
+        inject() {},
+      })
+
+      driver = new LoopXContinuationDriver({
+        service: service as unknown as LoopXServiceApi,
+        isLiveAgent: candidate => candidate === agent,
+      })
+      driver.observeAgent(agent)
+      stopEvents = ctx.on('session/event', (published, event) => {
+        if (published === session) driver?.onSessionEvent(agent, event)
+      })
+      const current = Object.freeze({
+        id: String(session.id),
+        session,
+        identity: Object.freeze({
+          createdAt: session.header.createdAt,
+          cwd: session.header.cwd,
+        }),
+      })
+      service.coordinator.observeBinding(current, { key: 'home', cwd: '/workspace' }, bound())
+      service.coordinator.arm(current, { key: 'home', cwd: '/workspace' }, bound())
+
+      applyCommand(commandsCtx.extend({ loopx: service }) as Context)
+      const globalExecution = await ctx.commands.execute(agent, '/loopx version', signal)
+      await Promise.resolve()
+      expect(globalExecution).toMatchObject({
+        result: { kind: 'success', text: `dsh-loopx-plugin ${PLUGIN_VERSION}` },
+      })
+      expect(service.coordinator.snapshot(current)).toMatchObject({
+        activation: 'armed', foreignLatched: false, barred: false,
+      })
+
+      agentScope.ctx.commands.register({
+        name: 'loopx',
+        description: 'agent-owned shadow',
+        handler: () => ({ kind: 'success', text: 'shadow-owned' }),
+      })
+      const shadowExecution = await ctx.commands.execute(agent, '/loopx version', signal)
+      await Promise.resolve()
+      expect(shadowExecution).toMatchObject({
+        result: { kind: 'success', text: 'shadow-owned' },
+      })
+      expect(service.coordinator.snapshot(current)).toMatchObject({
+        activation: 'disarmed', foreignLatched: true, barred: false,
+      })
+
+      const lifecycle = session.events.filter(event =>
+        event.type === 'command/run' || event.type === 'command/done')
+      expect(lifecycle).toMatchObject([
+        { type: 'command/run', data: { name: 'loopx' } },
+        { type: 'command/done', data: { kind: 'success' } },
+        { type: 'command/run', data: { name: 'loopx' } },
+        { type: 'command/done', data: { kind: 'success', text: 'shadow-owned' } },
+      ])
+      expect(lifecycle[0]?.data.commandId).toBe(lifecycle[1]?.data.commandId)
+      expect(lifecycle[2]?.data.commandId).toBe(lifecycle[3]?.data.commandId)
+    } finally {
+      stopEvents?.()
+      await driver?.dispose()
+      await agentScope?.dispose()
+      await ctx.fiber.dispose()
+    }
   })
 })
 
-describe('bounded LoopX model tools', () => {
-  it('registers exactly eleven typed tools including planning and Host lifecycle controls', () => {
+describe('typed tool receipts', () => {
+  it('registers eleven closed tools and removes obsolete start selectors', () => {
     const tools = registerTools(new FakeService())
-    expect([...tools.keys()]).toEqual([
-      'loopx_goal_start',
-      'loopx_goal_attach',
-      'loopx_goal_activate',
-      'loopx_status',
-      'loopx_goal_detach',
-      'loopx_driver_pause',
-      'loopx_driver_resume',
-      'loopx_todo_add',
-      'loopx_todo_claim',
-      'loopx_todo_update',
-      'loopx_todo_complete',
+    expect(tools.size).toBe(11)
+    for (const tool of tools.values()) {
+      expect(tool.parameters).toMatchObject({ type: 'object', additionalProperties: false })
+    }
+    expect(Object.keys(tools.get('loopx_goal_start')?.parameters.properties ?? {})).toEqual([
+      'goalText', 'switchConfirmation',
     ])
   })
 
-  it('returns the fixed unbound status failure without calling the status service', async () => {
-    const service = new FakeService(null)
-    const tools = registerTools(service)
-    const result = await callTool(tools, 'loopx_status', {}, stubAgent().agent)
-    expect(result).toMatchObject({
-      schemaVersion: 'dsh_loopx_tool_result_v0',
-      ok: false,
-      error: { code: 'LOOPX_SESSION_NOT_BOUND' },
-    })
-    expect(service.statusCalls).toBe(0)
-  })
-
-  it('derives exact current Session lifecycle identity for every mutation', async () => {
+  it('takes application from Service, including a successful no-op', async () => {
     const service = new FakeService()
-    const tools = registerTools(service)
-    const current = stubAgent('session-exact', 777, 'SENSITIVE_EXACT_CWD')
-    const result = await callTool(tools, 'loopx_todo_claim', {
-      todoId: 'todo-a',
-      role: 'agent',
-    }, current.agent)
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        todoId: 'todo-a',
-        status: 'claimed',
-        loopxAuthority: {
-          schema_version: 'loopx_todo_command_v0',
-          ok: true,
-          todo_id: 'todo-a',
-        },
-      },
-    })
-    expect(service.claims).toEqual([{ todoId: 'todo-a', role: 'agent' }])
-    expect(service.sessions.at(-1)).toEqual({
-      id: 'session-exact',
-      identity: { createdAt: 777, cwd: 'SENSITIVE_EXACT_CWD' },
-    })
-
-    const mismatched = stubAgent('session-a')
-    Object.defineProperty(mismatched.agent, 'id', { value: 'session-b' })
-    const denied = await callTool(tools, 'loopx_todo_claim', { todoId: 'todo-b' }, mismatched.agent)
-    expect(errorCode(denied)).toBe('LOOPX_SESSION_LIFECYCLE_MISMATCH')
-
-    const missing = stubAgent('session-missing')
-    Object.defineProperty(missing.agent, 'id', { value: undefined })
-    const missingDenied = await callTool(
-      tools,
-      'loopx_todo_claim',
-      { todoId: 'todo-c' },
-      missing.agent,
-    )
-    expect(errorCode(missingDenied)).toBe('LOOPX_SESSION_LIFECYCLE_MISMATCH')
-  })
-
-  it('completes the two-phase start only for the exact pending Goal and agent', async () => {
-    const service = new FakeService(binding('planning'))
-    const tools = registerTools(service)
-    const current = stubAgent()
-
-    const denied = await callTool(tools, 'loopx_goal_activate', {
-      goalId: 'goal-other',
-      agentId: 'agent-a',
-    }, current.agent)
-    expect(errorCode(denied)).toBe('LOOPX_IDENTITY_CONFLICT')
-    expect(service.binding?.phase).toBe('planning')
-
-    const activated = await callTool(tools, 'loopx_goal_activate', {
-      goalId: 'goal-a',
-      agentId: 'agent-a',
-    }, current.agent)
-    expect(activated).toMatchObject({
-      schemaVersion: 'dsh_loopx_tool_result_v0',
-      ok: true,
-      value: { goalId: 'goal-a', agentId: 'agent-a', phase: 'active_armed' },
-    })
-    expect(JSON.stringify(activated)).not.toContain('SENSITIVE_')
-  })
-
-  it('rejects alternate identity, private locator, task-body, and arbitrary command fields and pauses an armed driver', async () => {
-    const cases: readonly [string, Record<string, unknown>][] = [
-      ['loopx_status', { sessionId: 'another-session' }],
-      ['loopx_status', { goalId: 'another-goal' }],
-      ['loopx_todo_claim', { todoId: 'todo-a', agentId: 'another-agent' }],
-      ['loopx_todo_update', { todoId: 'todo-a', argv: ['status'] }],
-      ['loopx_todo_complete', { todoId: 'todo-a', registryPath: 'SENSITIVE_REGISTRY_LOCATOR' }],
-      ['loopx_goal_activate', { goalId: 'goal-a', taskBody: 'forged' }],
-    ]
-    for (const [name, args] of cases) {
-      const service = new FakeService()
-      const result = await callTool(registerTools(service), name, args, stubAgent().agent)
-      expect(errorCode(result), name).toBe('LOOPX_INVALID_REQUEST')
-      expect(service.binding?.phase, name).toBe('active_paused')
-      expect(service.pauses, name).toContain('manual_resume_required')
-      expect(service.pauseFences.at(-1), name).toMatchObject({ generation: 3 })
-    }
-  })
-
-  it('maps the bounded Todo fields and returns stable success envelopes', async () => {
-    const service = new FakeService(binding('planning'))
-    const tools = registerTools(service)
-    const current = stubAgent().agent
-    const added = await callTool(tools, 'loopx_todo_add', {
-      text: 'inspect the public schema',
-      priority: 'P1',
-      role: 'agent',
-      actionKind: 'advance',
-      targetKey: 'schema-review',
-    }, current)
-    expect(added).toMatchObject({
-      ok: true,
-      value: {
-        todoId: 'todo-added',
-        status: 'open',
-        priority: 'P1',
-        role: 'agent',
-      },
-    })
-    expect(service.additions).toEqual([{
-      text: 'inspect the public schema',
-      priority: 'P1',
-      role: 'agent',
-      actionKind: 'advance',
-      targetKey: 'schema-review',
-    }])
-    expect(JSON.stringify(added)).not.toContain('loopx_todo_command_v0')
-
-    const update = await callTool(tools, 'loopx_todo_update', {
-      todoId: 'todo-a',
-      status: 'blocked',
-      reason: 'waiting for an explicit user gate',
-      taskClass: 'user_gate',
-      clearClaim: true,
-    }, current)
-    expect(update).toMatchObject({
-      schemaVersion: 'dsh_loopx_tool_result_v0',
-      ok: true,
-      value: {
-        todoId: 'todo-a',
-        status: 'blocked',
-        loopxAuthority: {
-          schema_version: 'loopx_todo_command_v0',
-          ok: true,
-          todo_id: 'todo-a',
-        },
-      },
-    })
-    expect(service.updates).toEqual([{
-      todoId: 'todo-a',
-      status: 'blocked',
-      reason: 'waiting for an explicit user gate',
-      taskClass: 'user_gate',
-      clearClaim: true,
-    }])
-
-    const complete = await callTool(tools, 'loopx_todo_complete', {
-      todoId: 'todo-a',
-      evidence: 'public-safe evidence pointer',
-      noFollowUp: true,
-      turnInstanceId: 'turn-a',
-      taskLeaseIdempotencyKey: 'lease-key',
-      taskLeaseExpectedVersion: 2,
-    }, current)
-    expect(complete).toMatchObject({
-      ok: true,
-      value: {
-        todoId: 'todo-a',
-        status: 'done',
-        loopxAuthority: {
-          schema_version: 'loopx_todo_command_v0',
-          ok: true,
-          todo_id: 'todo-a',
-        },
-      },
-    })
-    expect(service.completions[0]).toMatchObject({
-      todoId: 'todo-a',
-      noFollowUp: true,
-      turnInstanceId: 'turn-a',
-      taskLeaseExpectedVersion: 2,
-    })
-  })
-
-  it('exposes typed pause, resume, and detach controls over only the current binding', async () => {
-    const service = new FakeService()
-    const tools = registerTools(service)
-    const current = stubAgent().agent
-    const paused = await callTool(tools, 'loopx_driver_pause', {}, current)
-    expect(paused).toMatchObject({ ok: true, value: { phase: 'active_paused' } })
-    const resumed = await callTool(tools, 'loopx_driver_resume', {}, current)
-    expect(resumed).toMatchObject({ ok: true, value: { phase: 'active_armed' } })
-    const detached = await callTool(tools, 'loopx_goal_detach', {}, current)
-    expect(detached).toMatchObject({ ok: true, value: { detached: true } })
-    expect(service.binding).toBeUndefined()
-  })
-
-  it('returns uncertain writes as typed failures and disarms through the service API', async () => {
-    const service = new FakeService()
-    service.todoFailure = failure('LOOPX_WRITE_UNCERTAIN', 'todo-update', true)
-    const result = await callTool(registerTools(service), 'loopx_todo_update', {
-      todoId: 'todo-a',
-      status: 'done',
+    service.attachResult = success({ kind: 'attached', binding: bound() }, 'no')
+    const result = await callTool(service, 'loopx_goal_attach', {
+      goalId: 'goal-a', agentId: 'agent-a',
     }, stubAgent().agent)
     expect(result).toMatchObject({
-      schemaVersion: 'dsh_loopx_tool_result_v0',
-      ok: false,
-      error: { code: 'LOOPX_WRITE_UNCERTAIN', outcomeUncertain: true },
+      schemaVersion: 'dsh_loopx_operation_receipt_v1',
+      kind: 'operation_result', execution: 'succeeded', application: 'no',
+      delivery: 'not_needed',
     })
-    expect(service.uncertainCalls).toBe(1)
-    expect(service.uncertainFences).toMatchObject([{ generation: 3 }])
-    expect(service.binding?.phase).toBe('uncertain')
   })
 
-  it('pauses an armed driver on a typed schema/readback boundary failure', async () => {
+  it('filters coordinator cancellation but counts a terminal tool failure', async () => {
     const service = new FakeService()
-    service.statusResult = failure('LOOPX_SCHEMA_UNSUPPORTED', 'status')
-    const result = await callTool(
-      registerTools(service),
-      'loopx_status',
-      {},
-      stubAgent().agent,
-    )
-    expect(errorCode(result)).toBe('LOOPX_SCHEMA_UNSUPPORTED')
-    expect(service.pauses).toEqual(['manual_resume_required'])
-    expect(service.pauseFences).toMatchObject([{ generation: 3 }])
-    expect(service.binding?.phase).toBe('active_paused')
+    const current = stubAgent().agent
+    service.startResult = failure('LOOPX_FOREIGN_COMMAND_ACTIVE', 'goal-start')
+    await callTool(service, 'loopx_goal_start', { goalText: 'safe' }, current)
+    expect(service.coordinator.snapshot(current.session)?.failureCount).toBe(0)
+
+    service.startResult = failure('LOOPX_READBACK_FAILED', 'goal-start')
+    await callTool(service, 'loopx_goal_start', { goalText: 'safe' }, current)
+    expect(service.coordinator.snapshot(current.session)?.failureCount).toBe(1)
   })
 
-  it('status labels Host sidecar and LoopX authority without leaking locators', async () => {
+  it('preserves bounded committed sub-effects on a rejected operation', async () => {
     const service = new FakeService()
-    const result = await callTool(
-      registerTools(service),
-      'loopx_status',
-      {},
-      stubAgent().agent,
-    )
+    service.attachResult = failure('LOOPX_CLI_FAILED', 'goal-attach', 'yes', [{
+      operation: 'register-agent', application: 'yes',
+      target: { goalId: 'goal-a', agentId: 'fresh-a' },
+    }])
+    const result = await callTool(service, 'loopx_goal_attach', {
+      goalId: 'goal-a', newPeer: true,
+    }, stubAgent().agent)
     expect(result).toMatchObject({
-      ok: true,
-      value: {
-        dshHostSidecar: { authority: 'host_binding_and_driver_only' },
-        loopxAuthority: { schema_version: 'loopx_status_v0' },
-      },
+      execution: 'rejected', application: 'yes', recovery: 'read_authority_then_decide',
+      subEffects: [{ operation: 'register-agent', application: 'yes' }],
     })
-    expect(JSON.stringify(result)).not.toContain('SENSITIVE_')
+  })
+
+  it('maps an indeterminate write to unknown application and authoritative readback', async () => {
+    const service = new FakeService()
+    service.detachResult = failure('LOOPX_CLI_TIMEOUT', 'goal-detach', 'unknown')
+    const result = await callTool(service, 'loopx_goal_detach', {}, stubAgent().agent)
+    expect(result).toMatchObject({
+      execution: 'indeterminate', application: 'unknown',
+      recovery: 'read_authority_then_decide', delivery: 'not_needed',
+    })
+  })
+
+  it('projects only bounded status and Todo fields', async () => {
+    const service = new FakeService()
+    const current = stubAgent().agent
+    service.statusResult = success({
+      ...statusValue(),
+      authority: {
+        ...statusValue().authority,
+        runtimeRoot: '/PRIVATE/RUNTIME',
+        rawStderr: 'SECRET STDERR',
+      },
+    } as unknown as LoopXStatusValue)
+    service.todoUpdate = (() => Promise.resolve(success({
+      todoId: 'todo-a',
+      status: 'done',
+      payload: {
+        schemaVersion: 'loopx_todo_projection_v1',
+        goalId: 'goal-a',
+        todoId: 'todo-a',
+        status: 'done',
+        changed: true,
+        project: '/PRIVATE/PROJECT',
+        registry: '/PRIVATE/REGISTRY',
+        state_file: '/PRIVATE/STATE',
+      },
+    } as unknown as LoopXTodoMutationValue, 'yes'))) as unknown as FakeService['todoUpdate']
+    const status = await callTool(service, 'loopx_status', {}, current)
+    const todo = await callTool(service, 'loopx_todo_update', {
+      todoId: 'todo-a', status: 'done',
+    }, current)
+    const rendered = JSON.stringify([status, todo])
+    expect(rendered).toContain('loopx_status_projection_v1')
+    expect(rendered).toContain('loopx_todo_projection_v1')
+    expect(rendered).not.toContain('/PRIVATE/CWD')
+    expect(rendered).not.toContain('SECRET STDERR')
+    expect(rendered).not.toMatch(/projectLocator|registryLocator|runtimeRoot|state_file|raw stderr/i)
+    expect(rendered).not.toMatch(/PRIVATE\/(?:PROJECT|REGISTRY|STATE|RUNTIME)/)
+  })
+
+  it('rejects alternate identity and locator keys before Service admission', async () => {
+    const service = new FakeService()
+    const result = await callTool(service, 'loopx_goal_start', {
+      goalText: 'safe objective', runtimeRoot: '/PRIVATE/RUNTIME', argv: ['loopx'],
+    }, stubAgent().agent)
+    expect(result).toMatchObject({
+      execution: 'rejected', application: 'no', error: { code: 'LOOPX_INVALID_REQUEST' },
+    })
+    expect(service.calls).toEqual([])
   })
 })

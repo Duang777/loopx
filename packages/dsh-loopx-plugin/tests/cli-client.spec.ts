@@ -150,7 +150,7 @@ describe('LoopXCliClient', () => {
     })
   })
 
-  it('times out, aborts, and marks only non-idempotent writes uncertain', async () => {
+  it('marks every admitted write timeout uncertain and never makes it blindly retryable', async () => {
     const hanging: ExecFileLike = (_file, _args, options, callback) => {
       const onAbort = (): void => callback(
         Object.assign(new Error('raw abort reason'), { code: 'ABORT_ERR' }),
@@ -179,8 +179,8 @@ describe('LoopXCliClient', () => {
     await expect(idempotent.runJson(request('idempotent-write'))).rejects.toMatchObject({
       failure: {
         code: 'LOOPX_CLI_TIMEOUT',
-        retryable: true,
-        outcomeUncertain: false,
+        retryable: false,
+        outcomeUncertain: true,
       },
     })
 
@@ -193,6 +193,82 @@ describe('LoopXCliClient', () => {
     controller.abort(new Error('private caller detail'))
     await expect(pending).rejects.toMatchObject({
       failure: { code: 'LOOPX_CLI_ABORTED', outcomeUncertain: false },
+    })
+  })
+
+  it('pins each binding command to one exact DSH surface and process-local home', async () => {
+    const calls: Parameters<ExecFileLike>[] = []
+    const client = new LoopXCliClient({}, {
+      execFile: (file, args, options, callback) => {
+        calls.push([file, args, options, callback])
+        queueMicrotask(() => callback(null, '{"schema_version":"fixture_v0","ok":true}', ''))
+        return childProcess()
+      },
+      parentEnv: {},
+    })
+    const home = {
+      key: 'runtime:private',
+      cwd: '/private/process-cwd',
+      runtimeRoot: '/private/runtime-root',
+    }
+    await client.runBindingJson({
+      operation: 'resolve-agent-thread',
+      kind: 'read',
+      args: [
+        'resolve-agent-thread',
+        '--host-surface', 'dsh',
+        '--thread-id', 'session-a',
+      ],
+      home,
+      schema: packetSchema,
+    })
+    expect(calls[0]?.[1]).toEqual([
+      '--format', 'json',
+      '--runtime-root', '/private/runtime-root',
+      'resolve-agent-thread',
+      '--host-surface', 'dsh',
+      '--thread-id', 'session-a',
+    ])
+    expect(calls[0]?.[2].cwd).toBe('/private/process-cwd')
+
+    const invalid = await client.runBindingJson({
+      operation: 'resolve-agent-thread',
+      kind: 'read',
+      args: [
+        '--runtime-root', '/caller-selected',
+        'resolve-agent-thread',
+        '--host-surface', 'dsh',
+        '--thread-id', 'session-a',
+      ],
+      home,
+      schema: packetSchema,
+    }).catch(error => error as LoopXCliError)
+    expect(invalid.failure).toMatchObject({ code: 'LOOPX_INVALID_REQUEST' })
+    expect(JSON.stringify(invalid.failure)).not.toContain('/private/')
+    expect(JSON.stringify(invalid.failure)).not.toContain('/caller-selected')
+  })
+
+  it('distinguishes an internal scope fence while preserving uncertain write application', async () => {
+    const hanging: ExecFileLike = (_file, _args, options, callback) => {
+      options.signal?.addEventListener('abort', () => callback(
+        Object.assign(new Error('private scope reason'), { code: 'ABORT_ERR' }),
+        '',
+        '',
+      ), { once: true })
+      return childProcess()
+    }
+    const client = new LoopXCliClient({ writeTimeoutMs: 1_000 }, {
+      execFile: hanging,
+      parentEnv: {},
+    })
+    const pending = client.runJson({ ...request('write'), scopeKey: 'scope-a' })
+      .catch(error => error as LoopXCliError)
+    client.abortScope('scope-a')
+    await expect(pending).resolves.toMatchObject({
+      failure: {
+        code: 'LOOPX_DRIVER_NOT_ARMED',
+        outcomeUncertain: true,
+      },
     })
   })
 

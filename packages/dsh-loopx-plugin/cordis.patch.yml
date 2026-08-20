@@ -1,5 +1,5 @@
-# Host-plane only. The web profile supplies storage, storage-json, and the
-# storage-domain backend before this service can activate.
+# Host-plane only. LoopX owns durable authority; this package keeps only
+# process-local coordination state.
 - insert:
     - id: loopx-service
       name: dsh-loopx-plugin/service

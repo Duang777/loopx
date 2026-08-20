@@ -242,6 +242,7 @@ def handle_start_goal_command(
         cli_bin=args.cli_bin,
         host_surface=args.host_surface,
         goal_text=goal_text,
+        runtime_root_override=args.runtime_root,
         available_capabilities=args.available_capabilities,
         capability_route=capability_route,
         fine_grained=fine_grained,

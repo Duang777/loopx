@@ -2,82 +2,95 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { deriveLoopXSessionRef } from './command.ts'
+import {
+  failureReceipt as sharedFailureReceipt,
+  safeAttach,
+  safeBinding,
+  safeStart,
+  safeStatus,
+  serviceOperationReceipt as sharedServiceReceipt,
+} from './receipts.ts'
+import type { ReceiptValue } from './receipts.ts'
 import type {
   LoopXAttachRequest,
-  LoopXAttachValue,
-  LoopXBindingFence,
-  LoopXBindingRow,
+  LoopXAppliedSubEffect,
   LoopXFailure,
-  LoopXIdentitySelection,
+  LoopXOperationReceipt,
   LoopXResult,
   LoopXServiceApi,
   LoopXSessionRef,
   LoopXStartOptions,
-  LoopXStartValue,
-  LoopXStatusValue,
-  LoopXSwitchRequired,
-  LoopXTodoMutationValue,
   LoopXTodoAddValue,
+  LoopXTodoMutationValue,
 } from './types.ts'
 
 export const name = 'dsh-loopx-tools'
 export const inject = ['tools', 'loopx']
 
-const RESULT_SCHEMA_VERSION = 'dsh_loopx_tool_result_v0' as const
+const RECEIPT_SCHEMA_VERSION = 'dsh_loopx_operation_receipt_v1' as const
 
-type ToolEnvelope =
-  | {
-    readonly schemaVersion: typeof RESULT_SCHEMA_VERSION
-    readonly ok: true
-    readonly value: JsonValue
+interface ToolReceipt {
+  readonly schemaVersion: typeof RECEIPT_SCHEMA_VERSION
+  readonly kind: 'operation_result'
+  readonly operation: string
+  readonly execution: LoopXOperationReceipt['execution']
+  readonly application: LoopXOperationReceipt['application']
+  readonly delivery: LoopXOperationReceipt['delivery']
+  readonly recovery: LoopXOperationReceipt['recovery']
+  readonly value?: JsonValue
+  readonly error?: {
+    readonly code: string
+    readonly message: string
+    readonly operation?: string
+    readonly retryable: boolean
+    readonly outcomeUncertain: boolean
   }
-  | {
-    readonly schemaVersion: typeof RESULT_SCHEMA_VERSION
-    readonly ok: false
-    readonly error: {
-      readonly code: string
-      readonly message: string
-      readonly operation?: string
-      readonly retryable: boolean
-      readonly outcomeUncertain: boolean
-    }
-  }
+  readonly subEffects?: JsonValue
+}
 
 const TOOL_OUTPUT = {
   schema: {
-    oneOf: [
-      {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      schemaVersion: { type: 'string', const: RECEIPT_SCHEMA_VERSION, required: true },
+      kind: { type: 'string', const: 'operation_result', required: true },
+      operation: { type: 'string', required: true },
+      execution: {
+        type: 'string',
+        enum: ['succeeded', 'rejected', 'indeterminate', 'not_attempted'],
+        required: true,
+      },
+      application: { type: 'string', enum: ['yes', 'no', 'unknown'], required: true },
+      delivery: {
+        type: 'string',
+        enum: ['steered', 'followup_queued', 'failed', 'not_needed'],
+        required: true,
+      },
+      recovery: {
+        type: 'string',
+        enum: [
+          'none', 'retry_same_tool', 'read_authority_then_decide',
+          'correct_request', 'ask_user', 'stop',
+        ],
+        required: true,
+      },
+      value: { type: 'json' },
+      error: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          schemaVersion: { type: 'string', const: RESULT_SCHEMA_VERSION, required: true },
-          ok: { type: 'boolean', const: true, required: true },
-          value: { type: 'json', required: true },
+          code: { type: 'string', required: true },
+          message: { type: 'string', required: true },
+          operation: { type: 'string' },
+          retryable: { type: 'boolean', required: true },
+          outcomeUncertain: { type: 'boolean', required: true },
         },
       },
-      {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          schemaVersion: { type: 'string', const: RESULT_SCHEMA_VERSION, required: true },
-          ok: { type: 'boolean', const: false, required: true },
-          error: {
-            type: 'object',
-            required: true,
-            additionalProperties: false,
-            properties: {
-              code: { type: 'string', required: true },
-              message: { type: 'string', required: true },
-              operation: { type: 'string' },
-              retryable: { type: 'boolean', required: true },
-              outcomeUncertain: { type: 'boolean', required: true },
-            },
-          },
-        },
-      },
-    ],
+      subEffects: { type: 'json' },
+    },
   },
-  render: (_args: unknown, value: ToolEnvelope) => [{
+  render: (_args: unknown, value: unknown) => [{
     type: 'text' as const,
     text: JSON.stringify(value),
   }],
@@ -93,615 +106,276 @@ function invalidRequest(message: string, operation: string): LoopXFailure {
   })
 }
 
-function notBound(operation: string): LoopXFailure {
-  return Object.freeze({
-    code: 'LOOPX_SESSION_NOT_BOUND',
-    message: 'The current DSH Session has no LoopX binding. Call loopx_goal_start with an objective or loopx_goal_attach with an existing Goal id; do not use Bash or edit registries.',
-    operation,
-    retryable: false,
-    outcomeUncertain: false,
-  })
+function failureReceipt(
+  operation: string,
+  error: LoopXFailure,
+  application?: LoopXOperationReceipt['application'],
+  subEffects?: readonly LoopXAppliedSubEffect[],
+): ToolReceipt {
+  return sharedFailureReceipt(operation, error, application, subEffects) as unknown as ToolReceipt
 }
 
-function success(value: JsonValue): ToolEnvelope {
-  return Object.freeze({ schemaVersion: RESULT_SCHEMA_VERSION, ok: true, value })
-}
-
-function rejected(error: LoopXFailure): ToolEnvelope {
-  return Object.freeze({
-    schemaVersion: RESULT_SCHEMA_VERSION,
-    ok: false,
-    error: Object.freeze({
-      code: error.code,
-      message: error.message,
-      ...(error.operation === undefined ? {} : { operation: error.operation }),
-      retryable: error.retryable,
-      outcomeUncertain: error.outcomeUncertain,
-    }),
-  })
+async function serviceReceipt<T>(
+  service: LoopXServiceApi,
+  session: LoopXSessionRef,
+  signal: AbortSignal,
+  operation: string,
+  invoke: () => Promise<LoopXResult<T>>,
+  project: (value: T) => ReceiptValue,
+): Promise<ToolReceipt> {
+  return sharedServiceReceipt(
+    service, session, signal, operation, invoke, project,
+  ) as unknown as Promise<ToolReceipt>
 }
 
 function hasOnlyKeys(args: object, allowed: ReadonlySet<string>): boolean {
   return Object.keys(args).every(key => allowed.has(key))
 }
 
-function safeBinding(binding: LoopXBindingRow): JsonValue {
-  return {
-    goalId: binding.goalId,
-    agentId: binding.agentId,
-    phase: binding.phase,
-    generation: binding.generation,
-    ...(binding.reason === undefined ? {} : { reason: binding.reason }),
-  }
-}
-
-function safeStatus(status: LoopXStatusValue): JsonValue {
-  return {
-    dshHostSidecar: {
-      authority: 'host_binding_and_driver_only',
-      binarySource: status.host.binarySource,
-      binding: status.host.binding === undefined ? null : safeBinding(status.host.binding),
-    },
-    loopxAuthority: status.authority === undefined
-      ? null
-      : status.authority as JsonValue,
-  }
-}
-
-function safeTodo(value: LoopXTodoMutationValue): JsonValue {
+function safeTodo(value: LoopXTodoMutationValue): ReceiptValue {
+  const authority = value.payload
   return {
     todoId: value.todoId,
     status: value.status ?? null,
-    loopxAuthority: value.payload as JsonValue,
+    loopxAuthority: {
+      schemaVersion: authority.schemaVersion,
+      goalId: authority.goalId,
+      todoId: authority.todoId,
+      ...(authority.status === undefined ? {} : { status: authority.status }),
+      ...(authority.changed === undefined ? {} : { changed: authority.changed }),
+      ...(authority.claimedBy === undefined ? {} : { claimedBy: authority.claimedBy }),
+      ...(authority.taskClass === undefined ? {} : { taskClass: authority.taskClass }),
+      ...(authority.settlementResult === undefined
+        ? {}
+        : { settlementResult: authority.settlementResult }),
+    },
   }
 }
 
-function safeTodoAdd(value: LoopXTodoAddValue): JsonValue {
+function safeTodoAdd(value: LoopXTodoAddValue): ReceiptValue {
+  const authority = value.payload
   return {
     todoId: value.todoId,
     status: value.status,
     priority: value.priority,
     role: value.role,
-  }
-}
-
-function safeSelection(selection: LoopXIdentitySelection): JsonValue {
-  return {
-    kind: selection.kind,
-    defaultAction: selection.defaultAction,
-    ...(selection.reason === undefined ? {} : { reason: selection.reason }),
-    choices: selection.choices.map(choice => ({
-      ...(choice.goalId === undefined ? {} : { goalId: choice.goalId }),
-      ...(choice.agentId === undefined ? {} : { agentId: choice.agentId }),
-      ...(choice.label === undefined ? {} : { label: choice.label }),
-    })),
-    ...(selection.freshAgentSuggestedId === undefined
-      ? {}
-      : { freshAgentSuggestedId: selection.freshAgentSuggestedId }),
-  }
-}
-
-function safeSwitch(value: LoopXSwitchRequired): JsonValue {
-  return {
-    kind: value.kind,
-    confirmationToken: value.confirmationToken,
-    requiresUserConfirmation: value.requiresUserConfirmation,
-    expiresAt: value.expiresAt,
-    current: {
-      goalId: value.current.goalId,
-      agentId: value.current.agentId,
-    },
-    requested: {
-      operation: value.requested.operation,
-      ...(value.requested.goalId === undefined ? {} : { goalId: value.requested.goalId }),
-      ...(value.requested.agentId === undefined ? {} : { agentId: value.requested.agentId }),
-      ...(value.requested.newPeer === true ? { newPeer: true } : {}),
-      ...(value.requested.newIndependent === true ? { newIndependent: true } : {}),
+    loopxAuthority: {
+      schemaVersion: authority.schemaVersion,
+      goalId: authority.goalId,
+      todoId: authority.todoId,
+      status: authority.status,
+      role: authority.role,
+      taskClass: authority.taskClass,
+      actionKind: authority.actionKind,
+      added: authority.added,
+      alreadyExists: authority.alreadyExists,
     },
   }
 }
 
-function safeStart(value: LoopXStartValue): JsonValue {
-  if (value.kind === 'planning') {
-    return {
-      kind: value.kind,
-      binding: safeBinding(value.binding),
-      planning: value.planning as unknown as JsonValue,
-      modelCheckpoint: value.modelCheckpoint,
-    }
-  }
-  if (value.kind === 'selection_required') {
-    return {
-      kind: value.kind,
-      ...(value.goalId === undefined ? {} : { goalId: value.goalId }),
-      selection: safeSelection(value.selection),
-    }
-  }
-  return safeSwitch(value)
-}
-
-function safeAttach(value: LoopXAttachValue): JsonValue {
-  if (value.kind === 'attached') {
-    return {
-      kind: value.kind,
-      binding: safeBinding(value.binding),
-    }
-  }
-  if (value.kind === 'selection_required') {
-    return {
-      kind: value.kind,
-      goalId: value.goalId,
-      selection: safeSelection(value.selection),
-    }
-  }
-  return safeSwitch(value)
-}
-
-/**
- * `defineTool` intentionally compiles an open implicit argument root. Entry
- * tools additionally publish a closed raw schema, while retaining an execute-
- * time allowlist for direct callers that bypass the registry in tests.
- */
-function strictInput(
-  definition: ReturnType<typeof defineTool>,
-): ReturnType<typeof defineTool> {
+function strictInput(definition: ReturnType<typeof defineTool>): ReturnType<typeof defineTool> {
   return Object.freeze({
     ...definition,
-    parameters: Object.freeze({
-      ...definition.parameters,
-      additionalProperties: false,
-    }),
-  })
-}
-
-/**
- * Preserve the original typed failure while ensuring suspicious or uncertain
- * writes cannot leave the continuation driver armed.
- */
-async function disarmAfterFailure(
-  service: LoopXServiceApi,
-  session: LoopXSessionRef,
-  error: LoopXFailure,
-  expectedFence: LoopXBindingFence | undefined,
-): Promise<void> {
-  if (expectedFence === undefined) return
-  try {
-    const current = service.getBinding(session)
-    if (!current.ok || current.value === undefined) return
-    if (error.outcomeUncertain) {
-      if (current.value.phase !== 'uncertain') {
-        await service.markUncertain(session, 'uncertain_write', expectedFence)
-      }
-      return
-    }
-    if (current.value.phase === 'active_armed'
-      && error.code !== 'LOOPX_DRIVER_NOT_ARMED'
-      && error.code !== 'LOOPX_SERVICE_CLOSED') {
-      await service.pause(session, 'manual_resume_required', expectedFence)
-    }
-  } catch {
-    // The original stable failure remains the authoritative tool outcome.
-  }
-}
-
-async function toolFailure(
-  service: LoopXServiceApi,
-  session: LoopXSessionRef | undefined,
-  error: LoopXFailure,
-  expectedFence?: LoopXBindingFence,
-): Promise<ToolEnvelope> {
-  if (session !== undefined) await disarmAfterFailure(service, session, error, expectedFence)
-  return rejected(error)
-}
-
-interface BoundLoopXSession {
-  readonly session: LoopXSessionRef
-  readonly fence: LoopXBindingFence
-}
-
-function bindingFence(session: LoopXSessionRef, row: LoopXBindingRow): LoopXBindingFence {
-  return Object.freeze({
-    sessionId: session.id,
-    session: Object.freeze({ ...row.session }),
-    goalId: row.goalId,
-    agentId: row.agentId,
-    generation: row.generation,
-  })
-}
-
-function currentFence(
-  service: LoopXServiceApi,
-  session: LoopXSessionRef,
-): LoopXBindingFence | undefined {
-  const binding = service.getBinding(session)
-  return binding.ok && binding.value !== undefined
-    ? bindingFence(session, binding.value)
-    : undefined
-}
-
-function boundSession(
-  service: LoopXServiceApi,
-  exec: ToolRunContext,
-  operation: string,
-): LoopXResult<BoundLoopXSession> {
-  const current = deriveLoopXSessionRef(exec.agent, operation)
-  if (!current.ok) return current
-  const binding = service.getBinding(current.value)
-  if (!binding.ok) return binding
-  if (binding.value === undefined) {
-    return Object.freeze({ ok: false, error: notBound(operation) })
-  }
-  return Object.freeze({
-    ok: true,
-    value: Object.freeze({
-      session: current.value,
-      fence: bindingFence(current.value, binding.value),
-    }),
+    parameters: Object.freeze({ ...definition.parameters, additionalProperties: false }),
   })
 }
 
 function invalidKeys(operation: string): LoopXFailure {
   return invalidRequest(
-    'Unsupported arguments are forbidden; the current Session and authority locators are derived by the plugin, and raw task bodies, argv, or shell commands are never accepted.',
+    'Unsupported arguments are forbidden; Session identity and authority locators are derived by the plugin, and raw task bodies, argv, or shell commands are never accepted.',
     operation,
   )
 }
 
-const START_KEYS = new Set([
-  'goalText', 'goalId', 'agentId', 'newPeer', 'newIndependent', 'switchConfirmation',
-])
+function toolSession(
+  exec: ToolRunContext,
+  operation: string,
+  args: object,
+  keys: ReadonlySet<string>,
+): LoopXResult<LoopXSessionRef> {
+  const current = deriveLoopXSessionRef(exec.agent, operation)
+  if (!current.ok) return current
+  return hasOnlyKeys(args, keys)
+    ? current
+    : { ok: false, error: invalidKeys(operation), application: 'no' }
+}
+
+const START_KEYS = new Set(['goalText', 'switchConfirmation'])
 const ATTACH_KEYS = new Set(['goalId', 'agentId', 'newPeer', 'switchConfirmation'])
 const ACTIVATE_KEYS = new Set(['goalId', 'agentId'])
 const TODO_ADD_KEYS = new Set(['text', 'priority', 'role', 'actionKind', 'targetKey'])
 const EMPTY_KEYS = new Set<string>()
 const CLAIM_KEYS = new Set(['todoId', 'role'])
-const UPDATE_KEYS = new Set([
-  'todoId', 'status', 'note', 'evidence', 'reason', 'taskClass', 'clearClaim',
-])
+const UPDATE_KEYS = new Set(['todoId', 'status', 'note', 'evidence', 'reason', 'taskClass', 'clearClaim'])
 const COMPLETE_KEYS = new Set([
   'todoId', 'note', 'evidence', 'noFollowUp', 'turnInstanceId',
   'taskLeaseIdempotencyKey', 'taskLeaseExpectedVersion',
 ])
 
-/** Build immutable tool definitions that close over one Host service instance. */
-function loopXToolDefinitions(
-  service: LoopXServiceApi,
-): readonly ReturnType<typeof defineTool>[] {
+function loopXToolDefinitions(service: LoopXServiceApi): readonly ReturnType<typeof defineTool>[] {
   const goalStart = strictInput(defineTool({
     name: 'loopx_goal_start',
-    description: 'Start or continue a LoopX Goal workflow from an objective in the current DSH Session. Use exact selections or switch confirmation returned by this tool. This typed tool owns the binding transition; never use Bash, raw LoopX CLI arguments, or registry edits for it.',
+    description: 'Start a fresh LoopX Goal and lane for this DSH Session; activation remains disarmed.',
     parameters: {
-      goalText: {
-        type: 'string',
-        required: true,
-        description: 'Non-empty objective for the LoopX planning workflow.',
-      },
-      goalId: {
-        type: 'string',
-        description: 'Optional exact Goal id returned by the immediately preceding selection step.',
-      },
-      agentId: {
-        type: 'string',
-        description: 'Optional exact agent id returned by the immediately preceding selection step.',
-      },
-      newPeer: {
-        type: 'boolean',
-        description: 'Request a fresh peer only when the authoritative guided contract permits it.',
-      },
-      newIndependent: {
-        type: 'boolean',
-        description: 'Request a distinct independent Goal instead of continuing the project Goal.',
-      },
-      switchConfirmation: {
-        type: 'string',
-        description: 'Opaque token from a preceding switch_required result after explicit user confirmation.',
-      },
+      goalText: { type: 'string', required: true, description: 'Non-empty Goal objective.' },
+      switchConfirmation: { type: 'string', description: 'Opaque confirmed-switch token.' },
     },
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'goal-start')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, START_KEYS)) return rejected(invalidKeys('goal-start'))
-      const options: LoopXStartOptions = Object.freeze({
-        ...(args.goalId === undefined ? {} : { goalId: args.goalId }),
-        ...(args.agentId === undefined ? {} : { agentId: args.agentId }),
-        ...(args.newPeer === true ? { newPeer: true } : {}),
-        ...(args.newIndependent === true ? { newIndependent: true } : {}),
-        ...(args.switchConfirmation === undefined
-          ? {}
-          : { switchConfirmation: args.switchConfirmation }),
-      })
-      const result = await service.start(
-        current.value,
-        args.goalText,
-        exec.signal,
-        options,
-      )
-      if (!result.ok) return rejected(result.error)
-      return success(safeStart(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'goal-start'
+      const current = toolSession(exec, operation, args, START_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      const options: LoopXStartOptions = {
+        ...(args.switchConfirmation === undefined ? {} : { switchConfirmation: args.switchConfirmation }),
+      }
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.start(current.value, args.goalText, exec.signal, options),
+        safeStart)
     },
   }))
 
   const goalAttach = strictInput(defineTool({
     name: 'loopx_goal_attach',
-    description: 'Attach the current DSH Session to one explicitly selected existing LoopX Goal. Use exact selection or switch confirmation returned by this tool. This typed tool owns the binding transition; never use Bash, raw LoopX CLI arguments, alternate locators, or registry edits for it.',
+    description: 'Attach this DSH Session to one exact existing Goal-Agent lane.',
     parameters: {
-      goalId: {
-        type: 'string',
-        required: true,
-        description: 'Exact existing LoopX Goal id to attach.',
-      },
-      agentId: {
-        type: 'string',
-        description: 'Optional exact registered agent id selected for this Goal.',
-      },
-      newPeer: {
-        type: 'boolean',
-        description: 'Request a fresh peer only when the authoritative guided contract permits it.',
-      },
-      switchConfirmation: {
-        type: 'string',
-        description: 'Opaque token from a preceding switch_required result after explicit user confirmation.',
-      },
+      goalId: { type: 'string', required: true },
+      agentId: { type: 'string' },
+      newPeer: { type: 'boolean' },
+      switchConfirmation: { type: 'string' },
     },
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'goal-attach')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, ATTACH_KEYS)) return rejected(invalidKeys('goal-attach'))
-      const request: LoopXAttachRequest = Object.freeze({
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'goal-attach'
+      const current = toolSession(exec, operation, args, ATTACH_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      const request: LoopXAttachRequest = {
         goalId: args.goalId,
         ...(args.agentId === undefined ? {} : { agentId: args.agentId }),
         ...(args.newPeer === true ? { newPeer: true } : {}),
-        ...(args.switchConfirmation === undefined
-          ? {}
-          : { switchConfirmation: args.switchConfirmation }),
-      })
-      const result = await service.attach(current.value, request, exec.signal)
-      if (!result.ok) return rejected(result.error)
-      return success(safeAttach(result.value))
+        ...(args.switchConfirmation === undefined ? {} : { switchConfirmation: args.switchConfirmation }),
+      }
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.attach(current.value, request, exec.signal),
+        safeAttach)
     },
   }))
 
   const goalActivate = strictInput(defineTool({
     name: 'loopx_goal_activate',
-    description: 'Activate only the exact pending LoopX Goal binding, normally after Todo writeback. Activation owns suppressed refresh and authoritative readback.',
-    parameters: {
-      goalId: { type: 'string', required: true, description: 'Exact pending Goal id.' },
-      agentId: { type: 'string', description: 'Optional exact pending agent id.' },
-    },
+    description: 'Activate the exact pending Goal-Agent lane after fresh authority readback.',
+    parameters: { goalId: { type: 'string', required: true }, agentId: { type: 'string' } },
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'goal-activate')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, ACTIVATE_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('goal-activate'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'goal-activate')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.activate(
-        bound.value.session,
-        args.goalId,
-        args.agentId,
-        exec.signal,
-      )
-      if (!result.ok) {
-        return toolFailure(
-          service,
-          bound.value.session,
-          result.error,
-          bound.value.fence,
-        )
-      }
-      return success(safeBinding(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'goal-activate'
+      const current = toolSession(exec, operation, args, ACTIVATE_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.activate(current.value, args.goalId, args.agentId, exec.signal),
+        binding => ({ binding: safeBinding(binding) }))
     },
   }))
 
   const loopxStatus = strictInput(defineTool({
     name: 'loopx_status',
-    description: 'Read live LoopX authoritative state together with the current DSH Host sidecar state; accepts no alternate identity.',
+    description: 'Read exact Host binding and LoopX authority without mutation or activation.',
     parameters: {},
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'status')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, new Set())) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('status'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'status')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.status(bound.value.session, exec.signal)
-      if (!result.ok) {
-        return toolFailure(
-          service,
-          bound.value.session,
-          result.error,
-          bound.value.fence,
-        )
-      }
-      return success(safeStatus(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'status'
+      const current = toolSession(exec, operation, args, EMPTY_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.status(current.value, exec.signal), safeStatus)
     },
   }))
 
   const goalDetach = strictInput(defineTool({
     name: 'loopx_goal_detach',
-    description: 'Detach only the current DSH Session from its exact LoopX Host binding. This does not delete or mutate Goal, Todo, quota, or scheduler authority.',
+    description: 'CAS-unbind this DSH Host thread and retain its revision tombstone.',
     parameters: {},
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'goal-detach')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, EMPTY_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('goal-detach'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'goal-detach')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.detach(bound.value.session, exec.signal)
-      if (!result.ok) {
-        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
-      }
-      return success({ detached: true })
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'goal-detach'
+      const current = toolSession(exec, operation, args, EMPTY_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.detach(current.value, exec.signal),
+        value => ({ detached: value.detached, binding: safeBinding(value.binding) }))
     },
   }))
 
   const driverPause = strictInput(defineTool({
     name: 'loopx_driver_pause',
-    description: 'Pause only the local continuation driver for the exact current LoopX binding; Goal and Todo authority are unchanged.',
+    description: 'Disarm only process-local continuation; durable LoopX state is unchanged.',
     parameters: {},
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'driver-pause')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, EMPTY_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('driver-pause'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'driver-pause')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.pause(
-        bound.value.session,
-        'user_pause',
-        bound.value.fence,
-      )
-      if (!result.ok) {
-        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
-      }
-      return success(safeBinding(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'driver-pause'
+      const current = toolSession(exec, operation, args, EMPTY_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.pause(current.value), value => ({
+          paused: value.paused,
+          ...(value.binding === undefined ? {} : { binding: safeBinding(value.binding) }),
+        }))
     },
   }))
 
   const driverResume = strictInput(defineTool({
     name: 'loopx_driver_resume',
-    description: 'Resume the local continuation driver only after authoritative reread of the exact current LoopX binding.',
+    description: 'Arm continuation only after fresh exact authority readback.',
     parameters: {},
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'driver-resume')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, EMPTY_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('driver-resume'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'driver-resume')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.resume(bound.value.session, exec.signal)
-      if (!result.ok) {
-        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
-      }
-      return success(safeBinding(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'driver-resume'
+      const current = toolSession(exec, operation, args, EMPTY_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.resume(current.value, exec.signal),
+        binding => ({ binding: safeBinding(binding) }))
     },
   }))
 
   const todoAdd = strictInput(defineTool({
     name: 'loopx_todo_add',
-    description: 'Add one bounded public-safe Todo to the exact pending planning generation. Goal, agent, project, registry, task class, and claim/block fields are derived by the plugin.',
+    description: 'Add one bounded public-safe Todo to the currently bound lane.',
     parameters: {
-      text: {
-        type: 'string',
-        required: true,
-        description: 'Non-empty Todo text without a priority prefix.',
-      },
-      priority: {
-        type: 'string',
-        required: true,
-        enum: ['P0', 'P1', 'P2'],
-      },
-      role: {
-        type: 'string',
-        enum: ['agent', 'user'],
-        description: 'Agent advancement work or a User gate; defaults to agent.',
-      },
-      actionKind: {
-        type: 'string',
-        description: 'Optional public action-kind atom.',
-      },
-      targetKey: {
-        type: 'string',
-        description: 'Optional stable public target for Agent work only.',
-      },
+      text: { type: 'string', required: true },
+      priority: { type: 'string', required: true, enum: ['P0', 'P1', 'P2'] },
+      role: { type: 'string', enum: ['agent', 'user'] },
+      actionKind: { type: 'string' },
+      targetKey: { type: 'string' },
     },
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'todo-add')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, TODO_ADD_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('todo-add'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'todo-add')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.todoAdd(bound.value.session, args, exec.signal)
-      if (!result.ok) {
-        return toolFailure(service, bound.value.session, result.error, bound.value.fence)
-      }
-      return success(safeTodoAdd(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'todo-add'
+      const current = toolSession(exec, operation, args, TODO_ADD_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.todoAdd(current.value, args, exec.signal), safeTodoAdd)
     },
   }))
 
   const todoClaim = strictInput(defineTool({
     name: 'loopx_todo_claim',
-    description: 'Claim one Todo for the exact Goal and agent bound to the current DSH Session.',
+    description: 'Claim one Todo for the currently bound Goal-Agent lane.',
     parameters: {
-      todoId: { type: 'string', required: true, description: 'Todo id from LoopX.' },
-      role: { type: 'string', enum: ['user', 'agent'], description: 'Optional bounded claim role.' },
+      todoId: { type: 'string', required: true },
+      role: { type: 'string', enum: ['user', 'agent'] },
     },
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'todo-claim')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, CLAIM_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('todo-claim'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'todo-claim')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.todoClaim(bound.value.session, args, exec.signal)
-      if (!result.ok) {
-        return toolFailure(
-          service,
-          bound.value.session,
-          result.error,
-          bound.value.fence,
-        )
-      }
-      return success(safeTodo(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'todo-claim'
+      const current = toolSession(exec, operation, args, CLAIM_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.todoClaim(current.value, args, exec.signal), safeTodo)
     },
   }))
 
   const todoUpdate = strictInput(defineTool({
     name: 'loopx_todo_update',
-    description: 'Update the stable bounded fields of one Todo for the exact current LoopX binding.',
+    description: 'Update bounded fields of one Todo for the currently bound lane.',
     parameters: {
       todoId: { type: 'string', required: true },
       status: { type: 'string', enum: ['open', 'done', 'blocked', 'deferred'] },
@@ -715,35 +389,18 @@ function loopXToolDefinitions(
       clearClaim: { type: 'boolean' },
     },
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'todo-update')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, UPDATE_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('todo-update'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'todo-update')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.todoUpdate(bound.value.session, args, exec.signal)
-      if (!result.ok) {
-        return toolFailure(
-          service,
-          bound.value.session,
-          result.error,
-          bound.value.fence,
-        )
-      }
-      return success(safeTodo(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'todo-update'
+      const current = toolSession(exec, operation, args, UPDATE_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.todoUpdate(current.value, args, exec.signal), safeTodo)
     },
   }))
 
   const todoComplete = strictInput(defineTool({
     name: 'loopx_todo_complete',
-    description: 'Complete one Todo through LoopX with bounded evidence and exact turn/lease identity for the current binding.',
+    description: 'Complete one Todo with bounded evidence for the currently bound lane.',
     parameters: {
       todoId: { type: 'string', required: true },
       note: { type: 'string' },
@@ -754,49 +411,22 @@ function loopXToolDefinitions(
       taskLeaseExpectedVersion: { type: 'integer' },
     },
     output: TOOL_OUTPUT,
-    async execute(args, exec): Promise<ToolEnvelope> {
-      const current = deriveLoopXSessionRef(exec.agent, 'todo-complete')
-      if (!current.ok) return rejected(current.error)
-      if (!hasOnlyKeys(args, COMPLETE_KEYS)) {
-        return toolFailure(
-          service,
-          current.value,
-          invalidKeys('todo-complete'),
-          currentFence(service, current.value),
-        )
-      }
-      const bound = boundSession(service, exec, 'todo-complete')
-      if (!bound.ok) return toolFailure(service, current.value, bound.error)
-      const result = await service.todoComplete(bound.value.session, args, exec.signal)
-      if (!result.ok) {
-        return toolFailure(
-          service,
-          bound.value.session,
-          result.error,
-          bound.value.fence,
-        )
-      }
-      return success(safeTodo(result.value))
+    async execute(args, exec): Promise<ToolReceipt> {
+      const operation = 'todo-complete'
+      const current = toolSession(exec, operation, args, COMPLETE_KEYS)
+      if (!current.ok) return failureReceipt(operation, current.error)
+      return serviceReceipt(service, current.value, exec.signal, operation,
+        () => service.todoComplete(current.value, args, exec.signal), safeTodo)
     },
   }))
 
   return Object.freeze([
-    goalStart,
-    goalAttach,
-    goalActivate,
-    loopxStatus,
-    goalDetach,
-    driverPause,
-    driverResume,
-    todoAdd,
-    todoClaim,
-    todoUpdate,
-    todoComplete,
+    goalStart, goalAttach, goalActivate, loopxStatus, goalDetach, driverPause,
+    driverResume, todoAdd, todoClaim, todoUpdate, todoComplete,
   ])
 }
 
-/** Register the frozen eleven-tool model catalog over the current Host service. */
+/** Register the closed model-tool catalog over the current Host service. */
 export function apply(ctx: Context): void {
-  const definitions = loopXToolDefinitions(ctx.loopx)
-  for (const definition of definitions) ctx.tools.register(definition)
+  for (const definition of loopXToolDefinitions(ctx.loopx)) ctx.tools.register(definition)
 }

@@ -148,9 +148,6 @@ if ! printf '%s' "$profile_dump" | node -e '
     if (!dump.includes(`name: ${name}`)) throw new Error(`missing bundle module ${name}`)
     previous = position
   }
-  if (!/id: storage-domain[\s\S]{0,240}backend: json/u.test(dump)) {
-    throw new Error("storage-domain backend is not json")
-  }
 '; then
   echo 'install: DSH profile readback failed; the full profile was not printed or persisted' >&2
   exit 1
