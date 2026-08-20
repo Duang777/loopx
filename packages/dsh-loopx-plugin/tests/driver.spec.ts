@@ -15,6 +15,7 @@ import type {
   LoopXQuotaDecision,
   LoopXResult,
   LoopXSchedulerHint,
+  LoopXPlanningContinuation,
   LoopXServiceApi,
   LoopXSessionRef,
   LoopXStartValue,
@@ -333,6 +334,13 @@ class FakeService implements LoopXServiceApi {
     return Promise.resolve(success({ fence: fence(session.id, binding), body }))
   }
 
+  planningContinuation(
+    _session: LoopXSessionRef,
+    _generation: number,
+  ): LoopXResult<LoopXPlanningContinuation> {
+    return failure('LOOPX_DRIVER_NOT_ARMED', 'planning-continuation')
+  }
+
   updateScheduler(
     session: LoopXSessionRef,
     expected: LoopXBindingFence,
@@ -616,7 +624,7 @@ describe('LoopX same-session continuation driver', () => {
     expect(current.followups[0]).toMatchObject({
       role: 'user',
       content: [{ type: 'text', text: 'task body for session-a' }],
-      source: { kind: 'plugin', plugin: 'dsh-loopx-plugin' },
+      source: { kind: 'plugin', plugin: 'dsh-loopx-plugin/driver' },
     })
 
     current.setStatus('idle')
@@ -823,14 +831,10 @@ describe('LoopX same-session continuation driver', () => {
       agentId: 'agent-new',
     })
 
-    // The rebind owns the queue but has not committed, so foreign input still
-    // observes the old row and queues its fenced pause behind that mutation.
+    // Ordinary input yields locally and cannot enqueue an old-generation pause
+    // behind the already accepted rebind.
     raced.driver.onInboxInserted(racedAgent.agent, userMessage('human-race'))
-    expect(raced.service.pauseAttempts).toEqual([{
-      sessionId: 'session-b',
-      reason: 'foreign_input',
-      expectedFence: fence('session-b', oldBinding),
-    }])
+    expect(raced.service.pauseAttempts).toEqual([])
     rebindGate.resolve(undefined)
     const rebound = await rebinding
     await raced.driver.whenSettled()
@@ -895,10 +899,9 @@ describe('LoopX same-session continuation driver', () => {
     await uncertain.driver.dispose()
   })
 
-  it('lets foreign user input preempt the timer and pauses only this binding', async () => {
+  it('lets ordinary user input preempt local work without pausing or cancelling admitted work', async () => {
     const test = harness('session-a')
     const current = requiredAgent(test.agents, 'session-a')
-    const initialBinding = test.service.rows.get('session-a') as LoopXBindingRow
     test.service.quotaHandler = (session, turnInstanceId) => {
       const binding = test.service.rows.get(session.id) as LoopXBindingRow
       return Promise.resolve(success(decision(binding, turnInstanceId, {
@@ -916,15 +919,9 @@ describe('LoopX same-session continuation driver', () => {
     test.clock.fire(staleCallback)
     await test.driver.whenSettled()
 
-    expect(test.service.pauses).toEqual([
-      { sessionId: 'session-a', reason: 'foreign_input' },
-    ])
-    expect(test.service.pauseAttempts).toEqual([{
-      sessionId: 'session-a',
-      reason: 'foreign_input',
-      expectedFence: fence('session-a', initialBinding),
-    }])
-    expect(test.service.rows.get('session-a')?.phase).toBe('active_paused')
+    expect(test.service.pauses).toEqual([])
+    expect(test.service.pauseAttempts).toEqual([])
+    expect(test.service.rows.get('session-a')?.phase).toBe('active_armed')
     expect(test.service.quotaCalls).toHaveLength(1)
     expect(current.followups).toEqual([])
     await test.driver.dispose()
@@ -938,13 +935,8 @@ describe('LoopX same-session continuation driver', () => {
     active.driver.onSessionEvent(activeAgent.agent, admittedMessageEvent(automatic))
     active.driver.onInboxInserted(activeAgent.agent, userMessage('human-2'))
     await active.driver.whenSettled()
-    expect(activeAgent.cancels).toEqual([
-      { kind: 'hook', reason: 'dsh-loopx-plugin foreign input' },
-    ])
-    expect(active.service.pauses).toContainEqual({
-      sessionId: 'session-b',
-      reason: 'foreign_input',
-    })
+    expect(activeAgent.cancels).toEqual([])
+    expect(active.service.pauses).toEqual([])
     await active.driver.dispose()
   })
 

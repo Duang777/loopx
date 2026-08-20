@@ -119,6 +119,14 @@ reread, fetches the heartbeat task body into memory, and arms the driver. The
 plugin keeps no parallel Todo receipt ledger; LoopX remains authoritative for
 the Todo and refreshed task state.
 
+If that initiating turn becomes idle before activation, the live driver may
+re-present the exact process-local checkpoint for one planning-only recovery
+round. The opportunity is consumed only when the follow-up passes pre-step
+admission; yielding a queued copy to human input does not consume it. Planning
+recovery does not call `quota should-run`, fetch a delivery task body, or spend
+delivery quota. If the admitted recovery still does not activate the Goal, the
+driver remains quiet until the user explicitly continues.
+
 A stable DSH Session with no prior binding defaults to a distinct public-safe
 LoopX peer identity, so both `/loopx <task>` and semantic start can enter the
 planning checkpoint without choosing an existing lane. Verified same-Session
@@ -175,11 +183,11 @@ All derive the current Session identity. Alternate Session ids, registry
 paths, task bodies, arbitrary argv, and unsupported fields are rejected and
 the active driver fails closed.
 
-At each idle boundary, the driver calls `loopx quota should-run` with runtime
-profile `generic_cli`, scheduler detail, and one unique turn identity. A
-certain retryable failure gets at most one retry with that same identity.
-Generation and lifecycle fences protect every post-await follow-up, scheduler
-write, pause, uncertain transition, reload, disposal, and foreign-input path.
+After activation, each idle boundary calls `loopx quota should-run` with
+runtime profile `generic_cli`, scheduler detail, and one unique turn identity.
+A certain retryable failure gets at most one retry with that same identity.
+Generation, message, pre-step, and lifecycle fences reject stale planning and
+delivery follow-ups before model admission.
 
 ## Observe, pause, resume, and detach
 
@@ -207,11 +215,20 @@ attached. If exact detach succeeds but the new operation fails, the Session is
 reported honestly as unbound; the plugin does not claim to have restored the
 old binding.
 
-Human messages, foreign plugin messages, and command runs preempt automatic
-continuation. The driver owns at most one evaluation, AbortController, timer,
-and follow-up attempt per Session. It becomes quiet when the LoopX scheduler
-unchanged limit is reached and treats only a validated terminal-no-follow-up
-receipt as terminal.
+Ordinary human messages temporarily preempt automatic continuation rather than
+persistently pausing it. A queued automatic follow-up is removed so the human
+turn runs first; already admitted work is allowed to settle. Once the human
+turn is idle, the driver rereads the exact binding and, when still armed, asks
+fresh quota before continuing. Direct command runs, explicit pause/detach or
+switch, stale or uncertain readback, and Session/Agent disposal remain strong
+fail-closed boundaries.
+
+Process-local authority never crosses DSH restart, Session resume or fork, or
+plugin reload. A cold restore cannot reconstruct a planning body, so a binding
+still in planning must be completed explicitly through natural language and
+typed tools, or planned again. `/loopx resume` applies only to an activated
+binding left paused by the lifecycle; it rereads exact LoopX authority before
+arming a fresh generation.
 
 ## Remove and rollback
 
@@ -263,10 +280,10 @@ node smoke/dsh-profile-smoke.mjs \
 The smoke performs real DSH plugin add/dump/remove operations, uses a mock
 LoopX executable, and checks all eleven registered tools, the versioned fresh
 connect/bootstrap exchange, single-follow-up semantic command entry, typed Todo
-writeback plus two-phase activation, one idle continuation,
-foreign-input pause, sidecar privacy, and tarball contents. It does not start a
-model, access the network, require credentials, or touch the user's existing
-DSH Profile.
+writeback plus one-shot planning recovery and activation, quota continuation,
+human-input yield with fresh continuation, sidecar privacy, and tarball
+contents. It does not start a model, access the network, require credentials,
+or touch the user's existing DSH Profile.
 
 ## Related contracts
 

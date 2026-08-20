@@ -112,6 +112,13 @@ suppressed-sink refresh plus authoritative readback before arming the local
 driver. The plugin keeps no parallel Todo receipt ledger; LoopX remains the
 authority for the resulting Todo and refreshed task state.
 
+If the initiating turn stops while that exact binding is still planning, the
+live driver may admit the cached checkpoint once more as a planning-only
+recovery. Only model-step admission consumes that opportunity; removing a
+queued recovery for a human message does not. This lane never calls delivery
+quota, fetches a task body, or writes delivery spend. It either reaches the
+same Todo-and-activation gate or becomes quiet until explicit continuation.
+
 When start runs in a stable DSH Session with no prior binding, LoopX defaults
 to a distinct public-safe peer identity for that Session. A verified binding
 is reused on later starts; taking over an existing peer remains an explicit
@@ -179,12 +186,15 @@ authority: pause and detach do not complete, pause, delete, or otherwise
 rewrite the Goal or its Todos, while resume revalidates the exact binding and
 refetches the task body before arming a new generation.
 
-At an idle boundary the driver asks LoopX quota whether the exact lane should
-run. It reuses one turn identity for at most one certain, retryable quota
-retry. Scheduler hints produce one per-Session timer and become quiet at the
-unchanged limit. Only a LoopX-validated terminal closure stops without another
-follow-up. Human input or another command preempts the automatic lane and
-pauses that binding with a generation fence.
+After activation, each idle boundary asks LoopX quota whether the exact lane
+should run. It reuses one turn identity for at most one certain, retryable
+quota retry. Scheduler hints produce one per-Session timer and become quiet at
+the unchanged limit. Only a LoopX-validated terminal closure stops without
+another follow-up. Ordinary human input temporarily wins: queued automatic
+work is removed, admitted work settles, and the driver rereads the binding and
+fresh quota after the human turn. Explicit commands, detach/switch/pause,
+uncertain or stale readback, and lifecycle disposal remain strong fail-closed
+boundaries.
 
 ## Remove
 
@@ -196,7 +206,11 @@ dsh --profile web --dump-config
 Removal deletes the bundle layer only. It does not delete LoopX state and v1
 does not implicitly purge the storage-domain sidecar. Reinstalling still
 performs Session lifecycle checks and cold-restores any formerly armed row as
-paused, requiring an explicit `/loopx resume`.
+paused. DSH restart, Session resume or fork, and plugin reload never inherit
+process-local planning or delivery authority. A restored planning binding has
+no cached body: continue with natural language and typed tools, or start its
+planning again. Use `/loopx resume` only for an activated binding that the
+lifecycle left paused; it performs exact readback before re-arming.
 
 ## Authority and privacy boundary
 

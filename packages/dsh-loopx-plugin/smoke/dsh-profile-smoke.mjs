@@ -443,6 +443,35 @@ async function exerciseInstalledPlugin(installedDir, home, mockLoopX, statePath)
   const connectCalls = (await readFile(statePath, 'utf8')).trim().split('\n').slice(0, 3)
   assert.deepEqual(connectCalls, ['start-goal', 'bootstrap', 'start-goal'])
 
+  followups.length = 0
+  nextTurn.length = 0
+  status = 'idle'
+  let turnOrdinal = 0
+  driver = new driverModule.LoopXContinuationDriver({
+    service,
+    isLiveAgent: current => current === agent,
+    makeTurnInstanceId: () => `turn-smoke-${++turnOrdinal}`,
+  })
+  driver.observeAgent(agent)
+  driver.onAgentStatus(agent, 'idle')
+  await driver.whenSettled()
+  assert.equal(followups.length, 1, 'planning idle did not enqueue exactly one recovery')
+  const planningFollowup = followups[0]
+  assert.equal(planningFollowup.source.plugin, 'dsh-loopx-plugin/driver')
+  assert.match(planningFollowup.content[0].text, /dsh_loopx_planning_checkpoint_v0/u)
+  const planningCalls = (await readFile(statePath, 'utf8')).trim().split('\n')
+  assert(!planningCalls.includes('quota'), 'planning recovery must not call delivery quota')
+  assert(!planningCalls.includes('heartbeat-prompt'), 'planning recovery must not fetch a task body')
+  driver.onInboxClaimed(agent, planningFollowup)
+  nextTurn.length = 0
+  const planningAdmission = await driver.onPreStep(
+    agent,
+    [planningFollowup],
+    signal,
+    async () => ({ kind: 'enter', messages: [planningFollowup] }),
+  )
+  assert.equal(planningAdmission.kind, 'enter', 'exact planning recovery was not admitted')
+
   const added = await executeTool('loopx_todo_add', {
     text: 'Validate the packaged semantic planning flow', priority: 'P0',
   })
@@ -461,28 +490,33 @@ async function exerciseInstalledPlugin(installedDir, home, mockLoopX, statePath)
   followups.length = 0
   nextTurn.length = 0
   status = 'idle'
-  driver = new driverModule.LoopXContinuationDriver({
-    service,
-    isLiveAgent: current => current === agent,
-    makeTurnInstanceId: () => 'turn-smoke',
-  })
-  driver.observeAgent(agent)
   driver.onAgentStatus(agent, 'idle')
   await driver.whenSettled()
   assert.equal(followups.length, 1, 'idle continuation did not enqueue exactly one same-Agent follow-up')
   assert.equal(followups[0].source.kind, 'plugin')
-  assert.equal(followups[0].source.plugin, 'dsh-loopx-plugin')
+  assert.equal(followups[0].source.plugin, 'dsh-loopx-plugin/driver')
   assert.equal(followups[0].content[0].text, 'SMOKE PRIVATE TASK BODY')
 
-  driver.onInboxInserted(agent, {
+  const human = {
     id: 'human-smoke', role: 'user', content: [{ type: 'text', text: 'human preemption' }],
     source: { kind: 'user' },
-  })
+  }
+  nextTurn.push(human)
+  driver.onInboxInserted(agent, human)
   await driver.whenSettled()
-  const paused = service.getBinding({ id: 'session-smoke', identity: { createdAt: 7, cwd: project } })
-  assert.equal(paused.ok, true)
-  assert.equal(paused.value?.phase, 'active_paused')
-  assert.equal(paused.value?.reason, 'foreign_input')
+  assert.deepEqual(nextTurn, [human], 'human input must replace a queued automatic follow-up')
+  const yielded = service.getBinding({ id: 'session-smoke', identity: { createdAt: 7, cwd: project } })
+  assert.equal(yielded.ok, true)
+  assert.equal(yielded.value?.phase, 'active_armed', 'ordinary human input must not persist a pause')
+  driver.onSessionEvent(agent, { type: 'user/message', data: human })
+  nextTurn.length = 0
+  followups.length = 0
+  status = 'idle'
+  driver.onAgentStatus(agent, 'idle')
+  await driver.whenSettled()
+  assert.equal(followups.length, 1, 'armed binding did not continue after the human turn')
+  assert.equal(followups[0].content[0].text, 'SMOKE PRIVATE TASK BODY')
+  assert.equal(turnOrdinal, 2, 'human yield must trigger a fresh quota turn identity')
   await driver.dispose()
   await ctx.fiber.dispose()
 

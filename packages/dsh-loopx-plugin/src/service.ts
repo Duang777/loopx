@@ -47,14 +47,15 @@ import type {
   LoopXBindingFence,
   LoopXBindingReason,
   LoopXBindingRow,
+  LoopXContinuationServiceApi,
   LoopXFailure,
   LoopXHostStatus,
   LoopXIdentitySelection,
   LoopXPlanningCheckpoint,
+  LoopXPlanningContinuation,
   LoopXQuotaDecision,
   LoopXResult,
   LoopXSchedulerHint,
-  LoopXServiceApi,
   LoopXSessionRef,
   LoopXStartValue,
   LoopXStartOptions,
@@ -111,6 +112,11 @@ interface ResolvedConfig extends Config {
 
 interface TaskBodyCacheEntry {
   readonly generation: number
+  readonly body: string
+}
+
+interface PlanningBodyCacheEntry {
+  readonly fence: LoopXBindingFence
   readonly body: string
 }
 
@@ -679,7 +685,7 @@ function boundedQuotaProjection(payload: QuotaShouldRunPayload): Readonly<Record
 }
 
 /** Host-only service. LoopX remains authoritative for all Goal and Todo state. */
-export class LoopXService extends Service implements LoopXServiceApi {
+export class LoopXService extends Service implements LoopXContinuationServiceApi {
   static inject = ['storageDomain']
 
   static Config: s<Config> = s.object({
@@ -698,6 +704,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
   private table: KvTable<string, LoopXBindingRow> | undefined
   private readonly operationTails = new Map<string, Promise<void>>()
   private readonly taskBodies = new Map<string, TaskBodyCacheEntry>()
+  private readonly planningBodies = new Map<string, PlanningBodyCacheEntry>()
   private readonly switchConfirmations = new Map<string, SwitchConfirmationRecord>()
   private mutationAdmissionOpen = true
 
@@ -725,6 +732,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
       await this.cli.close()
       await Promise.all(this.operationTails.values())
       this.taskBodies.clear()
+      this.planningBodies.clear()
       this.switchConfirmations.clear()
       await domain.close()
       this.table = undefined
@@ -744,6 +752,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
     if (invalid !== undefined) return rejected(invalid)
     const row = this.requireTable().get(session.id)
     if (row === undefined || !sameSessionIdentity(row.session, session.identity)) {
+      if (row !== undefined) this.planningBodies.delete(session.id)
       return success(undefined)
     }
     return success(snapshotBinding(row))
@@ -1231,6 +1240,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
           })
         : transitionBinding(existingRow, 'active_armed', undefined, Date.now())
       await this.requireTable().put(session.id, row)
+      this.planningBodies.delete(session.id)
       this.taskBodies.set(session.id, { generation: row.generation, body })
       return success({ kind: 'attached', binding: row })
   }
@@ -1435,11 +1445,16 @@ export class LoopXService extends Service implements LoopXServiceApi {
       : transitionBinding(existingRow, 'planning', undefined, Date.now())
     await this.requireTable().put(session.id, row)
     this.taskBodies.delete(session.id)
+    const body = renderPlanningCheckpoint(planning)
+    this.planningBodies.set(session.id, {
+      fence: fenceOf(session.id, row),
+      body,
+    })
     return success({
       kind: 'planning',
       binding: row,
       planning,
-      modelCheckpoint: renderPlanningCheckpoint(planning),
+      modelCheckpoint: body,
     })
   }
 
@@ -1687,6 +1702,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
   ): Promise<LoopXResult<undefined>> {
     this.cli.abortScope(session.id)
     this.taskBodies.delete(session.id)
+    this.planningBodies.delete(session.id)
     const detached = await this.writeThreadBinding(
       session,
       row.projectLocator,
@@ -1776,6 +1792,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
           { operation: 'activate' },
         ))
       }
+      this.planningBodies.delete(session.id)
       const before = fenceOf(session.id, row)
       let packet: BootstrapCommandPackPayload
       let body: string
@@ -1915,6 +1932,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
     if (expectedFence === undefined) {
       this.cli.abortScope(session.id)
       this.taskBodies.delete(session.id)
+      this.planningBodies.delete(session.id)
     }
     return this.queued(session, 'pause', async () => {
       const row = this.currentRow(session)
@@ -1926,6 +1944,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
       if (expectedFence !== undefined) {
         this.cli.abortScope(session.id)
         this.taskBodies.delete(session.id)
+        this.planningBodies.delete(session.id)
       }
       const phase = row.phase === 'planning' ? 'planning' : 'active_paused'
       const paused = transitionBinding(row, phase, reason, Date.now())
@@ -1990,6 +2009,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
   ): Promise<LoopXResult<{ readonly detached: true }>> {
     this.cli.abortScope(session.id)
     this.taskBodies.delete(session.id)
+    this.planningBodies.delete(session.id)
     this.switchConfirmations.delete(session.id)
     return this.queued(session, 'detach', async () => {
       const row = this.currentRow(session)
@@ -2273,6 +2293,43 @@ export class LoopXService extends Service implements LoopXServiceApi {
     }
   }
 
+  planningContinuation(
+    session: LoopXSessionRef,
+    generation: number,
+  ): LoopXResult<LoopXPlanningContinuation> {
+    const invalid = validateSession(session)
+    if (invalid !== undefined) return rejected(invalid)
+    const row = this.requireTable().get(session.id)
+    if (row === undefined) return rejected(this.notBound('planning-continuation'))
+    if (!sameSessionIdentity(row.session, session.identity)) {
+      this.planningBodies.delete(session.id)
+      return rejected(failure(
+        'LOOPX_SESSION_LIFECYCLE_MISMATCH',
+        'The planning continuation belongs to another DSH Session lifecycle.',
+        { operation: 'planning-continuation' },
+      ))
+    }
+    const cached = this.planningBodies.get(session.id)
+    if (row.phase !== 'planning' || row.generation !== generation
+      || cached === undefined || cached.fence.sessionId !== session.id
+      || !fenceMatches(row, cached.fence)) {
+      if (row.phase !== 'planning'
+        || (cached !== undefined && !fenceMatches(row, cached.fence))) {
+        this.planningBodies.delete(session.id)
+      }
+      return rejected(failure(
+        'LOOPX_DRIVER_NOT_ARMED',
+        'No exact process-local planning continuation is available for this binding generation.',
+        { operation: 'planning-continuation' },
+      ))
+    }
+    return success(Object.freeze({
+      kind: 'planning' as const,
+      fence: cached.fence,
+      body: cached.body,
+    }))
+  }
+
   updateScheduler(
     session: LoopXSessionRef,
     fence: LoopXBindingFence,
@@ -2317,6 +2374,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
     if (expectedFence === undefined) {
       this.cli.abortScope(session.id)
       this.taskBodies.delete(session.id)
+      this.planningBodies.delete(session.id)
     }
     return this.queued(session, 'mark-uncertain', async () => {
       const row = this.currentRow(session)
@@ -2328,6 +2386,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
       if (expectedFence !== undefined) {
         this.cli.abortScope(session.id)
         this.taskBodies.delete(session.id)
+        this.planningBodies.delete(session.id)
       }
       const uncertain = transitionBinding(row, 'uncertain', reason, Date.now())
       await this.requireTable().put(session.id, uncertain)
@@ -2338,6 +2397,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
   async disposeSession(session: LoopXSessionRef): Promise<void> {
     this.cli.abortScope(session.id)
     this.taskBodies.delete(session.id)
+    this.planningBodies.delete(session.id)
     this.switchConfirmations.delete(session.id)
     if (!this.mutationAdmissionOpen || validateSession(session) !== undefined) return
     await this.enqueue(session.id, async () => {
@@ -2629,6 +2689,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
         transitionBinding(current, phase, reason, Date.now()),
       )
       this.taskBodies.delete(session.id)
+      this.planningBodies.delete(session.id)
     }
     return rejected(cause)
   }
@@ -2665,6 +2726,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
     )
     await this.requireTable().put(session.id, disarmed)
     this.taskBodies.delete(session.id)
+    this.planningBodies.delete(session.id)
     return rejected(cause)
   }
 
@@ -2683,6 +2745,7 @@ export class LoopXService extends Service implements LoopXServiceApi {
         transitionBinding(row, 'active_paused', 'readback_failed', Date.now()),
       )
       this.taskBodies.delete(session.id)
+      this.planningBodies.delete(session.id)
     })
   }
 

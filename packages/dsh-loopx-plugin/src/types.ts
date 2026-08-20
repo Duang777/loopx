@@ -288,6 +288,12 @@ export interface LoopXTaskBody {
   readonly body: string
 }
 
+export interface LoopXPlanningContinuation {
+  readonly kind: 'planning'
+  readonly fence: LoopXBindingFence
+  readonly body: string
+}
+
 export interface LoopXServiceApi {
   getBinding(session: LoopXSessionRef): LoopXResult<LoopXBindingRow | undefined>
   start(session: LoopXSessionRef, goalText: string, signal?: AbortSignal, options?: LoopXStartOptions): Promise<LoopXResult<LoopXStartValue>>
@@ -308,4 +314,8 @@ export interface LoopXServiceApi {
   fenceIsCurrent(fence: LoopXBindingFence): boolean
   markUncertain(session: LoopXSessionRef, reason?: LoopXBindingReason, expectedFence?: LoopXBindingFence): Promise<LoopXResult<LoopXBindingRow>>
   disposeSession(session: LoopXSessionRef): Promise<void>
+}
+
+export interface LoopXContinuationServiceApi extends LoopXServiceApi {
+  planningContinuation(session: LoopXSessionRef, generation: number): LoopXResult<LoopXPlanningContinuation>
 }

@@ -8,7 +8,7 @@ import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import LoopXService from '../src/service.ts'
 import type {
-  LoopXServiceApi,
+  LoopXContinuationServiceApi,
   LoopXSessionRef,
   LoopXStartOptions,
   LoopXTodoAddRequest,
@@ -58,7 +58,7 @@ interface Harness {
   readonly project: string
   readonly statePath: string
   readonly callsPath: string
-  service: LoopXServiceApi
+  service: LoopXContinuationServiceApi
   disposeService(): Promise<void>
   reloadService(): Promise<void>
   readState(): Promise<FakeLoopXState>
@@ -716,6 +716,10 @@ describe('LoopXService', () => {
     expect(started.ok && started.value.kind === 'planning'
       ? started.value.modelCheckpoint
       : '').not.toContain('LOOPX_RETURNED_COMMAND_MUST_NOT_RUN')
+    expect(harness.service.planningContinuation(current, 1)).toMatchObject({
+      ok: true,
+      value: { kind: 'planning', fence: { generation: 1 } },
+    })
     const planning = harness.service.getBinding(current)
     expect(planning.ok && planning.value?.phase).toBe('planning')
     expect(planning.ok && Object.isFrozen(planning.value)).toBe(true)
@@ -740,6 +744,10 @@ describe('LoopXService', () => {
     expect(activated).toMatchObject({
       ok: true,
       value: { phase: 'active_armed', generation: 2 },
+    })
+    expect(harness.service.planningContinuation(current, 1)).toMatchObject({
+      ok: false,
+      error: { code: 'LOOPX_DRIVER_NOT_ARMED' },
     })
     const firstBody = await harness.service.taskBody(current, 2)
     expect(firstBody).toMatchObject({

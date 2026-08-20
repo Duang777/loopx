@@ -1,9 +1,10 @@
 /** Quota-gated, same-session LoopX continuation for DeepSeek Harness. */
 
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { FiberState } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentStatus, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-commands'
 import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type {
@@ -13,7 +14,7 @@ import type {
   LoopXQuotaDecision,
   LoopXResult,
   LoopXSchedulerHint,
-  LoopXServiceApi,
+  LoopXContinuationServiceApi,
   LoopXSessionRef,
 } from './types.ts'
 
@@ -21,6 +22,7 @@ export const name = 'dsh-loopx-driver'
 export const inject = ['agents', 'loopx']
 
 const PLUGIN_ID = 'dsh-loopx-plugin'
+const DRIVER_SOURCE_ID = `${PLUGIN_ID}/driver`
 const FAIL_CLOSED_RETRY_MS = 3 * 60_000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const MAX_QUOTA_ATTEMPTS = 2
@@ -34,7 +36,7 @@ export interface LoopXDriverClock {
 }
 
 export interface LoopXDriverOptions {
-  readonly service: LoopXServiceApi
+  readonly service: LoopXContinuationServiceApi
   readonly isLiveAgent: (agent: Agent) => boolean
   readonly clock?: LoopXDriverClock
   readonly makeTurnInstanceId?: () => string
@@ -44,7 +46,11 @@ export interface LoopXDriverOptions {
 
 interface FollowupAttempt {
   readonly messageId: UserMessage['id']
-  readonly generation: number
+  readonly content: UserMessage['content']
+  readonly fence: LoopXBindingFence
+  readonly lane: 'planning' | 'delivery'
+  readonly epoch: number
+  readonly instanceEpoch: number
   phase: 'queued' | 'claimed' | 'admitted'
 }
 
@@ -58,12 +64,15 @@ interface DriverState {
   readonly agent: Agent
   epoch: number
   blocked: boolean
+  blockedFence: LoopXBindingFence | undefined
   stopping: boolean
   requested: boolean
   evaluation: Promise<void> | undefined
   controller: AbortController | undefined
   timer: ScheduledEvaluation | undefined
   followup: FollowupAttempt | undefined
+  competingQueued: boolean
+  planningConsumedGeneration: number | undefined
 }
 
 const systemClock: LoopXDriverClock = Object.freeze({
@@ -108,8 +117,13 @@ function fenceFromBinding(agent: Agent, binding: LoopXBindingRow): LoopXBindingF
 
 function isOwnedSource(message: UserMessage, attempt: FollowupAttempt): boolean {
   return message.id === attempt.messageId
-    && message.source.kind === 'plugin'
-    && message.source.plugin === PLUGIN_ID
+    && isDriverSource(message)
+    && isDeepStrictEqual(message.content, attempt.content)
+}
+
+function isDriverSource(message: UserMessage): boolean {
+  return message.source.kind === 'plugin'
+    && message.source.plugin === DRIVER_SOURCE_ID
 }
 
 function createFollowupMessage(body: string): UserMessage {
@@ -118,7 +132,7 @@ function createFollowupMessage(body: string): UserMessage {
     id: randomUUID() as UserMessage['id'],
     role: 'user' as const,
     content: Object.freeze(content) as UserMessage['content'],
-    source: Object.freeze({ kind: 'plugin' as const, plugin: PLUGIN_ID }),
+    source: Object.freeze({ kind: 'plugin' as const, plugin: DRIVER_SOURCE_ID }),
   })
 }
 
@@ -171,7 +185,7 @@ function waitPlan(
  * facts are consumed through the frozen LoopX service contract.
  */
 export class LoopXContinuationDriver {
-  private readonly service: LoopXServiceApi
+  private readonly service: LoopXContinuationServiceApi
   private readonly isLiveAgent: (agent: Agent) => boolean
   private readonly clock: LoopXDriverClock
   private readonly makeTurnInstanceId: () => string
@@ -196,10 +210,11 @@ export class LoopXContinuationDriver {
     const state = this.stateFor(agent)
     if (!inheritedAuthority) return
     const binding = this.bindingFor(state)
-    if (binding?.phase !== 'active_armed') return
-    const expectedFence = fenceFromBinding(agent, binding)
+    if (binding === undefined) return
     this.cancelLocal(state, true)
     state.blocked = true
+    state.blockedFence = fenceFromBinding(agent, binding)
+    const expectedFence = fenceFromBinding(agent, binding)
     this.trackPause(state, 'manual_resume_required', expectedFence)
   }
 
@@ -207,15 +222,16 @@ export class LoopXContinuationDriver {
   onAgentStatus(agent: Agent, status: AgentStatus): void {
     const state = this.stateFor(agent)
     if (status !== 'idle') return
+    state.competingQueued = this.hasCompetingPending(state)
     state.followup = undefined
     this.requestEvaluation(state)
   }
 
-  /** Treat every non-current driver message as foreign input. */
+  /** Ordinary input temporarily wins over queued automatic work. */
   onInboxInserted(agent: Agent, message: UserMessage): void {
     const state = this.stateFor(agent)
     if (this.currentFollowupFence(state, message) !== undefined) return
-    this.foreignInput(state)
+    this.yieldToHuman(state)
   }
 
   /** Track admission of the one current-generation driver follow-up. */
@@ -234,11 +250,15 @@ export class LoopXContinuationDriver {
     if (state === undefined) return
     const expectedFence = this.currentFollowupFence(state, message)
     if (expectedFence === undefined) {
-      this.foreignInput(state)
+      state.competingQueued = this.hasCompetingPending(state)
+      if (!state.competingQueued && state.agent.status === 'idle') {
+        this.requestEvaluation(state)
+      }
       return
     }
     this.cancelLocal(state, false)
     state.blocked = true
+    state.blockedFence = expectedFence
     this.trackPause(state, 'readback_failed', expectedFence)
   }
 
@@ -251,15 +271,17 @@ export class LoopXContinuationDriver {
         attempt.phase = 'admitted'
         return
       }
-      this.foreignInput(state)
+      state.competingQueued = true
       return
     }
     if (event.type === 'command/run') {
-      this.foreignInput(state)
+      this.strongBoundary(state)
       return
     }
     if (event.type === 'command/done') {
       state.blocked = false
+      state.blockedFence = undefined
+      state.competingQueued = this.hasCompetingPending(state)
       this.requestEvaluation(state)
     }
   }
@@ -269,9 +291,69 @@ export class LoopXContinuationDriver {
     const state = this.stateFor(agent)
     const binding = this.bindingFor(state)
     this.cancelLocal(state, true)
-    if (binding?.phase !== 'active_armed') return
+    if (binding === undefined) {
+      state.blocked = false
+      state.blockedFence = undefined
+      return
+    }
     state.blocked = true
+    state.blockedFence = fenceFromBinding(agent, binding)
     this.trackPause(state, 'manual_resume_required', fenceFromBinding(agent, binding))
+  }
+
+  /** Fence one claimed automatic prompt immediately around model-step admission. */
+  async onPreStep(
+    agent: Agent,
+    messages: UserMessage[],
+    signal: AbortSignal,
+    next: () => Promise<PreStepDecision>,
+  ): Promise<PreStepDecision> {
+    const state = this.stateFor(agent)
+    const attempt = state.followup
+    const automatic = messages.filter(isDriverSource)
+    if (automatic.length === 0) return next()
+    const submitted = automatic[0] as UserMessage
+    if (automatic.length !== 1 || attempt === undefined || !isOwnedSource(submitted, attempt)) {
+      state.followup = undefined
+      this.restoreOtherClaimed(agent, messages)
+      return { kind: 'reject' }
+    }
+    if (!this.validReservation(state, attempt, submitted)) {
+      state.followup = undefined
+      this.restoreOtherClaimed(agent, messages)
+      return { kind: 'reject' }
+    }
+    let decision: PreStepDecision
+    try {
+      decision = await next()
+    } catch (error: unknown) {
+      state.followup = undefined
+      state.blocked = true
+      state.blockedFence = attempt.fence
+      throw error
+    }
+    if (signal.aborted) {
+      if (decision.kind === 'enter') {
+        this.restoreOtherClaimed(agent, decision.messages)
+      }
+      return decision
+    }
+    if (decision.kind === 'reject') {
+      state.followup = undefined
+      state.blocked = true
+      state.blockedFence = attempt.fence
+      return decision
+    }
+    if (!this.validReservation(state, attempt, submitted)) {
+      state.followup = undefined
+      this.restoreOtherClaimed(agent, decision.messages)
+      return { kind: 'reject' }
+    }
+    attempt.phase = 'admitted'
+    if (attempt.lane === 'planning') {
+      state.planningConsumedGeneration = attempt.fence.generation
+    }
+    return decision
   }
 
   /** Dispose only this Agent/Session lane and drain its accepted sidecar write. */
@@ -313,7 +395,7 @@ export class LoopXContinuationDriver {
       const binding = this.bindingFor(state)
       state.stopping = true
       this.cancelLocal(state, true)
-      if (binding?.phase === 'active_armed') {
+      if (binding?.phase === 'active_armed' || binding?.phase === 'planning') {
         this.trackPause(
           state,
           'manual_resume_required',
@@ -332,12 +414,15 @@ export class LoopXContinuationDriver {
       agent,
       epoch: 0,
       blocked: false,
+      blockedFence: undefined,
       stopping: false,
       requested: false,
       evaluation: undefined,
       controller: undefined,
       timer: undefined,
       followup: undefined,
+      competingQueued: false,
+      planningConsumedGeneration: undefined,
     }
     this.states.set(agent, state)
     return state
@@ -349,10 +434,18 @@ export class LoopXContinuationDriver {
   }
 
   private ready(state: DriverState): boolean {
-    if (this.disposed || state.stopping || state.blocked
+    const binding = this.bindingFor(state)
+    if (state.blocked && state.blockedFence !== undefined && binding !== undefined
+      && !sameFence(fenceFromBinding(state.agent, binding), state.blockedFence)) {
+      state.blocked = false
+      state.blockedFence = undefined
+    }
+    if (this.disposed || state.stopping || state.blocked || state.competingQueued
       || !this.isLiveAgent(state.agent) || state.agent.status !== 'idle'
       || state.followup !== undefined) return false
-    return this.bindingFor(state)?.phase === 'active_armed'
+    return binding?.phase === 'active_armed'
+      || (binding?.phase === 'planning'
+        && state.planningConsumedGeneration !== binding.generation)
   }
 
   private requestEvaluation(state: DriverState): void {
@@ -409,14 +502,25 @@ export class LoopXContinuationDriver {
     fence: LoopXBindingFence,
     signal: AbortSignal,
   ): Promise<void> {
-    if (!this.current(state, epoch, instanceEpoch, fence)) return
+    const binding = this.bindingFor(state)
+    const lane = binding?.phase === 'planning' ? 'planning' : 'delivery'
+    if (!this.current(state, epoch, instanceEpoch, fence, lane)) return
     const session = sessionRef(state.agent)
+    if (lane === 'planning') {
+      const planning = this.service.planningContinuation(session, fence.generation)
+      if (!planning.ok || planning.value.kind !== 'planning'
+        || !sameFence(planning.value.fence, fence)
+        || planning.value.body.trim().length === 0
+        || !this.current(state, epoch, instanceEpoch, fence, lane)) return
+      this.sendFollowup(state, fence, planning.value.body, lane)
+      return
+    }
     const turnInstanceId = this.makeTurnInstanceId()
     let quota: LoopXResult<LoopXQuotaDecision> | undefined
 
     for (let attempt = 0; attempt < MAX_QUOTA_ATTEMPTS; attempt += 1) {
       quota = await this.service.quotaShouldRun(session, turnInstanceId, signal)
-      if (!this.current(state, epoch, instanceEpoch, fence)) return
+      if (!this.current(state, epoch, instanceEpoch, fence, lane)) return
       if (quota.ok) break
       if (quota.error.outcomeUncertain) {
         this.failClosed(state, fence, 'uncertain_write', true)
@@ -438,6 +542,7 @@ export class LoopXContinuationDriver {
     if (decision.terminalNoFollowup) {
       this.cancelLocal(state, false)
       state.blocked = true
+      state.blockedFence = fence
       const terminalEpoch = state.epoch
       await this.service.pause(session, 'loopx_terminal_observed', fence)
       if (!this.epochIsCurrent(state, terminalEpoch, instanceEpoch)) return
@@ -451,7 +556,7 @@ export class LoopXContinuationDriver {
         decision.schedulerHint,
         0,
       )
-      if (!this.current(state, epoch, instanceEpoch, fence)) return
+      if (!this.current(state, epoch, instanceEpoch, fence, lane)) return
       if (!reset.ok) {
         this.failClosed(state, fence,
           reset.error.outcomeUncertain ? 'uncertain_write' : 'readback_failed',
@@ -459,7 +564,7 @@ export class LoopXContinuationDriver {
         return
       }
       const task = await this.service.taskBody(session, fence.generation, false, signal)
-      if (!this.current(state, epoch, instanceEpoch, fence)) return
+      if (!this.current(state, epoch, instanceEpoch, fence, lane)) return
       if (!task.ok || !sameFence(task.value.fence, fence) || task.value.body.trim().length === 0) {
         this.failClosed(state, fence, task.ok ? 'readback_failed' : task.error.outcomeUncertain
           ? 'uncertain_write'
@@ -470,10 +575,10 @@ export class LoopXContinuationDriver {
       return
     }
 
-    const binding = this.bindingFor(state)
-    if (binding === undefined || binding.phase !== 'active_armed'
-      || binding.generation !== fence.generation) return
-    const plan = waitPlan(binding, decision.schedulerHint)
+    const currentBinding = this.bindingFor(state)
+    if (currentBinding === undefined || currentBinding.phase !== 'active_armed'
+      || currentBinding.generation !== fence.generation) return
+    const plan = waitPlan(currentBinding, decision.schedulerHint)
     const now = this.clock.now()
     const nextCheckAt = plan.delayMs === undefined ? undefined : now + plan.delayMs
     if (nextCheckAt !== undefined && !Number.isSafeInteger(nextCheckAt)) {
@@ -487,7 +592,7 @@ export class LoopXContinuationDriver {
       plan.unchangedPollCount,
       nextCheckAt,
     )
-    if (!this.current(state, epoch, instanceEpoch, fence)) return
+    if (!this.current(state, epoch, instanceEpoch, fence, lane)) return
     if (!updated.ok) {
       this.failClosed(state, fence,
         updated.error.outcomeUncertain ? 'uncertain_write' : 'readback_failed',
@@ -501,12 +606,17 @@ export class LoopXContinuationDriver {
     state: DriverState,
     fence: LoopXBindingFence,
     body: string,
+    lane: FollowupAttempt['lane'] = 'delivery',
   ): void {
     if (!this.ready(state) || !this.service.fenceIsCurrent(fence)) return
     const message = createFollowupMessage(body)
     state.followup = {
       messageId: message.id,
-      generation: fence.generation,
+      content: message.content,
+      fence,
+      lane,
+      epoch: state.epoch,
+      instanceEpoch: this.instanceEpoch,
       phase: 'queued',
     }
     try {
@@ -514,7 +624,11 @@ export class LoopXContinuationDriver {
     } catch {
       state.followup = undefined
       this.warn('dsh-loopx-driver: follow-up admission failed')
-      this.failClosed(state, fence, 'readback_failed')
+      if (lane === 'planning') {
+        state.blocked = true
+        state.blockedFence = fence
+      }
+      else this.failClosed(state, fence, 'readback_failed')
     }
   }
 
@@ -524,27 +638,86 @@ export class LoopXContinuationDriver {
     fence: LoopXBindingFence,
     delayMs: number,
   ): void {
-    if (!this.current(state, epoch, this.instanceEpoch, fence) || state.timer !== undefined) return
+    if (!this.current(state, epoch, this.instanceEpoch, fence, 'delivery')
+      || state.timer !== undefined) return
     let scheduled: ScheduledEvaluation
     const handle = this.clock.setTimeout(() => {
       if (state.timer !== scheduled) return
       state.timer = undefined
-      if (!this.current(state, scheduled.epoch, this.instanceEpoch, scheduled.fence)) return
+      if (!this.current(
+        state,
+        scheduled.epoch,
+        this.instanceEpoch,
+        scheduled.fence,
+        'delivery',
+      )) return
       this.requestEvaluation(state)
     }, delayMs)
     scheduled = { handle, epoch, fence }
     state.timer = scheduled
   }
 
-  private foreignInput(state: DriverState): void {
+  private strongBoundary(state: DriverState): void {
     const binding = this.bindingFor(state)
-    const active = binding?.phase === 'active_armed'
+    const active = binding?.phase === 'active_armed' || binding?.phase === 'planning'
       || state.evaluation !== undefined || state.timer !== undefined || state.followup !== undefined
     if (!active || state.blocked || state.stopping || this.disposed) return
     state.blocked = true
+    state.blockedFence = binding === undefined ? undefined : fenceFromBinding(state.agent, binding)
     this.cancelLocal(state, true)
-    if (binding?.phase === 'active_armed') {
+    if (binding?.phase === 'active_armed' || binding?.phase === 'planning') {
       this.trackPause(state, 'foreign_input', fenceFromBinding(state.agent, binding))
+    }
+  }
+
+  private yieldToHuman(state: DriverState): void {
+    if (state.stopping || this.disposed) return
+    state.competingQueued = true
+    const attempt = state.followup
+    if (attempt?.phase === 'claimed' || attempt?.phase === 'admitted') return
+    state.epoch += 1
+    state.requested = false
+    state.controller?.abort(new Error('LoopX continuation yielded to human input'))
+    state.controller = undefined
+    if (state.timer !== undefined) {
+      this.clock.clearTimeout(state.timer.handle)
+      state.timer = undefined
+    }
+    state.followup = undefined
+    if (attempt?.phase === 'queued') state.agent.inbox.remove(attempt.messageId)
+  }
+
+  private hasCompetingPending(state: DriverState): boolean {
+    const attempt = state.followup
+    return [...state.agent.inbox.nextStep, ...state.agent.inbox.nextTurn]
+      .some(message => attempt === undefined || !isOwnedSource(message, attempt))
+  }
+
+  private validReservation(
+    state: DriverState,
+    attempt: FollowupAttempt,
+    message: UserMessage,
+  ): boolean {
+    if (this.disposed || state.stopping || state.followup !== attempt
+      || attempt.phase !== 'claimed' || !isOwnedSource(message, attempt)
+      || !this.isLiveAgent(state.agent)
+      || state.epoch !== attempt.epoch || this.instanceEpoch !== attempt.instanceEpoch
+      || !this.service.fenceIsCurrent(attempt.fence)) return false
+    const binding = this.bindingFor(state)
+    const phase = attempt.lane === 'planning' ? 'planning' : 'active_armed'
+    return binding?.phase === phase
+      && sameFence(fenceFromBinding(state.agent, binding), attempt.fence)
+  }
+
+  private restoreOtherClaimed(
+    agent: Agent,
+    messages: UserMessage[],
+  ): void {
+    const retained = messages.filter(message => !isDriverSource(message))
+    for (const message of [...retained].reverse()) {
+      if (agent.inbox.nextStep.some(candidate => candidate.id === message.id)
+        || agent.inbox.nextTurn.some(candidate => candidate.id === message.id)) continue
+      agent.inbox.prepend('next-step', message)
     }
   }
 
@@ -555,10 +728,11 @@ export class LoopXContinuationDriver {
     const attempt = state.followup
     if (attempt === undefined || !isOwnedSource(message, attempt)) return undefined
     const binding = this.bindingFor(state)
-    if (binding?.phase !== 'active_armed' || binding.generation !== attempt.generation) {
+    const phase = attempt.lane === 'planning' ? 'planning' : 'active_armed'
+    if (binding?.phase !== phase || !sameFence(fenceFromBinding(state.agent, binding), attempt.fence)) {
       return undefined
     }
-    return fenceFromBinding(state.agent, binding)
+    return attempt.fence
   }
 
   private failClosed(
@@ -571,6 +745,7 @@ export class LoopXContinuationDriver {
     if (!this.service.fenceIsCurrent(expectedFence)) return
     this.cancelLocal(state, true)
     state.blocked = true
+    state.blockedFence = expectedFence
     const session = sessionRef(state.agent)
     const operation = uncertain
       ? this.service.markUncertain(session, reason, expectedFence).then(() => undefined)
@@ -628,12 +803,18 @@ export class LoopXContinuationDriver {
     epoch: number,
     instanceEpoch: number,
     fence: LoopXBindingFence,
+    lane?: FollowupAttempt['lane'],
   ): boolean {
+    const binding = this.bindingFor(state)
+    const phase = lane === 'planning' ? 'planning'
+      : lane === 'delivery' ? 'active_armed'
+      : binding?.phase
     return this.epochIsCurrent(state, epoch, instanceEpoch)
       && this.isLiveAgent(state.agent)
       && state.agent.status === 'idle'
       && this.service.fenceIsCurrent(fence)
-      && this.bindingFor(state)?.phase === 'active_armed'
+      && (phase === 'planning' || phase === 'active_armed')
+      && binding?.phase === phase
   }
 
   private epochIsCurrent(
@@ -679,6 +860,8 @@ export function apply(ctx: Context): void {
     ctx.on('agent/inbox/discarded', ({ agent, message }) => {
       driver.onInboxDiscarded(agent, message)
     })
+    ctx.on('agent/pre-step', ({ agent, messages, signal }, next) =>
+      driver.onPreStep(agent, messages, signal, next))
     ctx.on('session/event', (session, event) => {
       const agent = ctx.agents.get(session.id)
       if (agent?.session === session) driver.onSessionEvent(agent, event)
