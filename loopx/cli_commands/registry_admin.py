@@ -43,6 +43,7 @@ from ..thread_agent_binding import (
     unbind_thread_agent_in_registry,
 )
 from ..upgrade import build_upgrade_plan
+from .goal_lifecycle import handle_goal_lifecycle_command, register_goal_lifecycle_command
 from .registry_admin_configure import register_configure_goal_command
 from .registry_admin_peer import render_register_agent_markdown
 from .registry_authority import (
@@ -63,6 +64,7 @@ THREAD_AGENT_BINDING_COMMAND_SCHEMA_VERSION = (
 
 REGISTRY_ADMIN_COMMANDS = {
     "configure-goal",
+    "goal-lifecycle",
     "register-agent",
     "bind-agent-thread",
     "unbind-agent-thread",
@@ -640,6 +642,7 @@ def loop_activation_for_goal(
 
 def register_registry_admin_commands(subparsers: argparse._SubParsersAction) -> None:
     register_configure_goal_command(subparsers)
+    register_goal_lifecycle_command(subparsers)
 
     register_agent_parser = subparsers.add_parser(
         "register-agent",
@@ -860,6 +863,13 @@ def handle_registry_admin_command(
 ) -> int | None:
     if args.command not in REGISTRY_ADMIN_COMMANDS:
         return None
+
+    if args.command == "goal-lifecycle":
+        return handle_goal_lifecycle_command(
+            args,
+            registry_path=registry_path,
+            print_payload=print_payload,
+        )
 
     if args.command == "configure-goal":
         try:

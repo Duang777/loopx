@@ -126,6 +126,13 @@ This command installs the dashboard's npm dependencies on first run, then
 starts the Vite UI together with the loopback status and Chat services. Open
 `http://127.0.0.1:5173/` after the readiness messages appear.
 
+If a LoopX Chat service is already running on the default port (for example
+started by the Tauri desktop shell), `loopx dashboard` detects it by its exact
+capability fingerprint and reuses it instead of failing: it prints the running
+URL and opens the browser/PWA route, then exits without starting a second
+server. The desktop shell reuses the same services in the opposite order, so
+the browser/PWA and native entry points can be started in either order.
+
 The equivalent source-checkout command remains available for dashboard
 development:
 
@@ -140,6 +147,11 @@ services on ports `5173`, `8766`, and `8767`. Use `npm run dev:web` when those
 LoopX services are already running separately. Vite proxies the default
 `/status.json` request to port `8766`, so an SSH user only needs to forward port
 `5173` for the normal development page.
+
+Both the root dashboard and the packaged `/chat/` route expose the same
+installable PWA manifest and icons. The default `loopx dashboard` command opens
+`/chat/`; its manifest therefore scopes the installed app to `/chat/`. This is
+an installable standalone surface, not an offline-cache service worker.
 
 The live `/status.json` route keeps repository-wide public-boundary scanning
 out of the first-screen request. Its contract projection reports that scan as
@@ -164,6 +176,31 @@ It provides a unified, coherent experience for managing long-running agent Goals
 
 - **Action Safety & Control Plane**:
   Durable modifications to Goals, Todos, Heartbeats, monitors, or settings follow the typed preview → explicit user confirmation → verified receipt protocol. The browser never performs unmediated direct writes to control-plane truth.
+  The Goal directory keeps only active Goals in its main list. Use the pause action
+  beside a Goal to preview and confirm a reversible stop; stopped Goals retain their
+  Todos, history, and evidence in a collapsed **Stopped Goals** section and can be
+  restored from the same section. Stopping a Goal pauses automatic Agent turns; it
+  does not mark the Goal complete or delete state. A stopped Goal leaves active
+  attention and projects zero effective quota, allowing the scheduler to stop host
+  automation such as a Codex App heartbeat while retaining the configured quota.
+  Goal stop and `quota.compute=0` share this shutdown path but keep distinct resume
+  authority: only Goal lifecycle resume may reactivate a stopped Goal, while an
+  explicit positive quota update resumes a quota pause. Stop does not force-kill an
+  in-flight tool call; the next `quota should-run` packet tells the host to pause or
+  delete the recurring heartbeat before another automatic turn. The equivalent CLI
+  flow is:
+
+  ```bash
+  loopx goal-lifecycle --goal-id <goal-id> --operation stop
+  loopx goal-lifecycle --goal-id <goal-id> --operation stop --execute
+  loopx goal-lifecycle --goal-id <goal-id> --operation resume --execute
+  loopx quota status --goal-id <goal-id>
+  ```
+
+  The first command is a zero-write preview. The executed commands write the
+  authoritative source registry, refresh the shared registry projection, and verify
+  both readbacks. Resume restores scheduling eligibility; quota, Gates, and Todos
+  still decide whether work may run.
 
 - **Public Frontstage (`/frontstage`)**:
   Public `/frontstage` continues to serve as an unauthenticated, read-only showcase and public-safe presentation surface. Real local operator workflows belong exclusively in the Personal Workspace.
@@ -306,7 +343,10 @@ npm run smoke:demo-readiness
 
 That command runs the LaunchAgent status-output smoke, the structured
 `promotion-gate` fresh/warning contract smoke, the source-contract smokes, and
-the three browser smokes below. In CI environments without Playwright/Chrome,
+the current Home and Personal Workspace browser smokes. The decision-freshness
+and promotion-readiness read models remain covered by focused control-plane
+smokes instead of browser tests for the retired legacy Ops view. In CI
+environments without Playwright/Chrome,
 use:
 
 ```bash
@@ -318,9 +358,8 @@ surface:
 
 ```bash
 npm run smoke:home-browser
+npm run smoke:personal-workspace
 npm run smoke:frontstage-share-bundle
-npm run smoke:ops-decision-freshness
-npm run smoke:promotion-readiness
 node examples/dashboard-throttled-browser-smoke.mjs
 node examples/dashboard-operator-gate-browser-smoke.mjs
 ```

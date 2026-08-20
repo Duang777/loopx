@@ -344,7 +344,7 @@ def build_start_goal_host_surface_selection_packet(
         "cursor-agent": "cursor-agent driving its own loop through the LoopX skill facade and MCP server",
         "dsh": "DeepSeek Harness same-session LoopX plugin using global Host binding v1",
         "deepseek-harness-native": "DeepSeek Harness same-session LoopX plugin",
-        "deepseek-harness": "DeepSeek Harness automation loop through scripts/dsh_turn_host_adapter.py",
+        "deepseek-harness": "DeepSeek Harness automation loop through loopx.dsh_goal_mode (compat: scripts/dsh_turn_host_adapter.py)",
         "ark-managed-agent": "Ark Managed Agent with one-shot Goal submission",
         "shell": "manual shell or an explicitly configured external scheduler",
         "other-agent": "custom agent host using the returned activation contract",

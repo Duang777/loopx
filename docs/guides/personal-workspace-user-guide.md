@@ -26,6 +26,12 @@ loopx dashboard
 
 默认访问地址为：`http://127.0.0.1:5179/?statusUrl=%2Fstatus.json`。
 
+> 💡 **两种入口可共存**：`loopx dashboard`（浏览器 / PWA）与 Tauri 原生桌面壳
+> 共享 `8766/8767` 两个本地服务，且都会复用已经在运行的 LoopX 服务。先开
+> dashboard 再开桌面壳，或先开桌面壳再执行 `loopx dashboard`，两种顺序都可以；
+> 当桌面壳已经启动时，也可以直接访问 `http://127.0.0.1:8767/chat/` 使用浏览器 /
+> PWA，无需再启动一套服务。
+
 ---
 
 ## 🧭 2. 控制台核心架构
@@ -34,11 +40,11 @@ loopx dashboard
 graph TD
     A[LoopX 控制台] --> B[LoopX 管家模式 (全局总览)]
     A --> C[Goal 频道模式 (单一目标深度)]
-    
+
     B --> B1[你不在的时候 (离线统计)]
     B --> B2[4 泳道任务流 (需要你 / 执行中 / 观察中 / 已安排)]
     B --> B3[全局快捷问询与创建 Goal]
-    
+
     C --> C1[Tasks 4 列看板]
     C --> C2[Chat 完整对话流]
     C --> C3[Files 产出交付物]
@@ -65,6 +71,35 @@ graph TD
    - `[询问全局待办 (草稿)]`：一键将「有哪些 Goal 正在等我？优先处理什么？」填入输入框；
    - `[汇总所有 Goal 进展 (立即发送)]`：带有蓝色高亮标识，点击后**立即发送**并在右下角弹出托盘展示全局总结；
    - `[创建新 Goal (草稿)]`：快速填入目标模板草稿。
+
+### 3.1 停止暂时不活跃的 Goal
+
+当 Goal 较多时，主列表只展示仍处于 active 状态的 Goal。点击 Goal 右侧的暂停按钮后，LoopX 会先展示 Typed Action 预览；只有你明确确认，Goal 才会进入 **「已停止」** 折叠区。
+
+- 停止会暂停该 Goal 的自动 Agent Turn，并从「需要你」等活跃聚合中移除；
+- 退出 active attention 后，该 Goal 的**有效 quota 会投影为 0**，调度器据此停止 Codex App heartbeat 等宿主自动化；原 quota 配置仍被保留；
+- Goal 的 Todo、历史、证据和配置全部保留，不会被标记成「已完成」，也不会删除；
+- 展开「已停止」，点击恢复按钮并确认，即可重新获得调度资格；恢复后仍需通过 quota、Gate 和 Todo 约束。
+
+`stop` 与手动设置 `quota.compute=0` 共用同一条自动停机通道，但恢复权限不同：前者只能由显式 Goal `resume` 恢复，后者由显式提高 compute quota 恢复。这样 quota 操作不会意外复活一个被 owner 停止的 Goal。
+
+该操作不会强杀正在执行的工具调用；下一次 `quota should-run` 会返回宿主停机指令，由 Codex App 等宿主暂停或删除当前 heartbeat，阻止后续自动 Turn。
+
+CLI 提供同一套可预览、可验证的生命周期操作：
+
+```bash
+# 零写入预览
+loopx goal-lifecycle --goal-id <goal-id> --operation stop
+
+# 确认执行，再读取 quota 验证自动推进已暂停
+loopx goal-lifecycle --goal-id <goal-id> --operation stop --execute
+loopx quota status --goal-id <goal-id>
+
+# 恢复；不会绕过其他运行门禁
+loopx goal-lifecycle --goal-id <goal-id> --operation resume --execute
+```
+
+执行时，LoopX 会写入权威 source registry、同步全局 registry，并验证两端 readback；任一端未验证成功时不会宣称操作完成。
 
 ---
 

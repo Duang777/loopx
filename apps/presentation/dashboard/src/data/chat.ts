@@ -5,7 +5,18 @@ import {
   todoPreviewMatchesRequest,
   type TodoApplyResult,
   type TodoPreview,
-} from "./chat-model";
+} from "./chat-model.js";
+
+const configuredChatOrigin = String(import.meta.env?.VITE_LOOPX_CHAT_ORIGIN ?? "")
+  .trim()
+  .replace(/\/+$/, "");
+
+function chatApiUrl(path: string) {
+  if (!configuredChatOrigin || /^https?:\/\//.test(path)) {
+    return path;
+  }
+  return new URL(path, `${configuredChatOrigin}/`).toString();
+}
 
 export {
   agentBackendLabel,
@@ -27,7 +38,7 @@ export {
   todoReceiptLabel,
   todoReceiptOutcomeLabel,
   todoReceiptProjected,
-} from "./chat-model";
+} from "./chat-model.js";
 export type {
   AgentResponse,
   ChatCapabilities,
@@ -43,7 +54,7 @@ export type {
   TodoProposal,
   TodoApplyResult,
   TodoWriteReceipt,
-} from "./chat-model";
+} from "./chat-model.js";
 
 export const chatTodoSchema = z.object({
   todo_id: z.string().nullable(),
@@ -223,6 +234,7 @@ export class ChatApiError extends Error {
 export const typedActionKindSchema = z.enum([
   "goal.create",
   "goal.update",
+  "goal.lifecycle",
   "todo.create",
   "todo.update",
   "agent.bind",
@@ -341,7 +353,7 @@ export async function transitionTypedAction(
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(chatApiUrl(url), {
     cache: "no-store",
     ...init,
     headers: {
@@ -574,7 +586,7 @@ export async function streamChatTurn(
   let terminal = false;
   while (!terminal && attempts < 4) {
     const origin = typeof window === "undefined" ? "http://127.0.0.1" : window.location.origin;
-    const url = new URL(eventsUrl, origin);
+    const url = new URL(chatApiUrl(eventsUrl), origin);
     if (cursor) url.searchParams.set("after", cursor);
     try {
       const response = await fetch(url, {
