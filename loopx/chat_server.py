@@ -711,10 +711,14 @@ class ChatRequestHandler(LarkChatRequestMixin, BaseHTTPRequestHandler):
                 return
             response = completed.get("response")
         except CodexChatAgentError as exc:
+            session_invalidated = exc.error_code == "resume_failed"
             self._send_error(
                 str(exc),
                 status=424,
                 gate=exc.gate,
+                error_code=exc.error_code,
+                session_invalidated=session_invalidated,
+                turn_replay_safe=session_invalidated,
             )
             return
         except RuntimeError as exc:
