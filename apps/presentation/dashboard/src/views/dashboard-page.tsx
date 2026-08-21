@@ -43,6 +43,7 @@ import {
   type ChatImageAttachment,
   type TodoProposal,
 } from "../data/chat";
+import { selectLatestResumableChatSession } from "../data/chat-session-selection";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -1308,14 +1309,15 @@ function PersonalGoalHome({
           };
         });
         if (selectedAgent.agentId === "status-only") return;
-        const latest = history.sessions[0];
-        latestDiscoveredSessionId = latest?.session_id ?? null;
-        if (latest && !latest.resumable) {
+        const latestKnown = history.sessions[0] ?? null;
+        const latest = selectLatestResumableChatSession(history.sessions);
+        latestDiscoveredSessionId = latest?.session_id ?? latestKnown?.session_id ?? null;
+        if (!latest && latestKnown) {
           newSessionRequired.current.add(sessionKey);
           recordRuntimeBinding(targetContextId, {
             agentId: selectedAgent.agentId,
             resumable: false,
-            sessionId: latest.session_id,
+            sessionId: latestKnown.session_id,
             status: "resume_failed",
           });
           return;
@@ -1474,7 +1476,10 @@ function PersonalGoalHome({
         channelId: `goal.${goal.goalId}`,
         goalId: goal.goalId,
       });
-      return { goalId: goal.goalId, session: listed.sessions[0] ?? null };
+      return {
+        goalId: goal.goalId,
+        session: selectLatestResumableChatSession(listed.sessions) ?? listed.sessions[0] ?? null,
+      };
     })).then((rows) => {
       if (cancelled) return;
       setRuntimeBindings((current) => {

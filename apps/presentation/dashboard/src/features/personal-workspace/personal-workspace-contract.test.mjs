@@ -45,6 +45,8 @@ for (const callback of ["onRetryResumeRun", "onStartNewRunSession", "onCloseRunS
   assert.match(drawer, new RegExp(`callbacks\\.${callback}`), `Run menu calls ${callback}`);
 }
 assert.match(drawer, /resume_failed/, "Run recovery presents resume failure explicitly");
+assert.match(dashboard, /selectLatestResumableChatSession\(history\.sessions\)/, "Goal Chat selects an eligible resumable Session instead of the newest failed record");
+assert.doesNotMatch(dashboard, /const latest = history\.sessions\[0\]/, "Goal Chat never treats the newest failed Session as the active Session");
 assert.match(drawer, /personal-run-more/, "Run secondary actions live in a compact menu");
 assert.match(page, /item\.run\.runId === selection\.item\.runId/, "Run drawer refresh keeps the selected run identity");
 assert.match(model, /todoId\??:/, "An execution Run keeps its Task identity");
