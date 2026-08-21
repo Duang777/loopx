@@ -17,6 +17,7 @@ const styles = source("./personal-workspace.css");
 const dashboard = source("../../views/dashboard-page.tsx");
 const tasks = source("./goal-tasks-view.tsx");
 const status = source("../../data/status.ts");
+const scheduleIntent = source("../../data/schedule-intent.ts");
 
 assert.match(model, /kind: "todo"/, "Todo has its own drawer selection");
 for (const field of ["dependencies", "nextTransition", "ownerLabel", "todoId", "taskClass"]) {
@@ -128,7 +129,8 @@ assert.match(page, /function prepareScheduleDraft[\s\S]*Goal：[\s\S]*检查内�
 assert.match(page, /function prepareScheduleDraft[\s\S]*频率：每天[\s\S]*通知：仅在需要我时/, "Goal heartbeat action opens an editable configuration draft before preview");
 assert.match(page, /function structuredGoalIntentFromMessage/, "Goal creation parses the visible form as structured fields");
 assert.match(page, /执行边界（可选）：/, "Goal creation asks for an explicit execution boundary");
-assert.match(page, /不支持精确到星期或时刻的日历计划/, "Unsupported calendar schedules fail closed before preview");
+assert.match(scheduleIntent, /不支持精确到星期或时刻的日历计划/, "Unsupported calendar schedules fail closed before preview");
+assert.match(page, /unsupportedCalendarScheduleReason\(message\)/, "Monitor preview checks the schedule boundary before creating an action");
 assert.match(page, /function monitorTargetFromMessage/, "Monitor creation preserves the user's requested check target");
 assert.match(page, /onOpenGoal: async \(goalId\)[\s\S]*await callbacks\.onRefresh\?\.\(\);[\s\S]*selectGoal\(goalId\)/, "A created Goal refreshes before navigation");
 assert.match(page, /callbacks\.onGoalActivationStateChange\?\.\(lifecycleChange\.goalId, lifecycleChange\.next\)/, "Goal lifecycle apply projects the requested state before the server responds");

@@ -17,6 +17,7 @@ import {
   type LarkGoalConnection,
   type TypedActionProposal,
 } from "../../data/chat";
+import { unsupportedCalendarScheduleReason } from "../../data/schedule-intent";
 
 import { ChannelHeader } from "./channel-header";
 import { ChannelTimeline } from "./channel-timeline";
@@ -511,13 +512,6 @@ function cadenceFromMessage(message: string) {
   if (/每小时/u.test(message)) return "1h";
   if (/每天|每日|早上|上午/u.test(message)) return "1d";
   return "1d";
-}
-
-function unsupportedCalendarScheduleReason(message: string) {
-  if (/(每周|星期|周[一二三四五六日天]|\d{1,2}\s*[：:]\s*\d{2})/u.test(message)) {
-    return "当前定时检查不支持精确到星期或时刻的日历计划。请改用固定间隔，例如“每 30 分钟”“每 2 小时”或“每天”；草稿已保留，没有生成待确认操作。";
-  }
-  return null;
 }
 
 function monitorTargetFromMessage(message: string) {
