@@ -96,20 +96,16 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-for candidate in python3.13 python3.12 python3.11 python3; do
-  if command -v "${candidate}" >/dev/null 2>&1 \
-    && "${candidate}" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
-    PYTHON_BIN="${candidate}"
-    break
-  fi
-done
-
-if [ -z "${PYTHON_BIN}" ]; then
+if ! PYTHON_BIN="$(bash "${SCRIPT_DIR}/loopx-python.sh")"; then
   echo "LoopX requires Python 3.11 or newer to start status and Chat services." >&2
-  echo "Starting the Vite UI only; use the bundled example until Python is upgraded." >&2
+  echo "Install Python 3.11+ (for example: brew install python@3.12), or set" >&2
+  echo "LOOPX_PYTHON to an existing Python 3.11+ executable and retry, e.g.:" >&2
+  echo "  LOOPX_PYTHON=/path/to/python3.12 npm run dev" >&2
+  echo "Starting the Vite UI only; use 'npm run dev:web' for the same UI-only preview." >&2
   cd "${DASHBOARD_DIR}"
   exec npm run dev:web
 fi
+echo "Using LoopX Python: ${PYTHON_BIN}"
 
 resolve_agent_binary() {
   local binary_name="$1"
