@@ -1,25 +1,27 @@
 from __future__ import annotations
 
-import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ...event_sourced_state import (
-    AppendOnlyStateEventStore,
-    StateEventError,
-    build_state_projection,
-)
+from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
 from ...history import load_registry
 from ...materials import find_registry_goal, goal_repo
-from ..goals.active_state_event_projection import state_event_log_candidates
-from ..goals.path_resolution import resolve_goal_local_path
 from ..runtime.validation_command import (
     CALLER_VALIDATION_RECEIPT_SCHEMA_VERSION,
     run_caller_validation,
 )
 from .active_state_editing import find_todo_block
-from .contract import TODO_STATUS_DONE, normalize_todo_id
+from .event_writeback import event_projection_source_authority, event_projection_todo_context
+
+
+TODO_COMPLETION_VALIDATION_PLAN_REQUEST_SCHEMA = (
+    "loopx_todo_completion_validation_plan_request_v0"
+)
+TODO_COMPLETION_VALIDATION_PLAN_RESULT_SCHEMA = (
+    "loopx_todo_completion_validation_plan_result_v0"
+)
 
 # Kept safely under the 30s outer CLI/MCP subprocess budget so a timed-out
 # validation still produces a typed receipt before the outer call is killed.
@@ -40,151 +42,144 @@ def _resolve_goal_repo_workspace(registry_path: Path, goal_id: str) -> Path | No
     return repo
 
 
-def _declaration_from_mapping(
-    block: dict[str, Any],
-) -> tuple[str | None, list[str] | None, str | None, int | None, bool]:
-    """Parse a stored validation declaration from markdown or event projection."""
-    try:
-        timeout_seconds: int | None = (
-            int(block["validation_timeout_seconds"])
-            if block.get("validation_timeout_seconds")
-            else None
-        )
-    except (TypeError, ValueError):
-        timeout_seconds = None
-    validation_argv: list[str] | None = None
-    raw_argv = block.get("validation_command_argv")
-    if raw_argv is not None and raw_argv != "":
-        if isinstance(raw_argv, list):
-            parsed_argv: Any = raw_argv
-        else:
-            try:
-                parsed_argv = json.loads(raw_argv)
-            except ValueError:
-                parsed_argv = None
-        if (
-            isinstance(parsed_argv, list)
-            and parsed_argv
-            and all(isinstance(item, str) and item for item in parsed_argv)
-        ):
-            validation_argv = parsed_argv
-        else:
-            validation_argv = []
-    already_completed = (
-        block.get("status") == TODO_STATUS_DONE or block.get("done") is True
-    )
-    return (
-        block.get("validation_command") or None,
-        validation_argv,
-        block.get("validation_label") or None,
-        timeout_seconds,
-        already_completed,
-    )
+def _json_successor_value(value: Any) -> Any:
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    return value
 
 
-def _event_projected_todo_item(
-    *,
-    state_file: Path,
-    todo_id: str,
-    role: str | None,
-    registry_path: Path,
-    goal_id: str,
+def _materialized_todo_item(
+    *, state_file: Path, todo_id: str, role: str | None
 ) -> dict[str, Any] | None:
-    """Read one todo from the append-only event log without holding the lock.
-
-    Do not reuse ``event_projection_todo_context`` here. That helper renders
-    Markdown and runs the public status projector, which strips
-    ``validation_command`` / argv down to ``completion_validation_required``.
-    The completion gate needs the actual declared command, so it must read the
-    raw event-sourced projection. When multiple logs contain the same todo,
-    a later log that still carries a validation declaration wins over an
-    earlier log that only has the todo identity; otherwise an older undeclared
-    snapshot would skip the gate.
-    """
-    goal = find_registry_goal(load_registry(registry_path), goal_id)
-    if goal is None:
-        log_paths = [state_file.with_name("events.jsonl")]
-    else:
-        log_paths = state_event_log_candidates(
-            goal,
-            state_path=state_file,
-            resolve_goal_local_path=resolve_goal_local_path,
-        )
-    normalized_todo_id = normalize_todo_id(todo_id) or todo_id
-    roles = [role] if role in {"user", "agent"} else ["user", "agent"]
-    undeclared_item: dict[str, Any] | None = None
-    for log_path in log_paths:
-        if not log_path.exists():
-            continue
-        try:
-            events = AppendOnlyStateEventStore(log_path).load()
-            if not events:
-                continue
-            projection = build_state_projection(events, goal_id=goal_id or None)
-        except (OSError, StateEventError):
-            continue
-        for item_role in roles:
-            summary = projection.get(f"{item_role}_todos") or {}
-            items = summary.get("items") if isinstance(summary, dict) else []
-            for item in items if isinstance(items, list) else []:
-                if not isinstance(item, dict):
-                    continue
-                if (normalize_todo_id(item.get("todo_id")) or "") != normalized_todo_id:
-                    continue
-                command, argv, _label, _timeout, _done = _declaration_from_mapping(item)
-                if command or argv is not None:
-                    return item
-                if undeclared_item is None:
-                    undeclared_item = item
-    return undeclared_item
-
-
-def _read_declared_validation(
-    *,
-    state_file: Path,
-    todo_id: str,
-    role: str | None,
-    registry_path: Path,
-    goal_id: str,
-) -> tuple[str | None, list[str] | None, str | None, int | None, bool]:
-    """Pre-read a todo's declared validation command without the mutation lock.
-
-    Returns ``(validation_command, validation_argv, validation_label,
-    validation_timeout_seconds, already_completed)`` from the markdown state
-    file, or from the event-sourced projection when the todo exists only in
-    the append-only log. Missing todos return
-    ``(None, None, None, None, False)``. Read-only; safe to call before
-    acquiring the state-file lock so a slow validation command does not block
-    concurrent todo operations on the same goal (the MUTATION lock deadline
-    is 5s). ``validation_command``, ``validation_command_argv`` and
-    ``validation_timeout_seconds`` are set only at ``todo add`` and have no
-    update path, so the values cannot drift between this pre-read and the
-    in-lock commit. A stored timeout that fails to parse as an int falls back
-    to ``None`` (the default), matching the writer-side range check that
-    guarantees a well-formed value. A stored argv that fails to parse as a
-    non-empty string list collapses to ``[]`` — never to ``None`` — so a
-    corrupted declaration still runs the gate and fails closed as a malformed
-    command instead of silently skipping validation. Markdown remains
-    authoritative when the todo is materialized there.
-    """
     try:
         lines = state_file.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
-        lines = []
-    match = find_todo_block(lines, todo_id=todo_id, role=role) if lines else None
-    if match:
-        _role, _section, _start, _end, block = match
-        return _declaration_from_mapping(block)
-    item = _event_projected_todo_item(
-        state_file=state_file,
-        todo_id=todo_id,
-        role=role,
-        registry_path=registry_path,
-        goal_id=goal_id,
-    )
-    if item is None:
-        return None, None, None, None, False
-    return _declaration_from_mapping(item)
+        return None
+    match = find_todo_block(lines, todo_id=todo_id, role=role)
+    if not match:
+        return None
+    item_role, _section, _start, _end, block = match
+    item = dict(block)
+    item["role"] = item_role
+    return item
+
+
+def evaluate_todo_completion_validation_plan(
+    *,
+    todo: Mapping[str, Any],
+    projection_source: str,
+    completion_turn_key: str | None,
+    no_followup: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Ask the TypeScript Todo owner for the validation decision/effect plan."""
+    try:
+        result = effect_runtime_result(
+            "todo.completion_validation.plan",
+            {
+                "schema_version": TODO_COMPLETION_VALIDATION_PLAN_REQUEST_SCHEMA,
+                "projection_source": projection_source,
+                "todo": {
+                    "status": str(todo.get("status") or "open"),
+                    "no_followup": todo.get("no_followup"),
+                    "completion_continuation": todo.get("completion_continuation"),
+                    "completion_turn_key": todo.get("completion_turn_key"),
+                    "successor_todo_ids": _json_successor_value(
+                        todo.get("successor_todo_ids")
+                    ),
+                    "validation_command": todo.get("validation_command"),
+                    "validation_command_argv": todo.get("validation_command_argv"),
+                    "validation_label": todo.get("validation_label"),
+                    "validation_timeout_seconds": todo.get(
+                        "validation_timeout_seconds"
+                    ),
+                },
+                "requested_no_followup": no_followup,
+                "requested_completion_turn_key": completion_turn_key,
+                "dry_run": dry_run,
+            },
+        )
+    except EffectRuntimeRejected as exc:
+        raise ValueError(str(exc)) from None
+    if not isinstance(result, Mapping):
+        raise RuntimeError(
+            "TypeScript Todo completion validation plan result must be an object"
+        )
+    effect = result.get("effect")
+    if (
+        result.get("schema_version")
+        != TODO_COMPLETION_VALIDATION_PLAN_RESULT_SCHEMA
+        or effect not in {"skip", "run", "reject"}
+        or not isinstance(result.get("reason"), str)
+    ):
+        raise RuntimeError(
+            "TypeScript Todo completion validation plan result shape mismatch"
+        )
+    if effect == "run":
+        argv = result.get("validation_argv")
+        if not (
+            result.get("validation_command") is None
+            or isinstance(result.get("validation_command"), str)
+        ):
+            raise RuntimeError(
+                "TypeScript Todo completion validation run command shape mismatch"
+            )
+        if not (
+            argv is None
+            or (
+                isinstance(argv, list)
+                and argv
+                and all(isinstance(item, str) and item for item in argv)
+            )
+        ):
+            raise RuntimeError(
+                "TypeScript Todo completion validation run argv shape mismatch"
+            )
+        timeout_seconds = result.get("validation_timeout_seconds")
+        if not (
+            timeout_seconds is None
+            or (
+                isinstance(timeout_seconds, int)
+                and 1 <= timeout_seconds <= COMPLETION_VALIDATION_TIMEOUT_MAX_SECONDS
+            )
+        ):
+            raise RuntimeError(
+                "TypeScript Todo completion validation timeout shape mismatch"
+            )
+        if not (
+            result.get("validation_label") is None
+            or isinstance(result.get("validation_label"), str)
+        ):
+            raise RuntimeError(
+                "TypeScript Todo completion validation label shape mismatch"
+            )
+    if effect == "reject" and (
+        result.get("status") != "declaration_invalid"
+        or not isinstance(result.get("summary"), str)
+        or not (
+            result.get("validation_label") is None
+            or isinstance(result.get("validation_label"), str)
+        )
+    ):
+        raise RuntimeError(
+            "TypeScript Todo completion validation reject shape mismatch"
+        )
+    return dict(result)
+
+
+def _validation_declaration_receipt(plan: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": CALLER_VALIDATION_RECEIPT_SCHEMA_VERSION,
+        "command_label": plan.get("validation_label")
+        or "todo completion validation",
+        "exit_code": None,
+        "passed": False,
+        "status": plan.get("status") or "declaration_invalid",
+        "summary": str(plan.get("summary") or "validation declaration is invalid"),
+        "stdout_captured": False,
+        "stderr_captured": False,
+        "local_path_captured": False,
+    }
 
 
 def _run_declared_completion_validation(
@@ -298,7 +293,32 @@ def run_completion_validation_gate(
     registry_path: Path,
     goal_id: str,
     dry_run: bool,
+    no_followup: bool = False,
+    completion_turn_key: str | None = None,
 ) -> dict[str, Any] | None:
+    return run_completion_validation_gate_with_source(
+        state_file=state_file,
+        todo_id=todo_id,
+        role=role,
+        registry_path=registry_path,
+        goal_id=goal_id,
+        dry_run=dry_run,
+        no_followup=no_followup,
+        completion_turn_key=completion_turn_key,
+    ).get("failure")
+
+
+def run_completion_validation_gate_with_source(
+    *,
+    state_file: Path,
+    todo_id: str,
+    role: str | None,
+    registry_path: Path,
+    goal_id: str,
+    dry_run: bool,
+    no_followup: bool = False,
+    completion_turn_key: str | None = None,
+) -> dict[str, Any]:
     """Run the caller-approved completion validation gate, OUTSIDE the mutation lock.
 
     Returns a ``validation_blocked_completion`` failure payload when a declared
@@ -309,34 +329,62 @@ def run_completion_validation_gate(
     call before acquiring the mutation lock so a multi-second validation command
     does not block concurrent todo operations on the same goal.
     """
-    (
-        validation_command,
-        validation_argv,
-        validation_label,
-        validation_timeout_seconds,
-        already_completed,
-    ) = _read_declared_validation(
-        state_file=state_file,
-        todo_id=todo_id,
-        role=role,
-        registry_path=registry_path,
-        goal_id=goal_id,
+    projection_source = "materialized"
+    source_authority: dict[str, Any] | None = None
+    todo = _materialized_todo_item(state_file=state_file, todo_id=todo_id, role=role)
+    if todo is None:
+        event_context = event_projection_todo_context(
+            registry_path=registry_path,
+            goal_id=goal_id,
+            state_path=state_file,
+            todo_id=todo_id,
+            role=role,
+        )
+        if event_context is None:
+            return {"failure": None, "source_authority": None}
+        projection_source = "event_log"
+        todo = dict(event_context.get("raw_item") or event_context["item"])
+        todo["role"] = event_context["role"]
+        source_authority = event_projection_source_authority(event_context)
+    plan = evaluate_todo_completion_validation_plan(
+        todo=todo,
+        projection_source=projection_source,
+        completion_turn_key=completion_turn_key,
+        no_followup=no_followup,
+        dry_run=dry_run,
     )
-    completion_validation = (
-        _run_declared_completion_validation(
-            validation_command=validation_command,
-            validation_argv=validation_argv,
-            validation_label=validation_label,
-            validation_timeout_seconds=validation_timeout_seconds,
+    completion_validation = None
+    if plan["effect"] == "reject":
+        completion_validation = _validation_declaration_receipt(plan)
+    elif plan["effect"] == "run":
+        validation_argv = plan.get("validation_argv")
+        completion_validation = _run_declared_completion_validation(
+            validation_command=(
+                str(plan["validation_command"])
+                if plan.get("validation_command") is not None
+                else None
+            ),
+            validation_argv=(
+                list(validation_argv)
+                if isinstance(validation_argv, list)
+                else None
+            ),
+            validation_label=(
+                str(plan["validation_label"])
+                if plan.get("validation_label") is not None
+                else None
+            ),
+            validation_timeout_seconds=(
+                int(plan["validation_timeout_seconds"])
+                if plan.get("validation_timeout_seconds") is not None
+                else None
+            ),
             registry_path=registry_path,
             goal_id=goal_id,
         )
-        if not dry_run and not already_completed
-        else None
-    )
     if completion_validation is None or completion_validation.get("passed") is True:
-        return None
-    return {
+        return {"failure": None, "source_authority": source_authority}
+    failure = {
         "ok": False,
         "dry_run": dry_run,
         "completed": False,
@@ -346,3 +394,4 @@ def run_completion_validation_gate(
         "validation": completion_validation,
         "validation_blocked_completion": True,
     }
+    return {"failure": failure, "source_authority": source_authority}

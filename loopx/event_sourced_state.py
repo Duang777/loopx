@@ -125,21 +125,10 @@ def _copy_todo_added_validation_fields(
         "validation_label",
         "validation_timeout_seconds",
     ):
-        value = compact_text(source.get(key))
-        if value:
-            target[key] = value
-    argv = source.get("validation_command_argv")
-    if "validation_command_argv" not in source:
-        return
-    if isinstance(argv, list):
-        target["validation_command_argv"] = json.dumps(
-            argv, separators=(",", ":"), ensure_ascii=False
-        )
-        return
-    compact_argv = compact_text(argv)
-    # Persist a gate-visible value even for empty/corrupt payloads so complete
-    # fail-closes as malformed instead of treating the declaration as absent.
-    target["validation_command_argv"] = compact_argv if compact_argv else "[]"
+        if key in source and source.get(key) is not None:
+            target[key] = source[key]
+    if "validation_command_argv" in source:
+        target["validation_command_argv"] = source.get("validation_command_argv")
 
 
 def _redact_public_backfill_text(value: Any, *, privacy: str) -> str:
@@ -990,7 +979,15 @@ def render_todo_markdown(item: dict[str, Any]) -> list[str]:
         note=item.get("note"),
         evidence=item.get("evidence"),
         validation_command=item.get("validation_command"),
-        validation_command_argv=item.get("validation_command_argv"),
+        validation_command_argv=(
+            json.dumps(
+                item.get("validation_command_argv"),
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            if isinstance(item.get("validation_command_argv"), list)
+            else item.get("validation_command_argv")
+        ),
         validation_label=item.get("validation_label"),
         validation_timeout_seconds=(
             str(item.get("validation_timeout_seconds"))
