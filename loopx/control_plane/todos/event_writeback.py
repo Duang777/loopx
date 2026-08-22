@@ -66,16 +66,10 @@ def _registry_goal(registry_path: Path, goal_id: str) -> dict[str, Any] | None:
 
 def _raw_event_projection_todo_item(
     *,
-    event_log_path: Path,
-    goal_id: str,
+    projection: Mapping[str, Any],
     todo_id: str,
     roles: list[str],
 ) -> dict[str, Any] | None:
-    try:
-        events = AppendOnlyStateEventStore(event_log_path).load()
-        projection = build_state_projection(events, goal_id=goal_id or None)
-    except (OSError, StateEventError):
-        return None
     for item_role in roles:
         if item_role not in TODO_SECTION_HEADINGS:
             continue
@@ -86,6 +80,43 @@ def _raw_event_projection_todo_item(
                 continue
             if normalize_todo_id(item.get("todo_id")) == todo_id:
                 return dict(item)
+    return None
+
+
+def _canonical_event_projection_source(
+    *,
+    goal: dict[str, Any],
+    state_path: Path,
+    projection_authority: Mapping[str, Any],
+) -> tuple[Path, dict[str, Any]] | None:
+    """Resolve the exact log whose fingerprint produced the public projection."""
+    authority_keys = (
+        "source_event_count",
+        "source_checksum",
+        "last_event_id",
+        "last_append_sequence",
+        "projection_version",
+    )
+    goal_id = str(goal.get("id") or "").strip()
+    for event_log_path in state_event_log_candidates(
+        goal,
+        state_path=state_path,
+        resolve_goal_local_path=resolve_goal_local_path,
+    ):
+        if not event_log_path.exists():
+            continue
+        try:
+            events = AppendOnlyStateEventStore(event_log_path).load()
+            if not events:
+                continue
+            projection = build_state_projection(events, goal_id=goal_id or None)
+        except (OSError, StateEventError):
+            return None
+        if all(
+            projection.get(key) == projection_authority.get(key)
+            for key in authority_keys
+        ):
+            return event_log_path, projection
     return None
 
 
@@ -199,23 +230,21 @@ def event_projection_todo_context(
             break
     if not matched_item or matched_role is None:
         return None
-    event_log_path = next(
-        (
-            path
-            for path in state_event_log_candidates(
-                goal,
-                state_path=state_path,
-                resolve_goal_local_path=resolve_goal_local_path,
-            )
-            if path.exists()
+    projection_authority = fields.get("state_event_projection")
+    source = _canonical_event_projection_source(
+        goal=goal,
+        state_path=state_path,
+        projection_authority=(
+            projection_authority
+            if isinstance(projection_authority, Mapping)
+            else {}
         ),
-        None,
     )
-    if event_log_path is None:
+    if source is None:
         return None
+    event_log_path, raw_projection = source
     raw_item = _raw_event_projection_todo_item(
-        event_log_path=event_log_path,
-        goal_id=goal_id,
+        projection=raw_projection,
         todo_id=normalized_todo_id,
         roles=roles,
     )

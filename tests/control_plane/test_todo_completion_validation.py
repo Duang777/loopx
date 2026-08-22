@@ -815,6 +815,37 @@ def test_noncanonical_sidecar_cannot_inject_validation_command(
     assert _event_todo_completed_count(state.with_name("events.jsonl")) == 0
 
 
+def test_empty_earlier_candidate_does_not_replace_canonical_validation_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, state = _write_fixture(tmp_path)
+    todo_id = _add_event_only_todo(
+        state,
+        todo_id="todo_event_after_empty_candidate",
+        validation_command=_FAIL_COMMAND,
+    )
+    empty_candidate = state.with_name("empty-events.jsonl")
+    empty_candidate.touch()
+    _set_registry_event_log(registry, empty_candidate)
+    calls = _spy_validation_runner(monkeypatch)
+
+    result = complete_goal_todo(
+        registry_path=registry,
+        goal_id=GOAL_ID,
+        todo_id=todo_id,
+        agent_id=AGENT,
+        evidence="canonical fallback validation must run",
+        no_followup=True,
+    )
+
+    assert calls["count"] == 1
+    assert result["ok"] is False
+    assert result["validation_blocked_completion"] is True
+    assert _event_todo_completed_count(state.with_name("events.jsonl")) == 0
+    assert empty_candidate.read_text(encoding="utf-8") == ""
+
+
 @pytest.mark.parametrize("timeout_value", [0, 30, "not-int", {"seconds": 5}])
 def test_event_projected_invalid_timeout_rejects_without_running_command(
     tmp_path: Path,

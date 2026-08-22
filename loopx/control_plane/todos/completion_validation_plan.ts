@@ -1,5 +1,10 @@
 import type { JsonObject } from "../effect_program.ts";
 import {
+  requireBoolean,
+  requireJsonObject,
+  requireStringLiteral,
+} from "../runtime_decode.ts";
+import {
   evaluateTodoCompletionFence,
   TODO_COMPLETION_FENCE_REQUEST_SCHEMA,
   type TodoCompletionProjectionSource,
@@ -34,23 +39,12 @@ export type TodoCompletionValidationPlanResult =
       summary: string;
     });
 
-function requiredObject(value: unknown, label: string): JsonObject {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as JsonObject;
-}
-
-function requiredBoolean(value: unknown, label: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new Error(`${label} must be a boolean`);
-  }
-  return value;
-}
-
 function projectionSource(value: unknown): TodoCompletionProjectionSource {
-  if (value === "materialized" || value === "event_log") return value;
-  throw new Error("projection_source is unsupported");
+  return requireStringLiteral(
+    value,
+    ["materialized", "event_log"] as const,
+    "projection_source",
+  );
 }
 
 function optionalOpaqueString(value: unknown, label: string): string | null {
@@ -145,12 +139,18 @@ function validationArgv(
 export function evaluateTodoCompletionValidationPlan(
   value: unknown,
 ): TodoCompletionValidationPlanResult {
-  const request = requiredObject(value, "todo.completion_validation_plan params");
+  const request = requireJsonObject(
+    value,
+    "todo.completion_validation_plan params",
+  );
   if (request.schema_version !== TODO_COMPLETION_VALIDATION_PLAN_REQUEST_SCHEMA) {
     throw new Error("Todo completion validation plan request schema mismatch");
   }
-  const todo = requiredObject(request.todo, "todo.completion_validation_plan todo");
-  const dryRun = requiredBoolean(request.dry_run, "dry_run");
+  const todo = requireJsonObject(
+    request.todo,
+    "todo.completion_validation_plan todo",
+  );
+  const dryRun = requireBoolean(request.dry_run, "dry_run");
   if (dryRun) {
     return {
       schema_version: TODO_COMPLETION_VALIDATION_PLAN_RESULT_SCHEMA,
@@ -170,7 +170,7 @@ export function evaluateTodoCompletionValidationPlan(
       completion_turn_key: todo.completion_turn_key,
       successor_todo_ids: todo.successor_todo_ids,
     },
-    requested_no_followup: requiredBoolean(
+    requested_no_followup: requireBoolean(
       request.requested_no_followup,
       "requested_no_followup",
     ),
