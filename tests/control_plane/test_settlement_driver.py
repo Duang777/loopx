@@ -231,3 +231,48 @@ def test_decode_settlement_result_rejects_corrupted_failure_payload() -> None:
                 "failure": "corrupted-failure",
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {"value": {}, "receipts": [], "failure": {"kind": "cancelled"}},
+            "result shape mismatch",
+        ),
+        (
+            {
+                "value": None,
+                "receipts": [],
+                "failure": {
+                    "kind": "cancelled",
+                    "step_kind": "durable_writeback",
+                    "reason": "cancelled",
+                    "details": "corrupted-details",
+                },
+            },
+            "failure shape mismatch",
+        ),
+        (
+            {
+                "value": {},
+                "receipts": [
+                    {
+                        "step_kind": "validation",
+                        "status": 1,
+                        "effect_id": "effect-1",
+                    }
+                ],
+                "failure": None,
+            },
+            "receipts shape mismatch",
+        ),
+        ({"value": {}, "receipts": []}, "result shape mismatch"),
+    ],
+)
+def test_decode_settlement_result_rejects_invalid_union_states(
+    payload: object,
+    message: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        decode_settlement_result(payload)
