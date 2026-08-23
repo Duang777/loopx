@@ -694,7 +694,7 @@ def test_required_workspace_causality_fails_closed_without_workspace_snapshot(
     assert preview["delivery_workspace_validated"] is False
 
 
-def test_unknown_workspace_causality_allows_legacy_spend_without_snapshot(
+def test_current_unknown_workspace_causality_fails_closed_without_snapshot(
     tmp_path: Path,
 ) -> None:
     runtime = tmp_path / "runtime"
@@ -724,9 +724,12 @@ def test_unknown_workspace_causality_allows_legacy_spend_without_snapshot(
         source="heartbeat",
     )
 
-    assert preview["ok"] is True, preview
-    assert preview["delivery_completion_spend"] is True
+    assert preview["ok"] is False
+    assert "requires an explicit Todo delivery contract" in preview["reason"]
     assert preview["delivery_workspace_causality"]["requirement"] == "unknown"
+    assert preview["delivery_workspace_resolution"]["decision"] == (
+        "repair_contract"
+    )
     assert preview["delivery_workspace_validated"] is False
 
 
