@@ -316,7 +316,7 @@ def _missing_delivery_workspace_preview(
     )
     if (
         not delivery_workspace_causality
-        or requirement == "not_required"
+        or requirement != "required"
         or delivery_workspace_repository(delivery_workspace)
     ):
         return None
