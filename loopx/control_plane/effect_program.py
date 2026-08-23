@@ -319,23 +319,26 @@ def _runtime_result_metadata(
     if not isinstance(payload, Mapping):
         raise RuntimeError("TypeScript settlement result shape mismatch")
     receipts_value = payload.get("receipts")
-    receipts = (
-        tuple(
+    if not isinstance(receipts_value, list):
+        raise RuntimeError("TypeScript settlement result receipts shape mismatch")
+    receipts_list = []
+    for receipt in receipts_value:
+        if not isinstance(receipt, Mapping):
+            raise RuntimeError("TypeScript settlement result receipts shape mismatch")
+        receipts_list.append(
             SettlementReceipt(
                 step_kind=SettlementStepKind(str(receipt["step_kind"])),
                 status=str(receipt["status"]),
                 effect_id=str(receipt["effect_id"]),
                 source_ref=str(receipt.get("source_ref") or "") or None,
             )
-            for receipt in receipts_value
-            if isinstance(receipt, Mapping)
         )
-        if isinstance(receipts_value, list)
-        else ()
-    )
+    receipts = tuple(receipts_list)
     failure_value = payload.get("failure")
     failure = None
-    if isinstance(failure_value, Mapping):
+    if failure_value is not None:
+        if not isinstance(failure_value, Mapping):
+            raise RuntimeError("TypeScript settlement result failure shape mismatch")
         details = failure_value.get("details")
         failure = SettlementFailure(
             kind=SettlementFailureKind(str(failure_value["kind"])),
