@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 import threading
 import time
@@ -36,31 +37,15 @@ def _slow_new_turn_writes(monkeypatch) -> set[str]:
     return turn_write_threads
 
 
-def test_concurrent_managed_turn_creation_claims_active_once(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    store = ChatSessionStore(tmp_path)
-    session = store.create_session(
-        goal_id="goal-one",
-        agent_id="codex",
-        executor_endpoint_id="codex",
-        adapter_kind="codex_app_server",
-        upstream_thread_id="thread-one",
-        upstream_mode="chat",
-    )
-    session_id = str(session["session_id"])
-    turn_write_threads = _slow_new_turn_writes(monkeypatch)
+def _run_two_client_turn_creators(
+    create_turn: Callable[[str], tuple[dict[str, object], bool]],
+) -> tuple[list[tuple[str, str, bool]], list[str]]:
     results: list[tuple[str, str, bool]] = []
     errors: list[str] = []
 
     def create(client_turn_id: str) -> None:
         try:
-            turn, created = store.create_turn(
-                session_id,
-                client_turn_id=client_turn_id,
-                message=f"message from {client_turn_id}",
-            )
+            turn, created = create_turn(client_turn_id)
             results.append((client_turn_id, str(turn["turn_id"]), created))
         except RuntimeError as exc:
             errors.append(str(exc))
@@ -79,6 +64,32 @@ def test_concurrent_managed_turn_creation_claims_active_once(
         thread.join(timeout=3)
 
     assert not any(thread.is_alive() for thread in threads)
+    return results, errors
+
+
+def test_concurrent_managed_turn_creation_claims_active_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    turn_write_threads = _slow_new_turn_writes(monkeypatch)
+    results, errors = _run_two_client_turn_creators(
+        lambda client_turn_id: store.create_turn(
+            session_id,
+            client_turn_id=client_turn_id,
+            message=f"message from {client_turn_id}",
+        )
+    )
+
     assert len(results) == 1
     assert len(errors) == 1
     active_turn_id = results[0][1]
@@ -169,34 +180,14 @@ def test_concurrent_queued_turn_creation_is_atomic(
         assert created
         assert queued["status"] == "queued"
     turn_write_threads = _slow_new_turn_writes(monkeypatch)
-    results: list[tuple[str, str, bool]] = []
-    errors: list[str] = []
-
-    def create(client_turn_id: str) -> None:
-        try:
-            turn, created = store.create_queued_turn(
-                session_id,
-                client_turn_id=client_turn_id,
-                message=f"message from {client_turn_id}",
-            )
-            results.append((client_turn_id, str(turn["turn_id"]), created))
-        except RuntimeError as exc:
-            errors.append(str(exc))
-
-    threads = [
-        threading.Thread(
-            target=create,
-            args=(f"client-{index}",),
-            name=f"creator-{index}",
+    results, errors = _run_two_client_turn_creators(
+        lambda client_turn_id: store.create_queued_turn(
+            session_id,
+            client_turn_id=client_turn_id,
+            message=f"message from {client_turn_id}",
         )
-        for index in (1, 2)
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=3)
+    )
 
-    assert not any(thread.is_alive() for thread in threads)
     assert len(results) == 1
     assert len(errors) == 1
     assert errors == ["session_queue_full"]
