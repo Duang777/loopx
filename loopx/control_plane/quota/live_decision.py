@@ -186,7 +186,10 @@ def build_live_quota_should_run_decision(
         if observation.get("available") is True:
             observed_rrule = str(observation.get("rrule") or "")
             observed_automation_id = str(observation.get("automation_id") or "").strip()
-    decision_status_payload = status_payload
+    decision_status_payload = {
+        **status_payload,
+        "runtime_root": str(runtime_root),
+    }
     if bounded_research_frontier_projector is not None:
         frontier = bounded_research_frontier_projector(
             runtime_root=runtime_root,
@@ -196,7 +199,7 @@ def build_live_quota_should_run_decision(
         )
         if isinstance(frontier, Mapping):
             decision_status_payload = {
-                **status_payload,
+                **decision_status_payload,
                 "bounded_research_frontier": dict(frontier),
             }
     receipt_bound_monitor_phase = receipt_bound_monitor_settlement_phase(
@@ -231,6 +234,7 @@ def build_live_quota_should_run_decision(
         receipt_bound_replay_phase=receipt_bound_replay_phase,
         receipt_bound_replan_obligation_id=receipt_bound_replan_obligation_id,
         turn_instance_id=turn_instance_id,
+        runtime_root=runtime_root,
     )
     hook_dispatch = dispatch_interaction_projection_hooks(interaction_projection_hooks)
     interaction = payload.get("interaction_contract")

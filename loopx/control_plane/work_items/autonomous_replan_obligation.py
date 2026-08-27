@@ -117,6 +117,7 @@ def build_autonomous_replan_cli_actions(
     scoped_cli_args: str,
     quota_spend_action: str,
     settlement_chain_ready: bool,
+    command_prefix: str = "loopx",
     lifecycle_actor_args: str = "",
 ) -> list[str]:
     lifecycle_reentry = project_todo_lifecycle_settlement_reentry(
@@ -159,8 +160,9 @@ def build_autonomous_replan_cli_actions(
         if settlement_chain_ready
         else ""
     )
+    cli_prefix = command_prefix.strip() or "loopx"
     refresh_action = (
-        f"loopx --format json refresh-state --goal-id {goal_id} "
+        f"{cli_prefix} --format json refresh-state --goal-id {goal_id} "
         "--progress-scope agent_lane "
         "--classification bounded_replan_progress "
         f"{delivery_args}{typed_progress_args}"
