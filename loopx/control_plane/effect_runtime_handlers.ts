@@ -10,6 +10,7 @@ import {
   settlementIdentityPayload,
   settlementPlanPayload,
   settlementResultPayload,
+  SETTLEMENT_BINDING_KINDS,
   SETTLEMENT_FAILURE_KINDS,
   SETTLEMENT_STEP_KINDS,
   type JsonObject,
@@ -77,6 +78,7 @@ import {
   evaluateDeliveryRoute,
 } from "./turn_driver/delivery_continuity.ts";
 import { reduceTurnSettlementTransaction } from "./turn_driver/settlement.ts";
+import { evaluateHostTodoCompletion } from "./turn_driver/host_todo_completion.ts";
 import {
   projectReplanSettlementContract,
   projectTodoLifecycleSettlementReentry,
@@ -455,6 +457,14 @@ export function createEffectRuntimeHandlers(
     [
       "settlement.receipt_bound_replay_phase",
       (params) => receiptBoundReplayPhase({
+        binding_kind: params.binding_kind === undefined
+          ? undefined
+          : requireStringLiteral(
+            params.binding_kind,
+            SETTLEMENT_BINDING_KINDS,
+            "binding_kind",
+            "binding_kind has an unsupported settlement binding kind",
+          ),
         completion_receipt_present: params.completion_receipt_present === true,
         durable_writeback_present: params.durable_writeback_present === true,
         quota_spend_present: params.quota_spend_present === true,
@@ -498,6 +508,7 @@ export function createEffectRuntimeHandlers(
       ),
     ],
     ["turn.settlement.reduce", reduceTurnSettlementTransaction],
+    ["turn.host_todo_completion.evaluate", evaluateHostTodoCompletion],
     ["work_item.replan_settlement.project", projectReplanSettlementContract],
     [
       "work_item.replan_settlement.reentry",

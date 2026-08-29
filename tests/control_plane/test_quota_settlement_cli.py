@@ -11,6 +11,10 @@ from typing import Any
 import pytest
 
 from loopx.bootstrap_command_pack import build_start_goal_guided_packet
+from loopx.control_plane.work_items.delivery_outcome import (
+    PROGRESS_DELIVERY_OUTCOMES,
+    DeliveryOutcome,
+)
 from loopx.heartbeat_prompt import build_heartbeat_prompt
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -574,6 +578,145 @@ def test_gitless_goal_refresh_and_quota_spend_settle_end_to_end(
     assert spend["appended"] is True
     assert spend["delivery_workspace_validated"] is True
     assert spend["delivery_workspace"]["workspace_identity"] == f"loopx:{GOAL_ID}"
+    assert _spend_run_count(runtime) == 1
+
+
+def test_typed_outcome_gap_settles_exact_turn_without_becoming_progress(
+    tmp_path: Path,
+) -> None:
+    project, runtime, registry_path = _write_fixture(
+        tmp_path,
+        required_capability="filesystem_write",
+    )
+    turn_id = "turn-typed-blocker-settlement"
+    binding = (
+        "--agent-id",
+        AGENT_ID,
+        "--todo-id",
+        TODO_ID,
+        "--turn-instance-id",
+        turn_id,
+    )
+    guard_rc, guard = _run_cli(
+        registry_path,
+        runtime,
+        "quota",
+        "should-run",
+        "--codex-app",
+        "--goal-id",
+        GOAL_ID,
+        *binding,
+        "--scan-path",
+        str(project),
+        cwd=project,
+    )
+    assert guard_rc == 0, guard
+    assert guard["heartbeat_receipt"]["settlement_identity"]["todo_id"] == TODO_ID
+    assert DeliveryOutcome.OUTCOME_GAP not in PROGRESS_DELIVERY_OUTCOMES
+
+    common_refresh_args = (
+        "refresh-state",
+        "--goal-id",
+        GOAL_ID,
+        "--classification",
+        "typed_blocker_writeback",
+        "--delivery-batch-scale",
+        "single_surface",
+        "--delivery-outcome",
+        "outcome_gap",
+        *binding,
+        "--no-global-sync",
+        "--suppress-external-sinks",
+    )
+    bare_rc, bare = _run_cli(
+        registry_path,
+        runtime,
+        *common_refresh_args,
+        cwd=project,
+    )
+    assert bare_rc == 1, bare
+    assert "typed blocked outcome_gap settlement" in bare["error"]
+    assert _classification_count(runtime, "typed_blocker_writeback") == 0
+
+    surface_args = list(common_refresh_args)
+    outcome_index = surface_args.index("outcome_gap")
+    surface_args[outcome_index] = "surface_only"
+    surface_rc, surface = _run_cli(
+        registry_path,
+        runtime,
+        *surface_args,
+        "--progress-result-class",
+        "blocked",
+        "--progress-blocker-id",
+        "blocker:runtime-boundary",
+        "--progress-evidence-id",
+        "evidence:runtime-boundary",
+        cwd=project,
+    )
+    assert surface_rc == 1, surface
+    assert "typed blocked outcome_gap settlement" in surface["error"]
+
+    mismatch_args = list(common_refresh_args)
+    todo_index = mismatch_args.index(TODO_ID)
+    mismatch_args[todo_index] = ALTERNATIVE_TODO_ID
+    mismatch_rc, mismatch = _run_cli(
+        registry_path,
+        runtime,
+        *mismatch_args,
+        "--progress-result-class",
+        "blocked",
+        "--progress-blocker-id",
+        "blocker:runtime-boundary",
+        "--progress-evidence-id",
+        "evidence:runtime-boundary",
+        cwd=project,
+    )
+    assert mismatch_rc == 1, mismatch
+    assert "settlement binding does not match" in mismatch["error"]
+
+    refresh_rc, refresh = _run_cli(
+        registry_path,
+        runtime,
+        *common_refresh_args,
+        "--progress-result-class",
+        "blocked",
+        "--progress-blocker-id",
+        "blocker:runtime-boundary",
+        "--progress-evidence-id",
+        "evidence:runtime-boundary",
+        cwd=project,
+    )
+    assert refresh_rc == 0, refresh
+    assert refresh["delivery_outcome"] == "outcome_gap"
+    assert refresh["progress_observation"]["result_class"] == "blocked"
+    assert refresh["progress_observation"]["work_item_id"] == TODO_ID
+    assert [
+        receipt["step_kind"]
+        for receipt in refresh["settlement_result"]["receipts"]
+    ] == ["validation", "durable_writeback"]
+
+    spend_rc, spend = _run_cli(
+        registry_path,
+        runtime,
+        "quota",
+        "spend-slot",
+        "--goal-id",
+        GOAL_ID,
+        "--slots",
+        "1",
+        "--source",
+        "heartbeat",
+        "--execute",
+        *binding,
+        "--scan-path",
+        str(project),
+        cwd=project,
+    )
+    assert spend_rc == 0, spend
+    assert [
+        receipt["step_kind"]
+        for receipt in spend["settlement_result"]["receipts"]
+    ] == ["validation", "durable_writeback", "quota_spend"]
     assert _spend_run_count(runtime) == 1
 
 
@@ -2167,6 +2310,15 @@ def test_todoless_autonomous_replan_settles_quota_refresh_spend_chain(
     assert plan_identity["binding_id"] == identity["binding_id"]
     assert plan_identity["replan_obligation_id"] == obligation_id
     assert plan_identity["turn_instance_id"] == turn_instance_id
+    original_scheduler_ack_args = guard["scheduler_hint"]["codex_app"][
+        "ack_hint"
+    ]["cli_args"]
+    original_scheduler_ack_args = original_scheduler_ack_args[
+        original_scheduler_ack_args.index("quota"):
+    ]
+    assert original_scheduler_ack_args[:2] == ["quota", "scheduler-ack-current"]
+    assert "--turn-instance-id" in original_scheduler_ack_args
+    assert turn_instance_id in original_scheduler_ack_args
     actions = cli_channel["next_cli_actions"]
     refresh_command = next(action for action in actions if "refresh-state" in action)
     spend_command = next(action for action in actions if "spend-slot" in action)
@@ -2227,6 +2379,76 @@ def test_todoless_autonomous_replan_settles_quota_refresh_spend_chain(
     assert replay_rc == 0, replay
     assert replay["idempotent_replay"] is True
     assert replay["appended"] is False
+    assert _spend_run_count(runtime) == 1
+
+    settled_rc, settled = _run_cli(
+        registry_path,
+        runtime,
+        "quota",
+        "should-run",
+        "--codex-app",
+        "--goal-id",
+        GOAL_ID,
+        "--agent-id",
+        AGENT_ID,
+        "--turn-instance-id",
+        turn_instance_id,
+        "--scan-path",
+        str(project),
+    )
+
+    assert settled_rc == 0, settled
+    assert settled["decision"] == "skip", settled
+    assert settled["effective_action"] == "heartbeat_settled_skip"
+    assert settled["execution_obligation"]["must_attempt_work"] is False
+    assert settled.get("autonomous_replan_obligation") is None
+    assert settled.get("replan_action_packet") is None
+    assert settled["heartbeat_receipt"]["status"] == "replayed"
+    assert settled["heartbeat_receipt"]["settlement_identity"][
+        "binding_kind"
+    ] == "autonomous_replan"
+    assert _spend_run_count(runtime) == 1
+
+    ack_rc, ack = _run_cli(
+        registry_path,
+        runtime,
+        *original_scheduler_ack_args,
+    )
+    assert ack_rc == 0, ack
+    assert ack["ok"] is True
+    assert ack["mode"] == "scheduler-ack-current"
+    assert ack["status"] == "heartbeat_settled_skip"
+    assert ack["idempotent_replay"] is True
+    assert ack["write_performed"] is False
+    assert ack["scheduler_state_mutated"] is False
+    assert ack["quota_spend_performed"] is False
+    assert ack["appended"] is False
+    assert _spend_run_count(runtime) == 1
+
+    fresh_turn_id = "turn-autonomous-replan-settlement-2"
+    fresh_rc, fresh = _run_cli(
+        registry_path,
+        runtime,
+        "quota",
+        "should-run",
+        "--codex-app",
+        "--goal-id",
+        GOAL_ID,
+        "--agent-id",
+        AGENT_ID,
+        "--turn-instance-id",
+        fresh_turn_id,
+        "--scan-path",
+        str(project),
+    )
+
+    assert fresh_rc == 0, fresh
+    assert fresh["decision"] == "skip", fresh
+    assert fresh["effective_action"] == "monitor_quiet_skip"
+    assert fresh["execution_obligation"]["must_attempt_work"] is False
+    assert fresh.get("autonomous_replan_obligation") is None
+    assert fresh.get("replan_action_packet") is None
+    assert fresh["heartbeat_receipt"]["turn_instance_id"] == fresh_turn_id
     assert _spend_run_count(runtime) == 1
 
 
