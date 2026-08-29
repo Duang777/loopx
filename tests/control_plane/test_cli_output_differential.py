@@ -613,6 +613,32 @@ def test_runtime_root_route_count_only_matches_executable_command_prefixes() -> 
     assert runtime_root_command_route_count(text) == 4
 
 
+def test_runtime_root_route_allowance_is_fail_closed_for_invalid_counts() -> None:
+    base = _row(
+        chars=1_000,
+        utf8_bytes=1_000,
+        lines=10,
+        compact_payload_chars=1_000,
+        runtime_root_command_route_count=0,
+    )
+    candidate = _row(
+        chars=1_000,
+        utf8_bytes=1_000,
+        lines=10,
+        compact_payload_chars=1_000,
+        runtime_root_command_route_count="2",
+    )
+
+    result = compare_cli_output_receipts(_receipt(base), _receipt(candidate))
+
+    assert result["rows"][0]["allowances"] == {
+        "chars": 64,
+        "utf8_bytes": 128,
+        "lines": 2,
+        "compact_payload_chars": 64,
+    }
+
+
 def test_observed_shape_removal_is_a_review_signal_not_a_permanent_red_light() -> None:
     candidate = _row(json_shape_paths=["$", "$.status_contract"])
     candidate.update(chars=20_000, utf8_bytes=20_000, lines=500)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Mapping
 from hashlib import sha256
 from typing import Any
@@ -862,6 +863,13 @@ def quota_action_signature_document(payload: Mapping[str, Any]) -> dict[str, Any
     return turn_envelope_action_signature_document(_turn_action_projection(payload))
 
 
+def _cli_command_prefix(runtime_root: Any) -> str:
+    runtime_root_text = str(runtime_root or "").strip()
+    if not runtime_root_text:
+        return "loopx"
+    return f"loopx --runtime-root {shlex.quote(runtime_root_text)}"
+
+
 def _cold_path(
     payload: Mapping[str, Any],
     agent_id: str | None,
@@ -871,6 +879,7 @@ def _cold_path(
 ) -> dict[str, Any]:
     goal_id = str(payload.get("goal_id") or "<goal-id>")
     agent_arg = f" --agent-id {agent_id}" if agent_id else ""
+    command_prefix = _cli_command_prefix(payload.get("runtime_root"))
     resolution = resolve_scheduler_execution_context(scheduler_execution_context)
     scheduler_args = ""
     if resolution.ok and resolution.context is not None:
@@ -879,13 +888,17 @@ def _cold_path(
         )
     return {
         "full_decision": (
-            f"loopx --format json quota should-run --goal-id {goal_id}"
+            f"{command_prefix} --format json quota should-run --goal-id {goal_id}"
             f"{agent_arg}{scheduler_args}"
             if scheduler_args
             else "rerun the typed quota_guard from the current host packet"
         ),
-        "todo_detail": f"loopx --format json todo list --goal-id {goal_id}",
-        "status_detail": f"loopx --format json status --goal-id {goal_id}",
+        "todo_detail": (
+            f"{command_prefix} --format json todo list --goal-id {goal_id}"
+        ),
+        "status_detail": (
+            f"{command_prefix} --format json status --goal-id {goal_id}"
+        ),
         "contains": [
             "quota accounting detail",
             "goal frontier and route diagnostics",
