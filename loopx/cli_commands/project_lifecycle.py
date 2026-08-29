@@ -16,8 +16,7 @@ from ..control_plane.goals.goal_vision_policy import (
     GOAL_VISION_ADVANCEMENT_POLICY_CHOICES,
 )
 from ..control_plane.quota.settlement import (
-    require_settlement_writeback,
-    resolve_heartbeat_settlement_identity,
+    read_heartbeat_settlement,
     settlement_result_payload,
 )
 from ..control_plane.work_items.delivery_batch_scale import (
@@ -177,6 +176,14 @@ def _inline_agent_vision_packet(args: argparse.Namespace) -> dict[str, object] |
     if state:
         packet["state"] = state
     return packet
+
+
+def _reject_non_standard_json_constant(name: str) -> object:
+    # json.loads would otherwise accept NaN/Infinity/-Infinity, which json.dump
+    # then re-emits as non-standard JSON that breaks strict ledger consumers.
+    raise ValueError(
+        f"--usage-json must be strict JSON; non-standard constant {name} is not allowed"
+    )
 
 
 def _inline_progress_observation(
@@ -454,6 +461,28 @@ def register_project_lifecycle_commands(
         ),
     )
     refresh_state_parser.add_argument(
+        "--usage-codex-session",
+        help=(
+            "Path to the local Codex session rollout JSONL that produced this "
+            "run. Only aggregate token_count totals, the model id, and event "
+            "timestamps are read; prompts, completions, and tool output never "
+            "enter run history. The session must be bound explicitly; when the "
+            "rollout is unknown, omit the flag and usage stays unknown. Cannot "
+            "be combined with --usage-json."
+        ),
+    )
+    refresh_state_parser.add_argument(
+        "--usage-json",
+        help=(
+            "Inline JSON object with a provider-neutral per-run usage "
+            "measurement: input_tokens, output_tokens, provider, model, "
+            "source_snapshot_id, plus optional cache_tokens/cost_usd/"
+            "duration_ms. Must be strict JSON; malformed, negative, or "
+            "non-finite usage fails the refresh closed. Cannot be combined "
+            "with --usage-codex-session."
+        ),
+    )
+    refresh_state_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the refresh payload without appending.",
@@ -637,6 +666,15 @@ def handle_project_lifecycle_command(
                 agent_vision_packet = inline_agent_vision_packet
                 merge_agent_vision_patch = True
             progress_observation = _inline_progress_observation(args)
+            usage_measurement: dict[str, object] | None = None
+            if getattr(args, "usage_json", None):
+                loaded_usage = json.loads(
+                    args.usage_json,
+                    parse_constant=_reject_non_standard_json_constant,
+                )
+                if not isinstance(loaded_usage, dict):
+                    raise ValueError("--usage-json must be a JSON object")
+                usage_measurement = loaded_usage
         except Exception as exc:
             payload = {
                 "ok": False,
@@ -684,6 +722,12 @@ def handle_project_lifecycle_command(
                 merge_agent_vision_patch=merge_agent_vision_patch,
                 vision_unchanged_reason=args.vision_unchanged_reason,
                 progress_observation=progress_observation,
+                usage_measurement=usage_measurement,
+                usage_codex_session=(
+                    Path(args.usage_codex_session).expanduser()
+                    if getattr(args, "usage_codex_session", None)
+                    else None
+                ),
                 dry_run=bool(args.dry_run),
                 sync_global=not bool(args.no_global_sync),
             )
@@ -796,7 +840,7 @@ def handle_project_lifecycle_command(
                     load_registry(registry_path),
                     args.runtime_root,
                 )
-                settlement_result = resolve_heartbeat_settlement_identity(
+                settlement_readback = read_heartbeat_settlement(
                     runtime_root,
                     goal_id=args.goal_id,
                     agent_id=args.agent_id,
@@ -805,12 +849,12 @@ def handle_project_lifecycle_command(
                     replan_obligation_id=getattr(
                         args, "replan_obligation_id", None
                     ),
-                ).bind(
-                    lambda identity: require_settlement_writeback(
-                        runtime_root,
-                        identity,
-                    )
                 )
+                if settlement_readback is None:
+                    raise RuntimeError(
+                        "exact settlement readback unexpectedly returned not-found"
+                    )
+                settlement_result = settlement_readback.delivery
                 payload["settlement_result"] = settlement_result_payload(
                     settlement_result
                 )

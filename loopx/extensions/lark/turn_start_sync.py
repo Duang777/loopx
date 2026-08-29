@@ -17,6 +17,12 @@ from ...file_lock import (
     exclusive_file_lock,
 )
 from .event_collector import _executable_prefix, load_lark_event_collector_config
+from .event_collector_runtime import (
+    _create_lark_event_received_reaction,
+    _delete_lark_event_reaction,
+    _profile_app_id,
+    _sender_identity,
+)
 from .group_history import (
     _canonical_events,
     _page_digest,
@@ -25,6 +31,11 @@ from .group_history import (
     _provider_page,
     _route_context,
     _verify_inbox_events,
+)
+from .inbox_reactions import (
+    ensure_lark_event_inbox_received_reaction,
+    lark_inbox_pending_turn_start_read_message_ids,
+    record_lark_inbox_turn_start_read,
 )
 from .routed_inbox import ingest_routed_lark_event_inbox
 
@@ -225,9 +236,27 @@ def _route_receipt(
             try:
                 payload = json.loads(provider.stdout)
                 messages, has_more, next_page_token = _provider_page(payload)
-                events, skipped_count, invalid_count = _canonical_events(
+                command_prefix = _executable_prefix(lark_cli_executable)
+                profile_app_id = (
+                    _profile_app_id(
+                        runner=runner,
+                        command_prefix=command_prefix,
+                        profile=str(config["profile"]),
+                    )
+                    if any(
+                        _sender_identity(message)[0] == "app" for message in messages
+                    )
+                    else None
+                )
+                (
+                    events,
+                    skipped_count,
+                    invalid_count,
+                    self_message_skipped_count,
+                ) = _canonical_events(
                     messages,
                     chat_id=str(route["chat_id"]),
+                    profile_app_id=profile_app_id,
                 )
             except (json.JSONDecodeError, TypeError, ValueError):
                 return {
@@ -268,6 +297,60 @@ def _route_receipt(
                     "external_read_performed": True,
                     "local_private_state_mutated": bool(ingest["write_performed"]),
                 }
+            try:
+                first_read_count = sum(
+                    int(
+                        record_lark_inbox_turn_start_read(
+                            inbox=route["inbox"]["inbox_path"],
+                            message_id=str(event["message_id"]),
+                        )
+                    )
+                    for event in events
+                )
+                reaction_message_ids = lark_inbox_pending_turn_start_read_message_ids(
+                    inbox=route["inbox"]["inbox_path"]
+                )
+            except (OSError, TypeError, ValueError):
+                return {
+                    "ok": False,
+                    "status": "turn_start_read_receipt_failed",
+                    "error_code": "turn_start_read_receipt_failed",
+                    "accepted_count": int(ingest["accepted_count"]),
+                    "external_read_performed": True,
+                    "local_private_state_mutated": bool(ingest["write_performed"]),
+                }
+            # Retry from the durable Agent-read set, not only the provider's
+            # overlap page. A failed ACK therefore remains recoverable after
+            # the history cursor advances beyond the message timestamp.
+            reaction_results = [
+                ensure_lark_event_inbox_received_reaction(
+                    project=config["project"],
+                    config_path=route["event_inbox_config_ref"],
+                    event={"message_id": message_id},
+                    create_reaction=lambda message_id, emoji_type: (
+                        _create_lark_event_received_reaction(
+                            {"message_id": message_id},
+                            runner=runner,
+                            command_prefix=command_prefix,
+                            profile=str(config["profile"]),
+                            emoji_type=emoji_type,
+                        )
+                    ),
+                    delete_reaction=lambda message_id, reaction_id: (
+                        _delete_lark_event_reaction(
+                            runner=runner,
+                            command_prefix=command_prefix,
+                            profile=str(config["profile"]),
+                            message_id=message_id,
+                            reaction_id=reaction_id,
+                        )
+                    ),
+                )
+                for message_id in reaction_message_ids
+            ]
+            reaction_failures = [
+                result for result in reaction_results if result["ok"] is not True
+            ]
             updated = {
                 **state,
                 "next_page_token": next_page_token,
@@ -294,14 +377,36 @@ def _route_receipt(
                     "local_private_state_mutated": bool(ingest["write_performed"]),
                 }
             return {
-                "ok": True,
-                "status": "page_pending" if has_more else "synced",
-                "error_code": None,
+                "ok": not reaction_failures,
+                "status": (
+                    "received_reaction_failed"
+                    if reaction_failures
+                    else "page_pending"
+                    if has_more
+                    else "synced"
+                ),
+                "error_code": (
+                    "received_reaction_failed" if reaction_failures else None
+                ),
                 "accepted_count": int(ingest["accepted_count"]),
+                "first_read_count": first_read_count,
                 "duplicate_count": int(ingest["duplicate_count"]),
                 "skipped_count": skipped_count,
+                "self_message_skipped_count": self_message_skipped_count,
                 "verified_count": verified_count,
                 "external_read_performed": True,
+                "received_reaction_count": sum(
+                    int(result["created_count"]) for result in reaction_results
+                ),
+                "received_reaction_failure_count": len(reaction_failures),
+                "read_ack_attempt_count": sum(
+                    int(result["read_ack_attempted"] is True)
+                    for result in reaction_results
+                ),
+                "external_writes_performed": any(
+                    result["external_writes_performed"] is True
+                    for result in reaction_results
+                ),
                 "local_private_state_mutated": True,
             }
     except LockAcquireTimeoutError:
@@ -337,6 +442,8 @@ def sync_lark_turn_start_inbox(
             "observation_count": 0,
             "agent_read_required": False,
             "external_reads_performed": False,
+            "external_writes_performed": False,
+            "self_message_skipped_count": 0,
             "local_private_state_mutated": False,
             "error_code": None,
             "private_content_returned": False,
@@ -358,10 +465,16 @@ def sync_lark_turn_start_inbox(
         for route in config["routes"]
     ]
     failures = [receipt for receipt in receipts if receipt["ok"] is not True]
+    # A realtime collector may have persisted a message before this hook sees
+    # the same provider-history item. The owner-private read receipt is
+    # independent of optional provider reactions, so it remains the sole
+    # authority for whether this turn newly placed content in the Agent chain.
     observation_count = sum(
-        int(receipt.get("accepted_count") or 0) for receipt in receipts
+        int(receipt.get("first_read_count") or receipt.get("accepted_count") or 0)
+        for receipt in receipts
     )
-    if failures and observation_count:
+    agent_read_required = bool(observation_count)
+    if failures and agent_read_required:
         status = "partial"
         error_code = "route_sync_partial"
     elif failures and len(failures) == len(receipts):
@@ -370,7 +483,7 @@ def sync_lark_turn_start_inbox(
     elif failures:
         status = "partial"
         error_code = "route_sync_partial"
-    elif observation_count:
+    elif agent_read_required:
         status = "observed"
         error_code = None
     else:
@@ -381,9 +494,22 @@ def sync_lark_turn_start_inbox(
         "schema_version": SYNC_SCHEMA_VERSION,
         "status": status,
         "observation_count": observation_count,
-        "agent_read_required": bool(observation_count),
+        "agent_read_required": agent_read_required,
         "external_reads_performed": any(
             receipt.get("external_read_performed") is True for receipt in receipts
+        ),
+        "received_reaction_count": sum(
+            int(receipt.get("received_reaction_count") or 0) for receipt in receipts
+        ),
+        "received_reaction_failure_count": sum(
+            int(receipt.get("received_reaction_failure_count") or 0)
+            for receipt in receipts
+        ),
+        "self_message_skipped_count": sum(
+            int(receipt.get("self_message_skipped_count") or 0) for receipt in receipts
+        ),
+        "external_writes_performed": any(
+            receipt.get("external_writes_performed") is True for receipt in receipts
         ),
         "local_private_state_mutated": any(
             receipt.get("local_private_state_mutated") is True for receipt in receipts
