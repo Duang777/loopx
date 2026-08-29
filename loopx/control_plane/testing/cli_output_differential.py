@@ -140,6 +140,16 @@ _PLANNING_INVENTORY_DETAIL_V0_MIGRATION_GROWTH_ALLOWANCE: dict[Metric, int] = {
     "compact_payload_chars": 1_024,
 }
 
+# Explicit runtime-root command routing repeats one path per executable action.
+# The bound is per newly observed route, not per row, so unrelated output growth
+# still fails under the normal hot-path policy.
+_RUNTIME_ROOT_COMMAND_ROUTE_GROWTH_PER_ROUTE: dict[Metric, int] = {
+    "chars": 96,
+    "utf8_bytes": 96,
+    "lines": 0,
+    "compact_payload_chars": 96,
+}
+
 
 def _rows_by_id(receipt: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if receipt.get("schema_version") != CLI_OUTPUT_PROBE_SCHEMA_VERSION:
@@ -338,6 +348,12 @@ def _compare_row(base: dict[str, Any], candidate: dict[str, Any]) -> dict[str, A
     inventory_detail_growth_migration = bool(
         output_format == "json" and inventory_detail_schema_migration
     )
+    base_runtime_routes = base.get("runtime_root_command_route_count")
+    candidate_runtime_routes = candidate.get("runtime_root_command_route_count")
+    added_runtime_root_routes = 0
+    if type(base_runtime_routes) is int and type(candidate_runtime_routes) is int:
+        added_runtime_root_routes = max(0, candidate_runtime_routes - base_runtime_routes)
+    runtime_root_route_growth = added_runtime_root_routes > 0
 
     deltas: dict[str, int | None] = {}
     allowances: dict[str, int | None] = {}
@@ -371,6 +387,12 @@ def _compare_row(base: dict[str, Any], candidate: dict[str, Any]) -> dict[str, A
                 _PLANNING_INVENTORY_DETAIL_V0_MIGRATION_GROWTH_ALLOWANCE[
                     metric
                 ],
+            )
+        if runtime_root_route_growth:
+            allowance = max(
+                allowance,
+                added_runtime_root_routes
+                * _RUNTIME_ROOT_COMMAND_ROUTE_GROWTH_PER_ROUTE[metric],
             )
         deltas[metric] = delta
         allowances[metric] = allowance
@@ -423,6 +445,11 @@ def _compare_row(base: dict[str, Any], candidate: dict[str, Any]) -> dict[str, A
                 "planning inventory detail schema migrated: "
                 f"{inventory_detail_schema_migration}"
             )
+    if runtime_root_route_growth:
+        review_signals.append(
+            "runtime-root command route coverage added: "
+            f"{added_runtime_root_routes} executable route(s)"
+        )
 
     return {
         "row_id": row_id,

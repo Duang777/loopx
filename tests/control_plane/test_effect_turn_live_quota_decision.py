@@ -59,4 +59,4 @@ def test_live_quota_decision_maps_to_effect_turn(tmp_path: Path) -> None:
     assert turn.interpretation.obligation == "advance_one_bounded_segment"
     assert turn.interpretation.interaction_mode == "bounded_delivery"
     assert turn.next_effect.cli_actions
-    assert turn.next_effect.cli_actions[0].startswith("loopx refresh-state")
+    assert turn.next_effect.cli_actions[0].startswith("loopx --runtime-root ")
