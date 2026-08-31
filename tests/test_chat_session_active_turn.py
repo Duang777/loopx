@@ -476,6 +476,60 @@ def test_resume_cannot_reopen_a_session_closed_during_restore(
     assert adapter.closed is True
 
 
+def test_close_wins_during_adapter_start_without_reopening_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    adapter = _HealthyChatAdapter()
+    start_entered = threading.Event()
+    release_start = threading.Event()
+
+    def start_adapter(*_args: object, **_kwargs: object) -> _HealthyChatAdapter:
+        start_entered.set()
+        release_start.wait(timeout=2)
+        return adapter
+
+    monkeypatch.setattr(runtime, "_start_adapter", start_adapter)
+    resume_error: list[BaseException] = []
+
+    def resume() -> None:
+        try:
+            runtime.resume_session(
+                session_id=session_id,
+                work_dir=tmp_path,
+                objective="resume this session",
+            )
+        except BaseException as exc:  # pragma: no cover - assertion captures it.
+            resume_error.append(exc)
+
+    worker = threading.Thread(target=resume)
+    worker.start()
+    assert start_entered.wait(timeout=2)
+    assert runtime.close_session(session_id) is True
+    release_start.set()
+    worker.join(timeout=2)
+
+    assert len(resume_error) == 1
+    assert isinstance(resume_error[0], KeyError)
+    assert str(resume_error[0]) == "'chat session was not found'"
+    persisted = store.load_session(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "closed"
+    assert session_id not in runtime.adapters
+    assert adapter.closed is True
+
+
 def test_restore_ready_does_not_clear_a_new_active_turn(
     tmp_path: Path,
 ) -> None:

@@ -487,19 +487,19 @@ class ChatRuntimeController:
             ) from exc
         with self.lock:
             self.adapters[session_id] = adapter
-        self.store.update_session(
-            session_id,
-            status="ready",
-            active_turn_id=None,
-            upstream_thread_id=adapter.upstream_thread_id,
-            upstream_mode=(
-                "chat"
-                if session.get("agent_id") == "codex"
-                else str(session.get("upstream_mode") or "default")
-            ),
-            last_activity_at=utc_now(),
-            last_error_code=None,
-        )
+        try:
+            self.store.restore_managed_session_if_idle(
+                session_id,
+                upstream_thread_id=adapter.upstream_thread_id,
+            )
+        except KeyError:
+            with self.lock:
+                owns_adapter = self.adapters.get(session_id) is adapter
+                if owns_adapter:
+                    self.adapters.pop(session_id, None)
+            if owns_adapter:
+                adapter.close_session()
+            raise
         return adapter
 
     def submit_turn(
