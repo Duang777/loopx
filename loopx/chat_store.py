@@ -280,6 +280,40 @@ class ChatSessionStore:
                 _atomic_write_json(path, payload, preserve_mode=True)
                 return payload
 
+    def restore_managed_session_if_idle(
+        self,
+        session_id: str,
+        *,
+        upstream_thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore a managed Session only while it has no active Turn."""
+
+        path = self._session_path(session_id)
+        with self._session_lock(session_id):
+            with exclusive_file_lock(
+                path,
+                agent_id="loopx-chat",
+                operation="restore_managed_chat_session",
+            ):
+                payload = self.load_session(session_id)
+                if payload is None:
+                    raise KeyError("chat session was not found")
+                if payload.get("session_mode") == CHAT_SESSION_MODE_ATTACHED:
+                    raise ValueError("the selected Session is an attached host session")
+                if payload.get("active_turn_id"):
+                    return payload
+                changes: dict[str, Any] = {
+                    "status": "ready",
+                    "last_error_code": None,
+                    "last_activity_at": utc_now(),
+                }
+                if upstream_thread_id is not None:
+                    changes["upstream_thread_id"] = _upstream_id(upstream_thread_id)
+                payload.update(changes)
+                payload["updated_at"] = utc_now()
+                _atomic_write_json(path, payload, preserve_mode=True)
+                return payload
+
     def release_active_turn(
         self,
         session_id: str,

@@ -43,6 +43,13 @@ class _BlockingChatAdapter:
         return True
 
 
+class _HealthyChatAdapter:
+    upstream_thread_id = "thread-one"
+
+    def healthcheck(self) -> bool:
+        return True
+
+
 def _slow_new_turn_writes(monkeypatch) -> set[str]:
     original_atomic_write = chat_store._atomic_write_json
     turn_write_threads: set[str] = set()
@@ -352,6 +359,64 @@ def test_managed_close_rejects_active_turn_before_closing_adapter(
         timeout_sec=2,
     )["status"] == "completed"
     assert runtime.close_session(session_id) is True
+
+
+def test_resume_with_healthy_adapter_restores_persisted_ready_state(
+    tmp_path: Path,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    runtime.adapters[session_id] = _HealthyChatAdapter()  # type: ignore[assignment]
+
+    restored = runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="resume this session",
+    )
+
+    assert restored["status"] == "ready"
+    persisted = store.load_session(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "ready"
+    assert persisted["active_turn_id"] is None
+
+
+def test_restore_ready_does_not_clear_a_new_active_turn(
+    tmp_path: Path,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    store.update_session(session_id, status="stale")
+    turn, _created = store.create_turn(
+        session_id,
+        client_turn_id="resume-race-turn",
+        message="new turn wins",
+    )
+
+    restored = store.restore_managed_session_if_idle(
+        session_id,
+        upstream_thread_id="thread-one",
+    )
+
+    assert restored["status"] == "busy"
+    assert restored["active_turn_id"] == turn["turn_id"]
 
 
 def test_managed_close_rejects_pending_queue_without_stranding_it(

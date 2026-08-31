@@ -1017,11 +1017,11 @@ class ChatRuntimeController:
             active_turn_id=None,
             last_error_code=None,
         )
-        self._ensure_adapter(session, work_dir=work_dir, objective=objective)
-        restored = self.store.load_session(session_id)
-        if restored is None:
-            raise KeyError("chat session was not found")
-        return restored
+        adapter = self._ensure_adapter(session, work_dir=work_dir, objective=objective)
+        return self.store.restore_managed_session_if_idle(
+            session_id,
+            upstream_thread_id=adapter.upstream_thread_id,
+        )
 
     def close(self) -> None:
         self.closed.set()
