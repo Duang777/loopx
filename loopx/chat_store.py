@@ -946,6 +946,42 @@ class ChatSessionStore:
                 _atomic_write_json(session_path, session, preserve_mode=True)
                 return True
 
+    def close_managed_session(self, session_id: str) -> bool:
+        """Close an idle managed Session without stranding background work."""
+
+        session_path = self._session_path(session_id)
+        with self._session_lock(session_id):
+            with exclusive_file_lock(
+                session_path,
+                agent_id="loopx-chat",
+                operation="close_managed_chat_session",
+            ):
+                session = self.load_session(session_id)
+                if session is None:
+                    return False
+                if session.get("session_mode") == CHAT_SESSION_MODE_ATTACHED:
+                    raise ValueError("the selected Session is an attached host session")
+                if session.get("status") == "closed":
+                    return True
+                if session.get("active_turn_id"):
+                    raise RuntimeError("managed_session_turn_active")
+                if self._settle_expired_queued_turns(
+                    session_id,
+                    now=datetime.now(timezone.utc),
+                ):
+                    raise RuntimeError("managed_session_queue_pending")
+                now = utc_now()
+                session.update(
+                    {
+                        "status": "closed",
+                        "active_turn_id": None,
+                        "last_activity_at": now,
+                        "updated_at": now,
+                    }
+                )
+                _atomic_write_json(session_path, session, preserve_mode=True)
+                return True
+
     def _event_rows_locked(self, session_id: str, turn_id: str) -> list[dict[str, Any]]:
         key = (session_id, turn_id)
         path = self._event_path(session_id, turn_id)

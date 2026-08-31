@@ -979,6 +979,9 @@ class ChatRuntimeController:
             return False
         if session.get("session_mode") == CHAT_SESSION_MODE_ATTACHED:
             return self.store.close_attached_session(session_id)
+        closed = self.store.close_managed_session(session_id)
+        if not closed:
+            return False
         with self.lock:
             adapter = self.adapters.pop(session_id, None)
             event_buffers = [
@@ -990,7 +993,6 @@ class ChatRuntimeController:
             event_buffer.close()
         if adapter is not None:
             adapter.close_session()
-        self.store.update_session(session_id, status="closed", active_turn_id=None)
         return True
 
     def resume_session(self, *, session_id: str, work_dir: Path, objective: str) -> dict[str, Any]:
