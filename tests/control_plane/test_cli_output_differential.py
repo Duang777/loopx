@@ -524,10 +524,10 @@ def test_runtime_root_route_growth_has_per_route_budget() -> None:
         action_signature_coverages=[],
     )
     candidate = _row(
-        chars=1_192,
-        utf8_bytes=1_192,
+        chars=1_320,
+        utf8_bytes=1_320,
         lines=10,
-        compact_payload_chars=1_192,
+        compact_payload_chars=1_320,
         action_signature_sha256=None,
         action_signature_coverages=[],
         runtime_root_command_route_count=2,
@@ -538,10 +538,10 @@ def test_runtime_root_route_growth_has_per_route_budget() -> None:
     assert result["ok"] is True
     assert result["review_required"] is True
     assert result["rows"][0]["allowances"] == {
-        "chars": 192,
-        "utf8_bytes": 192,
+        "chars": 320,
+        "utf8_bytes": 320,
         "lines": 2,
-        "compact_payload_chars": 192,
+        "compact_payload_chars": 320,
     }
     assert result["rows"][0]["review_signals"] == [
         "runtime-root command route coverage added: 2 executable route(s)"
@@ -558,10 +558,10 @@ def test_runtime_root_route_growth_still_fails_above_per_route_budget() -> None:
         action_signature_coverages=[],
     )
     candidate = _row(
-        chars=1_193,
-        utf8_bytes=1_193,
+        chars=1_321,
+        utf8_bytes=1_321,
         lines=10,
-        compact_payload_chars=1_193,
+        compact_payload_chars=1_321,
         action_signature_sha256=None,
         action_signature_coverages=[],
         runtime_root_command_route_count=2,
@@ -570,7 +570,7 @@ def test_runtime_root_route_growth_still_fails_above_per_route_budget() -> None:
     result = compare_cli_output_receipts(_receipt(base), _receipt(candidate))
 
     assert result["ok"] is False
-    assert "chars grew by 193; allowance is 192" in result["rows"][0]["failures"]
+    assert "chars grew by 321; allowance is 320" in result["rows"][0]["failures"]
 
 
 def test_invalid_runtime_root_route_count_does_not_grant_budget() -> None:

@@ -141,14 +141,15 @@ _PLANNING_INVENTORY_DETAIL_V0_MIGRATION_GROWTH_ALLOWANCE: dict[Metric, int] = {
     "compact_payload_chars": 1_024,
 }
 
-# Explicit runtime-root command routing repeats one path per executable action.
-# The bound is per newly observed route, not per row, so unrelated output growth
-# still fails under the normal hot-path policy.
+# Explicit runtime-root command routing repeats one bounded command prefix per
+# executable action. The allowance covers the prefix and its JSON projection;
+# it is per newly observed route, not per row, so unrelated output growth still
+# fails under the normal hot-path policy.
 _RUNTIME_ROOT_COMMAND_ROUTE_GROWTH_PER_ROUTE: dict[Metric, int] = {
-    "chars": 96,
-    "utf8_bytes": 96,
+    "chars": 160,
+    "utf8_bytes": 160,
     "lines": 0,
-    "compact_payload_chars": 96,
+    "compact_payload_chars": 160,
 }
 
 # loopx_guided_todo_delta_v0 adds the continuation-aware Todo authoring
