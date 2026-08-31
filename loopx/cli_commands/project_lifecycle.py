@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable, Mapping
-from importlib import import_module
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from ..capabilities.explore.activation import (
@@ -11,6 +10,9 @@ from ..capabilities.explore.activation import (
 )
 from ..control_plane.agents.capability_gate import (
     runtime_capabilities_for_cli_projection,
+)
+from ..control_plane.capability_hooks import (
+    PostWritebackHookRegistration,
 )
 from ..control_plane.goals.goal_vision_policy import (
     GOAL_VISION_ADVANCEMENT_POLICY_CHOICES,
@@ -31,10 +33,6 @@ from ..control_plane.work_items.semantic_replan_writeback import (
 from ..extensions.lark.goal_channel_lifecycle import (
     goal_channel_gate_sync_failure,
     sync_human_gate_after_refresh,
-)
-from ..extensions.runtime import (
-    default_extension_state_file,
-    resolve_extension_activation,
 )
 from ..feedback import (
     LESSON_KINDS,
@@ -63,6 +61,14 @@ from ..state_refresh import (
     refresh_state_run,
     render_state_refresh_markdown,
 )
+from .post_writeback import (
+    PostWritebackProjectionBuilder,
+    dispatch_committed_cli_post_writeback_hooks,
+)
+from .project_lifecycle_sinks import (
+    apply_external_sink_postcondition,
+    lark_explore_graph_syncer,
+)
 
 PrintPayload = Callable[
     [dict[str, object], str, Callable[[dict[str, object]], str]],
@@ -87,66 +93,6 @@ INLINE_VISION_FIELDS = {
     "vision_dreaming_policy": "dreaming_policy",
     "vision_last_patch": "last_patch_summary",
 }
-
-
-def _lark_explore_graph_syncer(
-    runtime_root_arg: str | None,
-    *,
-    registry_path: Path,
-) -> Callable[..., Mapping[str, object]]:
-    extension_runtime_root = resolve_runtime_root(
-        load_registry(registry_path), runtime_root_arg
-    )
-
-    def sync(**kwargs: object) -> Mapping[str, object]:
-        implementation = import_module(
-            "loopx.extensions.lark.presentation.explore_results"
-        )
-        preview_kwargs = dict(kwargs)
-        preview_kwargs["execute"] = False
-        preview = dict(
-            implementation.sync_issue_fix_explore_on_material_change(
-                **preview_kwargs
-            )
-        )
-        if preview.get("status") in {"not_applicable", "not_configured"}:
-            return preview
-
-        provider = import_module("loopx.extensions.lark")
-        activation = resolve_extension_activation(
-            str(provider.LARK_EXTENSION_ID),
-            state_file=default_extension_state_file(extension_runtime_root),
-            required_permissions=(str(provider.LARK_PROJECTION_SINK_PERMISSION),),
-        )
-        result = (
-            dict(implementation.sync_issue_fix_explore_on_material_change(**kwargs))
-            if kwargs.get("execute")
-            else preview
-        )
-        result["extension_activation"] = activation
-        return result
-
-    return sync
-
-
-def _apply_external_sink_postcondition(
-    payload: dict[str, object],
-    *,
-    sink_result: Mapping[str, object],
-    warning: str,
-    error: str,
-) -> None:
-    postcondition = (
-        sink_result.get("delivery_postcondition")
-        if isinstance(sink_result.get("delivery_postcondition"), Mapping)
-        else {}
-    )
-    if not sink_result.get("enabled") or postcondition.get("satisfied"):
-        return
-    payload.setdefault("warnings", []).append(warning)
-    if postcondition.get("blocks_delivery"):
-        payload["ok"] = False
-        payload["error"] = error
 
 
 def _inline_agent_vision_packet(args: argparse.Namespace) -> dict[str, object] | None:
@@ -643,6 +589,8 @@ def handle_project_lifecycle_command(
     print_payload: PrintPayload,
     output_format: OutputFormat,
     append_cli_rollout_event: AppendCliRolloutEvent,
+    post_writeback_hooks: Sequence[PostWritebackHookRegistration] | None = None,
+    post_writeback_projection_builder: PostWritebackProjectionBuilder | None = None,
 ) -> int | None:
     if args.command not in PROJECT_LIFECYCLE_COMMANDS:
         return None
@@ -866,6 +814,35 @@ def handle_project_lifecycle_command(
                 elif settlement_receipt_repair:
                     payload["receipt_repair_required"] = False
                     payload["receipt_repaired"] = True
+            if material_refresh_ready and post_writeback_hooks:
+                settlement_identity = (
+                    payload.get("settlement_identity")
+                    if isinstance(payload.get("settlement_identity"), Mapping)
+                    else {}
+                )
+                payload["post_writeback_hooks"] = (
+                    dispatch_committed_cli_post_writeback_hooks(
+                        payload=payload,
+                        registry_path=registry_path,
+                        runtime_root_arg=args.runtime_root,
+                        goal_id=args.goal_id,
+                        event_kind="refresh_state",
+                        identity={
+                            "agent_id": str(args.agent_id or ""),
+                            "todo_id": str(getattr(args, "todo_id", None) or ""),
+                            "turn_instance_id": str(
+                                getattr(args, "turn_instance_id", None) or ""
+                            ),
+                            "effect_id": str(
+                                settlement_identity.get("effect_id") or ""
+                            ),
+                        },
+                        state_version=str(payload.get("generated_at") or ""),
+                        committed_at=str(payload.get("generated_at") or ""),
+                        hooks=post_writeback_hooks,
+                        projection_builder=post_writeback_projection_builder,
+                    )
+                )
             if not material_refresh_ready:
                 print_payload(payload, fmt, render_state_refresh_markdown)
                 return 0 if payload.get("ok") else 1
@@ -878,13 +855,13 @@ def handle_project_lifecycle_command(
                 external_sink_delivery_authorized=not bool(
                     args.suppress_external_sinks
                 ),
-                syncer=_lark_explore_graph_syncer(
+                syncer=lark_explore_graph_syncer(
                     args.runtime_root,
                     registry_path=registry_path,
                 ),
             )
             payload["explore_graph_sync"] = graph_sync
-            _apply_external_sink_postcondition(
+            apply_external_sink_postcondition(
                 payload,
                 sink_result=graph_sync,
                 warning=(
@@ -912,7 +889,7 @@ def handle_project_lifecycle_command(
                     goal_id=args.goal_id,
                 )
             payload["goal_channel_gate_sync"] = gate_sync
-            _apply_external_sink_postcondition(
+            apply_external_sink_postcondition(
                 payload,
                 sink_result=gate_sync,
                 warning=(

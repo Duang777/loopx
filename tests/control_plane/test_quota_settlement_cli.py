@@ -846,6 +846,7 @@ def test_standard_codex_app_settlement_is_receipted_and_idempotent(
     tmp_path: Path,
 ) -> None:
     project, runtime, registry_path = _write_fixture(tmp_path)
+    _configure_read_only_todo(project)
     binding = (
         "--agent-id",
         AGENT_ID,
@@ -1224,6 +1225,14 @@ def test_same_turn_identityless_guard_upgrades_and_settles_full_chain(
     project, runtime, registry_path = _write_fixture(
         tmp_path,
         required_capability="network",
+    )
+    state_path = project / f".codex/goals/{GOAL_ID}/ACTIVE_GOAL_STATE.md"
+    state_path.write_text(
+        state_path.read_text(encoding="utf-8").replace(
+            "action_kind=validate ",
+            "action_kind=validate continuation_policy=same_agent_non_delivery ",
+        ),
+        encoding="utf-8",
     )
     binding = (
         "--agent-id",
@@ -2452,6 +2461,119 @@ def test_todoless_autonomous_replan_settles_quota_refresh_spend_chain(
     assert _spend_run_count(runtime) == 1
 
 
+def test_todoless_blocked_replan_settles_read_only_external_evidence_without_worktree(
+    tmp_path: Path,
+) -> None:
+    project, runtime, registry_path = _write_fixture(tmp_path)
+    _configure_autonomous_replan_fixture(project, runtime, registry_path)
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["goals"][0]["coordination"]["registered_agents"].append(
+        "codex-settlement-peer"
+    )
+    registry_path.write_text(
+        json.dumps(registry, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    external_evidence_dir = tmp_path / "external-review"
+    external_evidence_dir.mkdir()
+    turn_instance_id = "turn-autonomous-replan-blocked-external-evidence"
+
+    guard_rc, guard = _run_cli(
+        registry_path,
+        runtime,
+        "quota",
+        "should-run",
+        "--codex-app",
+        "--goal-id",
+        GOAL_ID,
+        "--agent-id",
+        AGENT_ID,
+        "--turn-instance-id",
+        turn_instance_id,
+        "--scan-path",
+        str(project),
+    )
+
+    assert guard_rc == 0, guard
+    assert guard["decision"] == "autonomous_replan_required", guard
+    obligation_id = guard["replan_action_packet"]["obligation_id"]
+    binding = (
+        "--agent-id",
+        AGENT_ID,
+        "--replan-obligation-id",
+        obligation_id,
+        "--turn-instance-id",
+        turn_instance_id,
+    )
+    refresh_rc, refresh = _run_cli(
+        registry_path,
+        runtime,
+        "refresh-state",
+        "--goal-id",
+        GOAL_ID,
+        "--progress-scope",
+        "agent_lane",
+        "--classification",
+        "external_evidence_replan_blocked",
+        "--delivery-batch-scale",
+        "single_surface",
+        "--delivery-outcome",
+        "outcome_gap",
+        "--progress-result-class",
+        "blocked",
+        "--progress-blocker-id",
+        "public-head-validation-failed",
+        "--progress-evidence-id",
+        "public-review-readback",
+        *binding,
+        "--no-global-sync",
+        "--suppress-external-sinks",
+        cwd=external_evidence_dir,
+    )
+
+    assert refresh_rc == 0, refresh.get("error") or refresh
+    assert refresh["delivery_outcome"] == "outcome_gap"
+    assert refresh["progress_observation"]["work_item_id"] == obligation_id
+    assert refresh["settlement_workspace_requirement"] == {
+        "schema_version": "settlement_workspace_requirement_v0",
+        "settlement_binding_kind": "autonomous_replan",
+        "requirement": "not_required",
+        "source": "typed_settlement_identity",
+        "reason": "autonomous_replan_is_non_repository_control_plane_work",
+    }
+    assert "delivery_workspace" not in refresh
+    assert refresh["settlement_result"]["ok"] is True
+
+    spend_rc, spend = _run_cli(
+        registry_path,
+        runtime,
+        "quota",
+        "spend-slot",
+        "--goal-id",
+        GOAL_ID,
+        "--slots",
+        "1",
+        "--source",
+        "heartbeat",
+        "--execute",
+        *binding,
+        "--scan-path",
+        str(project),
+        cwd=external_evidence_dir,
+    )
+
+    assert spend_rc == 0, spend
+    assert spend["settlement_workspace_requirement"]["requirement"] == (
+        "not_required"
+    )
+    assert spend["delivery_workspace_validated"] is False
+    assert spend["settlement_result"]["ok"] is True
+    assert [
+        receipt["step_kind"] for receipt in spend["settlement_result"]["receipts"]
+    ] == ["validation", "durable_writeback", "quota_spend"]
+    assert _spend_run_count(runtime) == 1
+
+
 def test_unbound_visible_goal_todoless_replan_reenters_through_guided_turn(
     tmp_path: Path,
 ) -> None:
@@ -3050,6 +3172,7 @@ def test_same_turn_receipt_replay_defers_newly_due_higher_priority_monitor(
     tmp_path: Path,
 ) -> None:
     project, runtime, registry_path = _write_fixture(tmp_path)
+    _configure_read_only_todo(project)
     guard_args = (
         "quota",
         "should-run",
@@ -3208,7 +3331,26 @@ def test_read_only_settlement_omits_non_causal_delivery_workspace(
     tmp_path: Path,
 ) -> None:
     project, runtime, registry_path = _write_fixture(tmp_path)
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["goals"][0]["control_plane"] = {
+        "periodic_report": {
+            "enabled": True,
+            "profile_preset": "weekly",
+        }
+    }
+    registry_path.write_text(
+        json.dumps(registry, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     state_path = _configure_read_only_todo(project)
+    state_path.write_text(
+        state_path.read_text(encoding="utf-8").replace(
+            "## Agent Todo\n\n",
+            "## User Todo\n\n## Agent Todo\n\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
     binding = (
         "--agent-id",
         AGENT_ID,
@@ -3292,6 +3434,12 @@ def test_read_only_settlement_omits_non_causal_delivery_workspace(
         "single_surface",
         "--delivery-outcome",
         "outcome_progress",
+        "--vision-state",
+        "vision_closed",
+        "--vision-summary",
+        "The bounded read-only characterization is complete.",
+        "--vision-acceptance",
+        "The characterization evidence is validated and durably written.",
         *binding,
         "--no-global-sync",
         "--suppress-external-sinks",
@@ -3299,6 +3447,7 @@ def test_read_only_settlement_omits_non_causal_delivery_workspace(
     assert refresh_rc == 0, refresh
     assert refresh["delivery_workspace_causality"]["requirement"] == "not_required"
     assert "delivery_workspace" not in refresh
+    assert refresh["post_writeback_hooks"]["intent_count"] == 0
 
     ordinary_args = (
         "todo",
@@ -3320,6 +3469,7 @@ def test_read_only_settlement_omits_non_causal_delivery_workspace(
     assert ordinary["changed"] is True
     assert ordinary["completion_continuation"] == "active_goal"
     assert ordinary["completion_recovery"] is None
+    assert ordinary["post_writeback_hooks"]["intent_count"] == 0
 
     spend_args = (
         "quota",
@@ -3366,6 +3516,12 @@ def test_read_only_settlement_omits_non_causal_delivery_workspace(
     assert complete["changed"] is True
     assert complete["completion_continuation"] == "no_followup"
     assert complete["completion_recovery"] == "same_turn_terminal_closeout"
+    assert complete["post_writeback_hooks"]["intent_count"] == 1
+    trigger_intent = complete["post_writeback_hooks"]["intents"][0]
+    assert trigger_intent["intent_kind"] == "periodic_report.trigger_evaluation"
+    assert trigger_intent["requested_write_scope"] == []
+    assert trigger_intent["payload"]["generation_authorized"] is False
+    assert trigger_intent["payload"]["external_delivery_authorized"] is False
     assert [
         receipt["step_kind"] for receipt in complete["settlement_result"]["receipts"]
     ] == [
@@ -3404,6 +3560,11 @@ def test_read_only_settlement_omits_non_causal_delivery_workspace(
     assert complete_replay_rc == 0, complete_replay
     assert complete_replay["idempotent_replay"] is True
     assert complete_replay["changed"] is False
+    assert complete_replay["post_writeback_hooks"]["invoked_count"] == 0
+    assert complete_replay["post_writeback_hooks"]["replayed_hooks"] == [
+        "periodic_report.runtime_trigger"
+    ]
+    assert complete_replay["post_writeback_hooks"]["intents"] == [trigger_intent]
     ordinary_replay_rc, ordinary_replay = _run_cli(
         registry_path,
         runtime,

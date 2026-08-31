@@ -1311,7 +1311,8 @@ export function PersonalWorkspacePage({
       if (pendingImages.length) {
         if (!selectedGoalId) setManagerConversationReceiptVisible(true);
         else if (selectedGoalTab !== "chat") setGoalConversationReceiptVisible(true);
-        await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId, pendingImages);
+        const semanticPreview = await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId, pendingImages);
+        if (semanticPreview) await createPreview(semanticPreview);
         return;
       }
       const intentRoute = routeWorkspaceInput(message, {
@@ -1321,9 +1322,9 @@ export function PersonalWorkspacePage({
       });
       if (intentRoute.route === "clarify") {
         setComposer(message);
-        setActionFeedback(intentRoute.missingFields.includes("resume_when")
-          ? t("composer.clarifyDefer")
-          : t("composer.clarifySingleAction"));
+        let clarification = t("composer.clarifySingleAction");
+        if (intentRoute.missingFields.includes("resume_when")) clarification = t("composer.clarifyDefer");
+        setActionFeedback(clarification);
         return;
       }
       if (intentRoute.actionKind === "goal.create") {
@@ -1435,19 +1436,10 @@ export function PersonalWorkspacePage({
         });
         return;
       }
-      if (selectedGoalId && intentRoute.actionKind === "goal.update") {
-        await createPreview({
-          actionKind: "goal.update",
-          context: { kind: "goal", goal_id: selectedGoalId, natural_language: message },
-          idempotencyKey: `workspace-protected-${selectedGoalId}-${Date.now().toString(36)}`,
-          normalizedParameters: { goal_id: selectedGoalId, status: "operator_gate_requested" },
-          summary: `请求受保护操作：${message.slice(0, 160)}`,
-        });
-        return;
-      }
       if (!selectedGoalId) setManagerConversationReceiptVisible(true);
       else if (selectedGoalTab !== "chat") setGoalConversationReceiptVisible(true);
-      await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId);
+      const semanticPreview = await callbacks.onSendMessage?.(message, selectedAgentId, selectedGoalId);
+      if (semanticPreview) await createPreview(semanticPreview);
     } catch (error) {
       if (!messageOverride) {
         setComposer(message);
