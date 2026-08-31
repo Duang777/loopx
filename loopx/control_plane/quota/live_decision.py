@@ -238,7 +238,8 @@ def build_live_quota_should_run_decision(
         turn_instance_id=turn_instance_id,
         runtime_root=runtime_root,
     )
-    payload["runtime_root"] = str(runtime_root)
+    if route_source.startswith("loopx_turn_"):
+        payload["runtime_root"] = str(runtime_root)
     hook_dispatch = dispatch_interaction_projection_hooks(interaction_projection_hooks)
     interaction = payload.get("interaction_contract")
     if isinstance(interaction, dict):

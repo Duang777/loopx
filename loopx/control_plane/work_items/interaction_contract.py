@@ -57,13 +57,6 @@ PROTOCOL_ACTION_PACKET_SCHEMA_VERSION = "protocol_action_packet_v0"
 PROTOCOL_ACTION_PACKET_LLM_POLICY = "no_api"
 
 
-def _render_cli_command_prefix(*, runtime_root: str | None = None) -> str:
-    prefix = "loopx"
-    if runtime_root:
-        prefix += f" --runtime-root {shlex.quote(str(runtime_root))}"
-    return prefix
-
-
 class _InteractionContractRequired(typing.TypedDict):
     schema_version: str
     mode: str
@@ -598,7 +591,7 @@ def _turn_scoped_cli_settlement_context(
         ),
         goal_id=goal_id,
         agent_id=agent_id,
-        command_prefix=_render_cli_command_prefix(runtime_root=runtime_root),
+        command_prefix=selection.render_cli_command_prefix(runtime_root=runtime_root),
         todo_id=todo_id,
         replan_obligation_id=replan_obligation_id,
         scoped_cli_args=scoped_cli_args,
@@ -677,7 +670,7 @@ def interaction_next_cli_actions(
     runtime_root: str | None = None,
 ) -> list[str]:
     goal_id = str(payload.get("goal_id") or "<GOAL_ID>")
-    command_prefix = _render_cli_command_prefix(runtime_root=runtime_root)
+    command_prefix = selection.render_cli_command_prefix(runtime_root=runtime_root)
     agent_identity = payload.get("agent_identity") if isinstance(payload.get("agent_identity"), dict) else {}
     scoped_cli_args = _scoped_cli_args(
         agent_identity,
@@ -689,14 +682,12 @@ def interaction_next_cli_actions(
         else ""
     )
     if settlement_plan is None:
-        settlement_plan, _replan_settlement_contract = (
-            _turn_scoped_cli_settlement_context(
-                payload,
-                available_capabilities=available_capabilities,
-                scheduler_execution_context=scheduler_execution_context,
-                turn_instance_id=turn_instance_id,
-                runtime_root=runtime_root,
-            )
+        settlement_plan, _replan_settlement_contract = _turn_scoped_cli_settlement_context(
+            payload,
+            available_capabilities=available_capabilities,
+            scheduler_execution_context=scheduler_execution_context,
+            turn_instance_id=turn_instance_id,
+            runtime_root=runtime_root,
         )
     settlement_args = settlement_binding_args(settlement_plan)
     try:

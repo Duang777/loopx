@@ -5,6 +5,14 @@ from collections.abc import Mapping
 from typing import Any
 
 
+def render_cli_command_prefix(*, runtime_root: str | None = None) -> str:
+    return (
+        f"loopx --runtime-root {shlex.quote(str(runtime_root))}"
+        if runtime_root
+        else "loopx"
+    )
+
+
 def action_portfolio_requires_explicit_selection(
     payload: Mapping[str, Any],
 ) -> bool:
