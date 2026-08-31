@@ -46,8 +46,14 @@ class _BlockingChatAdapter:
 class _HealthyChatAdapter:
     upstream_thread_id = "thread-one"
 
+    def __init__(self) -> None:
+        self.closed = False
+
     def healthcheck(self) -> bool:
         return True
+
+    def close_session(self) -> None:
+        self.closed = True
 
 
 def _slow_new_turn_writes(monkeypatch) -> set[str]:
@@ -375,7 +381,8 @@ def test_resume_with_healthy_adapter_restores_persisted_ready_state(
     )
     session_id = str(session["session_id"])
     runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
-    runtime.adapters[session_id] = _HealthyChatAdapter()  # type: ignore[assignment]
+    adapter = _HealthyChatAdapter()
+    runtime.adapters[session_id] = adapter  # type: ignore[assignment]
 
     restored = runtime.resume_session(
         session_id=session_id,
@@ -388,6 +395,45 @@ def test_resume_with_healthy_adapter_restores_persisted_ready_state(
     assert persisted is not None
     assert persisted["status"] == "ready"
     assert persisted["active_turn_id"] is None
+
+
+def test_resume_cannot_reopen_a_session_closed_during_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    adapter = _HealthyChatAdapter()
+
+    def close_before_restore(*_args: object, **_kwargs: object) -> object:
+        store.update_session(session_id, status="closed", active_turn_id=None)
+        runtime.adapters[session_id] = adapter  # type: ignore[assignment]
+        return adapter
+
+    monkeypatch.setattr(runtime, "_ensure_adapter", close_before_restore)
+
+    with pytest.raises(KeyError, match="chat session was not found"):
+        runtime.resume_session(
+            session_id=session_id,
+            work_dir=tmp_path,
+            objective="resume this session",
+        )
+
+    persisted = store.load_session(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "closed"
+    assert persisted["active_turn_id"] is None
+    assert session_id not in runtime.adapters
+    assert adapter.closed is True
 
 
 def test_restore_ready_does_not_clear_a_new_active_turn(

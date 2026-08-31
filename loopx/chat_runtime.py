@@ -1018,10 +1018,19 @@ class ChatRuntimeController:
             last_error_code=None,
         )
         adapter = self._ensure_adapter(session, work_dir=work_dir, objective=objective)
-        return self.store.restore_managed_session_if_idle(
-            session_id,
-            upstream_thread_id=adapter.upstream_thread_id,
-        )
+        try:
+            return self.store.restore_managed_session_if_idle(
+                session_id,
+                upstream_thread_id=adapter.upstream_thread_id,
+            )
+        except KeyError:
+            with self.lock:
+                owns_adapter = self.adapters.get(session_id) is adapter
+                if owns_adapter:
+                    self.adapters.pop(session_id, None)
+            if owns_adapter:
+                adapter.close_session()
+            raise
 
     def close(self) -> None:
         self.closed.set()

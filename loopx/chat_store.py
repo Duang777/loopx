@@ -300,6 +300,8 @@ class ChatSessionStore:
                     raise KeyError("chat session was not found")
                 if payload.get("session_mode") == CHAT_SESSION_MODE_ATTACHED:
                     raise ValueError("the selected Session is an attached host session")
+                if payload.get("status") == "closed":
+                    raise KeyError("chat session was not found")
                 if payload.get("active_turn_id"):
                     return payload
                 changes: dict[str, Any] = {
