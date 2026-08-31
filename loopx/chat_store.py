@@ -280,6 +280,49 @@ class ChatSessionStore:
                 _atomic_write_json(path, payload, preserve_mode=True)
                 return payload
 
+    def prepare_managed_session_resume(
+        self,
+        session_id: str,
+        *,
+        preserve_active_turn: bool,
+    ) -> tuple[dict[str, Any], bool]:
+        """Begin managed resume without taking ownership from an active Turn."""
+
+        path = self._session_path(session_id)
+        with self._session_lock(session_id):
+            with exclusive_file_lock(
+                path,
+                agent_id="loopx-chat",
+                operation="prepare_managed_chat_resume",
+            ):
+                payload = self.load_session(session_id)
+                if payload is None or payload.get("status") == "closed":
+                    raise KeyError("chat session was not found")
+                active_turn_id = str(payload.get("active_turn_id") or "")
+                active_turn = (
+                    self.load_turn(session_id, active_turn_id)
+                    if active_turn_id
+                    else None
+                )
+                if (
+                    preserve_active_turn
+                    and active_turn is not None
+                    and active_turn.get("status")
+                    in {"queued", "starting", "running", "interrupting"}
+                ):
+                    return payload, True
+                resume_snapshot = dict(payload)
+                payload.update(
+                    {
+                        "status": "stale",
+                        "active_turn_id": None,
+                        "last_error_code": None,
+                        "updated_at": utc_now(),
+                    }
+                )
+                _atomic_write_json(path, payload, preserve_mode=True)
+                return resume_snapshot, False
+
     def restore_managed_session_if_idle(
         self,
         session_id: str,

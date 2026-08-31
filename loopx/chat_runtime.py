@@ -1011,12 +1011,15 @@ class ChatRuntimeController:
                 last_error_code=None,
             )
             return restored
-        self.store.update_session(
+        with self.lock:
+            current = self.adapters.get(session_id)
+            adapter_healthy = current is not None and current.healthcheck()
+        session, active_turn_preserved = self.store.prepare_managed_session_resume(
             session_id,
-            status="stale",
-            active_turn_id=None,
-            last_error_code=None,
+            preserve_active_turn=adapter_healthy,
         )
+        if active_turn_preserved:
+            return session
         adapter = self._ensure_adapter(session, work_dir=work_dir, objective=objective)
         try:
             return self.store.restore_managed_session_if_idle(
