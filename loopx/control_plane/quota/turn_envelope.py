@@ -115,7 +115,6 @@ CONTRACT_CAPSULE_FIELDS = {
         "selected_todo_is_goal_completion",
         "closeout_allowed_without_evidence",
         "trigger_kinds",
-        "required_before_closeout",
         "recommended_action",
     ),
     "handoff_readiness": (
@@ -137,7 +136,7 @@ CONTRACT_CAPSULE_TEXT_LIMITS = {
     "execution_obligation": {"reason": 240},
     "agent_scope_frontier": {"recommended_action": 320, "spend_policy": 220},
     "automation_liveness": {"pause_policy": 260},
-    "vision_continuation_audit": {"recommended_action": 320},
+    "vision_continuation_audit": {"recommended_action": 48},
 }
 
 

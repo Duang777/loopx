@@ -1699,7 +1699,8 @@ def test_turn_envelope_cli_preserves_codex_app_scheduler_binding(
     assert exit_code == 0, text
     payload = json.loads(text)
     assert payload["detail_ref"]["full_decision"] == (
-        "loopx --format json quota should-run "
+        f"loopx --runtime-root {shlex.quote(str(runtime))} "
+        "--format json quota should-run "
         f"--goal-id {GOAL_ID} --agent-id {AGENT_IDS[0]} --codex-app"
     )
 

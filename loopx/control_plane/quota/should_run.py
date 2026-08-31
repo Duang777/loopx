@@ -211,6 +211,9 @@ def build_quota_paused_should_run_payload(
         payload=payload,
         agent_identity=agent_identity,
     )
+    resolved_runtime_root = runtime_root or status_payload.get("runtime_root")
+    if resolved_runtime_root:
+        payload["runtime_root"] = str(resolved_runtime_root)
     payload["automation_liveness"] = build_automation_liveness(payload)
     payload["interaction_contract"] = build_interaction_contract(
         payload,

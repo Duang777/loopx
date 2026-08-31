@@ -127,18 +127,22 @@ def bind_action_selection_cli_routes(
         tokens = shlex.split(route_prefix)
     except ValueError:
         return
-    if tokens == ["loopx", "--format", "json"]:
-        selection_command["route_prefix"] = shlex.join(
-            [
-                "loopx",
-                "--registry",
-                str(registry_path.expanduser().resolve()),
+    if len(tokens) >= 3 and tokens[0] == "loopx":
+        try:
+            format_index = tokens.index("--format")
+        except ValueError:
+            return
+        if tokens[format_index : format_index + 2] != ["--format", "json"]:
+            return
+        if "--registry" not in tokens:
+            tokens[1:1] = ["--registry", str(registry_path.expanduser().resolve())]
+        if "--runtime-root" not in tokens:
+            format_index = tokens.index("--format")
+            tokens[format_index:format_index] = [
                 "--runtime-root",
                 str(runtime_root.expanduser().resolve()),
-                "--format",
-                "json",
             ]
-        )
+        selection_command["route_prefix"] = shlex.join(tokens)
 
 
 def build_live_quota_should_run_decision(

@@ -710,6 +710,7 @@ def interaction_next_cli_actions(
         scoped_cli_args=scoped_cli_args,
         scheduler_args=scheduler_args,
         turn_instance_id=turn_instance_id,
+        runtime_root=runtime_root,
     )
     if selection_command_template:
         return [selection_command_template]
@@ -922,6 +923,7 @@ def interaction_next_cli_actions(
             settlement_chain_ready=settlement_plan is not None,
             command_prefix=command_prefix,
             lifecycle_actor_args=lifecycle_actor_args,
+            runtime_root=runtime_root,
         )
     return _terminal_cli_actions(
         mode=mode,

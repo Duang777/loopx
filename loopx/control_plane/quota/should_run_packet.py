@@ -1247,6 +1247,9 @@ def _build_quota_should_run_payload(
         "plan_summary": prepared.plan.get("summary"),
         "todo_write_hint": build_todo_write_hint(prepared.safe_goal_id),
     }
+    resolved_runtime_root = runtime_root or prepared.status_payload.get("runtime_root")
+    if resolved_runtime_root:
+        payload["runtime_root"] = str(resolved_runtime_root)
     if payload["safe_bypass_policy"] is None:
         payload.pop("safe_bypass_policy")
     payload = attach_task_orchestration_payload(
