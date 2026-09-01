@@ -13,14 +13,16 @@ from typing import Any, Callable, Protocol
 from .chat_acp import ACPStdioAdapter
 from .chat_agent import CodexChatAgentError, CodexChatAgentSession, CodexChatTimeoutError
 from .chat_endpoints import AgentEndpointRegistry
-from .chat_store import CHAT_SESSION_MODE_ATTACHED, ChatSessionStore, utc_now
+from .chat_store import (
+    CHAT_SESSION_MODE_ATTACHED,
+    TERMINAL_TURN_STATES,
+    ChatSessionStore,
+    utc_now,
+)
 from .chat_providers import ClaudeCodeAdapter, direct_model_from_environment
 
 
 EventSink = Callable[[str, dict[str, Any]], None]
-TERMINAL_TURN_STATES = {"completed", "interrupted", "timed_out", "failed"}
-
-
 class ChatRuntimeAdapter(Protocol):
     @property
     def upstream_thread_id(self) -> str: ...
