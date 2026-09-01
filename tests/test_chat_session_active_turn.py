@@ -442,6 +442,75 @@ def test_legacy_codex_resume_persists_chat_mode_after_one_time_migration(
     assert len(start_calls) == 1
 
 
+def test_legacy_codex_resume_commits_identity_when_new_turn_wins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="legacy-thread",
+        upstream_mode="default",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    adapter = _HealthyChatAdapter()
+    start_calls: list[dict[str, object]] = []
+    winning_turn: dict[str, object] = {}
+
+    def start_adapter(**kwargs: object) -> _HealthyChatAdapter:
+        start_calls.append(kwargs)
+        turn, _created = store.create_turn(
+            session_id,
+            client_turn_id="identity-race-turn",
+            message="new turn wins before restore",
+        )
+        winning_turn.update(turn)
+        store.update_turn(session_id, str(turn["turn_id"]), status="running")
+        return adapter
+
+    monkeypatch.setattr(runtime, "_start_adapter", start_adapter)
+
+    restored = runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="resume this session",
+    )
+
+    assert restored["status"] == "busy"
+    assert restored["active_turn_id"] == winning_turn["turn_id"]
+    persisted = store.load_session(session_id)
+    assert persisted is not None
+    assert persisted["upstream_thread_id"] == "thread-one"
+    assert persisted["upstream_mode"] == "chat"
+    assert start_calls[0]["resume_thread_id"] is None
+
+    store.update_turn(
+        session_id,
+        str(winning_turn["turn_id"]),
+        status="completed",
+        completed_at="2026-09-01T00:00:00Z",
+    )
+    assert store.release_active_turn(
+        session_id,
+        str(winning_turn["turn_id"]),
+        last_activity_at="2026-09-01T00:00:01Z",
+        last_error_code=None,
+    )
+    runtime.adapters.pop(session_id)
+    runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="resume this session",
+    )
+
+    assert start_calls[1]["resume_thread_id"] == "thread-one"
+    assert start_calls[1]["history"] is None
+
+
 def test_resume_does_not_clear_a_healthy_active_turn(
     tmp_path: Path,
 ) -> None:

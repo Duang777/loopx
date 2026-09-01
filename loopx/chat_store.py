@@ -346,20 +346,28 @@ class ChatSessionStore:
                     raise ValueError("the selected Session is an attached host session")
                 if payload.get("status") == "closed":
                     raise KeyError("chat session was not found")
-                if payload.get("active_turn_id"):
-                    return payload
-                changes: dict[str, Any] = {
-                    "status": "ready",
-                    "last_error_code": None,
-                    "last_activity_at": utc_now(),
-                }
+                identity_changes: dict[str, Any] = {}
                 if upstream_thread_id is not None:
-                    changes["upstream_thread_id"] = _upstream_id(upstream_thread_id)
+                    identity_changes["upstream_thread_id"] = _upstream_id(
+                        upstream_thread_id
+                    )
                 if upstream_mode is not None:
-                    changes["upstream_mode"] = _opaque_id(
+                    identity_changes["upstream_mode"] = _opaque_id(
                         upstream_mode,
                         field="upstream_mode",
                     )
+                if payload.get("active_turn_id"):
+                    if identity_changes:
+                        payload.update(identity_changes)
+                        payload["updated_at"] = utc_now()
+                        _atomic_write_json(path, payload, preserve_mode=True)
+                    return payload
+                changes = {
+                    "status": "ready",
+                    "last_error_code": None,
+                    "last_activity_at": utc_now(),
+                    **identity_changes,
+                }
                 payload.update(changes)
                 payload["updated_at"] = utc_now()
                 _atomic_write_json(path, payload, preserve_mode=True)
