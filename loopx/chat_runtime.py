@@ -277,6 +277,14 @@ class ChatRuntimeController:
         ]
         return [*builtins, *(endpoint.public_summary() for endpoint in self.endpoint_registry.list())]
 
+    @staticmethod
+    def _managed_upstream_mode(session: dict[str, Any]) -> str:
+        return (
+            "chat"
+            if session.get("agent_id") == "codex"
+            else str(session.get("upstream_mode") or "default")
+        )
+
     def _start_adapter(
         self,
         *,
@@ -491,6 +499,7 @@ class ChatRuntimeController:
             self.store.restore_managed_session_if_idle(
                 session_id,
                 upstream_thread_id=adapter.upstream_thread_id,
+                upstream_mode=self._managed_upstream_mode(session),
             )
         except KeyError:
             with self.lock:
@@ -1025,6 +1034,7 @@ class ChatRuntimeController:
             return self.store.restore_managed_session_if_idle(
                 session_id,
                 upstream_thread_id=adapter.upstream_thread_id,
+                upstream_mode=self._managed_upstream_mode(session),
             )
         except KeyError:
             with self.lock:

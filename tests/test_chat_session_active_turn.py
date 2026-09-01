@@ -397,6 +397,51 @@ def test_resume_with_healthy_adapter_restores_persisted_ready_state(
     assert persisted["active_turn_id"] is None
 
 
+def test_legacy_codex_resume_persists_chat_mode_after_one_time_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="legacy-thread",
+        upstream_mode="default",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    adapter = _HealthyChatAdapter()
+    start_calls: list[dict[str, object]] = []
+
+    def start_adapter(**kwargs: object) -> _HealthyChatAdapter:
+        start_calls.append(kwargs)
+        return adapter
+
+    monkeypatch.setattr(runtime, "_start_adapter", start_adapter)
+
+    restored = runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="resume this session",
+    )
+
+    assert restored["status"] == "ready"
+    persisted = store.load_session(session_id)
+    assert persisted is not None
+    assert persisted["upstream_thread_id"] == "thread-one"
+    assert persisted["upstream_mode"] == "chat"
+    assert start_calls[0]["resume_thread_id"] is None
+
+    runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="resume this session",
+    )
+    assert len(start_calls) == 1
+
+
 def test_resume_does_not_clear_a_healthy_active_turn(
     tmp_path: Path,
 ) -> None:

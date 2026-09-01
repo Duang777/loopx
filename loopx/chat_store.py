@@ -328,6 +328,7 @@ class ChatSessionStore:
         session_id: str,
         *,
         upstream_thread_id: str | None = None,
+        upstream_mode: str | None = None,
     ) -> dict[str, Any]:
         """Restore a managed Session only while it has no active Turn."""
 
@@ -354,6 +355,11 @@ class ChatSessionStore:
                 }
                 if upstream_thread_id is not None:
                     changes["upstream_thread_id"] = _upstream_id(upstream_thread_id)
+                if upstream_mode is not None:
+                    changes["upstream_mode"] = _opaque_id(
+                        upstream_mode,
+                        field="upstream_mode",
+                    )
                 payload.update(changes)
                 payload["updated_at"] = utc_now()
                 _atomic_write_json(path, payload, preserve_mode=True)
