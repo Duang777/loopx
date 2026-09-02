@@ -8,6 +8,8 @@ Response: `loopx_codex_provider_routing_response_v0`
 
 Catalog: `codex_provider_routing_catalog_v1`
 
+Runtime status: `codex_provider_routing_runtime_status_v0`
+
 The provider accepts exactly one public-safe operation per invocation and
 returns a deterministic JSON result. An input containing credential-shaped
 keys fails before any operation runs.
@@ -16,6 +18,21 @@ The provider has no Kernel transition authority and no external write
 permission. A qualification result is evidence, not permission to edit a
 Codex home, install CPA, change a model, start a turn, rotate a credential or
 merge an upstream PR.
+
+Runtime status deliberately has two projections. `host_identity` records only
+that the operator's ChatGPT identity is retained but is not projected by the
+custom provider; its `route_binding` is always `none`. `route_intent` and
+`execution` separately report the requested logical route and the symbolic
+provider profiles actually attempted by CPA. A direct Auto hit on B is not a
+fallback; fallback is true only after a second candidate was attempted.
+`route_intent.fast` is derived from the selected `fast/` route slug. A caller
+may include a redundant boolean only when it agrees with that slug.
+
+Account observations may contain symbolic catalog profile IDs, readiness,
+bounded success/failure counters and percentage quota windows. The provider
+derives `remaining_percent`. Email addresses, auth IDs/files, credentials,
+private paths, task IDs and request content are forbidden at the public
+boundary.
 
 The catalog defines one bounded account ring, not one ring per visible route.
 Auto and Luna enter the same ring through affinity (or its first member for a
@@ -36,6 +53,17 @@ Affinity can reorder only the remaining eligible ring members. If none remain,
 the route fails closed before the first visible output or tool call. A
 text-only fallback can therefore serve text Auto requests but cannot receive
 image history. Luna has no heterogeneous fallback tail.
+
+Fast is modeled as a selector projection over an existing route. A route may
+declare one `fast_selector`; the compiler emits `fast/<route>`, filters its
+candidates to Fast-capable profiles and marks its default tier as `fast`.
+`normalize_selector_request` consumes only the original selector and optional
+service tier: Fast rows resolve to the underlying route and force the wire tier
+to `priority`, while ordinary rows preserve the request. A preserved
+`priority` tier is nevertheless treated as effective Fast state for candidate
+admission, so both the explicit sibling row and the native Fast entry are
+limited to Fast-capable providers. It never accepts a prompt or request body.
+A Fast request cannot fall through to a provider that does not support Fast.
 
 Codex App settings use the same evidence rule. A selector label is not proof
 that a running turn adopted the new model. Qualification requires a durable

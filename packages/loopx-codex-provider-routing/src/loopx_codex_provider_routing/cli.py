@@ -11,6 +11,8 @@ from .contract import (
     RESPONSE_SCHEMA_VERSION,
     build_upgrade_plan,
     compile_catalog,
+    normalize_selector_request,
+    project_runtime_status,
     qualify_snapshot,
     reject_private_material,
 )
@@ -38,7 +40,13 @@ def _doctor() -> int:
             "schema_version": RESPONSE_SCHEMA_VERSION,
             "extension_id": EXTENSION_ID,
             "doctor": "ready",
-            "operations": ["compile_catalog", "qualify_snapshot", "upgrade_plan"],
+            "operations": [
+                "compile_catalog",
+                "normalize_selector_request",
+                "project_runtime_status",
+                "qualify_snapshot",
+                "upgrade_plan",
+            ],
             "effect_boundary": "read_only_public_safe",
         }
     )
@@ -54,9 +62,13 @@ def _run_request(request: Any) -> dict[str, Any]:
     operation = request.get("operation")
     operation_fields = {
         "compile_catalog": "source",
+        "normalize_selector_request": "normalization",
+        "project_runtime_status": "status",
         "qualify_snapshot": "snapshot",
         "upgrade_plan": "upgrade",
     }
+    if not isinstance(operation, str):
+        raise ValueError(f"unsupported operation: {operation!r}")
     expected_field = operation_fields.get(operation)
     if expected_field is None:
         raise ValueError(f"unsupported operation: {operation!r}")
@@ -68,6 +80,18 @@ def _run_request(request: Any) -> dict[str, Any]:
         if not isinstance(source, Mapping):
             raise ValueError("compile_catalog requires object `source`")
         result = compile_catalog(source)
+    elif operation == "normalize_selector_request":
+        normalization = request.get("normalization")
+        if not isinstance(normalization, Mapping):
+            raise ValueError(
+                "normalize_selector_request requires object `normalization`"
+            )
+        result = normalize_selector_request(normalization)
+    elif operation == "project_runtime_status":
+        status = request.get("status")
+        if not isinstance(status, Mapping):
+            raise ValueError("project_runtime_status requires object `status`")
+        result = project_runtime_status(status)
     elif operation == "qualify_snapshot":
         snapshot = request.get("snapshot")
         if not isinstance(snapshot, Mapping):

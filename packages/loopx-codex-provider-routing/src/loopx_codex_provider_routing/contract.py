@@ -6,17 +6,26 @@ from itertools import pairwise
 from typing import Any
 
 CATALOG_SCHEMA_VERSION = "codex_provider_routing_catalog_v1"
+RUNTIME_STATUS_SCHEMA_VERSION = "codex_provider_routing_runtime_status_v0"
 REQUEST_SCHEMA_VERSION = "loopx_codex_provider_routing_request_v0"
 RESPONSE_SCHEMA_VERSION = "loopx_codex_provider_routing_response_v0"
 
 FORBIDDEN_KEYS = {
+    "account_id",
     "api_key",
     "access_token",
+    "auth_file",
+    "auth_index",
     "refresh_token",
     "authorization",
     "cookie",
+    "email",
+    "filename",
     "password",
+    "project_id",
     "secret",
+    "session_id",
+    "task_id",
     "token",
 }
 ALLOWED_MODALITIES = {"text", "image"}
@@ -69,6 +78,14 @@ def _boolean(value: Any, field: str, *, default: bool | None = None) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"{field} must be a boolean")
     return value
+
+
+def _reject_unexpected_keys(
+    value: Mapping[str, Any], allowed: set[str], field: str
+) -> None:
+    unexpected = sorted(set(value) - allowed)
+    if unexpected:
+        raise ValueError(f"{field} has unsupported fields: {unexpected}")
 
 
 def _compile_profiles(raw_profiles: Any) -> dict[str, dict[str, Any]]:
@@ -306,6 +323,38 @@ def compile_catalog(source: Mapping[str, Any]) -> dict[str, Any]:
             )
         ):
             raise ValueError(f"route {slug} has no fast-eligible candidate")
+        fast_selector = raw.get("fast_selector")
+        compiled_fast_selector = None
+        if fast_selector is not None:
+            if not isinstance(fast_selector, Mapping):
+                raise TypeError(f"routes[{index}].fast_selector must be an object")
+            _reject_unexpected_keys(
+                fast_selector,
+                {"display_name", "fallback_policy"},
+                f"routes[{index}].fast_selector",
+            )
+            if mode == "alias" or not visible:
+                raise ValueError(
+                    f"Fast selector requires a visible concrete route: {slug}"
+                )
+            if not supports_fast:
+                raise ValueError(f"Fast selector requires Fast support: {slug}")
+            fallback_policy = _non_empty_string(
+                fast_selector.get("fallback_policy"),
+                f"routes[{index}].fast_selector.fallback_policy",
+            )
+            if fallback_policy != "fast_capable_only":
+                raise ValueError(
+                    f"route {slug} Fast selector must fail closed to Fast-capable providers"
+                )
+            compiled_fast_selector = {
+                "display_name": _non_empty_string(
+                    fast_selector.get("display_name"),
+                    f"routes[{index}].fast_selector.display_name",
+                ),
+                "fallback_policy": fallback_policy,
+            }
+        max_cycles = rings[ring_id]["max_cycles"] if isinstance(ring_id, str) else 1
 
         routes.append(
             {
@@ -329,6 +378,7 @@ def compile_catalog(source: Mapping[str, Any]) -> dict[str, Any]:
                 if mode != "alias"
                 else {},
                 "supports_fast": supports_fast,
+                "fast_selector": compiled_fast_selector,
                 "fast_candidates": _eligible_profiles(
                     candidates,
                     profiles,
@@ -346,7 +396,7 @@ def compile_catalog(source: Mapping[str, Any]) -> dict[str, Any]:
                     "traversal": "one_ring_pass_then_tail"
                     if uses_ring
                     else "ordered_candidates_once",
-                    "max_cycles": rings[ring_id]["max_cycles"] if uses_ring else 1,
+                    "max_cycles": max_cycles,
                     "commit_barrier": "before_first_visible_output_or_tool_call",
                     "foreign_history": "normalize_or_quarantine",
                 },
@@ -370,13 +420,416 @@ def compile_catalog(source: Mapping[str, Any]) -> dict[str, Any]:
         if alias["supports_fast"] != target["supports_fast"]:
             raise ValueError(f"alias {alias['slug']} Fast support differs from target")
 
+    selector_rows: list[dict[str, Any]] = []
+    for route in routes:
+        target = (
+            non_alias_routes[route["alias_for"]]
+            if route["routing_mode"] == "alias"
+            else route
+        )
+        selector_rows.append(
+            {
+                "slug": route["slug"],
+                "route_slug": target["slug"],
+                "display_name": route["display_name"],
+                "visibility": route["visibility"],
+                "input_modalities": route["input_modalities"],
+                "reasoning_levels": route["reasoning_levels"],
+                "candidates": target["candidates"],
+                "default_service_tier": "default",
+                "request_service_tier_action": "preserve",
+                "fallback_policy": "route_default",
+            }
+        )
+        fast_selector = route["fast_selector"]
+        if fast_selector is None:
+            continue
+        selector_rows.append(
+            {
+                "slug": f"fast/{route['slug']}",
+                "route_slug": route["slug"],
+                "display_name": fast_selector["display_name"],
+                "visibility": route["visibility"],
+                "input_modalities": route["input_modalities"],
+                "reasoning_levels": route["reasoning_levels"],
+                "candidates": route["fast_candidates"],
+                "default_service_tier": "fast",
+                "request_service_tier_action": "force_priority",
+                "fallback_policy": fast_selector["fallback_policy"],
+            }
+        )
+    selector_slugs = [row["slug"] for row in selector_rows]
+    if len(selector_slugs) != len(set(selector_slugs)):
+        raise ValueError("generated Fast selector collides with a declared route slug")
+
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,
         "credential_free": True,
         "default_service_tier": "default",
+        "fast_selector_prefix": "fast/",
+        "fast_request_service_tier": "priority",
         "profiles": list(profiles.values()),
         "rings": list(rings.values()),
         "routes": routes,
+        "selector_rows": selector_rows,
+    }
+
+
+def normalize_selector_request(normalization: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve one public selector before provider alias mapping or body handling."""
+
+    reject_private_material(normalization)
+    _reject_unexpected_keys(
+        normalization,
+        {"catalog_source", "model_selector", "service_tier"},
+        "normalization",
+    )
+    source = normalization.get("catalog_source")
+    if not isinstance(source, Mapping):
+        raise TypeError("normalization.catalog_source must be an object")
+    catalog = compile_catalog(source)
+    selector_slug = _non_empty_string(
+        normalization.get("model_selector"), "normalization.model_selector"
+    )
+    selectors = {row["slug"]: row for row in catalog["selector_rows"]}
+    selector = selectors.get(selector_slug)
+    if selector is None:
+        raise ValueError(f"unknown model selector: {selector_slug}")
+
+    requested_tier = normalization.get("service_tier")
+    if requested_tier is not None:
+        requested_tier = _non_empty_string(requested_tier, "normalization.service_tier")
+        if requested_tier not in {"default", "priority"}:
+            raise ValueError("normalization.service_tier must be default or priority")
+
+    tier_action: dict[str, str] = {"action": selector["request_service_tier_action"]}
+    if selector["request_service_tier_action"] == "force_priority":
+        tier_action["value"] = catalog["fast_request_service_tier"]
+    elif requested_tier is not None:
+        tier_action["value"] = requested_tier
+
+    effective_fast = (
+        selector["default_service_tier"] == "fast"
+        or requested_tier == catalog["fast_request_service_tier"]
+    )
+    eligible_candidates = selector["candidates"]
+    fallback_policy = selector["fallback_policy"]
+    if effective_fast:
+        profiles = {item["id"]: item for item in catalog["profiles"]}
+        eligible_candidates = _eligible_profiles(
+            selector["candidates"],
+            profiles,
+            required_modalities=set(),
+            require_fast=True,
+        )
+        if not eligible_candidates:
+            raise ValueError(f"selector {selector_slug} has no Fast-capable candidates")
+        fallback_policy = "fast_capable_only"
+
+    return {
+        "original_model_selector": selector_slug,
+        "normalized_model_selector": selector["route_slug"],
+        "default_service_tier": selector["default_service_tier"],
+        "service_tier": tier_action,
+        "fallback_policy": fallback_policy,
+        "eligible_candidates": eligible_candidates,
+    }
+
+
+def _timestamp(value: Any, field: str) -> str:
+    timestamp = _non_empty_string(value, field)
+    if (
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", timestamp)
+        is None
+    ):
+        raise ValueError(f"{field} must be an RFC 3339 UTC timestamp")
+    return timestamp
+
+
+def _percentage(value: Any, field: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TypeError(f"{field} must be a number")
+    if not 0 <= value <= 100:
+        raise ValueError(f"{field} must be between 0 and 100")
+    return float(value)
+
+
+def _quota_windows(raw: Any, field: str) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise TypeError(f"{field} must be a list")
+    windows: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            raise TypeError(f"{field}[{index}] must be an object")
+        _reject_unexpected_keys(
+            item,
+            {"id", "used_percent", "window_minutes", "reset_at"},
+            f"{field}[{index}]",
+        )
+        window_id = _non_empty_string(item.get("id"), f"{field}[{index}].id")
+        if SYMBOLIC_ID_RE.fullmatch(window_id) is None:
+            raise ValueError(f"{field}[{index}].id must be a symbolic id")
+        if window_id in ids:
+            raise ValueError(f"{field} has duplicate window id: {window_id}")
+        ids.add(window_id)
+        used = _percentage(item.get("used_percent"), f"{field}[{index}].used_percent")
+        minutes = item.get("window_minutes")
+        if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes <= 0:
+            raise ValueError(f"{field}[{index}].window_minutes must be positive")
+        reset_at = item.get("reset_at")
+        if reset_at is not None:
+            reset_at = _timestamp(reset_at, f"{field}[{index}].reset_at")
+        windows.append(
+            {
+                "id": window_id,
+                "used_percent": used,
+                "remaining_percent": 100.0 - used,
+                "window_minutes": minutes,
+                "reset_at": reset_at,
+            }
+        )
+    return windows
+
+
+def _eligible_route_order(
+    route: Mapping[str, Any],
+    profiles: Mapping[str, Mapping[str, Any]],
+    *,
+    modality: str,
+    fast: bool,
+) -> list[str]:
+    return _eligible_profiles(
+        route["candidates"],
+        profiles,
+        required_modalities={modality},
+        require_fast=fast,
+    )
+
+
+def _legal_attempt_orders(
+    route: Mapping[str, Any],
+    rings: Mapping[str, Mapping[str, Any]],
+    profiles: Mapping[str, Mapping[str, Any]],
+    *,
+    modality: str,
+    fast: bool,
+) -> list[list[str]]:
+    eligible = _eligible_route_order(route, profiles, modality=modality, fast=fast)
+    if route["entrypoint"] != "affinity_then_first":
+        return [eligible]
+    ring = rings[route["ring_id"]]
+    eligible_ring = [item for item in ring["members"] if item in eligible]
+    eligible_tail = [item for item in route["fallback_tail"] if item in eligible]
+    if not eligible_ring:
+        return [eligible_tail]
+    return [
+        _rotate_members(eligible_ring, entrypoint) + eligible_tail
+        for entrypoint in eligible_ring
+    ]
+
+
+def project_runtime_status(status: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and project content-free host, route and account observations."""
+
+    reject_private_material(status)
+    _reject_unexpected_keys(
+        status,
+        {
+            "schema_version",
+            "credential_free",
+            "catalog_source",
+            "host_identity",
+            "execution_observation",
+            "account_observations",
+        },
+        "status",
+    )
+    source = status.get("catalog_source")
+    if not isinstance(source, Mapping):
+        raise TypeError("status.catalog_source must be an object")
+    catalog = compile_catalog(source)
+    profiles = {item["id"]: item for item in catalog["profiles"]}
+    rings = {item["id"]: item for item in catalog["rings"]}
+    routes = {
+        item["slug"]: item
+        for item in catalog["routes"]
+        if item["routing_mode"] != "alias"
+    }
+    selectors = {item["slug"]: item for item in catalog["selector_rows"]}
+
+    host = status.get("host_identity")
+    if not isinstance(host, Mapping):
+        raise TypeError("status.host_identity must be an object")
+    expected_host = {
+        "state": "retained",
+        "projection": "not_projected",
+        "route_binding": "none",
+    }
+    if dict(host) != expected_host:
+        raise ValueError(
+            "host identity must be retained, not projected and independent of routing"
+        )
+
+    observation = status.get("execution_observation")
+    if not isinstance(observation, Mapping):
+        raise TypeError("status.execution_observation must be an object")
+    _reject_unexpected_keys(
+        observation,
+        {
+            "route_slug",
+            "modality",
+            "fast",
+            "observed_at",
+            "attempted_profiles",
+            "selected_profile",
+            "outcome",
+        },
+        "status.execution_observation",
+    )
+    selector_slug = _non_empty_string(
+        observation.get("route_slug"), "status.execution_observation.route_slug"
+    )
+    selector = selectors.get(selector_slug)
+    if selector is None:
+        raise ValueError("execution observation must reference a catalog selector")
+    route = routes[selector["route_slug"]]
+    modality = _non_empty_string(
+        observation.get("modality"), "status.execution_observation.modality"
+    )
+    if modality not in route["input_modalities"]:
+        raise ValueError(f"selector {selector_slug} does not admit modality {modality}")
+    selector_defaults_fast = selector["default_service_tier"] == "fast"
+    fast = selector_defaults_fast
+    if "fast" in observation:
+        declared_fast = _boolean(
+            observation.get("fast"), "status.execution_observation.fast"
+        )
+        if selector_defaults_fast and not declared_fast:
+            raise ValueError("a Fast selector cannot report a non-Fast execution")
+        fast = declared_fast
+    observed_at = _timestamp(
+        observation.get("observed_at"), "status.execution_observation.observed_at"
+    )
+    attempted = _string_list(
+        observation.get("attempted_profiles"),
+        "status.execution_observation.attempted_profiles",
+    )
+    if not attempted:
+        raise ValueError("execution observation needs at least one attempted profile")
+    legal_orders = _legal_attempt_orders(
+        route, rings, profiles, modality=modality, fast=fast
+    )
+    matching_orders = [
+        order for order in legal_orders if attempted == order[: len(attempted)]
+    ]
+    if not matching_orders:
+        raise ValueError(
+            f"attempted profiles are not a legal prefix for selector {selector_slug}"
+        )
+    outcome = _non_empty_string(
+        observation.get("outcome"), "status.execution_observation.outcome"
+    )
+    if outcome not in {"success", "failed"}:
+        raise ValueError("execution outcome must be success or failed")
+    selected = observation.get("selected_profile")
+    if outcome == "success":
+        selected = _non_empty_string(
+            selected, "status.execution_observation.selected_profile"
+        )
+        if selected != attempted[-1]:
+            raise ValueError(
+                "successful selection must equal the final attempted profile"
+            )
+    elif "selected_profile" in observation:
+        raise ValueError("failed execution must not declare a selected profile")
+
+    raw_accounts = status.get("account_observations")
+    if not isinstance(raw_accounts, list):
+        raise TypeError("status.account_observations must be a list")
+    accounts: list[dict[str, Any]] = []
+    account_ids: set[str] = set()
+    for index, raw in enumerate(raw_accounts):
+        field = f"status.account_observations[{index}]"
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"{field} must be an object")
+        _reject_unexpected_keys(
+            raw,
+            {"profile_id", "state", "quota", "recent_activity"},
+            field,
+        )
+        profile_id = _non_empty_string(raw.get("profile_id"), f"{field}.profile_id")
+        if profile_id in account_ids:
+            raise ValueError(f"duplicate account observation: {profile_id}")
+        if profile_id not in profiles or profiles[profile_id]["provider"] != "codex":
+            raise ValueError(
+                f"account observation must reference a Codex profile: {profile_id}"
+            )
+        account_ids.add(profile_id)
+        state = _non_empty_string(raw.get("state"), f"{field}.state")
+        if state not in {"ready", "degraded", "unavailable", "unknown"}:
+            raise ValueError(f"unsupported account state: {state}")
+        quota = raw.get("quota")
+        projected_quota = None
+        if quota is not None:
+            if not isinstance(quota, Mapping):
+                raise TypeError(f"{field}.quota must be an object")
+            _reject_unexpected_keys(quota, {"observed_at", "windows"}, f"{field}.quota")
+            projected_quota = {
+                "observed_at": _timestamp(
+                    quota.get("observed_at"), f"{field}.quota.observed_at"
+                ),
+                "windows": _quota_windows(
+                    quota.get("windows", []), f"{field}.quota.windows"
+                ),
+            }
+        activity = raw.get("recent_activity")
+        if not isinstance(activity, Mapping):
+            raise TypeError(f"{field}.recent_activity must be an object")
+        _reject_unexpected_keys(
+            activity,
+            {"success", "failed", "window_minutes"},
+            f"{field}.recent_activity",
+        )
+        projected_activity: dict[str, int] = {}
+        for key in ("success", "failed", "window_minutes"):
+            value = activity.get(key)
+            minimum = 1 if key == "window_minutes" else 0
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                raise ValueError(f"{field}.recent_activity.{key} is invalid")
+            projected_activity[key] = value
+        accounts.append(
+            {
+                "profile_id": profile_id,
+                "state": state,
+                "quota": projected_quota,
+                "recent_activity": projected_activity,
+            }
+        )
+
+    execution = {
+        "observed_at": observed_at,
+        "attempted_profiles": attempted,
+        "outcome": outcome,
+        "fallback_used": len(attempted) > 1,
+    }
+    if selected is not None:
+        execution["selected_profile"] = selected
+
+    return {
+        "schema_version": RUNTIME_STATUS_SCHEMA_VERSION,
+        "credential_free": True,
+        "host_identity": expected_host,
+        "route_intent": {
+            "selector_slug": selector_slug,
+            "route_slug": route["slug"],
+            "routing_mode": route["routing_mode"],
+            "modality": modality,
+            "fast": fast,
+            "legal_attempt_orders": legal_orders,
+        },
+        "execution": execution,
+        "accounts": accounts,
     }
 
 
@@ -384,8 +837,11 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     reject_private_material(snapshot)
     expected_visible = {
         "auto/gpt-5.6-sol",
+        "fast/auto/gpt-5.6-sol",
         "codex-a/gpt-5.6-sol",
+        "fast/codex-a/gpt-5.6-sol",
         "codex-b/gpt-5.6-sol",
+        "fast/codex-b/gpt-5.6-sol",
         "gpt-5.6-luna",
         "ark/deepseek-v4-flash",
     }
@@ -401,7 +857,7 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     check(
         "visible_routes",
         visible == expected_visible,
-        "selector exposes exactly Auto/Prefer A/Prefer B/Luna/Ark",
+        "selector exposes Standard and Fast Sol rows plus Luna and Ark",
     )
     check(
         "hidden_alias",
@@ -417,12 +873,15 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             set(modalities.get(slug, [])) == {"text", "image"}
             for slug in (
                 "auto/gpt-5.6-sol",
+                "fast/auto/gpt-5.6-sol",
                 "codex-a/gpt-5.6-sol",
+                "fast/codex-a/gpt-5.6-sol",
                 "codex-b/gpt-5.6-sol",
+                "fast/codex-b/gpt-5.6-sol",
                 "gpt-5.6-luna",
             )
         ),
-        "Auto/Prefer A/Prefer B/Luna declare text and image",
+        "Standard/Fast Sol selectors and Luna declare text and image",
     )
     check(
         "ark_text_only",
@@ -434,17 +893,33 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "fast_projection",
         fast_models
         == {
-            "auto/gpt-5.6-sol",
-            "codex-a/gpt-5.6-sol",
-            "codex-b/gpt-5.6-sol",
-            "gpt-5.6-luna",
+            "fast/auto/gpt-5.6-sol",
+            "fast/codex-a/gpt-5.6-sol",
+            "fast/codex-b/gpt-5.6-sol",
         },
-        "Fast is exposed only for Auto/Prefer A/Prefer B/Luna",
+        "Fast is exposed only as explicit Auto/Prefer A/Prefer B sibling rows",
     )
+    selector_tiers = snapshot.get("selector_default_service_tiers")
+    if not isinstance(selector_tiers, Mapping):
+        raise TypeError("snapshot.selector_default_service_tiers must be an object")
+    standard_selectors = expected_visible - fast_models
     check(
         "fast_default_off",
-        snapshot.get("default_service_tier") == "default",
-        "Fast is available but defaults to off",
+        snapshot.get("default_service_tier") == "default"
+        and all(selector_tiers.get(slug) == "default" for slug in standard_selectors)
+        and all(selector_tiers.get(slug) == "fast" for slug in fast_models),
+        "ordinary rows stay Standard while explicit Fast rows opt into Fast",
+    )
+    normalizer = snapshot.get("request_normalizer")
+    check(
+        "request_normalizer",
+        isinstance(normalizer, Mapping)
+        and normalizer.get("active") is True
+        and normalizer.get("selector_prefix") == "fast/"
+        and normalizer.get("fast_request_service_tier") == "priority"
+        and normalizer.get("ordinary_selector_action") == "preserve"
+        and normalizer.get("effective_priority_admission") == "fast_capable_only",
+        "normalizer preserves ordinary tiers and constrains effective Fast requests",
     )
     check(
         "loopback_endpoint",
@@ -465,15 +940,30 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             "ordered_candidates": ["codex-a", "codex-b", "ark-text"],
             "fallback_tail": ["ark-text"],
         },
+        "fast/auto/gpt-5.6-sol": {
+            "entrypoint": "affinity_then_first",
+            "ordered_candidates": ["codex-a", "codex-b"],
+            "fallback_tail": [],
+        },
         "codex-a/gpt-5.6-sol": {
             "entrypoint": "codex-a",
             "ordered_candidates": ["codex-a", "codex-b", "ark-text"],
             "fallback_tail": ["ark-text"],
         },
+        "fast/codex-a/gpt-5.6-sol": {
+            "entrypoint": "codex-a",
+            "ordered_candidates": ["codex-a", "codex-b"],
+            "fallback_tail": [],
+        },
         "codex-b/gpt-5.6-sol": {
             "entrypoint": "codex-b",
             "ordered_candidates": ["codex-b", "codex-a", "ark-text"],
             "fallback_tail": ["ark-text"],
+        },
+        "fast/codex-b/gpt-5.6-sol": {
+            "entrypoint": "codex-b",
+            "ordered_candidates": ["codex-b", "codex-a"],
+            "fallback_tail": [],
         },
         "gpt-5.6-luna": {
             "entrypoint": "affinity_then_first",
@@ -503,7 +993,7 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             == expected["ordered_candidates"]
             for slug, expected in expected_traversal.items()
         ),
-        "Auto/Prefer A/Prefer B/Luna use the expected account-ring entrypoint and order",
+        "Standard/Fast Sol selectors and Luna use the expected ring entrypoint and order",
     )
     check(
         "terminal_fallback_tail",
@@ -511,7 +1001,17 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             traversal_rows[slug].get("fallback_tail") == expected["fallback_tail"]
             for slug, expected in expected_traversal.items()
         ),
-        "Sol routes append Ark once and Luna has no heterogeneous fallback tail",
+        "only Standard Sol routes append Ark; Fast and Luna have no heterogeneous tail",
+    )
+    check(
+        "fast_capable_only",
+        all(
+            traversal_rows[slug].get("ordered_candidates")
+            in (["codex-a", "codex-b"], ["codex-b", "codex-a"])
+            and traversal_rows[slug].get("fallback_tail") == []
+            for slug in fast_models
+        ),
+        "Fast rows remain inside the A/B Fast-capable ring",
     )
     check(
         "single_cycle_traversal",
@@ -546,6 +1046,7 @@ def build_upgrade_plan(upgrade: Mapping[str, Any]) -> dict[str, Any]:
         "retry_policy",
         "transport_pool",
         "model_catalog",
+        "request_normalizer",
         "ssh_bridge",
         "modality_routing",
         "settings_revision",
@@ -568,7 +1069,19 @@ def build_upgrade_plan(upgrade: Mapping[str, Any]) -> dict[str, Any]:
             "draining_rebuild",
             "no_replay",
         ],
-        "model_catalog": ["visible_routes", "hidden_alias", "fast_default_off"],
+        "model_catalog": [
+            "visible_routes",
+            "hidden_alias",
+            "fast_selector_rows",
+            "fast_default_off",
+        ],
+        "request_normalizer": [
+            "selector_prefix_capture",
+            "priority_injection",
+            "ordinary_selector_preserved",
+            "effective_priority_admission",
+            "fast_route_no_unsupported_fallback",
+        ],
         "ssh_bridge": ["loopback_binds", "reconnect", "existing_task_resume"],
         "modality_routing": ["image_a_b", "ark_text_only", "no_eligible_fail_closed"],
         "settings_revision": [

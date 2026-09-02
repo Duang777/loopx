@@ -88,6 +88,15 @@ the task's normal tools instead of imposing this workflow.
    `integrity_qualified=true` and `official_result_present=true`. Fill `effort`
    and set `insight.status` to `complete` after the post-run analysis.
 
+   For non-baseline arms, also reduce the reviewed mechanism facts separately:
+   ```bash
+   loopx benchmark treatment-continuation-receipt \
+     --observation-json <compact-post-run-observation.json> --format json
+   ```
+   This receipt distinguishes qualified startup from post-start semantic control
+   persistence. It is analysis-only and must not change score countability,
+   integrity qualification, treatment fidelity, or matched-pair eligibility.
+
 5. **Read matched comparisons before selecting the next arm.**
    ```bash
    loopx benchmark experiment-board-show --goal-id <GOAL_ID> --format json
@@ -138,6 +147,16 @@ the task's normal tools instead of imposing this workflow.
   `continuous_monitor` todo. Refresh aggregate score/coverage and write
   `benchmark_case_insight_v0` on material scored-case transitions, with bounded
   periodic reviews while the campaign remains active.
+- Treat that monitor as an observation lane, not executable delivery. When a
+  material poll discovers bounded repository, runner-repair, or experiment work,
+  use `quota monitor-poll --material-change --next-agent-todo` with explicit
+  `--next-action-kind`, repository, and required capabilities so it creates an
+  independent runnable `advancement_task`. An unchanged poll creates no successor
+  and spends no delivery quota.
+- If the main campaign advancement Todo is waiting for a monitor transition, keep
+  it `open` and pair `resume_when=monitor_changed:<monitor-todo-id>` with an
+  already-created independent runnable successor. Do not mark the wait `blocked`,
+  and do not treat the monitor itself as delivery work.
 - Report only public-safe conclusions (countable baselines, countable
   treatments, matched pairs, aggregate primary metric by arm, improved/flat/
   regressed pair counts). Never copy raw private evidence into a user update.
@@ -145,4 +164,8 @@ the task's normal tools instead of imposing this workflow.
   final workspace, hidden tests, verifier, and failure/score details; write one
   `benchmark_case_insight_v0` explaining the decisive evidence, why the outcome
   happened, and what LoopX should test next.
+- For treatment arms, record whether qualified startup was followed by semantic
+  Todo transitions, technical replans, or control closeout. Use `startup_only`
+  only when a complete authorized post-run review observed no such transition;
+  otherwise absence is `unknown`. Keep terminal settlement separate.
 - Do not send a repetitive user update when nothing material changed.

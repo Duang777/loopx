@@ -612,7 +612,7 @@ def test_attached_close_settles_expired_queue_before_closing(tmp_path: Path) -> 
     assert events[-1]["payload"] == {"error_code": "session_queue_expired"}
 
 
-def test_managed_close_reports_active_turn_conflict_at_api_boundary(
+def test_managed_close_reports_active_turn_instead_of_stranding_it(
     tmp_path: Path,
 ) -> None:
     store = ChatSessionStore(tmp_path)
@@ -624,7 +624,7 @@ def test_managed_close_reports_active_turn_conflict_at_api_boundary(
     )
     turn, _created = store.create_turn(
         str(session["session_id"]),
-        client_turn_id="managed-api-close",
+        client_turn_id="managed-active-close",
         message="active managed turn",
     )
     runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
@@ -643,6 +643,41 @@ def test_managed_close_reports_active_turn_conflict_at_api_boundary(
     assert current is not None
     assert current["status"] == "busy"
     assert current["active_turn_id"] == turn["turn_id"]
+
+
+def test_managed_close_reports_pending_queue_instead_of_stranding_it(
+    tmp_path: Path,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+        adapter_kind="managed-test",
+        upstream_thread_id="managed-thread",
+    )
+    queued, _created = store.create_queued_turn(
+        str(session["session_id"]),
+        client_turn_id="managed-queued-close",
+        message="queued managed turn",
+    )
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+
+    responses = _delete_session(runtime, str(session["session_id"]))
+
+    assert responses == [
+        {
+            "ok": False,
+            "error": "complete queued Agent turns before closing the session",
+            "status": 409,
+            "error_code": "managed_session_queue_pending",
+        }
+    ]
+    current = store.load_session(str(session["session_id"]))
+    assert current is not None
+    assert current["status"] == "ready"
+    assert store.load_turn(
+        str(session["session_id"]), str(queued["turn_id"])
+    )["status"] == "queued"  # type: ignore[index]
 
 
 def test_attached_live_steering_fails_closed_with_durable_receipt(tmp_path: Path) -> None:
