@@ -1014,26 +1014,27 @@ class ChatRuntimeController:
         raise TimeoutError("chat turn wait timed out")
 
     def close_session(self, session_id: str) -> bool:
-        session = self.store.load_session(session_id)
-        if session is None:
-            return False
-        if session.get("session_mode") == CHAT_SESSION_MODE_ATTACHED:
-            return self.store.close_attached_session(session_id)
-        closed = self.store.close_managed_session(session_id)
-        if not closed:
-            return False
-        with self.lock:
-            adapter = self.adapters.pop(session_id, None)
-            event_buffers = [
-                buffer
-                for (buffer_session_id, _), buffer in self.turn_event_buffers.items()
-                if buffer_session_id == session_id
-            ]
-        for event_buffer in event_buffers:
-            event_buffer.close()
-        if adapter is not None:
-            adapter.close_session()
-        return True
+        with self._session_adapter_lock(session_id):
+            session = self.store.load_session(session_id)
+            if session is None:
+                return False
+            if session.get("session_mode") == CHAT_SESSION_MODE_ATTACHED:
+                return self.store.close_attached_session(session_id)
+            closed = self.store.close_managed_session(session_id)
+            if not closed:
+                return False
+            with self.lock:
+                adapter = self.adapters.pop(session_id, None)
+                event_buffers = [
+                    buffer
+                    for (buffer_session_id, _), buffer in self.turn_event_buffers.items()
+                    if buffer_session_id == session_id
+                ]
+            for event_buffer in event_buffers:
+                event_buffer.close()
+            if adapter is not None:
+                adapter.close_session()
+            return True
 
     def resume_session(self, *, session_id: str, work_dir: Path, objective: str) -> dict[str, Any]:
         with self._session_adapter_lock(session_id):
@@ -1050,21 +1051,34 @@ class ChatRuntimeController:
                     last_error_code=None,
                 )
                 return restored
-            self.store.update_session(
+            with self.lock:
+                current = self.adapters.get(session_id)
+                adapter_healthy = current is not None and current.healthcheck()
+            session, active_turn_preserved = self.store.prepare_managed_session_resume(
                 session_id,
-                status="stale",
-                active_turn_id=None,
-                last_error_code=None,
+                preserve_active_turn=adapter_healthy,
             )
-            self._ensure_adapter_locked(
+            if active_turn_preserved:
+                return session
+            adapter = self._ensure_adapter_locked(
                 session,
                 work_dir=work_dir,
                 objective=objective,
             )
-            restored = self.store.load_session(session_id)
-            if restored is None:
-                raise KeyError("chat session was not found")
-            return restored
+            try:
+                return self.store.restore_managed_session_if_idle(
+                    session_id,
+                    upstream_thread_id=adapter.upstream_thread_id,
+                    upstream_mode=self._managed_upstream_mode(session),
+                )
+            except KeyError:
+                with self.lock:
+                    owns_adapter = self.adapters.get(session_id) is adapter
+                    if owns_adapter:
+                        self.adapters.pop(session_id, None)
+                if owns_adapter:
+                    adapter.close_session()
+                raise
         with self.lock:
             current = self.adapters.get(session_id)
             adapter_healthy = current is not None and current.healthcheck()

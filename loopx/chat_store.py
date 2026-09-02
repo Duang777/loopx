@@ -1046,53 +1046,14 @@ class ChatSessionStore:
                 active_turn_id = str(session.get("active_turn_id") or "")
                 if active_turn_id:
                     active_turn = self.load_turn(session_id, active_turn_id)
-                    if active_turn and active_turn.get("status") not in TERMINAL_TURN_STATES:
-                        raise RuntimeError("attached_session_turn_active")
+                    if active_turn is None or active_turn.get("status") not in TERMINAL_TURN_STATES:
+                        raise RuntimeError(active_error)
                 live_queued_turns = self._settle_expired_queued_turns(
                     session_id,
                     now=datetime.now(timezone.utc),
                 )
                 if live_queued_turns:
                     raise RuntimeError(queue_error)
-                now = utc_now()
-                session.update(
-                    {
-                        "status": "closed",
-                        "active_turn_id": None,
-                        "last_activity_at": now,
-                        "updated_at": now,
-                    }
-                )
-                _atomic_write_json(session_path, session, preserve_mode=True)
-                return True
-
-    def close_managed_session(self, session_id: str) -> bool:
-        """Close an idle managed Session without stranding background work."""
-
-        session_path = self._session_path(session_id)
-        with self._session_lock(session_id):
-            with exclusive_file_lock(
-                session_path,
-                agent_id="loopx-chat",
-                operation="close_managed_chat_session",
-            ):
-                session = self.load_session(session_id)
-                if session is None:
-                    return False
-                if session.get("session_mode") == CHAT_SESSION_MODE_ATTACHED:
-                    raise ValueError("the selected Session is an attached host session")
-                if session.get("status") == "closed":
-                    return True
-                active_turn_id = str(session.get("active_turn_id") or "")
-                if active_turn_id:
-                    active_turn = self.load_turn(session_id, active_turn_id)
-                    if active_turn is None or active_turn.get("status") not in TERMINAL_TURN_STATES:
-                        raise RuntimeError("managed_session_turn_active")
-                if self._settle_expired_queued_turns(
-                    session_id,
-                    now=datetime.now(timezone.utc),
-                ):
-                    raise RuntimeError("managed_session_queue_pending")
                 now = utc_now()
                 session.update(
                     {
