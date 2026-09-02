@@ -904,18 +904,49 @@ class ChatSessionStore:
     def close_attached_session(self, session_id: str) -> bool:
         """Close an idle attached Session without stranding a claimed Turn."""
 
+        return self._close_session_if_idle(
+            session_id,
+            expected_mode=CHAT_SESSION_MODE_ATTACHED,
+            operation="close_attached_chat_session",
+            mode_error="the selected Session is not an attached host session",
+            active_error="attached_session_turn_active",
+            queue_error="attached_session_queue_pending",
+        )
+
+    def close_managed_session(self, session_id: str) -> bool:
+        """Close an idle managed Session without stranding background work."""
+
+        return self._close_session_if_idle(
+            session_id,
+            expected_mode=CHAT_SESSION_MODE_MANAGED,
+            operation="close_managed_chat_session",
+            mode_error="the selected Session is an attached host session",
+            active_error="managed_session_turn_active",
+            queue_error="managed_session_queue_pending",
+        )
+
+    def _close_session_if_idle(
+        self,
+        session_id: str,
+        *,
+        expected_mode: str,
+        operation: str,
+        mode_error: str,
+        active_error: str,
+        queue_error: str,
+    ) -> bool:
         session_path = self._session_path(session_id)
         with self._session_lock(session_id):
             with exclusive_file_lock(
                 session_path,
                 agent_id="loopx-chat",
-                operation="close_attached_chat_session",
+                operation=operation,
             ):
                 session = self.load_session(session_id)
                 if session is None:
                     return False
-                if session.get("session_mode") != CHAT_SESSION_MODE_ATTACHED:
-                    raise ValueError("the selected Session is not an attached host session")
+                if session.get("session_mode") != expected_mode:
+                    raise ValueError(mode_error)
                 if session.get("status") == "closed":
                     return True
                 active_turn_id = str(session.get("active_turn_id") or "")
@@ -927,13 +958,13 @@ class ChatSessionStore:
                         "timed_out",
                         "failed",
                     }:
-                        raise RuntimeError("attached_session_turn_active")
+                        raise RuntimeError(active_error)
                 live_queued_turns = self._settle_expired_queued_turns(
                     session_id,
                     now=datetime.now(timezone.utc),
                 )
                 if live_queued_turns:
-                    raise RuntimeError("attached_session_queue_pending")
+                    raise RuntimeError(queue_error)
                 now = utc_now()
                 session.update(
                     {

@@ -4,6 +4,7 @@ import threading
 import time
 
 import loopx.chat_store as chat_store
+from loopx.chat_runtime import ChatRuntimeController
 from loopx.chat_store import ChatSessionStore, SESSION_QUEUE_MAX_PENDING
 
 
@@ -272,3 +273,286 @@ def test_queued_turn_rejects_closed_session(tmp_path: Path) -> None:
         assert str(exc) == "'chat session was not found'"
     else:  # pragma: no cover - safety net for unexpected passes.
         raise AssertionError("closed session should not accept queued turns")
+
+
+def test_managed_close_rejects_active_turn_without_closing_adapter(
+    tmp_path: Path,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    adapter = _ResumeAdapter("thread-one")
+    runtime.adapters[session_id] = adapter
+    turn, _created = store.create_turn(
+        session_id,
+        client_turn_id="managed-active-close",
+        message="active managed turn",
+    )
+
+    try:
+        runtime.close_session(session_id)
+    except RuntimeError as exc:
+        assert str(exc) == "managed_session_turn_active"
+    else:  # pragma: no cover - safety net for unexpected passes.
+        raise AssertionError("managed active turns must block session close")
+
+    current = store.load_session(session_id)
+    assert current is not None
+    assert current["status"] == "busy"
+    assert current["active_turn_id"] == turn["turn_id"]
+    assert session_id in runtime.adapters
+
+
+def test_managed_close_rejects_pending_queue_without_closing_session(
+    tmp_path: Path,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    queued, _created = store.create_queued_turn(
+        session_id,
+        client_turn_id="managed-queued-close",
+        message="queued managed turn",
+    )
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+
+    try:
+        runtime.close_session(session_id)
+    except RuntimeError as exc:
+        assert str(exc) == "managed_session_queue_pending"
+    else:  # pragma: no cover - safety net for unexpected passes.
+        raise AssertionError("managed queued turns must block session close")
+
+    current = store.load_session(session_id)
+    assert current is not None
+    assert current["status"] == "ready"
+    assert current["active_turn_id"] is None
+    pending = store.load_turn(session_id, str(queued["turn_id"]))
+    assert pending is not None
+    assert pending["status"] == "queued"
+
+
+class _ResumeAdapter:
+    def __init__(self, thread_id: str) -> None:
+        self.upstream_thread_id = thread_id
+
+    def capabilities(self) -> dict[str, object]:
+        return {}
+
+    def start_turn(self, message: str, event_sink) -> dict[str, object]:
+        del event_sink
+        return {"message": message}
+
+    def interrupt_turn(self, turn_id: str | None = None) -> None:
+        del turn_id
+
+    def close_session(self) -> None:
+        return None
+
+    def healthcheck(self) -> bool:
+        return True
+
+
+def test_concurrent_resume_starts_one_managed_adapter(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    first_start = threading.Event()
+    allow_first_start = threading.Event()
+    start_calls: list[dict[str, object]] = []
+
+    def start_adapter(**kwargs: object) -> _ResumeAdapter:
+        start_calls.append(kwargs)
+        if len(start_calls) == 1:
+            first_start.set()
+            assert allow_first_start.wait(timeout=2)
+        return _ResumeAdapter("thread-one")
+
+    monkeypatch.setattr(runtime, "_start_adapter", start_adapter)
+    errors: list[Exception] = []
+
+    def resume() -> None:
+        try:
+            runtime.resume_session(
+                session_id=session_id,
+                work_dir=tmp_path,
+                objective="resume this session",
+            )
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion below.
+            errors.append(exc)
+
+    first = threading.Thread(target=resume)
+    second = threading.Thread(target=resume)
+    first.start()
+    assert first_start.wait(timeout=2)
+    second.start()
+    time.sleep(0.1)
+    assert len(start_calls) == 1
+    allow_first_start.set()
+    first.join(timeout=3)
+    second.join(timeout=3)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert len(start_calls) == 1
+    assert runtime.adapters[session_id].upstream_thread_id == "thread-one"
+
+
+def test_close_waits_for_managed_adapter_start_before_closing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    adapter_started = threading.Event()
+    allow_adapter_start = threading.Event()
+
+    def start_adapter(**_kwargs: object) -> _ResumeAdapter:
+        adapter_started.set()
+        assert allow_adapter_start.wait(timeout=2)
+        return _ResumeAdapter("thread-one")
+
+    monkeypatch.setattr(runtime, "_start_adapter", start_adapter)
+    resume_errors: list[Exception] = []
+
+    def resume() -> None:
+        try:
+            runtime.resume_session(
+                session_id=session_id,
+                work_dir=tmp_path,
+                objective="resume this session",
+            )
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion below.
+            resume_errors.append(exc)
+
+    resume_thread = threading.Thread(target=resume)
+    resume_thread.start()
+    assert adapter_started.wait(timeout=2)
+
+    close_result: list[bool] = []
+    close_thread = threading.Thread(
+        target=lambda: close_result.append(runtime.close_session(session_id))
+    )
+    close_thread.start()
+    time.sleep(0.1)
+    current = store.load_session(session_id)
+    assert current is not None
+    assert current["status"] == "resuming"
+
+    allow_adapter_start.set()
+    resume_thread.join(timeout=3)
+    close_thread.join(timeout=3)
+
+    assert not resume_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert resume_errors == []
+    assert close_result == [True]
+    current = store.load_session(session_id)
+    assert current is not None
+    assert current["status"] == "closed"
+    assert session_id not in runtime.adapters
+
+
+def test_close_cannot_be_reopened_by_a_stale_resume_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    stale_update_started = threading.Event()
+    allow_stale_update = threading.Event()
+    original_update_session = store.update_session
+
+    def update_session(selected_session_id: str, **changes: object) -> dict[str, object]:
+        if selected_session_id == session_id and changes.get("status") == "stale":
+            stale_update_started.set()
+            assert allow_stale_update.wait(timeout=2)
+        return original_update_session(selected_session_id, **changes)
+
+    monkeypatch.setattr(store, "update_session", update_session)
+    monkeypatch.setattr(
+        runtime,
+        "_start_adapter",
+        lambda **_kwargs: _ResumeAdapter("thread-one"),
+    )
+    resume_errors: list[Exception] = []
+
+    def resume() -> None:
+        try:
+            runtime.resume_session(
+                session_id=session_id,
+                work_dir=tmp_path,
+                objective="resume this session",
+            )
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion below.
+            resume_errors.append(exc)
+
+    resume_thread = threading.Thread(target=resume)
+    resume_thread.start()
+    assert stale_update_started.wait(timeout=2)
+
+    close_result: list[bool] = []
+    close_thread = threading.Thread(
+        target=lambda: close_result.append(runtime.close_session(session_id))
+    )
+    close_thread.start()
+    time.sleep(0.1)
+    assert close_result == []
+
+    allow_stale_update.set()
+    resume_thread.join(timeout=3)
+    close_thread.join(timeout=3)
+
+    assert not resume_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert resume_errors == []
+    assert close_result == [True]
+    current = store.load_session(session_id)
+    assert current is not None
+    assert current["status"] == "closed"
+    assert session_id not in runtime.adapters
