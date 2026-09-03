@@ -424,6 +424,7 @@ class ChatRuntimeController:
         *,
         work_dir: Path,
         objective: str,
+        interrupted_turn_id: str | None = None,
     ) -> ChatRuntimeAdapter:
         session_id = str(session["session_id"])
         current_session = self.store.load_session(session_id)
@@ -443,7 +444,7 @@ class ChatRuntimeController:
                 current.close_session()
                 self.adapters.pop(session_id, None)
         self.store.update_session(session_id, status="resuming", last_error_code=None)
-        active_turn_id = session.get("active_turn_id")
+        active_turn_id = interrupted_turn_id or session.get("active_turn_id")
         if active_turn_id:
             active = self.store.load_turn(session_id, str(active_turn_id))
             if active and active.get("status") not in TERMINAL_TURN_STATES:
@@ -1060,10 +1061,12 @@ class ChatRuntimeController:
             )
             if active_turn_preserved:
                 return session
+            interrupted_turn_id = str(session.get("active_turn_id") or "") or None
             adapter = self._ensure_adapter_locked(
                 session,
                 work_dir=work_dir,
                 objective=objective,
+                interrupted_turn_id=interrupted_turn_id,
             )
             try:
                 return self.store.restore_managed_session_if_idle(
@@ -1079,30 +1082,6 @@ class ChatRuntimeController:
                 if owns_adapter:
                     adapter.close_session()
                 raise
-        with self.lock:
-            current = self.adapters.get(session_id)
-            adapter_healthy = current is not None and current.healthcheck()
-        session, active_turn_preserved = self.store.prepare_managed_session_resume(
-            session_id,
-            preserve_active_turn=adapter_healthy,
-        )
-        if active_turn_preserved:
-            return session
-        adapter = self._ensure_adapter(session, work_dir=work_dir, objective=objective)
-        try:
-            return self.store.restore_managed_session_if_idle(
-                session_id,
-                upstream_thread_id=adapter.upstream_thread_id,
-                upstream_mode=self._managed_upstream_mode(session),
-            )
-        except KeyError:
-            with self.lock:
-                owns_adapter = self.adapters.get(session_id) is adapter
-                if owns_adapter:
-                    self.adapters.pop(session_id, None)
-            if owns_adapter:
-                adapter.close_session()
-            raise
 
     def close(self) -> None:
         self.closed.set()

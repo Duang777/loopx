@@ -551,6 +551,47 @@ def test_resume_does_not_clear_a_healthy_active_turn(
         )
 
 
+def test_resume_with_unhealthy_adapter_fails_interrupted_turn_before_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    turn, _created = store.create_turn(
+        session_id,
+        client_turn_id="interrupted-resume-turn",
+        message="fail this interrupted turn",
+    )
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    unhealthy_adapter = _HealthyChatAdapter()
+    monkeypatch.setattr(unhealthy_adapter, "healthcheck", lambda: False)
+    runtime.adapters[session_id] = unhealthy_adapter  # type: ignore[assignment]
+    replacement_adapter = _HealthyChatAdapter()
+    monkeypatch.setattr(runtime, "_start_adapter", lambda **_kwargs: replacement_adapter)
+
+    restored = runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="resume this session",
+    )
+
+    interrupted = store.load_turn(session_id, str(turn["turn_id"]))
+    assert interrupted is not None
+    assert interrupted["status"] == "failed"
+    assert interrupted["error_code"] == "server_restarted"
+    assert restored["status"] == "ready"
+    assert restored["active_turn_id"] is None
+    assert unhealthy_adapter.closed is True
+
+
 def test_resume_cannot_reopen_a_session_closed_during_restore(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
