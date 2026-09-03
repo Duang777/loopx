@@ -3,19 +3,20 @@
 - Status: Draft, under maintainer review
 - Initially proposed by: NoKV Lab
 - Widened by: LoopX maintainers
-- Date: 2026-08-05; revised 2026-09-01
+- Date: 2026-08-05; revised 2026-09-02
 - Scope: one provider-neutral LoopX authority contract with built-in file,
   optional NoKV, and optional PostgreSQL provider profiles, complementing
   [`host-integration-surface-v0`](../../reference/protocols/host-integration-surface-v0.md)
 - Source baseline: LoopX `a0c20f1779d273e7aaa4bd3ea166d145d466e6d5`
-- Provider API baseline: NoKV `3d75d96965` (0.11.0 line). The Python
-  `publish_bytes` generation-CAS mapping was exercised once by hand against a
-  live NoKV stack at that pin (see the example README); the run is evidence for
-  the mapping only, not part of any merge gate
+- Provider API baseline: NoKV `7bb3ffd6512fd57d9c0f193aa6d9c5b935d77f30`
+  (release 0.11.0, Python API 1, Holt pinned to 0.8.6). The Stage 2A executable
+  qualification admits only that SDK contract and this checkout's helper. It
+  remains candidate evidence, not a merge gate or authority promotion
 - PostgreSQL baseline: the TypeScript Stage 2B candidate implements the store
-  contract and has passed a real PostgreSQL 16 transaction matrix. No shared
-  authority service, runtime caller, authentication boundary, or authority
-  promotion ships yet
+  contract, transaction-local tenant context, forced row-level security, and
+  has passed a real PostgreSQL 16 transaction matrix. No shared authority
+  service, runtime caller, principal authentication/tenant authorization, or
+  authority promotion ships yet
 - Language note: the
   [Chinese version](./shared-goal-authority-state-provider-v0.zh-CN.md) and this
   English version are semantic mirrors. A difference between them is a defect.
@@ -1136,7 +1137,7 @@ independent version domains. Likewise, a restore may preserve frozen bytes and
 lineage without granting current authority: promoting restored state to the
 live authority head requires an explicit lineage and binding fence.
 
-#### Stage 2B PostgreSQL candidate status (2026-09-01)
+#### Stage 2B PostgreSQL candidate status (2026-09-02)
 
 The first PostgreSQL candidate now implements the LoopX-owned TypeScript store
 contract instead of introducing a second semantic authority. A store handle is
@@ -1151,6 +1152,21 @@ An error before `COMMIT` is rolled back and typed `failed`; an error after the
 receipt readback. Database-incarnation metadata is installed administratively
 and cannot be rebound implicitly.
 
+The database trust-boundary slice now gives each provider operation a
+transaction-local `loopx.tenant_id` context and enables plus forces PostgreSQL
+row-level security on every tenant-scoped table. Reads use a read-only
+transaction and roll it back before returning, so a pooled session cannot
+retain a previous tenant context. A missing context sees no scoped rows;
+`WITH CHECK` rejects a row for any tenant other than the active context. The
+qualified restricted-role profile receives only schema usage, metadata read,
+and the minimum scoped table privileges, so it cannot rebind
+database-incarnation metadata or install schema policy.
+
+This is defense in depth inside the service, not tenant authentication. The
+service still owns the database role and chooses the transaction context after
+authenticating a principal and authorizing its tenant. An Agent never receives
+that role, and RLS does not make a caller-supplied tenant id trustworthy.
+
 This slice also moves strict JSON validation and commit normalization out of
 the file implementation into one TypeScript authority-store codec. File and
 PostgreSQL now run the same provider-neutral conformance suite for atomic
@@ -1159,26 +1175,166 @@ operation fencing, ordered cursor scans, isolation of returned values, and
 pre-write rejection of malformed JSON.
 
 Real PostgreSQL qualification starts here, not at shadow or canary. A
-PostgreSQL 16 instance passed nine durable rows: the shared conformance matrix,
-same-head concurrent CAS, tenant-scoped reuse of the same goal and operation
-ids, transaction rollback with no visible head or receipt, receipt recovery
-after a committed transaction loses its response, and database-incarnation
-rebind refusal. A fake can still exercise adapter branches, but it cannot prove
-row locking, unique constraints, rollback, or commit visibility; every later
-PostgreSQL provider slice must therefore retain a real-database gate.
+PostgreSQL 16 instance passed the shared conformance matrix, same-head
+concurrent CAS, tenant-scoped reuse of the same goal and operation ids,
+transaction rollback with no visible head or receipt, receipt recovery after a
+committed transaction loses its response, database-incarnation rebind refusal,
+and a restricted-role two-tenant RLS matrix. The latter proves that missing
+transaction context exposes no scoped row, cross-context writes fail, and the
+runtime role cannot mutate administrative metadata. A fake can still exercise
+adapter branches, but it cannot prove row locking, unique constraints,
+rollback, commit visibility, privileges, or RLS; every later PostgreSQL
+provider slice must therefore retain a real-database gate.
 
 The candidate remains coverage-only. No production LoopX entry point constructs
 it, local mode remains unchanged, and Agents cannot receive the injected pool.
-Service authentication and database roles, tenant authorization/RLS, restore
-incarnation rotation, pool exhaustion/cancellation/failover, one-way shadow
-parity, and authority-source promotion remain explicit holds. The expected
-route to the TEST ONLY canary is three further reviewed slices: service trust
-and deployment boundaries; one-way runtime shadow plus parity; then the bounded
-canary and promotion gate.
+The database runtime-role and RLS behavior within the service trust boundary is
+now implemented and qualified. Service API authentication,
+principal-to-tenant authorization, the production runtime caller,
+restore-incarnation rotation, pool
+exhaustion/cancellation/failover, one-way shadow parity, the TEST ONLY canary,
+and authority-source promotion remain explicit holds. The next PostgreSQL
+slice must qualify the authenticated service/deployment and failure boundary;
+it must not treat database RLS as that missing API authorization layer.
 
-The file-backed provider shadow is Stage 2; its first slice is merged on
-`main` through #3529, and the evidence behind it is recorded in the Stage 2
-status subsection below.
+The file-backed provider contract and executor are Stage 2; their first slice
+is merged on `main` through #3529, and the evidence behind it is recorded in
+the Stage 2 status subsection below. That slice proves the aggregate and
+provider boundary, but it is not the Stage 2C production runtime shadow: it
+does not hook the legacy Todo or task-lease writers.
+
+#### Stage 2C post-commit runtime-shadow status (2026-09-03)
+
+The first production-path shadow slice is implemented behind this exact,
+default-off goal configuration:
+
+```json
+{
+  "coordination": {
+    "runtime_shadow": {
+      "enabled": true,
+      "schema_version": "loopx_coordination_runtime_shadow_config_v0",
+      "provider": "file_v0"
+    }
+  }
+}
+```
+
+Activation requires all three values. An absent, disabled, malformed, or
+unsupported configuration preserves the legacy result and returns typed
+disabled evidence. When enabled, the runtime obeys the following boundary:
+
+- the legacy Markdown Todo writer or task-lease writer commits first and
+  remains canonical; only a successful primary mutation dispatches the
+  shadow;
+- the Python adapter reduces the committed Todo and lease read models to the
+  coordination-owned fields, sorts them by stable Todo identity, and sends one
+  post-commit projection through the existing TypeScript effect runtime;
+- the TypeScript owner writes that projection and its operation receipt in one
+  `AuthorityStore` transaction. It checks an existing receipt before writing,
+  rejects reuse of an operation id with different normalized content, retries
+  provider-revision contention only within a fixed bound, and reconciles an
+  ambiguous commit only by reading the exact durable receipt;
+- an applied result reads the receipt back and verifies the current provider
+  head when it has not already been superseded. Every result states
+  `decision_read_from_shadow=false`; a disabled, failed, conflicting, or
+  ambiguous shadow result cannot reject, roll back, or rewrite the committed
+  primary result.
+
+Cross-runtime tests exercise the real Python -> TypeScript ->
+`FileAuthorityStore` path from both Todo and task-lease hooks, including
+default-off behavior, stable replay, content-drift rejection, ambiguous-commit
+recovery, projection read-back, and shadow-failure isolation. This closes the
+first runtime-shadow slice. A follow-up typed inspection seam now compares the
+current compact legacy projection with the file head and reports `missing`,
+`matched`, or `drifted` plus both content digests. It is default-off,
+read-only, and always returns `decision_read_from_shadow=false`; this provides
+the reusable baseline/parity observation needed by migration without turning
+an observation into authority.
+
+The next migration primitive is now also present behind the same explicit
+opt-in. `coordination.runtime_shadow.bootstrap` installs one normalized legacy
+projection only when the file shadow is uninitialized. Its first committed
+event durably binds the source version, source projection digest, and
+`legacy_canonical_shadow` mode declaration; it deliberately carries an empty
+receipt payload because no agent operation has run. Exact replay is recovered
+from that first transaction, including an ambiguous lost response, while a
+different existing lineage fails closed. This is the provider-owned bootstrap
+effect needed by a later administrative migration command; it still cannot
+promote the shadow or make a coordination decision.
+
+The administrative caller is explicit and preview-first:
+
+```bash
+loopx coordination-shadow inspect --goal-id <goal-id>
+loopx coordination-shadow bootstrap --goal-id <goal-id>
+loopx coordination-shadow bootstrap --goal-id <goal-id> --execute
+loopx coordination-shadow qualify --goal-id <goal-id> \
+  --minimum-operations 3 \
+  --require-event-kind todo_claim \
+  --require-event-kind task_lease_acquire
+loopx coordination-shadow rollback --goal-id <goal-id> \
+  --provider-revision <revision-from-inspect> --execute
+```
+
+It derives the compact projection from the current canonical Todo and
+task-lease views, reports only counts and digests, and requires `--execute`
+before invoking bootstrap. A successful write is immediately read back through
+the typed parity inspection. The command remains unavailable unless the exact
+goal-level `file_v0` shadow opt-in is active.
+
+Pre-promotion rollback is revision-fenced and non-destructive. TypeScript moves
+the exact active file-shadow lineage into a durable quarantine archive; exact
+retries replay that archive receipt, revision drift fails closed, and the
+legacy Todo/task-lease source remains canonical throughout. A later bootstrap
+may therefore reconstruct a fresh shadow without restoring or trusting the
+retired lineage.
+
+The read-only `qualify` action turns one-point inspection into a typed sustained
+parity report. Its coverage-based policy requires a caller-selected number of
+distinct committed operations and any explicitly named Todo/lease mutation
+kinds. TypeScript scans the complete bounded lineage, verifies the bootstrap,
+every event/receipt/projection identity, the current legacy/file head digest,
+and reports `qualified`, `insufficient_evidence`, or `drifted`. Replays do not
+increase the operation count, missing coverage fails the gate, and every result
+continues to declare `decision_read_from_shadow=false`.
+
+The next read-only seam exercises the provider shape needed by the future
+read flip without granting it authority:
+
+```bash
+loopx coordination-shadow read-candidate \
+  --goal-id <goal-id> \
+  --todo-id <todo-id>
+```
+
+TypeScript loads the file head, requires its digest to match the complete
+current legacy coordination projection, validates unique Todo identities, and
+returns the exact compact Todo plus the provider revision and cursor. Missing,
+drifted, malformed, or duplicate state fails closed. The result deliberately
+keeps `decision_read_from_shadow=false`: it proves that a parity-matched
+provider can answer an exact Todo read, but no lifecycle or settlement caller
+uses that answer yet. Promotion still requires an atomic provider-first read
+flip together with legacy-writer fencing; a fallback to Markdown after that
+flip would recreate split authority and is forbidden.
+
+The provider-first read flip and fencing every legacy coordination writer
+remain mandatory evidence for the separately reviewed local canonical
+promotion. Remote NoKV/PostgreSQL shadowing therefore remains Stage 3 and
+cannot use this default-off hook as authority.
+
+The next Stage 2C implementation slice adds the TypeScript cutover kernel but
+does not yet change the default runtime. One pure reducer now derives the
+Todo/lease projection, event, and receipt from the same mutation. An explicit
+promotion operation requires a qualified shadow at one exact provider revision
+and digest, plus an independently persisted legacy-writer fence bound to that
+same revision. The fence has a shared fail-closed write-check hook; promotion
+is replayable through its operation receipt, and provider-first reads and
+mutations never fall back to Markdown. Until the Python Todo and task-lease
+entry points call that hook and select the promoted mode, these surfaces remain
+cutover machinery rather than a production authority flip. The follow-up must
+wire every legacy writer, make configuration and rollback explicit, and prove
+default legacy compatibility before the local promotion can be enabled.
 
 Durable completion continuation read-back
 (`durable_completion.py`: `read_persisted_todo_record` /
@@ -1404,6 +1560,27 @@ shipped production capability.
    canary? Provider selection does not change the authority contract.
 5. Before production use, what retention and capacity policy replaces or
    operationalizes `retain_all_v0` without losing historical proof?
+6. Does the Stage 4 canary require Host lease liveness before admission, or
+   is that a Stage 5 promotion hold? Section 11 asks the canary to observe
+   that no external effect is duplicated, but a Host whose runtime exceeds the
+   lease TTL can keep producing effects after another Agent reclaims the Todo,
+   and a settlement rejected afterwards cannot undo them. The review of #3820
+   treated this as a Stage 4 precondition; the RFC must say which mechanism
+   is required and where: renewing the lease while the Host runs plus
+   cancelling the Host when the fence is lost, an effect-owning fenced commit
+   inside the recoverable protocol, or a hard Host duration bound below the
+   TTL. *Proposed answer: any canary that runs a real Host must renew during
+   Host execution and cancel on fence loss, and its acceptance must include
+   the long-Host expiry/reclaim negative test; a bounded fake Host is not
+   evidence for this row.*
+7. How is the canary's authority provider bound to a Goal? A CLI argument
+   that names an arbitrary guard command is a test-harness convenience, not a
+   product authority selector. *Proposed answer: the binding is a
+   goal-level registry record published by the same owner as the
+   authorization projection in question 2, naming the provider kind, the
+   store identity or lineage, and an explicit TEST ONLY canary marker; a Goal
+   without that marker cannot be admitted by a shared-authority guard, and
+   the runtime resolves the provider from the record rather than from argv.*
 
 ---
 
@@ -1427,6 +1604,30 @@ or HA. Passing
 claim that the complete P0 acceptance gate above passes. Historical latency or
 fault results are informative only; they are not a durability, recovery, HA,
 or production qualification claim.
+
+The additional TEST ONLY Stage 2A probe in
+`examples/nokv-authority-store/` opens three independent SDK helper processes
+and checks fresh create, exact generation update, reconciliation after an
+applied CAS response is deliberately lost, a one-winner/two-contender CAS,
+winner/loser receipt behavior, and fresh-process receipt/history readback. Its
+executable fixes argv to one absolute Python executable, the interpreter
+isolation flag `-I`, and this checkout's reviewed helper, so `PYTHONPATH`
+cannot substitute the `nokv` module; the helper fails closed unless the SDK
+reports NoKV 0.11.0 and Python API 1, and the report repeats those two
+admission constants rather than server-observed values. It validates read metadata against the current workbench
+incarnation and validates publish responses against the requested workbench,
+path, operation, revision, and generation. The AuthorityStore accepts even a
+successful publish response only after a fresh read proves the exact persisted
+transaction under the current workbench incarnation. This closes false success
+at the LoopX boundary, but NoKV's current Python API does not atomically bind an
+expected workspace incarnation into `publish_bytes`; preventing a write after a
+concurrent remove/recreate remains an explicit provider-contract hold.
+Only a successful live JSON report is evidence for that single-node Stage 2A
+store-conformance run; deterministic tests are sequence tests only. This
+LoopX-only candidate changes neither NoKV source nor its workbench/artifact data
+model, and it does not prove runtime shadow parity, a multi-Agent canary,
+authority-source promotion, HA, restart recovery, capacity, or production
+routing.
 
 ## Appendix B: Handoff-Mode Decision Record (2026-08-10)
 
@@ -1505,8 +1706,12 @@ as a follow-up. `legacy` remains the default and keeps the divergence hole by
 design. Two side doors found after the gate landed are closed alongside this
 revision: `supersede` crosses the same lease fence as `complete`, and a forced
 state rebuild (`bootstrap --force`) carries the declared mode instead of
-resetting it to `legacy`. The next stage, a file-backed provider shadow behind
-the coordination contract of Section 11, has not started.
+resetting it to `legacy`. The Stage 2 provider contract and file backend have
+since landed, and the first Stage 2C post-commit runtime shadow now exists
+behind an explicit default-off configuration. Local canonical promotion has
+not started: the runtime still never reads the shadow for decisions, and the
+migration, rollback, parity, read-flip, and legacy-writer fencing gates above
+remain open.
 
 ### Relation to Staged Delivery
 

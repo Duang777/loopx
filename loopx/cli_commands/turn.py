@@ -53,6 +53,7 @@ from .lark_inbox import (
     build_lark_operator_inbox_urgency_projector,
     dispatch_goal_lark_turn_start_hooks,
 )
+from .turn_dsh_host import build_dsh_host_runner
 from .turn_registration import register_turn_commands as register_turn_commands
 from .turn_inspection import handle_turn_journal_inspection
 from .turn_rendering import (
@@ -140,6 +141,7 @@ def handle_turn_command(
                     project_live_explore_composition_frontier
                 ),
                 requested_action_todo_id=requested_action_todo_id,
+                turn_start_hook_dispatch=turn_start_hook_dispatch,
             )
 
         decision = build_turn_decision()
@@ -259,7 +261,9 @@ def handle_turn_command(
                     )
             else:
                 if args.host_command_json:
-                    raise ValueError("codex-cli does not accept --host-command-json")
+                    raise ValueError(
+                        f"{args.host} does not accept --host-command-json"
+                    )
                 raw_argv = None
             if args.validation_command_json:
                 raw_validation_argv = json.loads(args.validation_command_json)
@@ -899,7 +903,7 @@ def handle_turn_command(
                     }
                 )
 
-            host_runner = None
+            host_runner: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None
             session_binding_resolver = None
             if args.host == "codex-cli":
 
@@ -924,6 +928,11 @@ def handle_turn_command(
                     return codex_cli_session_binding(runtime_root, turn_envelope)
 
                 session_binding_resolver = resolve_built_in_session_binding
+            elif args.host == "dsh":
+                host_runner = build_dsh_host_runner(
+                    args,
+                    workspace=project,
+                )
 
             payload = run_loopx_turn_once(
                 payload,

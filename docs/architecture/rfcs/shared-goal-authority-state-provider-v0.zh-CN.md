@@ -3,17 +3,19 @@
 - 状态：Draft，正在接受 maintainer review
 - 最初提案方：NoKV Lab
 - 扩展修订方：LoopX maintainer
-- 日期：2026-08-05；修订于 2026-09-01
+- 日期：2026-08-05；修订于 2026-09-02
 - 范围：一个 provider-neutral 的 LoopX 权威合同，支持内置 file、可选 NoKV
   与可选 PostgreSQL provider profile，用来补充
   [`host-integration-surface-v0`](../../reference/protocols/host-integration-surface-v0.md)
 - 源码基线：LoopX `a0c20f1779d273e7aaa4bd3ea166d145d466e6d5`
-- Provider API 基线：NoKV `3d75d96965`（0.11.0 线）。Python `publish_bytes`
-  generation-CAS 映射已在该基线的真实 NoKV stack 上手工跑过一次（见示例 README）；
-  该次运行只是映射本身的证据，不属于任何合并门槛
-- PostgreSQL 基线：TypeScript Stage 2B candidate 已实现 store contract，且已通过
-  真实 PostgreSQL 16 transaction matrix；shared authority service、runtime caller、
-  authentication boundary 与 authority promotion 均尚未交付
+- Provider API 基线：NoKV `7bb3ffd6512fd57d9c0f193aa6d9c5b935d77f30`
+  （release 0.11.0、Python API 1、Holt 固定为 0.8.6）。Stage 2A 的可执行资格
+  验证只接受这份 SDK 合同与本 checkout 的 helper；它仍是候选证据，不是合并门槛
+  或 authority promotion
+- PostgreSQL 基线：TypeScript Stage 2B candidate 已实现 store contract、
+  transaction-local tenant context 与 forced row-level security，且已通过真实
+  PostgreSQL 16 transaction matrix；shared authority service、runtime caller、
+  principal authentication/tenant authorization 与 authority promotion 均尚未交付
 - 语言说明：[英文版](./shared-goal-authority-state-provider-v0.md)与本中文版互为
   语义镜像；两者不一致属于缺陷
 
@@ -914,7 +916,7 @@ Stage 2 的 aggregate 与 provider shadow。该 aggregate 必须把 `handoff_mod
 lineage，却不会因此获得当前权威；把恢复状态晋升为 live authority head，必须经过
 显式的 lineage 与 binding fence。
 
-#### Stage 2B PostgreSQL candidate 状态（2026-09-01）
+#### Stage 2B PostgreSQL candidate 状态（2026-09-02）
 
 首个 PostgreSQL candidate 已实现由 LoopX 持有的 TypeScript store contract，而非
 引入第二个语义权威。Store handle 绑定 `(tenant_id, goal_id)`，只接收 service 持有的
@@ -926,6 +928,18 @@ scoped head row，校验 opaque provider revision，以 unique constraint fence
 的错误返回 typed `ambiguous`，只能通过 receipt readback reconcile。Database
 incarnation metadata 由行政部署路径安装，不能被隐式重新绑定。
 
+数据库 trust-boundary 切片现在会为每次 provider operation 设置 transaction-local
+`loopx.tenant_id` context，并在所有 tenant-scoped table 上同时 enable 与 force
+PostgreSQL row-level security。读操作使用 read-only transaction，并在返回前
+rollback，因此 pooled session 不会残留上一个 tenant context。缺少 context 时看不到
+任何 scoped row；`WITH CHECK` 会拒绝写入 active context 之外的 tenant。资格化所用的
+restricted-role profile 只获得 schema usage、metadata read 与 scoped table 所需的最小
+权限，因此不能重新绑定 database-incarnation metadata，也不能安装 schema policy。
+
+这只是 service 内部的 defense in depth，不是 tenant authentication。Service 仍持有
+database role，并且必须先认证 principal、授权其 tenant，才能选择 transaction context。
+Agent 永远拿不到该 role；RLS 也不会让 caller 自报的 tenant id 自动变可信。
+
 本切片还把 strict JSON validation 与 commit normalization 从 file 实现抽到统一的
 TypeScript authority-store codec。File 与 PostgreSQL 现在运行同一套 provider-neutral
 conformance suite，覆盖 projection-plus-receipt 原子提交、CAS contention、历史 receipt
@@ -933,22 +947,136 @@ replay、operation fencing、有序 cursor scan、返回值隔离，以及 malfo
 被拒绝。
 
 真实 PostgreSQL qualification 从这里开始，而不是等到 shadow 或 canary。一个真实
-PostgreSQL 16 实例已通过九行 durable 验证：共享 conformance matrix、同一 head 的并发
-CAS、不同 tenant 复用相同 goal 与 operation id、transaction rollback 后不暴露 head
-或 receipt、已提交 transaction 丢失响应后的 receipt 恢复，以及拒绝 database
-incarnation rebind。Fake 仍可覆盖 adapter 分支，但不能证明 row lock、unique
-constraint、rollback 或 commit visibility；因此后续每个 PostgreSQL provider 切片都
-必须保留真实数据库门禁。
+PostgreSQL 16 实例已通过共享 conformance matrix、同一 head 的并发 CAS、不同 tenant
+复用相同 goal 与 operation id、transaction rollback 后不暴露 head 或 receipt、已提交
+transaction 丢失响应后的 receipt 恢复、拒绝 database incarnation rebind，以及受限
+role 的双 tenant RLS matrix。最后一项证明：缺少 transaction context 时看不到 scoped
+row，跨 context 写入失败，runtime role 也不能修改行政 metadata。Fake 仍可覆盖 adapter
+分支，但不能证明 row lock、unique constraint、rollback、commit visibility、privilege
+或 RLS；因此后续每个 PostgreSQL provider 切片都必须保留真实数据库门禁。
 
 该 candidate 仍是 coverage-only。没有 production LoopX entry point 构造它，本地模式
-保持不变，Agent 也不能获得注入的 pool。Service authentication 与 database role、
-tenant authorization/RLS、restore incarnation rotation、pool exhaustion/cancellation/
-failover、单向 shadow parity 与 authority-source promotion 仍是显式 hold。从这里到
-TEST ONLY canary，预计还需三个经 review 的切片：service trust 与 deployment boundary；
-单向 runtime shadow 加 parity；最后是有界 canary 与 promotion gate。
+保持不变，Agent 也不能获得注入的 pool。Service trust boundary 内的数据库
+runtime-role/RLS 行为现已实现并完成资格化。Service API authentication、
+principal-to-tenant authorization、production runtime caller、restore
+incarnation rotation、pool exhaustion/cancellation/failover、单向 shadow parity、TEST
+ONLY canary 与 authority-source promotion 仍是显式 hold。下一个 PostgreSQL 切片必须
+资格化 authenticated service/deployment 与 failure boundary，不能把 database RLS 当成
+仍缺失的 API authorization layer。
 
-File-backed provider shadow 属于 Stage 2；其第一个切片已通过 #3529 合入
-`main`，证据记录在下方的 Stage 2 状态小节。
+File-backed provider 合同与 executor 属于 Stage 2；其第一个切片已通过 #3529
+合入 `main`，证据记录在下方的 Stage 2 状态小节。该切片证明 aggregate 与 provider
+边界，但还不是 Stage 2C 的生产 runtime shadow：它没有接入 legacy Todo 或
+task-lease writer。
+
+#### Stage 2C 提交后 runtime shadow 状态（2026-09-03）
+
+第一个接入真实写路径的 shadow 切片由以下精确配置显式启用，默认关闭：
+
+```json
+{
+  "coordination": {
+    "runtime_shadow": {
+      "enabled": true,
+      "schema_version": "loopx_coordination_runtime_shadow_config_v0",
+      "provider": "file_v0"
+    }
+  }
+}
+```
+
+三个值缺一不可；配置缺失、关闭、格式错误或 provider 不受支持时，legacy 结果保持
+不变，并返回 typed disabled evidence。启用后，runtime 遵守以下边界：
+
+- legacy Markdown Todo writer 或 task-lease writer 先成功提交且继续作为 canonical；
+  只有 primary mutation 成功后才派发 shadow；
+- Python adapter 把已提交的 Todo 与 lease read model 收敛为 coordination 自有字段，
+  按稳定 Todo identity 排序，再通过既有 TypeScript effect runtime 发送一份提交后
+  projection；
+- TypeScript owner 在同一笔 `AuthorityStore` transaction 中写 projection 与 operation
+  receipt。写前先查询既有 receipt；同一 operation id 搭配不同 normalized content
+  会被拒绝；provider-revision contention 只做固定次数重试；ambiguous commit 只能
+  通过读取精确 durable receipt 恢复；
+- `applied` 会读回 receipt，并在 provider head 尚未被后续提交覆盖时验证当前
+  projection。所有结果都声明 `decision_read_from_shadow=false`；shadow 被关闭、失败、
+  冲突或 ambiguous，都不能拒绝、回滚或改写已经提交的 primary result。
+
+跨 runtime 测试从 Todo 与 task-lease 两条 hook 验证真实的 Python -> TypeScript ->
+`FileAuthorityStore` 路径，覆盖 default-off、稳定 replay、内容漂移拒绝、ambiguous
+commit 恢复、projection read-back 与 shadow failure isolation。这里仅关闭第一个
+runtime-shadow 切片。后续 typed inspection seam 会把当前紧凑 legacy projection 与
+file head 对比，返回 `missing`、`matched` 或 `drifted` 以及两侧内容摘要。该 seam 默认
+关闭、只读，并始终返回 `decision_read_from_shadow=false`；它为 migration 提供可复用
+的 baseline/parity observation，但不会把 observation 升格为 authority。
+
+同一显式 opt-in 后面现在也有了下一个 migration primitive：
+`coordination.runtime_shadow.bootstrap` 只允许在 file shadow 尚未初始化时安装一份
+规范化 legacy projection。第一条已提交 event 持久绑定 source version、source
+projection digest 与 `legacy_canonical_shadow` mode declaration；由于尚未执行任何
+Agent operation，它刻意携带空 receipt payload。精确重放从第一条 transaction 恢复，
+包括提交成功但响应丢失的 ambiguous 情形；如果已有不同 lineage，则 fail closed。
+这是后续管理面 migration command 所需的 provider-owned bootstrap effect，但它仍不能
+promotion shadow，也不能参与协调决策。
+
+管理面 caller 是显式且 preview-first 的：
+
+```bash
+loopx coordination-shadow inspect --goal-id <goal-id>
+loopx coordination-shadow bootstrap --goal-id <goal-id>
+loopx coordination-shadow bootstrap --goal-id <goal-id> --execute
+loopx coordination-shadow qualify --goal-id <goal-id> \
+  --minimum-operations 3 \
+  --require-event-kind todo_claim \
+  --require-event-kind task_lease_acquire
+loopx coordination-shadow rollback --goal-id <goal-id> \
+  --provider-revision <revision-from-inspect> --execute
+```
+
+它从当前 canonical Todo 与 task-lease view 派生紧凑 projection，只报告计数与摘要，
+并要求 `--execute` 才调用 bootstrap。写入成功后会立即通过 typed parity inspection
+读回。除非目标开启精确的 goal-level `file_v0` shadow opt-in，否则该命令不可执行。
+
+promotion 前 rollback 带精确 revision fence，且不删除数据。TypeScript 会把命中的
+file-shadow lineage 移入持久 quarantine archive；精确重试复用 archive receipt，revision
+漂移 fail closed，legacy Todo/task-lease source 全程保持 canonical。之后可以从 legacy
+source 重新 bootstrap 新 shadow，而无需恢复或信任退役 lineage。
+
+只读 `qualify` action 把单点 inspection 提升为 typed 持续 parity 报告。它采用覆盖式
+策略：调用方指定至少需要多少个不同的已提交 operation，以及必须覆盖哪些 Todo/lease
+mutation kind。TypeScript 会扫描完整且有界的 lineage，校验 bootstrap、每条
+event/receipt/projection identity，以及当前 legacy/file head digest，并返回
+`qualified`、`insufficient_evidence` 或 `drifted`。replay 不增加 operation 计数，缺少
+覆盖会让 gate 失败，所有结果仍明确声明 `decision_read_from_shadow=false`。
+
+下一个只读 seam 会演练未来 read flip 所需的 provider 读取形态，但不授予它 authority：
+
+```bash
+loopx coordination-shadow read-candidate \
+  --goal-id <goal-id> \
+  --todo-id <todo-id>
+```
+
+TypeScript 会读取 file head，要求其 digest 与当前完整 legacy coordination projection
+一致，校验 Todo identity 唯一，再返回精确的紧凑 Todo、provider revision 与 cursor。
+provider 缺失、漂移、结构非法或 Todo 重复都会 fail closed。结果刻意保持
+`decision_read_from_shadow=false`：它只证明 parity 匹配的 provider 能回答一次精确
+Todo 读取，尚无 lifecycle 或 settlement 调用方消费这个答案。正式 promotion 仍必须
+把 provider-first read flip 与 legacy-writer fencing 作为同一个受审原子边界；flip 后
+回退 Markdown 会重新制造双权威，因此禁止。
+
+后续仍需完成 provider-first read flip，并 fence 全部 legacy coordination writer；这些
+仍是独立评审的本地 canonical promotion 的强制证据。因此 NoKV/PostgreSQL 远端 shadow
+仍属于 Stage 3，不能把这个默认关闭的 hook 当作 authority。
+
+下一块 Stage 2C 实现加入了 TypeScript cutover kernel，但尚未改变默认 runtime。
+同一个纯 reducer 从一次 Todo/lease mutation 派生 projection、event 与 receipt；显式
+promotion 必须同时验证 qualified shadow 的精确 provider revision、projection digest，
+以及独立持久化、绑定到同一 revision 的 legacy-writer fence。该 fence 提供共享的
+fail-closed write-check hook；promotion 可按 operation receipt 重放，provider-first read
+与 mutation 也绝不回退到 Markdown。在 Python Todo/task-lease 入口真正调用这个 hook
+并选择 promoted mode 之前，这些仍只是切换机械结构，不代表生产权威源已经翻转。
+后续必须接齐所有 legacy writer、显式配置与 rollback，并证明默认 legacy 兼容性，
+才能启用本地 promotion。
 
 完成续接（continuation）的持久化读回
 （`durable_completion.py`：`read_persisted_todo_record` /
@@ -1124,6 +1252,21 @@ retention 决策，不能用一个会制造第二 writer 的诊断 CLI 代替。
    Provider 选择不改变 authority contract。
 5. Production 使用前，什么 retention 与 capacity policy 可以替代或落实
    `retain_all_v0`，且不丢失历史凭证？
+6. Stage 4 canary 在准入前是否要求 Host lease liveness，还是把它留作 Stage 5
+   promotion hold？第 11 节要求 canary 观察"外部 effect 不重复"，但运行时间超过
+   lease TTL 的 Host 会在另一个 Agent reclaim 该 Todo 之后继续产生 effect，事后
+   拒绝 settlement 也无法撤销它们。#3820 的评审把这一点当作 Stage 4 前置条件；
+   RFC 必须写明要求哪种机制以及落在哪一层：Host 运行期间续约并在 fence 丢失时取
+   消 Host、可恢复协议内的 effect-owning fenced commit，或把 Host 时长硬性限制在
+   TTL 之下。*拟议答案：任何运行真实 Host 的 canary 都必须在 Host 执行期间续约并
+   在 fence 丢失时取消，其验收必须包含长 Host 过期/reclaim 负例；有界的 fake Host
+   不能作为这一行的证据。*
+7. canary 的 authority provider 如何绑定到 Goal？用 CLI 参数指定任意 guard 命令只
+   是测试 harness 的便利，不是产品级 authority selector。*拟议答案：绑定是一条
+   goal 级 registry 记录，由问题 2 中发布 authorization projection 的同一 owner 发
+   布，记录 provider 种类、store identity 或 lineage，以及显式的 TEST ONLY canary
+   标记；没有该标记的 Goal 不得被 shared-authority guard 准入，runtime 从该记录而
+   非 argv 解析 provider。*
 
 ---
 
@@ -1144,6 +1287,24 @@ migration/promotion、service recovery 或 HA。
 `python3 examples/nokv-shadow-provider/probes.py contract` 通过并不表示上面的完整 P0
 验收门通过。历史 latency 或 fault 结果只具有参考意义，不构成 durability、recovery、
 HA 或 production qualification 声明。
+
+`examples/nokv-authority-store/` 还包含一个 TEST ONLY 的 Stage 2A probe：它会
+打开三个相互独立的 SDK helper 进程，验证 fresh create、精确 generation update、
+一次 CAS 已落盘但响应被刻意丢弃后的回读 reconciliation、两个竞争者恰一胜出的
+CAS、胜负双方的 receipt 行为，以及新进程对 receipt 与完整 history 的回读。该可
+执行入口把 argv 固定为一个绝对 Python executable、解释器隔离标志 `-I`，加本
+checkout 中经过评审的 helper，因此 `PYTHONPATH` 无法替换 `nokv` 模块；helper 只
+接受 NoKV 0.11.0 / Python API 1，report 中重复的是这两个准入常量，而非从服务端读
+回的值。它把 read metadata 与当前
+workbench incarnation 对照，并针对请求的 workbench、path、operation、revision、
+generation 校验 publish 回包。即使 publish 回包报告成功，AuthorityStore 也必须
+重新读取并证明当前 workbench incarnation 下持久化了完全相同的 transaction，才会
+接受成功。这在 LoopX 边界消除了错误成功，但 NoKV 当前 Python API 尚不能把
+expected workspace incarnation 原子绑定到 `publish_bytes`；阻止 concurrent
+remove/recreate 后的写入仍是明确的 provider-contract hold。只有成功的 live JSON report 才是该次单节点 Stage 2A store-conformance
+运行的证据；确定性测试只证明场景序列。这个纯 LoopX 候选既不修改 NoKV 源码，也
+不改变其 workbench/artifact 数据模型；它不证明 runtime shadow parity、multi-Agent
+canary、authority-source promotion、HA、重启恢复、容量或生产路由。
 
 ## 附录 B：交接模式决策记录（2026-08-10）
 
@@ -1200,8 +1361,11 @@ hard_lease` 语义、只允许静止态切换的 `loopx handoff-mode show|set`�
 `handoff_gate_overridden` 标记的委托授权门；上面的 user gate 自动铸钥匙作为后续
 补充落地。`legacy` 仍是默认值，分叉洞按设计保留。门禁落地后发现的两扇侧门随本次
 修订一并关上：`supersede` 与 `complete` 过同一道租约栅栏；强制重建状态
-（`bootstrap --force`）保留已声明的模式而不是把它重置回 `legacy`。下一阶段，即
-第 11 节协调合同后面的 file-backed provider shadow，尚未开始。
+（`bootstrap --force`）保留已声明的模式而不是把它重置回 `legacy`。此后 Stage 2
+provider 合同与 file backend 已落地，第一个 Stage 2C 提交后 runtime shadow 也已在
+显式、默认关闭的配置后实现。本地 canonical promotion 尚未开始：runtime 仍不从
+shadow 读取决策，上述 migration、rollback、parity、read flip 与 legacy-writer fencing
+门禁仍然开放。
 
 ### 与分阶段交付的关系
 

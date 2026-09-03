@@ -74,6 +74,17 @@ def _status_payload(*, gate_action_kind: str) -> dict:
             "agent_model": "peer_v1",
             "registered_agents": [AGENT_ID],
         },
+        item_extra={
+            "long_task_cadence_hint": {
+                "schema_version": "cadence_hint_v0",
+                "signal": "blocked",
+                "recommendation": "wait",
+                "reason_codes": [
+                    "quota_state_operator_gate",
+                    "open_user_todos_visible",
+                ],
+            }
+        },
     )
 
 
@@ -119,6 +130,21 @@ def test_unrelated_user_gate_allows_ready_deferred_successor_replan() -> None:
         "agent_channel"
     ]["primary_action"]
     assert payload["scheduler_hint"]["cadence_class"] == "active_work"
+    assert payload["long_task_cadence_hint"] == {
+        "schema_version": "cadence_hint_v0",
+        "signal": "active_work",
+        "recommendation": "keep",
+        "reason_codes": ["final_agent_scoped_active_work"],
+        "authority": "final_agent_scoped_interaction_and_scheduler",
+        "superseded": {
+            "signal": "blocked",
+            "recommendation": "wait",
+            "reason_codes": [
+                "quota_state_operator_gate",
+                "open_user_todos_visible",
+            ],
+        },
+    }
 
 
 def test_consumed_review_gate_exposes_quality_vision_replan() -> None:
@@ -202,6 +228,15 @@ def test_blocking_user_gate_backs_off_instead_of_polling_as_active_work() -> Non
     )
     assert payload["scheduler_hint"]["cadence_class"] == "human_gate"
     assert payload["scheduler_hint"]["codex_app"]["recommended_interval_minutes"] == 30
+    assert payload["long_task_cadence_hint"] == {
+        "schema_version": "cadence_hint_v0",
+        "signal": "blocked",
+        "recommendation": "wait",
+        "reason_codes": [
+            "quota_state_operator_gate",
+            "open_user_todos_visible",
+        ],
+    }
 
     initial_backoff = payload["scheduler_hint"]["codex_app"]["stateful_backoff"]
     next_hint = build_scheduler_hint(

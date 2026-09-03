@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ...long_task_cadence import reconcile_long_task_cadence_hint
 from ...state_projection import (
     next_action_projection_warning,
 )
@@ -1480,6 +1481,11 @@ def _build_quota_should_run_payload(
         scheduler_execution_context=prepared.resolved_scheduler_context,
         turn_instance_id=turn_instance_id,
         runtime_root=_interaction_runtime_root(runtime_root, prepared.status_payload),
+    )
+    payload["long_task_cadence_hint"] = reconcile_long_task_cadence_hint(
+        payload.get("long_task_cadence_hint"),
+        interaction_contract=payload.get("interaction_contract"),
+        scheduler_hint=payload.get("scheduler_hint"),
     )
     payload["protocol_action_packet"] = build_protocol_action_packet(payload)
     return payload

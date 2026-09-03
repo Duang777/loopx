@@ -1005,10 +1005,18 @@ wait `blocked`, and do not use the monitor itself as the runnable successor.
 
 A material user update should include the current countable arm and pair coverage,
 aggregate primary metric by arm, binary outcomes when the benchmark exposes them,
-improved/flat/regressed pair counts, and the new causal insight or next probe. Derive
-these score fields from the experiment board or benchmark-owned scoring projection,
-not from raw private evidence. Do not send a repetitive update when no score,
-coverage, direction, insight, or material runner state changed.
+feature and preservation guardrail totals when the benchmark exposes them,
+improved/flat/regressed pair counts, and the new causal insight or next probe.
+When effort stratification is useful, preregister benchmark-appropriate fixed
+boundaries and assign every matched case from the baseline arm's
+`effort.duration_ms`. Reuse that same case bucket for every candidate arm; candidate
+duration must not define difficulty because it is itself a treatment outcome. Per
+bucket, report pair count, primary/binary/feature/preservation metrics, and
+improved/flat/regressed counts. Treat these strata as descriptive sensitivity
+analysis unless the study preregistered a causal subgroup claim. Derive score fields
+from the experiment board or benchmark-owned scoring projection, not from raw
+private evidence. Do not send a repetitive update when no score, coverage,
+direction, insight, or material runner state changed.
 Only public-safe conclusions from the private post-run insight may enter that user
 update; raw evaluation evidence remains private.
 
@@ -1140,15 +1148,151 @@ loopx benchmark treatment-continuation-receipt \
 
 The observation names startup state, whether the review is complete, counts of
 post-start Todo transitions, technical replans, and control closeouts, terminal
-control settlement, and whether pre-commit validation was observed. It contains no
-task text, trajectory content, paths, run identity, verifier output, or score.
+control settlement, and whether pre-commit validation was observed. Count a Todo
+transition only when it advances or revises task-facing technical work before the
+result is fixed. Count a technical replan only when it changes that technical
+course. Record terminal-only Todo settlement, replan bookkeeping, and final
+closeout under `control_closeout_count`; those events are visible but do not prove
+continued technical control. The observation contains no task text, trajectory
+content, paths, run identity, verifier output, or score.
 
 The receipt classifies the mechanism as `sustained`, `startup_only`, `unknown`, or
-`not_applicable`. Here, `sustained` means at least one semantic control transition
-was observed after qualified startup; terminal settlement remains a separate field.
-Absence becomes `startup_only` only when the authorized post-run observation is
-complete. This receipt is analysis-only: it never changes score countability,
-integrity qualification, treatment fidelity, or matched-pair eligibility.
+`not_applicable`. Here, `sustained` means at least one qualifying task-facing Todo
+transition or technical replan was observed after qualified startup and before the
+result was fixed. Terminal-only control never establishes `sustained`, even when
+terminal settlement succeeds; the existing total and per-kind event counts still
+record that closeout activity. Absence becomes `startup_only` only when the
+authorized post-run observation is complete. This receipt is analysis-only: it
+never changes score countability, integrity qualification, treatment fidelity, or
+matched-pair eligibility.
+
+## Study manifest, local upload simulation, and dashboard packet
+
+Use `benchmark_study_manifest_v0` when a benchmark adapter needs to declare its
+case set, arms, factors, native metric meanings, and pinned source revisions once.
+The manifest describes the study; it does not score, launch, retry, or mutate a run.
+A simple baseline/treatment study normally declares one two-level factor. A
+factorized study declares each factor independently and assigns every arm to one
+level of every factor.
+
+Validate the public-safe manifest before producing upload records:
+
+```bash
+loopx benchmark study-validate \
+  --manifest-json <study-manifest.json> \
+  --format json
+```
+
+An adapter can then wrap one allowlisted record at a time: the manifest, an existing
+`benchmark_experiment_board_row_v0`, a redacted
+`benchmark_case_insight_projection_v0`, or an existing
+`benchmark_runtime_observation_v0`.
+
+```bash
+loopx benchmark upload-envelope \
+  --payload-json <public-safe-record.json> \
+  --record-kind experiment_board_row \
+  --producer-id <adapter-id> \
+  --producer-version <adapter-version> \
+  --benchmark-id <benchmark-id> \
+  --study-id <study-id> \
+  --idempotency-key <stable-key> \
+  --observed-at <iso-8601-timestamp> \
+  --source-revision <adapter-revision> \
+  --format json > <upload-envelope.json>
+```
+
+Before implementing a remote provider, exercise the transport lifecycle against
+the built-in local simulation. Preview is the default and performs no write;
+`--execute` appends to the explicitly named JSONL store under a file lock. Neither
+mode performs network access or grants upload/submission authority.
+
+```bash
+loopx benchmark upload-local \
+  --envelope-json <upload-envelope.json> \
+  --store <simulation.jsonl> \
+  --format json
+
+loopx benchmark upload-local \
+  --envelope-json <upload-envelope.json> \
+  --store <simulation.jsonl> \
+  --execute --format json
+
+loopx benchmark upload-readback \
+  --store <simulation.jsonl> \
+  --record-id <record-id> \
+  --format json
+```
+
+Retries using the same producer, benchmark, study, and idempotency key are accepted
+only when the payload digest is unchanged. A corrected record uses a new idempotency
+key and explicitly names `--supersedes-record-id`; experiment-board corrections must
+also obey existing legal run-state transitions. A study manifest is immutable
+comparison intent: change its design under a new `study_id` instead of superseding it.
+Supersession also stays within the producer that authored the prior record.
+
+### Upload a terminal case insight
+
+`benchmark_case_insight_projection_v0` is the public-safe child record for one
+exact run. Upload the run's terminal `benchmark_experiment_board_row_v0` first;
+its `insight.status` must be `complete`, and the projection's `case_id`, `run_id`,
+and `outcome_status` must match that active terminal row. The run identity already
+resolves its arm, so the insight cannot invent a second arm binding. Because the
+projection has no metric, countability, integrity, or treatment-fidelity fields,
+accepting it cannot change the run's score authority.
+
+This is an intentionally strict upload-ordering rule: orphan, pre-terminal, and
+outcome-mismatched insight records that older local simulations accepted are now
+rejected. Re-upload the terminal run row before uploading its insight; no existing
+score or experiment-board authority is rewritten.
+
+```json
+{
+  "schema_version": "benchmark_case_insight_projection_v0",
+  "benchmark_id": "example-benchmark@1",
+  "study_id": "example-study-v1",
+  "case_id": "case-1",
+  "run_id": "treatment-case-1-r1",
+  "outcome_status": "completed",
+  "failure_class": "none",
+  "causal_summary": "The implementation satisfied the declared contract after an independent boundary check.",
+  "expectedness": "expected",
+  "implication": "Retain the independent boundary check in this arm.",
+  "next_probe": "Repeat on a different public case family.",
+  "confidence": "high",
+  "evidence_refs": ["public-receipt:abc123"],
+  "privacy_classification": "public_safe",
+  "producer_redaction_attested": true
+}
+```
+
+Wrap it with the same `benchmark upload-envelope` command above using
+`--record-kind case_insight_projection`, then preview, execute, and read it back
+through the same local provider flow. The private analyst may use task text,
+trajectory, final workspace, hidden evaluation, and verifier details only after
+the run is terminal; those sources are reduced into the bounded fields and
+public-safe evidence handles above and are never uploaded themselves.
+
+Finally, derive a read-only `benchmark_study_dashboard_v0` packet. It exposes
+campaign, arm, case, and run projections with explicit denominators and provisional
+coverage, while delegating scores and matched comparisons to the experiment board.
+For a qualified Goal/LoopX four-arm study, pass the compact four-arm contract to
+reuse the existing factorial reducer.
+
+```bash
+loopx benchmark study-dashboard \
+  --manifest-json <study-manifest.json> \
+  --store <simulation.jsonl> \
+  [--four-arm-contract-json <compact-four-arm-contract.json>] \
+  --format json
+```
+
+Adapters preserve their benchmark's native metric names, units, directions, and
+totals. Core fields are not software-engineering specific, so the same flow applies
+to two-arm, four-arm, and other declared benchmark studies. Raw tasks, trajectories,
+logs, hidden evaluator material, verifier tails, credentials, and local paths have
+no upload schema slot; producers must reduce post-run analysis to the redacted
+insight contract.
 
 ## Related commands
 

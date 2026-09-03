@@ -92,6 +92,9 @@ A DeepSeek Harness adapter lives in the `loopx.dsh_goal_mode` subpackage
 `scripts/dsh_turn_host_adapter.py` launcher still works); it uses
 the optional `deepseek-harness-sdk` Python client to run one bounded dsh session
 and parses the final assistant JSON message into the same typed Turn result.
+Prefer the built-in `loopx turn run-once --host dsh` surface so structured SDK
+terminal failures reach the Turn Journal. The module/subprocess invocation with
+`--host generic-cli` remains the compatibility and rollback path.
 See [DeepSeek Harness connector](../../integrations/deepseek-harness-connector.md).
 
 ### Five Questions For Any Agent CLI

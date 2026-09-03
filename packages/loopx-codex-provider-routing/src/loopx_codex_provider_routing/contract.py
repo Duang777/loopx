@@ -9,6 +9,14 @@ CATALOG_SCHEMA_VERSION = "codex_provider_routing_catalog_v1"
 RUNTIME_STATUS_SCHEMA_VERSION = "codex_provider_routing_runtime_status_v0"
 REQUEST_SCHEMA_VERSION = "loopx_codex_provider_routing_request_v0"
 RESPONSE_SCHEMA_VERSION = "loopx_codex_provider_routing_response_v0"
+INTEGRATION_CANDIDATE_SCHEMA_VERSION = "codex_provider_integration_candidate_v0"
+HEARTBEAT_TRANSPORT_SCHEMA_VERSION = "codex_app_heartbeat_transport_qualification_v0"
+HOST_CONTROL_RECOVERY_SCHEMA_VERSION = "codex_host_control_recovery_qualification_v0"
+
+RECOVERABLE_HOST_CONTROL_NAMES = {
+    "automation_update",
+    "send_message_to_thread",
+}
 
 FORBIDDEN_KEYS = {
     "account_id",
@@ -31,8 +39,23 @@ FORBIDDEN_KEYS = {
 ALLOWED_MODALITIES = {"text", "image"}
 ALLOWED_PROVIDERS = {"codex", "openai_compatibility"}
 ALLOWED_REASONING_LEVELS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+ALLOWED_CHANGE_SEAMS = {
+    "history_projection",
+    "integration_candidate",
+    "modality_routing",
+    "model_catalog",
+    "request_normalizer",
+    "retry_policy",
+    "route_fallback",
+    "settings_revision",
+    "sse_lifecycle",
+    "ssh_bridge",
+    "transport_pool",
+}
 SYMBOLIC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MODEL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9./-]{0,127}$")
+GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$")
+GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SENSITIVE_VALUE_PATTERNS = (
     re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE),
     re.compile(r"(?:^|\s)/(?:Users|home|var/folders)/"),
@@ -80,12 +103,253 @@ def _boolean(value: Any, field: str, *, default: bool | None = None) -> bool:
     return value
 
 
+def qualify_heartbeat_transport(observation: Mapping[str, Any]) -> dict[str, Any]:
+    """Check the host boundary used to inject one scheduled heartbeat turn."""
+
+    reject_private_material(observation)
+    _reject_unexpected_keys(
+        observation,
+        {"turn_trigger", "payload_kind", "delivery_kind", "message_role", "tool_name"},
+        "heartbeat_transport",
+    )
+    turn_trigger = _non_empty_string(
+        observation.get("turn_trigger"), "heartbeat_transport.turn_trigger"
+    )
+    if turn_trigger != "automation_heartbeat":
+        raise ValueError(
+            "heartbeat_transport.turn_trigger must be automation_heartbeat"
+        )
+    payload_kind = _non_empty_string(
+        observation.get("payload_kind"), "heartbeat_transport.payload_kind"
+    )
+    if payload_kind != "heartbeat_xml":
+        raise ValueError("heartbeat_transport.payload_kind must be heartbeat_xml")
+    delivery_kind = _non_empty_string(
+        observation.get("delivery_kind"), "heartbeat_transport.delivery_kind"
+    )
+    if delivery_kind not in {"user_input", "tool_output"}:
+        raise ValueError(
+            "heartbeat_transport.delivery_kind must be user_input or tool_output"
+        )
+
+    message_role = observation.get("message_role")
+    tool_name = observation.get("tool_name")
+    if delivery_kind == "user_input":
+        if message_role != "user":
+            raise ValueError("heartbeat user_input must declare message_role=user")
+        if tool_name is not None:
+            raise ValueError("heartbeat user_input must not declare tool_name")
+        qualified = True
+        failure_code = None
+    else:
+        if message_role is not None:
+            raise ValueError("heartbeat tool_output must not declare message_role")
+        tool_name = _non_empty_string(tool_name, "heartbeat_transport.tool_name")
+        qualified = False
+        failure_code = (
+            "heartbeat_mislabeled_as_automation_tool_output"
+            if tool_name == "automation_update"
+            else "heartbeat_injected_as_tool_output"
+        )
+
+    return {
+        "schema_version": HEARTBEAT_TRANSPORT_SCHEMA_VERSION,
+        "qualified": qualified,
+        "failure_code": failure_code,
+        "required_delivery": {
+            "delivery_kind": "user_input",
+            "message_role": "user",
+        },
+        "observed_delivery": {
+            "delivery_kind": delivery_kind,
+            "message_role": message_role,
+            "tool_name": tool_name,
+        },
+        "responsible_layer": "codex_app_heartbeat_transport",
+        "prompt_or_model_remediation": False,
+    }
+
+
+def qualify_host_control_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
+    """Qualify a content-free observation of CPA orphan host-output recovery."""
+
+    reject_private_material(observation)
+    _reject_unexpected_keys(
+        observation,
+        {
+            "tool_name",
+            "call_id_present",
+            "matching_call_count",
+            "semantic_output_present",
+            "observed_action",
+            "projection",
+            "error_status",
+        },
+        "host_control_recovery",
+    )
+    tool_name = _non_empty_string(
+        observation.get("tool_name"), "host_control_recovery.tool_name"
+    )
+    call_id_present = _boolean(
+        observation.get("call_id_present"),
+        "host_control_recovery.call_id_present",
+    )
+    matching_call_count = observation.get("matching_call_count")
+    if (
+        not isinstance(matching_call_count, int)
+        or isinstance(matching_call_count, bool)
+        or matching_call_count < 0
+    ):
+        raise TypeError(
+            "host_control_recovery.matching_call_count must be a non-negative integer"
+        )
+    semantic_output_present = _boolean(
+        observation.get("semantic_output_present"),
+        "host_control_recovery.semantic_output_present",
+    )
+    observed_action = _non_empty_string(
+        observation.get("observed_action"),
+        "host_control_recovery.observed_action",
+    )
+    if observed_action not in {"project_as_user", "fail_closed"}:
+        raise ValueError(
+            "host_control_recovery.observed_action must be project_as_user or fail_closed"
+        )
+
+    recoverable = (
+        tool_name in RECOVERABLE_HOST_CONTROL_NAMES
+        and not call_id_present
+        and matching_call_count == 0
+        and semantic_output_present
+    )
+    expected_action = "project_as_user" if recoverable else "fail_closed"
+    checks = [
+        {
+            "id": "recovery_action",
+            "passed": observed_action == expected_action,
+            "expected": expected_action,
+            "observed": observed_action,
+        }
+    ]
+
+    projection = observation.get("projection")
+    error_status = observation.get("error_status")
+    if expected_action == "project_as_user":
+        if not isinstance(projection, Mapping):
+            projection = {}
+        else:
+            _reject_unexpected_keys(
+                projection,
+                {
+                    "type",
+                    "role",
+                    "tool_identity_removed",
+                    "semantic_output_preserved",
+                    "next_action_observed",
+                    "next_action_matches_instruction",
+                },
+                "host_control_recovery.projection",
+            )
+        checks.extend(
+            [
+                {
+                    "id": "projection_type",
+                    "passed": projection.get("type") == "message",
+                },
+                {
+                    "id": "projection_role",
+                    "passed": projection.get("role") == "user",
+                },
+                {
+                    "id": "tool_identity_removed",
+                    "passed": projection.get("tool_identity_removed") is True,
+                },
+                {
+                    "id": "semantic_output_preserved",
+                    "passed": projection.get("semantic_output_preserved") is True,
+                },
+                {
+                    "id": "next_action_observed",
+                    "passed": projection.get("next_action_observed") is True,
+                },
+                {
+                    "id": "instruction_follow_through",
+                    "passed": projection.get("next_action_matches_instruction") is True,
+                },
+                {
+                    "id": "no_error_status",
+                    "passed": error_status is None,
+                },
+            ]
+        )
+    else:
+        checks.extend(
+            [
+                {
+                    "id": "typed_fail_closed",
+                    "passed": error_status == 409,
+                },
+                {
+                    "id": "no_projection_on_rejection",
+                    "passed": projection is None,
+                },
+            ]
+        )
+
+    return {
+        "schema_version": HOST_CONTROL_RECOVERY_SCHEMA_VERSION,
+        "qualified": all(check["passed"] for check in checks),
+        "expected_action": expected_action,
+        "checks": checks,
+        "required_contract": {
+            "allowlisted_tools": sorted(RECOVERABLE_HOST_CONTROL_NAMES),
+            "recoverable_shape": {
+                "call_id_present": False,
+                "matching_call_count": 0,
+                "semantic_output_present": True,
+            },
+            "projection": {
+                "type": "message",
+                "role": "user",
+                "remove_tool_identity": True,
+                "preserve_semantic_output": True,
+            },
+            "negative_paths": {
+                "action": "fail_closed",
+                "status": 409,
+            },
+            "qualification_requires_instruction_follow_through": True,
+        },
+        "responsible_layer": "cpa_provider_history_normalizer",
+        "effect_boundary": "content_free_observation_only",
+    }
+
+
 def _reject_unexpected_keys(
     value: Mapping[str, Any], allowed: set[str], field: str
 ) -> None:
     unexpected = sorted(set(value) - allowed)
     if unexpected:
         raise ValueError(f"{field} has unsupported fields: {unexpected}")
+
+
+def _git_ref(value: Any, field: str) -> str:
+    ref = _non_empty_string(value, field)
+    if (
+        GIT_REF_RE.fullmatch(ref) is None
+        or ".." in ref
+        or "@{" in ref
+        or ref.endswith(("/", ".", ".lock"))
+    ):
+        raise ValueError(f"{field} must be a bounded public Git ref")
+    return ref
+
+
+def _git_sha(value: Any, field: str) -> str:
+    sha = _non_empty_string(value, field)
+    if GIT_SHA_RE.fullmatch(sha) is None:
+        raise ValueError(f"{field} must be a full lowercase Git SHA")
+    return sha
 
 
 def _compile_profiles(raw_profiles: Any) -> dict[str, dict[str, Any]]:
@@ -131,7 +395,7 @@ def _compile_rings(
     if raw_rings is None:
         return {}
     if not isinstance(raw_rings, list):
-        raise ValueError("rings must be a list")
+        raise TypeError("rings must be a list")
     rings: dict[str, dict[str, Any]] = {}
     for index, raw in enumerate(raw_rings):
         if not isinstance(raw, Mapping):
@@ -1040,18 +1304,7 @@ def build_upgrade_plan(upgrade: Mapping[str, Any]) -> dict[str, Any]:
     current = _non_empty_string(upgrade.get("current_ref"), "upgrade.current_ref")
     target = _non_empty_string(upgrade.get("target_ref"), "upgrade.target_ref")
     changed_seams = _string_list(upgrade.get("changed_seams"), "upgrade.changed_seams")
-    allowed_seams = {
-        "history_projection",
-        "sse_lifecycle",
-        "retry_policy",
-        "transport_pool",
-        "model_catalog",
-        "request_normalizer",
-        "ssh_bridge",
-        "modality_routing",
-        "settings_revision",
-    }
-    unknown = sorted(set(changed_seams) - allowed_seams)
+    unknown = sorted(set(changed_seams) - ALLOWED_CHANGE_SEAMS)
     if unknown:
         raise ValueError(f"unsupported changed seams: {unknown}")
     matrix = ["public_boundary", "doctor", "catalog_readback", "rollback_receipt"]
@@ -1060,6 +1313,12 @@ def build_upgrade_plan(upgrade: Mapping[str, Any]) -> dict[str, Any]:
             "additional_tools",
             "foreign_reasoning",
             "tool_causality",
+        ],
+        "integration_candidate": [
+            "exact_base_head",
+            "exact_ordered_source_heads",
+            "required_seam_coverage",
+            "integration_tree_receipt",
         ],
         "sse_lifecycle": ["unique_terminal", "active_item_pairing"],
         "retry_policy": ["bounded_attempts", "ttfb_p50_p95", "commit_barrier"],
@@ -1081,6 +1340,11 @@ def build_upgrade_plan(upgrade: Mapping[str, Any]) -> dict[str, Any]:
             "ordinary_selector_preserved",
             "effective_priority_admission",
             "fast_route_no_unsupported_fallback",
+        ],
+        "route_fallback": [
+            "preferred_entrypoint_order",
+            "single_ring_cycle",
+            "terminal_tail_once",
         ],
         "ssh_bridge": ["loopback_binds", "reconnect", "existing_task_resume"],
         "modality_routing": ["image_a_b", "ark_text_only", "no_eligible_fail_closed"],
@@ -1107,4 +1371,191 @@ def build_upgrade_plan(upgrade: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "required_checks": list(dict.fromkeys(matrix)),
         "rollback_trigger": "any_failed_check_or_unexplained_regression",
+    }
+
+
+def reconcile_integration_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare a public-safe multi-source candidate with its last sync receipt.
+
+    This operation owns provider-specific source coverage and upgrade policy.
+    It returns inputs for LoopX's core integration-branch capability instead of
+    implementing Git fetch, merge, push, or deployment effects.
+    """
+
+    reject_private_material(candidate)
+    _reject_unexpected_keys(
+        candidate,
+        {
+            "base_ref",
+            "integration_branch",
+            "required_seams",
+            "sources",
+            "observed",
+            "last_sync",
+        },
+        "integration",
+    )
+    base_ref = _git_ref(candidate.get("base_ref"), "integration.base_ref")
+    integration_branch = _git_ref(
+        candidate.get("integration_branch"), "integration.integration_branch"
+    )
+    required_seams = _string_list(
+        candidate.get("required_seams"), "integration.required_seams"
+    )
+    if not required_seams:
+        raise ValueError("integration.required_seams must not be empty")
+    unknown_required = sorted(set(required_seams) - ALLOWED_CHANGE_SEAMS)
+    if unknown_required:
+        raise ValueError(f"unsupported required seams: {unknown_required}")
+
+    raw_sources = candidate.get("sources")
+    if not isinstance(raw_sources, list) or len(raw_sources) < 2:
+        raise ValueError("integration.sources needs at least two ordered sources")
+    sources: list[dict[str, Any]] = []
+    source_ids: set[str] = set()
+    source_refs: set[str] = set()
+    covered_seams: set[str] = set()
+    for index, raw in enumerate(raw_sources):
+        field = f"integration.sources[{index}]"
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"{field} must be an object")
+        _reject_unexpected_keys(
+            raw,
+            {"id", "kind", "ref", "head_sha", "changed_seams"},
+            field,
+        )
+        source_id = _non_empty_string(raw.get("id"), f"{field}.id")
+        if SYMBOLIC_ID_RE.fullmatch(source_id) is None:
+            raise ValueError(f"{field}.id must be a public symbolic id")
+        if source_id in source_ids:
+            raise ValueError(f"duplicate integration source id: {source_id}")
+        source_ids.add(source_id)
+        kind = _non_empty_string(raw.get("kind"), f"{field}.kind")
+        if kind not in {"pull_request", "public_safe_patch"}:
+            raise ValueError(f"{field}.kind must be pull_request or public_safe_patch")
+        source_ref = _git_ref(raw.get("ref"), f"{field}.ref")
+        if source_ref in source_refs:
+            raise ValueError(f"duplicate integration source ref: {source_ref}")
+        source_refs.add(source_ref)
+        changed_seams = _string_list(raw.get("changed_seams"), f"{field}.changed_seams")
+        if not changed_seams:
+            raise ValueError(f"{field}.changed_seams must not be empty")
+        unknown = sorted(set(changed_seams) - ALLOWED_CHANGE_SEAMS)
+        if unknown:
+            raise ValueError(f"{field} has unsupported changed seams: {unknown}")
+        covered_seams.update(changed_seams)
+        sources.append(
+            {
+                "id": source_id,
+                "kind": kind,
+                "ref": source_ref,
+                "head_sha": _git_sha(raw.get("head_sha"), f"{field}.head_sha"),
+                "changed_seams": changed_seams,
+            }
+        )
+
+    missing_seams = sorted(set(required_seams) - covered_seams)
+    if missing_seams:
+        raise ValueError(
+            f"integration candidate does not cover required seams: {missing_seams}"
+        )
+
+    def receipt(raw: Any, field: str) -> dict[str, Any]:
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"{field} must be an object")
+        _reject_unexpected_keys(
+            raw, {"base_sha", "integration_sha", "source_heads"}, field
+        )
+        raw_heads = raw.get("source_heads")
+        if not isinstance(raw_heads, Mapping):
+            raise TypeError(f"{field}.source_heads must be an object")
+        if set(raw_heads) != source_ids:
+            raise ValueError(f"{field}.source_heads must match integration source ids")
+        return {
+            "base_sha": _git_sha(raw.get("base_sha"), f"{field}.base_sha"),
+            "integration_sha": _git_sha(
+                raw.get("integration_sha"), f"{field}.integration_sha"
+            ),
+            "source_heads": {
+                source_id: _git_sha(
+                    raw_heads[source_id], f"{field}.source_heads.{source_id}"
+                )
+                for source_id in sorted(source_ids)
+            },
+        }
+
+    observed = receipt(candidate.get("observed"), "integration.observed")
+    last_sync = receipt(candidate.get("last_sync"), "integration.last_sync")
+    for source in sources:
+        if observed["source_heads"][source["id"]] != source["head_sha"]:
+            raise ValueError(
+                f"observed source head does not match declared head for {source['id']}"
+            )
+
+    drift_reasons: list[dict[str, str]] = []
+    if observed["base_sha"] != last_sync["base_sha"]:
+        drift_reasons.append(
+            {
+                "kind": "base_moved",
+                "ref": base_ref,
+                "last_sync_sha": last_sync["base_sha"],
+                "observed_sha": observed["base_sha"],
+            }
+        )
+    for source in sources:
+        source_id = source["id"]
+        if observed["source_heads"][source_id] != last_sync["source_heads"][source_id]:
+            drift_reasons.append(
+                {
+                    "kind": "source_moved",
+                    "source_id": source_id,
+                    "last_sync_sha": last_sync["source_heads"][source_id],
+                    "observed_sha": observed["source_heads"][source_id],
+                }
+            )
+    if observed["integration_sha"] != last_sync["integration_sha"]:
+        drift_reasons.append(
+            {
+                "kind": "integration_head_moved",
+                "ref": integration_branch,
+                "last_sync_sha": last_sync["integration_sha"],
+                "observed_sha": observed["integration_sha"],
+            }
+        )
+
+    sync_required = bool(drift_reasons)
+    return {
+        "schema_version": INTEGRATION_CANDIDATE_SCHEMA_VERSION,
+        "status": "sync_required" if sync_required else "in_sync",
+        "sync_required": sync_required,
+        "drift_reasons": drift_reasons,
+        "required_seams": required_seams,
+        "covered_seams": sorted(covered_seams),
+        "source_order": sources,
+        "core_integration_plan": {
+            "base_ref": base_ref,
+            "integration_branch": integration_branch,
+            "source_refs": [source["ref"] for source in sources],
+        },
+        "reconcile_steps": [
+            "refresh_declared_remote_refs_read_only",
+            "verify_every_ref_resolves_to_declared_head",
+            "preview_core_integration_branch_sync",
+            "execute_local_sync_with_explicit_write_authority",
+            "run_changed_seam_and_build_validation",
+            "push_candidate_only_after_validation",
+        ],
+        "deployment_contract": {
+            "artifact": "content_addressed_binary_with_sha256",
+            "sequence": [
+                "retain_previous_binary_and_config_pointer",
+                "run_isolated_smoke",
+                "compare_configuration_by_field",
+                "switch_operator_owned_pointer",
+                "read_back_catalog_retry_and_runtime",
+            ],
+            "rollback_trigger": "any_failed_readback_or_unexplained_regression",
+            "session_store_policy": "preserve_in_place_never_copy_or_delete",
+        },
+        "effect_boundary": "read_only_public_safe_plan",
     }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
-import { AlertCircle, Bot, CalendarClock, ListPlus, MessageCircleQuestion, Paperclip, Plus, Send, X } from "lucide-react";
+import { AlertCircle, Bot, CalendarClock, FileText, ListPlus, MessageCircleQuestion, Paperclip, Plus, RefreshCw, Send, X } from "lucide-react";
 
 import {
   applyTypedAction,
@@ -154,6 +154,46 @@ function ManagerHomeBoard({
           <div>{stopped.map(goalCard)}</div>
         </details>
       ) : null}
+    </section>
+  );
+}
+
+function GoalOutputsView({
+  items,
+  onSelect,
+  reportState,
+}: {
+  items: Array<Extract<WorkspaceTimelineItem, { kind: "output" }>>;
+  onSelect: (selection: WorkspaceDrawerSelection) => void;
+  reportState?: WorkspaceModel["periodicReports"];
+}) {
+  const { locale, t } = useWorkspaceI18n();
+  return (
+    <section className="personal-object-list" data-testid="personal-goal-outputs">
+      <header><strong>{t("files.title")}</strong><span>{items.length}</span></header>
+      {reportState?.loading ? (
+        <p className="personal-object-list-state" role="status"><RefreshCw className="is-spinning" size={14} />{t("files.loadingReports")}</p>
+      ) : null}
+      {reportState?.error ? (
+        <p className="personal-object-list-state is-error" role="alert"><AlertCircle size={14} />{t("files.reportLoadFailed")}: {reportState.error}</p>
+      ) : null}
+      {!reportState?.loading && !reportState?.error && items.length === 0 ? (
+        <p className="personal-object-list-state"><FileText size={14} />{t("files.empty")}</p>
+      ) : null}
+      {items.map((item) => (
+        <button data-output-kind={item.output.kind} key={item.id} onClick={() => onSelect({ item: item.output, kind: "output" })} type="button">
+          <span>{item.output.kind === "report" ? "▤" : "↗"}</span>
+          <strong>{item.output.title}</strong>
+          {item.output.report ? <em>{t("files.reportDelta", { added: item.output.report.addedCount, changed: item.output.report.changedCount })}</em> : null}
+          <p>{item.output.summary ?? item.output.safePreview ?? item.output.kind ?? t("files.emptySummary")}</p>
+          <small title={item.output.createdAt}>{[
+            item.output.goalTitle,
+            item.output.kind === "report" ? t("files.verifiedReport") : null,
+            item.output.todoId ? `${t("common.task")} ${item.output.todoId}` : null,
+            activityTimeLabel(item.output.createdAt, locale, t),
+          ].filter(Boolean).join(" · ")}</small>
+        </button>
+      ))}
     </section>
   );
 }
@@ -429,6 +469,13 @@ function proposalFields(parameters: Record<string, unknown>, t: WorkspaceTransla
 }
 
 type GoalLifecycleOperation = "stop" | "resume" | "delete";
+
+type GoalLifecycleProjection = {
+  goalId: string;
+  next: "active" | "stopped";
+  optimisticApplied: boolean;
+  previous: "active" | "stopped";
+};
 
 function lifecycleOperationFor(proposal: TypedActionProposal): GoalLifecycleOperation | undefined {
   if (proposal.action_kind !== "goal.lifecycle") return undefined;
@@ -1009,12 +1056,22 @@ export function PersonalWorkspacePage({
       resume: t("proposal.summary.lifecycleResume", { title: goal.title }),
       stop: t("proposal.summary.lifecycleStop", { title: goal.title }),
     };
+    let stopProjection: GoalLifecycleProjection | null = null;
+    let projectionOwnedByApply = false;
     try {
       if (operation === "stop") {
         if (lifecyclePendingGoalIdsRef.current.has(goal.goalId)) return;
         lifecyclePendingGoalIdsRef.current.add(goal.goalId);
         setLifecycleBusyGoalIds(new Set(lifecyclePendingGoalIdsRef.current));
         setSelection(null);
+        stopProjection = {
+          goalId: goal.goalId,
+          next: "stopped",
+          optimisticApplied: true,
+          previous: goal.activationState,
+        };
+        setActionFeedback(t("feedback.applying", { title: summaryByOperation.stop }));
+        callbacks.onGoalActivationStateChange?.(goal.goalId, "stopped");
       }
       const proposal = await createPreview({
         actionKind: "goal.lifecycle",
@@ -1029,12 +1086,25 @@ export function PersonalWorkspacePage({
       }, { select: operation !== "stop" });
       if (operation === "stop") {
         if (proposal.status === "ready") {
-          await applyProposal(proposal, { presentation: "feedback" });
+          projectionOwnedByApply = true;
+          await applyProposal(proposal, {
+            lifecycleProjection: stopProjection ?? undefined,
+            presentation: "feedback",
+          });
         } else {
+          if (stopProjection) {
+            callbacks.onGoalActivationStateChange?.(stopProjection.goalId, stopProjection.previous);
+          }
+          setActionFeedback(proposal.gate
+            ? t("feedback.gateRequired", { summary: proposal.gate.summary })
+            : t("feedback.notCompleted", { status: proposal.status }));
           setSelection({ item: proposal, kind: "proposal" });
         }
       }
     } catch (error) {
+      if (stopProjection && !projectionOwnedByApply) {
+        callbacks.onGoalActivationStateChange?.(stopProjection.goalId, stopProjection.previous);
+      }
       setActionFeedback(t("feedback.executionFailed", {
         error: error instanceof Error ? error.message : String(error),
       }));
@@ -1100,24 +1170,29 @@ export function PersonalWorkspacePage({
 
   async function applyProposal(
     proposal: WorkspaceActionPreview,
-    options: { presentation?: "drawer" | "feedback" } = {},
+    options: {
+      lifecycleProjection?: GoalLifecycleProjection;
+      presentation?: "drawer" | "feedback";
+    } = {},
   ) {
     const showDrawer = options.presentation !== "feedback";
-    const lifecycleChange = proposal.actionKind === "goal.lifecycle"
+    const inferredLifecycleChange = proposal.actionKind === "goal.lifecycle"
       && proposal.goalId
       && (proposal.lifecycleOperation === "stop" || proposal.lifecycleOperation === "resume")
       ? {
           goalId: proposal.goalId,
           next: proposal.lifecycleOperation === "stop" ? "stopped" as const : "active" as const,
+          optimisticApplied: false,
           previous: model.goals.find((goal) => goal.goalId === proposal.goalId)?.activationState
             ?? (proposal.lifecycleOperation === "stop" ? "active" as const : "stopped" as const),
         }
       : null;
+    const lifecycleChange = options.lifecycleProjection ?? inferredLifecycleChange;
     setActionFeedback(t("feedback.applying", { title: proposal.title }));
     const applying = { ...proposal, status: "applying" as const };
     setProposals((current) => ({ ...current, [proposal.previewId]: applying }));
     if (showDrawer) setSelection({ item: applying, kind: "proposal" });
-    if (lifecycleChange) {
+    if (lifecycleChange && !lifecycleChange.optimisticApplied) {
       callbacks.onGoalActivationStateChange?.(lifecycleChange.goalId, lifecycleChange.next);
     }
     try {
@@ -1666,7 +1741,11 @@ export function PersonalWorkspacePage({
                 userTodos={model.userTodos}
               />
             ) : selectedGoal && selectedGoalTab === "files" ? (
-              <section className="personal-object-list"><header><strong>{t("files.title")}</strong><span>{items.filter((item) => item.kind === "output").length}</span></header>{items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "output" }> => item.kind === "output").map((item) => <button key={item.id} onClick={() => setSelection({ item: item.output, kind: "output" })} type="button"><span>↗</span><strong>{item.output.title}</strong><p>{item.output.summary ?? item.output.safePreview ?? item.output.kind ?? t("files.emptySummary")}</p><small title={item.output.createdAt}>{[item.output.goalTitle, item.output.todoId ? `${t("common.task")} ${item.output.todoId}` : null, activityTimeLabel(item.output.createdAt, locale, t)].filter(Boolean).join(" · ")}</small></button>)}</section>
+              <GoalOutputsView
+                items={items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "output" }> => item.kind === "output")}
+                onSelect={setSelection}
+                reportState={model.periodicReports}
+              />
             ) : !selectedGoal && !managerChatOpen ? (
               <ManagerHomeBoard goals={workspaceGoals} onSelectGoal={selectGoal} systemHealth={model.systemHealth} />
             ) : !selectedGoal ? (

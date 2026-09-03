@@ -50,12 +50,34 @@ qualification.
   modality-aware affinity, typed route traversal, durable settings revision and
   commit barrier.
 
+`qualify_heartbeat_transport`
+: Checks a content-free host observation for one scheduler-injected heartbeat.
+  A heartbeat envelope must enter the turn as user input with `role=user`.
+  Encoding it as a tool result, especially as an `automation_update` result,
+  fails with a stable code and assigns remediation to the Codex App heartbeat
+  transport rather than to the LoopX prompt or model provider. This operation
+  diagnoses the boundary; it does not patch, restart or modify Codex App.
+
+`qualify_host_control_recovery`
+: Checks a content-free observation of CPA recovery for an orphan host control
+  output. Only confirmed host names with no `call_id`, no matching model call
+  and non-empty semantic output may be retyped as a `role=user` message. The
+  qualification also requires proof that the next observed action followed the
+  preserved instruction; HTTP success alone cannot pass. Unknown, paired or
+  empty outputs must remain a typed `409` failure.
+
 `project_runtime_status`
 : Joins a stable, route-independent host ChatGPT identity state with a
   content-free CPA execution observation and symbolic A/B quota/activity.
   It validates the actual attempt chain against the compiled route, derives
   remaining quota and reports fallback only when more than one provider was
   attempted. It never accepts account identity, auth-file names or tokens.
+
+`reconcile_integration_candidate`
+: Validates one ordered multi-source CPA candidate against its last sync
+  receipt. It proves exact base/source heads, required runtime-seam coverage and
+  whether reconciliation is needed, then returns inputs for LoopX core
+  `integration-branch`. It never fetches, merges, pushes, builds or deploys.
 
 `upgrade_plan`
 : Produces a bounded upgrade/rollback checklist from public current and target
@@ -81,6 +103,18 @@ loopx extension run loopx-codex-provider-routing \
   --input-json packages/loopx-codex-provider-routing/examples/normalize-request.json \
   --execute \
   --format json
+loopx extension run loopx-codex-provider-routing \
+  --input-json packages/loopx-codex-provider-routing/examples/heartbeat-transport.json \
+  --execute \
+  --format json
+loopx extension run loopx-codex-provider-routing \
+  --input-json packages/loopx-codex-provider-routing/examples/host-control-recovery.json \
+  --execute \
+  --format json
+loopx extension run loopx-codex-provider-routing \
+  --input-json packages/loopx-codex-provider-routing/examples/integration-candidate.json \
+  --execute \
+  --format json
 ```
 
 The extension runtime owns install/enable/disable/doctor registration. Package
@@ -96,6 +130,7 @@ The earlier operator scripts split into three classes:
 | Secret-free profile/catalog compiler | Migrated into `compile_catalog` and strengthened with modality/service-tier eligibility |
 | Fast selector catalog generation and request-tier normalization | Migrated into `compile_catalog` plus `normalize_selector_request`; the CPA adapter remains the online enforcement point |
 | App/CPA model readback assertions | Migrated as the content-free `qualify_snapshot` contract |
+| Ordered PR/patch candidate inventory and drift detection | Migrated as `reconcile_integration_candidate`; Git composition remains owned by LoopX core `integration-branch` |
 | Upgrade matrix, snapshot order and rollback triggers | Migrated as `upgrade_plan`; effect execution remains operator-owned |
 | CPA process launcher, OAuth login/reconcile, Ark key loading | Excluded; these are provider runtime and credential lifecycle, not LoopX state |
 | Direct App config writes, private snapshots and rollback copies | Excluded from v0; require an explicit permissioned execution envelope before productization |

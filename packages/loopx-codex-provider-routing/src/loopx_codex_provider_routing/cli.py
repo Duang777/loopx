@@ -13,7 +13,10 @@ from .contract import (
     compile_catalog,
     normalize_selector_request,
     project_runtime_status,
+    qualify_heartbeat_transport,
+    qualify_host_control_recovery,
     qualify_snapshot,
+    reconcile_integration_candidate,
     reject_private_material,
 )
 
@@ -44,7 +47,10 @@ def _doctor() -> int:
                 "compile_catalog",
                 "normalize_selector_request",
                 "project_runtime_status",
+                "qualify_heartbeat_transport",
+                "qualify_host_control_recovery",
                 "qualify_snapshot",
+                "reconcile_integration_candidate",
                 "upgrade_plan",
             ],
             "effect_boundary": "read_only_public_safe",
@@ -64,11 +70,14 @@ def _run_request(request: Any) -> dict[str, Any]:
         "compile_catalog": "source",
         "normalize_selector_request": "normalization",
         "project_runtime_status": "status",
+        "qualify_heartbeat_transport": "heartbeat_transport",
+        "qualify_host_control_recovery": "host_control_recovery",
         "qualify_snapshot": "snapshot",
+        "reconcile_integration_candidate": "integration",
         "upgrade_plan": "upgrade",
     }
     if not isinstance(operation, str):
-        raise ValueError(f"unsupported operation: {operation!r}")
+        raise TypeError(f"operation must be a string, got {operation!r}")
     expected_field = operation_fields.get(operation)
     if expected_field is None:
         raise ValueError(f"unsupported operation: {operation!r}")
@@ -92,11 +101,32 @@ def _run_request(request: Any) -> dict[str, Any]:
         if not isinstance(status, Mapping):
             raise ValueError("project_runtime_status requires object `status`")
         result = project_runtime_status(status)
+    elif operation == "qualify_heartbeat_transport":
+        heartbeat_transport = request.get("heartbeat_transport")
+        if not isinstance(heartbeat_transport, Mapping):
+            raise ValueError(
+                "qualify_heartbeat_transport requires object `heartbeat_transport`"
+            )
+        result = qualify_heartbeat_transport(heartbeat_transport)
+    elif operation == "qualify_host_control_recovery":
+        host_control_recovery = request.get("host_control_recovery")
+        if not isinstance(host_control_recovery, Mapping):
+            raise ValueError(
+                "qualify_host_control_recovery requires object `host_control_recovery`"
+            )
+        result = qualify_host_control_recovery(host_control_recovery)
     elif operation == "qualify_snapshot":
         snapshot = request.get("snapshot")
         if not isinstance(snapshot, Mapping):
             raise ValueError("qualify_snapshot requires object `snapshot`")
         result = qualify_snapshot(snapshot)
+    elif operation == "reconcile_integration_candidate":
+        integration = request.get("integration")
+        if not isinstance(integration, Mapping):
+            raise ValueError(
+                "reconcile_integration_candidate requires object `integration`"
+            )
+        result = reconcile_integration_candidate(integration)
     else:
         upgrade = request.get("upgrade")
         if not isinstance(upgrade, Mapping):
