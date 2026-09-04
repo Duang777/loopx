@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -132,11 +133,14 @@ def _shell_plan(
     def capture_sleep(seconds: float) -> None:
         raise _WaitScheduled(seconds)
 
-    monkeypatch.setattr(worker.time, "sleep", capture_sleep)
-    try:
-        return_code = worker.run_worker(_worker_args(cli=cli, state=state))
-    except _WaitScheduled as scheduled:
-        return {"stop": False, "minutes": int(scheduled.seconds / 60)}
+    # Patch only this module's lookup. ``worker.time`` is the process-global
+    # stdlib module, so mutating its ``sleep`` attribute can interrupt an
+    # unrelated thread while the full suite runs in parallel.
+    with patch.object(worker, "_sleep", capture_sleep):
+        try:
+            return_code = worker.run_worker(_worker_args(cli=cli, state=state))
+        except _WaitScheduled as scheduled:
+            return {"stop": False, "minutes": int(scheduled.seconds / 60)}
     assert return_code == 0
     return {"stop": True}
 
