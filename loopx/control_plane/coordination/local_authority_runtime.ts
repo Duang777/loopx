@@ -26,6 +26,10 @@ import {
   COORDINATION_RUNTIME_SHADOW_QUALIFY_REQUEST_SCHEMA,
   qualifyCoordinationRuntimeShadow,
 } from "./runtime_shadow.ts";
+import {
+  COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
+  executeCoordinationTodoClaim,
+} from "./todo_claim.ts";
 
 export const LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA =
   "loopx_local_coordination_mutation_request_v0";
@@ -39,6 +43,8 @@ export const LOCAL_COORDINATION_TODO_LIST_REQUEST_SCHEMA =
   "loopx_local_coordination_todo_list_request_v0";
 export const LOCAL_COORDINATION_TODO_LIST_RESULT_SCHEMA =
   "loopx_local_coordination_todo_list_result_v0";
+export const LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA =
+  "loopx_local_coordination_todo_claim_request_v0";
 export const LOCAL_COORDINATION_PROMOTION_REQUEST_SCHEMA =
   "loopx_local_coordination_promotion_request_v0";
 export const LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA =
@@ -58,6 +64,24 @@ function runtimeRoot(value: unknown): string {
     throw new Error("runtime_root must be an absolute path");
   }
   return value;
+}
+
+function claimAgentValue(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value;
+}
+
+function claimObservedAt(value: unknown): Date {
+  if (typeof value !== "string" || value.trim() !== value) {
+    throw new Error("observed_at must be a trimmed ISO-8601 timestamp");
+  }
+  const observedAt = new Date(value);
+  if (Number.isNaN(observedAt.valueOf())) {
+    throw new Error("observed_at must be a valid ISO-8601 timestamp");
+  }
+  return observedAt;
 }
 
 function authorityDirectory(root: string): string {
@@ -485,6 +509,57 @@ export async function mutateLocalCoordinationAuthority(
       status: "failed",
       reason_code: "invalid_local_coordination_mutation_request",
       reason: error instanceof Error ? error.message : "invalid mutation request",
+      source_authority: "file_v0",
+      decision_read_from_provider: true,
+      legacy_fallback_used: false,
+    };
+  }
+}
+
+/** Local file-provider adapter for the provider-neutral Todo claim transaction. */
+export async function claimLocalCoordinationTodo(
+  value: unknown,
+  dependencies: LocalAuthorityRuntimeDependencies = {},
+): Promise<JsonObject> {
+  try {
+    const input = requireJsonObject(value, "local coordination Todo claim request");
+    if (input.schema_version !== LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA) {
+      throw new Error("local coordination Todo claim request schema mismatch");
+    }
+    const root = runtimeRoot(input.runtime_root);
+    const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
+    const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
+      new FileAuthorityStore(authorityDirectory(root), goalId);
+    const registeredAgents = Array.isArray(input.registered_agents)
+      ? input.registered_agents.map((value) => String(value))
+      : [];
+    const result = await executeCoordinationTodoClaim(store, {
+      goal_id: goalId,
+      todo_id: requireAuthorityStoreId(input.todo_id, "todo id"),
+      claimed_by: claimAgentValue(input.claimed_by, "claimed_by"),
+      actor_agent_id: input.actor_agent_id === null || input.actor_agent_id === undefined
+        ? null
+        : claimAgentValue(input.actor_agent_id, "actor_agent_id"),
+      expected_role: input.role === null || input.role === undefined
+        ? null
+        : requireAuthorityStoreId(input.role, "role"),
+      registered_agents: registeredAgents,
+      operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
+      dry_run: input.dry_run === true,
+      now: claimObservedAt(input.observed_at),
+    });
+    return {
+      ...result,
+      source_authority: "file_v0",
+      decision_read_from_provider: true,
+      legacy_fallback_used: false,
+    };
+  } catch (error) {
+    return {
+      schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
+      status: "failed",
+      reason_code: "invalid_local_coordination_todo_claim_request",
+      reason: error instanceof Error ? error.message : "invalid Todo claim request",
       source_authority: "file_v0",
       decision_read_from_provider: true,
       legacy_fallback_used: false,

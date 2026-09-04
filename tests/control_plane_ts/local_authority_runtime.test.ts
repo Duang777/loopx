@@ -14,9 +14,11 @@ import {
 import {
   LOCAL_COORDINATION_PROMOTION_REQUEST_SCHEMA,
   LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
+  LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_LIST_REQUEST_SCHEMA,
   listLocalCoordinationTodos,
+  claimLocalCoordinationTodo,
   mutateLocalCoordinationAuthority,
   promoteLocalCoordinationAuthority,
   readLocalCoordinationTodo,
@@ -394,6 +396,132 @@ test("local canonical runtime reads and mutates only the provider head", async (
   assert.equal((listed.todos as Record<string, unknown>[])[0]?.claimed_by, "agent-a");
   assert.equal(listed.decision_read_from_provider, true);
   assert.equal(listed.legacy_fallback_used, false);
+});
+
+test("provider-first Todo claim preserves the complete record and is replay-safe", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-claim-"));
+  const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+  const richTodo = todoRecord({
+    priority: "P0",
+    action_kind: "implement",
+    required_capabilities: ["network"],
+    excluded_agents: ["agent-b"],
+    note: "preserve this field",
+  });
+  const initial = await store.commitAuthority({
+    expected_provider_revision: null,
+    operation_id: "promote:claim-test",
+    events: [{ schema_version: "promotion_v0" }],
+    next_projection: withTodoReadModel({
+      goal_id: "goal-a",
+      handoff_mode: "soft_claim",
+      todos: [richTodo],
+      leases: [],
+    }),
+    receipts: [],
+  });
+  assert.equal(initial.status, "applied");
+
+  const request = {
+    schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+    role: "agent",
+    claimed_by: " Agent-A ",
+    actor_agent_id: "AGENT-A",
+    registered_agents: ["agent-a", "agent-b"],
+    operation_id: "todo-claim:goal-a:todo_a:one",
+    observed_at: "2026-09-05T04:30:00Z",
+    dry_run: false,
+  };
+  const applied = await claimLocalCoordinationTodo(request);
+  assert.equal(applied.status, "applied", JSON.stringify(applied));
+  assert.equal(applied.changed, true);
+  assert.equal(applied.source_authority, "file_v0");
+  assert.equal(
+    (applied.mutation_authority as Record<string, unknown>).mode,
+    "registered_peer_actor",
+  );
+
+  const read = await readLocalCoordinationTodo({
+    schema_version: LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+  });
+  assert.equal(read.status, "found");
+  assert.deepEqual(read.todo, {
+    ...richTodo,
+    claimed_by: "agent-a",
+    updated_at: (read.todo as Record<string, unknown>).updated_at,
+  });
+
+  const replayed = await claimLocalCoordinationTodo(request);
+  assert.equal(replayed.status, "replayed");
+
+  const repeated = await claimLocalCoordinationTodo({
+    ...request,
+    operation_id: "todo-claim:goal-a:todo_a:two",
+  });
+  assert.equal(repeated.status, "no_change");
+  assert.equal(repeated.changed, false);
+});
+
+test("provider-first Todo claim validates authority and hard-lease ownership", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-claim-gates-"));
+  const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+  const initial = await store.commitAuthority({
+    expected_provider_revision: null,
+    operation_id: "promote:claim-gates",
+    events: [{ schema_version: "promotion_v0" }],
+    next_projection: withTodoReadModel({
+      goal_id: "goal-a",
+      handoff_mode: "hard_lease",
+      todos: [todoRecord({ excluded_agents: ["agent-b"] })],
+      leases: [],
+    }),
+    receipts: [],
+  });
+  assert.equal(initial.status, "applied");
+  const base = {
+    schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+    role: "agent",
+    actor_agent_id: "agent-a",
+    registered_agents: ["agent-a", "agent-b"],
+    operation_id: "todo-claim:goal-a:todo_a:gated",
+    observed_at: "2026-09-05T04:30:00Z",
+    dry_run: false,
+  };
+
+  const mismatch = await claimLocalCoordinationTodo({
+    ...base,
+    claimed_by: "agent-b",
+  });
+  assert.equal(mismatch.reason_code, "claim_actor_mismatch");
+
+  const missingLease = await claimLocalCoordinationTodo({
+    ...base,
+    claimed_by: "agent-a",
+  });
+  assert.equal(missingLease.reason_code, "handoff_mode_requires_lease");
+
+  const dryRun = await claimLocalCoordinationTodo({
+    ...base,
+    claimed_by: "agent-a",
+    dry_run: true,
+  });
+  assert.equal(dryRun.reason_code, "handoff_mode_requires_lease");
+  const unchanged = await readLocalCoordinationTodo({
+    schema_version: LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+  });
+  assert.equal((unchanged.todo as Record<string, unknown>).claimed_by, undefined);
 });
 
 test("local canonical runtime never falls back when provider state is missing", async () => {

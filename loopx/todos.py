@@ -121,6 +121,7 @@ from .control_plane.todos.write_policy import (
 from .control_plane.coordination.legacy_writer_fence import legacy_todo_write_transaction
 from .control_plane.coordination.local_authority import (
     canonical_todo_summary_fields,
+    claim_canonical_todo_if_promoted,
     read_canonical_todos_if_promoted,
 )
 from .control_plane.todos.handoff_mode import (
@@ -1063,6 +1064,56 @@ def update_goal_todo(
         raise ValueError(
             "todo update accepts either resume_when or clear_resume_when, not both"
         )
+    if claim_only:
+        unsupported_claim_values = (
+            text, status, note, evidence, reason, task_class, action_kind,
+            task_domain, task_repository, continuation_policy,
+            required_write_scopes, required_capabilities, target_capabilities,
+            explore_result_node_refs, decision_scope, required_decision_scopes,
+            bound_agent, blocks_agent, excluded_agents, unblocks_todo_id,
+            successor_todo_ids, resume_when, no_followup, monitor_metadata,
+        )
+        if (
+            any(value is not None and value is not False for value in unsupported_claim_values)
+            or goal_bound
+            or clear_blocks_agent
+            or clear_excluded_agents
+            or global_gate
+            or clear_global_gate
+            or clear_resume_when
+            or clear_claim
+        ):
+            raise ValueError(
+                "todo claim only accepts todo_id, claimed_by, agent_id, optional role, "
+                "project, state_file, and dry_run"
+            )
+        effective_claimed_by = require_registered_agent_id(
+            registry_path=registry_path,
+            goal_id=goal_id,
+            agent_id=claimed_by,
+        )
+        effective_agent_id = (
+            require_registered_agent_id(
+                registry_path=registry_path,
+                goal_id=goal_id,
+                agent_id=agent_id,
+                field="agent_id",
+            )
+            if agent_id
+            else None
+        )
+        canonical_claim = claim_canonical_todo_if_promoted(
+            registry_path=registry_path,
+            runtime_root=shadow_runtime_root,
+            goal_id=goal_id,
+            todo_id=normalize_todo_id(todo_id) or todo_id,
+            role=role,
+            claimed_by=effective_claimed_by,
+            actor_agent_id=effective_agent_id,
+            dry_run=dry_run,
+        )
+        if canonical_claim is not None:
+            return canonical_claim
     resolved_project, resolved_state_file = resolve_todo_state_path(
         registry_path=registry_path,
         goal_id=goal_id,

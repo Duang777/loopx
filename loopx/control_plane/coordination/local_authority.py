@@ -10,7 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+from ...agent_registry import registered_agent_ids_from_registry
+from ...state_refresh import now_local
 from ..effect_runtime import effect_runtime_result
 from .coordination_state_contract import (
     TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION,
@@ -25,6 +28,10 @@ LOCAL_COORDINATION_TODO_LIST_REQUEST_SCHEMA = (
     "loopx_local_coordination_todo_list_request_v0"
 )
 LOCAL_COORDINATION_TODO_LIST_METHOD = "coordination.local_authority.todo_list"
+LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA = (
+    "loopx_local_coordination_todo_claim_request_v0"
+)
+LOCAL_COORDINATION_TODO_CLAIM_METHOD = "coordination.local_authority.todo_claim"
 
 
 class LocalCoordinationAuthorityUnavailable(RuntimeError):
@@ -34,6 +41,87 @@ class LocalCoordinationAuthorityUnavailable(RuntimeError):
         super().__init__(message)
         self.code = code
         self.payload = dict(payload)
+
+
+def _local_authority_is_promoted(*, runtime_root: Path, goal_id: str) -> bool:
+    fence_path = legacy_coordination_writer_fence_path(
+        runtime_root=runtime_root,
+        goal_id=goal_id,
+    )
+    try:
+        fence_path.stat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise LocalCoordinationAuthorityUnavailable(
+            "local coordination authority mode cannot be inspected",
+            code="local_authority_mode_read_failed",
+            payload={"source_authority": "unknown_fail_closed"},
+        ) from exc
+    return True
+
+
+def claim_canonical_todo_if_promoted(
+    *,
+    registry_path: Path,
+    runtime_root: Path,
+    goal_id: str,
+    todo_id: str,
+    role: str | None,
+    claimed_by: str,
+    actor_agent_id: str | None,
+    dry_run: bool,
+) -> dict[str, Any] | None:
+    """Route a post-cutover claim to the TypeScript transaction owner."""
+
+    if not _local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
+        return None
+    result = effect_runtime_result(
+        LOCAL_COORDINATION_TODO_CLAIM_METHOD,
+        {
+            "schema_version": LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+            "runtime_root": str(runtime_root.expanduser().resolve(strict=False)),
+            "goal_id": goal_id,
+            "todo_id": todo_id,
+            "role": role,
+            "claimed_by": claimed_by,
+            "actor_agent_id": actor_agent_id,
+            "registered_agents": registered_agent_ids_from_registry(
+                registry_path, goal_id
+            ),
+            "operation_id": f"todo-claim:{goal_id}:{todo_id}:{uuid4().hex}",
+            "observed_at": now_local(),
+            "dry_run": dry_run,
+        },
+    )
+    if not isinstance(result, Mapping):
+        raise LocalCoordinationAuthorityUnavailable(
+            "local coordination authority returned an invalid Todo claim result",
+            code="local_authority_todo_claim_invalid_result",
+            payload={"source_authority": "file_v0"},
+        )
+    payload = dict(result)
+    accepted = {"applied", "recovered", "replayed", "no_change", "planned"}
+    if (
+        payload.get("status") not in accepted
+        or payload.get("source_authority") != "file_v0"
+        or payload.get("decision_read_from_provider") is not True
+        or payload.get("legacy_fallback_used") is not False
+    ):
+        raise LocalCoordinationAuthorityUnavailable(
+            str(payload.get("reason") or "canonical Todo claim failed"),
+            code=str(payload.get("reason_code") or "local_authority_todo_claim_failed"),
+            payload=payload,
+        )
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "goal_id": goal_id,
+        "role": "agent",
+        "section": "Agent Todo",
+        "todo_id": todo_id,
+        **payload,
+    }
 
 
 def read_canonical_todos_if_promoted(
@@ -46,20 +134,8 @@ def read_canonical_todos_if_promoted(
     this read; callers must never recover by reading Markdown.
     """
 
-    fence_path = legacy_coordination_writer_fence_path(
-        runtime_root=runtime_root,
-        goal_id=goal_id,
-    )
-    try:
-        fence_path.stat()
-    except FileNotFoundError:
+    if not _local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
         return None
-    except OSError as exc:
-        raise LocalCoordinationAuthorityUnavailable(
-            "local coordination authority mode cannot be inspected",
-            code="local_authority_mode_read_failed",
-            payload={"source_authority": "unknown_fail_closed"},
-        ) from exc
 
     result = effect_runtime_result(
         LOCAL_COORDINATION_TODO_LIST_METHOD,
