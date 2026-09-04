@@ -14,7 +14,8 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from ..todos.todo_summary import TODO_CANONICAL_READ_RECORD_FIELDS, canonical_todo_read_record
+from ..todos.todo_summary import canonical_todo_read_record
+from .coordination_state_contract import TODO_CANONICAL_READ_RECORD_FIELDS
 
 
 LOCAL_AUTHORITY_SHADOW_PROJECTION_SCHEMA_V0 = "loopx_local_authority_shadow_projection_v0"
@@ -88,7 +89,11 @@ def compact_todo(raw: object) -> dict[str, Any] | None:
     if not todo_id:
         return None
     try:
-        return dict(canonical_value(canonical_todo_read_record(dict(raw))))
+        return dict(
+            canonical_value(
+                canonical_todo_read_record(dict(raw), reject_unknown=True)
+            )
+        )
     except ValueError as error:
         raise ProjectionValueError(str(error)) from error
 

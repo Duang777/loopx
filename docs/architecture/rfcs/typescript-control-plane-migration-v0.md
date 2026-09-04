@@ -14,6 +14,17 @@
 
 ---
 
+## Current implementation checkpoint
+
+The coordination path now uses one language-neutral
+`coordination_state_contract_v0.json` for canonical Todo read
+records. Python Markdown projection and the TypeScript authority/store boundary
+load the same artifact and fail closed on unversioned provider-bound fields.
+This removes a duplicated cross-language schema owner without changing the
+default Markdown write path. The next transaction-sized cutover can therefore
+move a complete mutation path into TypeScript without first reconciling two
+field allowlists.
+
 ## 0. Decision in one example
 
 During migration, the Python `loopx` CLI sends one coarse typed transaction to

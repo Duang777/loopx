@@ -20,6 +20,19 @@
 - 语言说明：[英文版](./shared-goal-authority-state-provider-v0.md)与本中文版互为
   语义镜像；两者不一致属于缺陷
 
+## 当前实现检查点
+
+machine-owned coordination 投影现已有一份由 Python 与 TypeScript 共享的、随包
+发布且 provider-neutral 的 record contract。file、NoKV 与 PostgreSQL 候选读取同一
+份 canonical Todo read shape；provider-bound 投影遇到未知字段会拒绝，而不是静默
+丢失。删除已声明字段必须提供显式兼容性证据并获得 maintainer 批准，即便该字段已经
+存储但尚未进入决策读取路径。
+
+这不晋升任何 provider，也不会把整份 active-state Markdown 变成生成文件。默认本地
+模式下 Markdown 仍是 canonical；未来显式晋升 shared authority 后，也只有 typed
+contract 覆盖的 section 才成为确定性的兼容投影，自由的人类叙事仍在 coordination
+head 之外。
+
 ## 文档地图与维护约定
 
 本文将稳定决策与交付证据分开维护：

@@ -486,6 +486,26 @@ def test_todo_projection_rejects_incomplete_consumer_semantics() -> None:
         )
 
 
+def test_todo_projection_rejects_unversioned_machine_owned_fields() -> None:
+    with pytest.raises(ValueError, match="unversioned fields: future_authority_field"):
+        build_todo_runtime_shadow_projection(
+            goal_id="goal-a",
+            todos=[
+                {
+                    "schema_version": "todo_item_v0",
+                    "todo_id": "todo_complete",
+                    "role": "agent",
+                    "status": "open",
+                    "done": False,
+                    "text": "Do not silently drop state.",
+                    "archive_state": "active",
+                    "source_section": "Agent Todo",
+                    "future_authority_field": "must be reviewed",
+                }
+            ],
+        )
+
+
 def test_committed_todo_hook_has_no_default_output_or_runtime_call(
     monkeypatch,
     tmp_path: Path,

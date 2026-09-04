@@ -14,41 +14,17 @@ import {
   canonicalAuthoritySha256,
   requireAuthorityStoreId,
 } from "./authority_store_codec.ts";
+import {
+  canonicalCoordinationTodoRecord,
+  TODO_CANONICAL_READ_RECORD_FIELDS,
+  TODO_CANONICAL_READ_RECORD_SCHEMA,
+} from "./coordination_state_contract.ts";
 
 export const COORDINATION_PROJECTION_MUTATION_EVENT_SCHEMA =
   "loopx_coordination_projection_mutation_event_v0";
 export const COORDINATION_PROJECTION_MUTATION_RECEIPT_SCHEMA =
   "loopx_coordination_projection_mutation_receipt_v0";
-export const TODO_CANONICAL_READ_RECORD_SCHEMA = "loopx_todo_canonical_read_record_v0";
-export const TODO_CANONICAL_READ_RECORD_FIELDS = [
-  "index", "done", "text", "schema_version", "todo_id", "role", "status",
-  "priority", "title", "archive_state", "source_section", "task_class",
-  "action_kind", "task_domain", "capability_binding_ref", "task_repository",
-  "continuation_policy", "removed_continuation_policy", "required_write_scopes",
-  "required_capabilities", "target_capabilities", "explore_result_node_refs",
-  "decision_scope", "required_decision_scopes", "decision_outcome",
-  "decision_scope_outcomes", "claimed_by", "created_by", "last_actor_agent_id",
-  "bound_agent", "goal_bound", "blocks_agent", "excluded_agents", "global_gate",
-  "unblocks_todo_id", "resume_when", "resume_monitor_generation",
-  "resume_condition", "resume_ready", "no_followup", "successor_todo_ids",
-  "completion_continuation", "completion_recovery", "replan_obligation_id",
-  "target_key", "cadence", "next_due_at", "expires_at", "watch_only",
-  "last_checked_at", "result_hash", "consecutive_no_change", "material_change",
-  "material_change_generation", "max_no_change_before_replan", "monitor_effect_id",
-  "note", "evidence", "reason", "completed_at", "completion_turn_key", "updated_at", "superseded_by",
-  "completion_validation_required",
-  "handoff_note",
-] as const;
-const TODO_CANONICAL_REQUIRED_READ_FIELDS = [
-  "schema_version",
-  "todo_id",
-  "role",
-  "status",
-  "done",
-  "text",
-  "archive_state",
-  "source_section",
-] as const;
+export { TODO_CANONICAL_READ_RECORD_FIELDS, TODO_CANONICAL_READ_RECORD_SCHEMA };
 
 export interface CoordinationTodoProjectionIndex {
   readonly todos: ReadonlyMap<string, JsonObject>;
@@ -175,9 +151,8 @@ export function validateCoordinationTodoReadModel(
   )) {
     throw new AuthorityStoreProtocolError("coordination Todo read-model field contract mismatch");
   }
-  const allowedFields = new Set<string>(TODO_CANONICAL_READ_RECORD_FIELDS);
   for (const [recordIndex, record] of records.entries()) {
-    validateCoordinationTodoReadRecord(record, recordIndex, allowedFields);
+    validateCoordinationTodoReadRecord(record, recordIndex);
   }
   return readModel;
 }
@@ -185,31 +160,11 @@ export function validateCoordinationTodoReadModel(
 function validateCoordinationTodoReadRecord(
   record: JsonObject,
   recordIndex: number,
-  allowedFields: ReadonlySet<string>,
 ): void {
-  const unknownField = Object.keys(record).find((field) => !allowedFields.has(field));
-  if (unknownField !== undefined) {
-    throw new AuthorityStoreProtocolError(
-      `coordination Todo read record ${recordIndex} has an unversioned field`,
-    );
-  }
-  for (const field of TODO_CANONICAL_REQUIRED_READ_FIELDS) {
-    if (!(field in record)) {
-      throw new AuthorityStoreProtocolError(
-        `coordination Todo read record ${recordIndex} omits required ${field}`,
-      );
-    }
-  }
-  if (record.schema_version !== "todo_item_v0" ||
-      (record.role !== "user" && record.role !== "agent") ||
-      typeof record.status !== "string" || record.status.length === 0 ||
-      typeof record.done !== "boolean" || typeof record.text !== "string" ||
-      typeof record.archive_state !== "string" || record.archive_state.length === 0 ||
-      typeof record.source_section !== "string" || record.source_section.length === 0) {
-    throw new AuthorityStoreProtocolError(
-      `coordination Todo read record ${recordIndex} has invalid required semantics`,
-    );
-  }
+  canonicalCoordinationTodoRecord(
+    record,
+    `coordination Todo read record ${recordIndex}`,
+  );
 }
 
 function todoReadModel(records: readonly JsonObject[]): JsonObject {

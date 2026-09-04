@@ -22,6 +22,22 @@
   [Chinese version](./shared-goal-authority-state-provider-v0.zh-CN.md) and this
   English version are semantic mirrors. A difference between them is a defect.
 
+## Current implementation checkpoint
+
+The machine-owned coordination projection now has one packaged,
+provider-neutral record contract shared by Python and TypeScript. File, NoKV,
+and PostgreSQL candidates consume the same canonical Todo read shape; a
+provider-bound projection rejects an unknown field rather than silently losing
+it. Removing a declared field requires explicit compatibility evidence and
+maintainer approval, even when the field is stored but not yet read by a
+decision path.
+
+This does not promote a provider or make the whole active-state Markdown file
+generated. Markdown remains canonical in default local mode. In a later,
+explicit shared-authority promotion, only sections covered by the typed
+contract become deterministic compatibility projections; free-form human
+narrative remains outside the coordination head.
+
 ## Document map and maintenance contract
 
 This RFC separates durable decisions from delivery evidence:

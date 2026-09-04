@@ -13,6 +13,15 @@
 
 ---
 
+## 当前实现检查点
+
+coordination 路径现已用同一份语言中立的
+`coordination_state_contract_v0.json` 描述 canonical Todo read record。
+Python Markdown 投影和 TypeScript authority/store 边界读取同一份 artifact，并对
+未版本化的 provider-bound 字段 fail closed。这消除了一处跨语言 schema 双 owner，
+但不改变默认 Markdown 写路径。下一笔 transaction-sized cutover 因而可以直接迁移
+一条完整 mutation 路径，无需先调和两份字段 allowlist。
+
 ## 0. 用一个例子说明决策
 
 迁移期间，Python `loopx` CLI 向 LoopX 托管的 TypeScript runtime 发送一笔
