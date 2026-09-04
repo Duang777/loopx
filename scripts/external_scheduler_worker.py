@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -44,7 +44,6 @@ from loopx.extensions.process_runtime import (  # noqa: E402
 SCHEDULER_DETAIL_KEY = "local_scheduler"
 TERMINAL_ACTIONS = frozenset({"stop_until_explicit_resume"})
 PROCESS_OUTPUT_LIMIT_BYTES = 1_000_000
-_sleep = time.sleep
 
 
 @dataclass(frozen=True)
@@ -291,7 +290,11 @@ def _scheduler_contract_identity(
     )
 
 
-def run_worker(args: argparse.Namespace) -> int:
+def run_worker(
+    args: argparse.Namespace,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
     should_run_command = build_should_run_command(args)
     state_path = resolve_state_path(args)
     once = bool(args.once)
@@ -311,7 +314,7 @@ def run_worker(args: argparse.Namespace) -> int:
             _log(f"status=tick_error error={shlex.quote(str(exc))}")
             if once:
                 return 2
-            _sleep(max(5, args.error_backoff_seconds))
+            sleep(max(5, args.error_backoff_seconds))
             continue
 
         retry_after_error = False
@@ -384,7 +387,7 @@ def run_worker(args: argparse.Namespace) -> int:
                         "status=wake_failed_backoff "
                         f"backoff_seconds={max(5, int(args.error_backoff_seconds))}"
                     )
-                    _sleep(max(5, args.error_backoff_seconds))
+                    sleep(max(5, args.error_backoff_seconds))
                     retry_after_error = True
                 else:
                     unchanged_count = 0
@@ -427,7 +430,7 @@ def run_worker(args: argparse.Namespace) -> int:
                     _log(f"status=tick_error error={shlex.quote(str(exc))}")
                     if once:
                         return 2
-                    _sleep(max(5, args.error_backoff_seconds))
+                    sleep(max(5, args.error_backoff_seconds))
                     retry_after_error = True
                     break
                 changed = _scheduler_contract_identity(
@@ -472,7 +475,7 @@ def run_worker(args: argparse.Namespace) -> int:
 
         if once:
             return 0
-        _sleep(max(5, interval_minutes * 60))
+        sleep(max(5, interval_minutes * 60))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
