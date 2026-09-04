@@ -97,7 +97,9 @@ export function canonicalCoordinationRecord(
 ): JsonObject {
   const record = canonicalAuthorityObject(value, label);
   const allowed = new Set(contract.fields);
-  const unexpected = Object.keys(record).filter((field) => !allowed.has(field)).sort();
+  const unexpected = Object.keys(record)
+    .filter((field) => !allowed.has(field))
+    .sort((left, right) => left.localeCompare(right));
   if (unexpected.length > 0) {
     throw new AuthorityStoreProtocolError(
       `${label} has unversioned fields: ${unexpected.join(", ")}`,
