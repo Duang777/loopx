@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import type {
   AuthorityStore,
   AuthorityStoreCommit,
 } from "../../loopx/control_plane/coordination/authority_store.ts";
+import { canonicalAuthorityBytes } from "../../loopx/control_plane/coordination/authority_store_codec.ts";
+import {
+  TODO_CANONICAL_READ_RECORD_FIELDS,
+  TODO_CANONICAL_READ_RECORD_SCHEMA,
+} from "../../loopx/control_plane/coordination/coordination_state_contract.ts";
+import { executeCoordinationTodoClaim } from "../../loopx/control_plane/coordination/todo_claim.ts";
 
 export interface AuthorityStoreConformanceFixture {
   store: AuthorityStore;
@@ -13,6 +20,35 @@ export interface AuthorityStoreConformanceFixture {
 export type AuthorityStoreConformanceFactory = (
   context: test.TestContext,
 ) => Promise<AuthorityStoreConformanceFixture>;
+
+function todoClaimProjection(goalId: string): Record<string, unknown> {
+  const todos = [{
+    schema_version: "todo_item_v0",
+    todo_id: "todo-claim",
+    role: "agent",
+    status: "open",
+    done: false,
+    text: "Claim through the provider-neutral transaction",
+    archive_state: "active",
+    source_section: "Agent Todo",
+    note: "preserve complete canonical record",
+  }];
+  const recordsSha256 = createHash("sha256")
+    .update(canonicalAuthorityBytes(todos))
+    .digest("hex");
+  return {
+    goal_id: goalId,
+    handoff_mode: "soft_claim",
+    todos,
+    leases: [],
+    todo_read_model: {
+      schema_version: TODO_CANONICAL_READ_RECORD_SCHEMA,
+      todo_count: todos.length,
+      records_sha256: recordsSha256,
+      contract_fields: [...TODO_CANONICAL_READ_RECORD_FIELDS],
+    },
+  };
+}
 
 export function authorityStoreCommitFixture(
   expectedProviderRevision: string | null,
@@ -174,5 +210,39 @@ export function registerAuthorityStoreConformance(
     (invalidObject.next_projection as Record<string, unknown>).coordination = new Date();
     assert.equal((await store.commitAuthority(invalidObject)).status, "failed");
     assert.deepEqual(await store.loadAuthority(), { status: "missing" });
+  });
+
+  test(`${providerName} conformance: provider-neutral Todo claim transaction`, async (t) => {
+    const { store } = await factory(t);
+    const goalId = "goal-claim";
+    const initialized = await store.commitAuthority({
+      expected_provider_revision: null,
+      operation_id: "initialize-claim",
+      events: [{ schema_version: "loopx_authority_event_v0", type: "promoted" }],
+      next_projection: todoClaimProjection(goalId),
+      receipts: [],
+    });
+    assert.equal(initialized.status, "applied");
+
+    const claimed = await executeCoordinationTodoClaim(store, {
+      goal_id: goalId,
+      todo_id: "todo-claim",
+      claimed_by: "agent-a",
+      actor_agent_id: "agent-a",
+      expected_role: "agent",
+      registered_agents: ["agent-a", "agent-b"],
+      operation_id: "claim-todo",
+      dry_run: false,
+      now: new Date("2026-09-05T04:30:00Z"),
+    });
+    assert.equal(claimed.status, "applied", JSON.stringify(claimed));
+
+    const loaded = await store.loadAuthority();
+    assert.equal(loaded.status, "loaded");
+    if (loaded.status !== "loaded") return;
+    const todo = (loaded.head.todos as Record<string, unknown>[])[0];
+    assert.equal(todo?.claimed_by, "agent-a");
+    assert.equal(todo?.note, "preserve complete canonical record");
+    assert.equal((await store.readReceipt("claim-todo")).status, "found");
   });
 }
