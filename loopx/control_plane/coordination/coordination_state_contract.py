@@ -74,6 +74,14 @@ TODO_CANONICAL_REQUIRED_READ_FIELDS = _string_tuple(
     _TODO_READ_RECORD.get("required_fields"),
     label="todo_read_record.required_fields",
 )
+_UNKNOWN_REQUIRED_FIELDS = sorted(
+    set(TODO_CANONICAL_REQUIRED_READ_FIELDS).difference(TODO_CANONICAL_READ_RECORD_FIELDS)
+)
+if _UNKNOWN_REQUIRED_FIELDS:
+    raise CoordinationStateContractError(
+        "todo_read_record.required_fields are absent from fields: "
+        + ", ".join(_UNKNOWN_REQUIRED_FIELDS)
+    )
 
 
 def canonical_record_fields(
@@ -91,6 +99,12 @@ def canonical_record_fields(
     fields outside the machine-owned coordination record.
     """
 
+    unknown_required = sorted(set(required_fields).difference(fields))
+    if unknown_required:
+        raise CoordinationStateContractError(
+            f"{label} required fields are absent from fields: "
+            + ", ".join(unknown_required)
+        )
     if reject_unknown:
         unexpected = sorted(set(value).difference(fields))
         if unexpected:

@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 
 import {
+  canonicalCoordinationRecord,
   canonicalCoordinationTodoRecord,
   COORDINATION_STATE_CONTRACT,
   TODO_CANONICAL_READ_RECORD_FIELDS,
@@ -66,5 +67,16 @@ test("provider-bound Todo records reject silent data loss", () => {
   assert.throws(
     () => canonicalCoordinationTodoRecord(incomplete),
     /omits required fields: text/,
+  );
+});
+
+test("record validation rejects a required field outside the declared schema", () => {
+  assert.throws(
+    () => canonicalCoordinationRecord(
+      { todo_id: "todo_contract" },
+      { fields: ["todo_id"], required_fields: ["todo_id", "role"] },
+      "test record",
+    ),
+    /required fields are absent from fields: role/,
   );
 });

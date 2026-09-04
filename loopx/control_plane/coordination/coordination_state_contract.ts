@@ -42,10 +42,19 @@ function stringList(value: unknown, label: string): readonly string[] {
 
 function recordContract(value: unknown, label: string): RecordContract {
   const record = canonicalAuthorityObject(value, label);
-  return Object.freeze({
-    fields: stringList(record.fields, `${label}.fields`),
-    required_fields: stringList(record.required_fields, `${label}.required_fields`),
-  });
+  const fields = stringList(record.fields, `${label}.fields`);
+  const requiredFields = stringList(
+    record.required_fields,
+    `${label}.required_fields`,
+  );
+  const allowed = new Set(fields);
+  const unknownRequired = requiredFields.filter((field) => !allowed.has(field));
+  if (unknownRequired.length > 0) {
+    throw new AuthorityStoreProtocolError(
+      `${label}.required_fields are absent from fields: ${unknownRequired.join(", ")}`,
+    );
+  }
+  return Object.freeze({ fields, required_fields: requiredFields });
 }
 
 function loadCoordinationStateContract(): CoordinationStateContract {
@@ -97,6 +106,14 @@ export function canonicalCoordinationRecord(
 ): JsonObject {
   const record = canonicalAuthorityObject(value, label);
   const allowed = new Set(contract.fields);
+  const unknownRequired = contract.required_fields.filter(
+    (field) => !allowed.has(field),
+  );
+  if (unknownRequired.length > 0) {
+    throw new AuthorityStoreProtocolError(
+      `${label} required fields are absent from fields: ${unknownRequired.join(", ")}`,
+    );
+  }
   const unexpected = Object.keys(record)
     .filter((field) => !allowed.has(field))
     .sort((left, right) => left.localeCompare(right));
