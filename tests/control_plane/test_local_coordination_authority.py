@@ -8,6 +8,7 @@ import pytest
 
 from loopx.control_plane.coordination.local_authority import (
     LocalCoordinationAuthorityUnavailable,
+    claim_canonical_todo_if_promoted,
     read_canonical_todos_if_promoted,
 )
 from loopx.control_plane.coordination.runtime_shadow import (
@@ -18,7 +19,7 @@ from loopx.control_plane.todos.active_state_editing import TODO_SECTION_HEADINGS
 from loopx.control_plane.coordination.legacy_writer_fence import (
     legacy_coordination_writer_fence_path,
 )
-from loopx.todos import list_goal_todos
+from loopx.todos import list_goal_todos, update_goal_todo
 
 
 def _engage_fence(runtime_root: Path, goal_id: str = "goal-a") -> None:
@@ -77,6 +78,66 @@ def test_engaged_fence_reads_typescript_provider_result(
     assert result["todos"][0]["todo_id"] == "todo_a"
 
 
+def test_promoted_claim_adapter_invokes_typescript_without_markdown_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "goals": [
+                    {
+                        "id": "goal-a",
+                        "coordination": {
+                            "registered_agents": ["agent-a", "agent-b"]
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _engage_fence(tmp_path)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _claim(method: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append((method, params))
+        return {
+            "status": "applied",
+            "changed": True,
+            "todo_id": "todo_a",
+            "claimed_by": "agent-a",
+            "source_authority": "file_v0",
+            "decision_read_from_provider": True,
+            "legacy_fallback_used": False,
+        }
+
+    monkeypatch.setattr(
+        "loopx.control_plane.coordination.local_authority.effect_runtime_result",
+        _claim,
+    )
+    result = claim_canonical_todo_if_promoted(
+        registry_path=registry,
+        runtime_root=tmp_path,
+        goal_id="goal-a",
+        todo_id="todo_a",
+        role="agent",
+        claimed_by="agent-a",
+        actor_agent_id="agent-a",
+        dry_run=False,
+    )
+
+    assert result is not None and result["changed"] is True
+    assert calls[0][0] == "coordination.local_authority.todo_claim"
+    assert calls[0][1]["registered_agents"] == ["agent-a", "agent-b"]
+    assert str(calls[0][1]["operation_id"]).startswith(
+        "todo-claim:goal-a:todo_a:"
+    )
+    assert isinstance(calls[0][1]["observed_at"], str)
+
+
 def test_engaged_fence_never_falls_back_when_provider_is_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -120,6 +181,9 @@ def test_todo_list_uses_provider_after_cutover_even_when_markdown_disagrees(
                         "status": "active",
                         "repo": str(project),
                         "state_file": ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md",
+                        "coordination": {
+                            "registered_agents": ["agent-a", "agent-b"]
+                        },
                     }
                 ],
             }
@@ -178,6 +242,9 @@ def test_real_shadow_projection_promotes_complete_complex_todo_semantics(
                         "status": "active",
                         "repo": str(project),
                         "state_file": ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md",
+                        "coordination": {
+                            "registered_agents": ["agent-a", "agent-b"]
+                        },
                     }
                 ],
             }
@@ -234,9 +301,23 @@ def test_real_shadow_projection_promotes_complete_complex_todo_semantics(
         "completed_at": "2026-09-03T18:00:00+08:00",
         "completion_turn_key": "turn-complete",
     }
+    claimable = {
+        "schema_version": "todo_item_v0",
+        "index": 9,
+        "done": False,
+        "text": "Claim directly against the promoted provider head",
+        "todo_id": "todo_claimable",
+        "role": "agent",
+        "status": "open",
+        "archive_state": "active",
+        "source_section": TODO_SECTION_HEADINGS["agent"],
+        "priority": "P0",
+        "action_kind": "implement",
+        "note": "this complete record must survive the claim",
+    }
     projection = build_todo_runtime_shadow_projection(
         goal_id="goal-a",
-        todos=[complex_todo, successor],
+        todos=[complex_todo, successor, claimable],
     )
     canonical_bytes = json.dumps(
         projection,
@@ -330,4 +411,24 @@ def test_real_shadow_projection_promotes_complete_complex_todo_semantics(
         assert by_id["todo_complex"][field] == complex_todo[field]
     assert by_id["todo_successor"]["completed_at"] == successor["completed_at"]
     assert by_id["todo_successor"]["completion_continuation"] == "no_followup"
-    assert result["authority_read"]["todo_read_model"]["todo_count"] == 2
+    assert result["authority_read"]["todo_read_model"]["todo_count"] == 3
+
+    claimed = update_goal_todo(
+        registry_path=registry_path,
+        goal_id="goal-a",
+        todo_id="todo_claimable",
+        claimed_by="agent-a",
+        agent_id="agent-a",
+        claim_only=True,
+    )
+    assert claimed["ok"] is True
+    assert claimed["source_authority"] == "file_v0"
+    assert claimed["legacy_fallback_used"] is False
+    assert claimed["mutation_authority"]["mode"] == "registered_peer_actor"
+
+    after_claim = list_goal_todos(registry_path=registry_path, goal_id="goal-a")
+    claimed_item = next(
+        item for item in after_claim["todos"] if item["todo_id"] == "todo_claimable"
+    )
+    assert claimed_item["claimed_by"] == "agent-a"
+    assert claimed_item["note"] == claimable["note"]

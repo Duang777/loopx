@@ -113,6 +113,7 @@ import {
   rollbackCoordinationRuntimeShadow,
 } from "./coordination/runtime_shadow.ts";
 import {
+  claimLocalCoordinationTodo,
   mutateLocalCoordinationAuthority,
   listLocalCoordinationTodos,
   promoteLocalCoordinationAuthority,
@@ -389,6 +390,7 @@ export function createEffectRuntimeHandlers(
     ],
     ["coordination.runtime_shadow.rollback", rollbackCoordinationRuntimeShadow],
     ["coordination.local_authority.promote", promoteLocalCoordinationAuthority],
+    ["coordination.local_authority.todo_claim", claimLocalCoordinationTodo],
     ["coordination.local_authority.mutate", mutateLocalCoordinationAuthority],
     ["coordination.local_authority.todo_read", readLocalCoordinationTodo],
     ["coordination.local_authority.todo_list", listLocalCoordinationTodos],

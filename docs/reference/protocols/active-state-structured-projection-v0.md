@@ -126,12 +126,30 @@ deterministic compatibility projection after authority promotion. Promotion
 must not make unrelated prose generated or discard text that is outside the
 machine-owned record contract.
 
+The cutover is deliberately section-sized, not document-sized:
+
+- before promotion, Markdown remains the authority and existing writers are
+  unchanged;
+- after promotion, the versioned Todo records live in the canonical provider
+  head and Markdown's Todo section is a compatibility/workbench projection;
+- free-form rationale and operator narrative remain Markdown-owned;
+- a provider outage after promotion fails closed and never makes stale
+  Markdown authoritative again.
+
+The first write using this boundary is Todo claim. It exercises a complete
+provider-neutral TypeScript transaction while leaving the default local path
+unchanged. Deterministic Markdown regeneration is a later migration step, not
+an implicit side effect of promotion.
+
 ## Migration Path
 
 1. Emit this projection from active-state Markdown.
 2. Add parity smokes comparing it with existing status todo summaries.
 3. Move Markdown parsing into a dedicated active-state read-model module behind
    the same projection fields.
-4. Add event-store dual-read parity.
-5. Promote event projection only after rollback and idempotency checks are in
-   place.
+4. Promote one complete provider-backed mutation at a time behind the durable
+   writer fence; keep the default Markdown mode unchanged.
+5. Regenerate only machine-owned sections from canonical state, preserving
+   human narrative and validating parse/render parity.
+6. Promote a provider projection only after rollback and idempotency checks are
+   in place.
