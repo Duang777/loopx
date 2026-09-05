@@ -122,6 +122,7 @@ from .control_plane.coordination.legacy_writer_fence import legacy_todo_write_tr
 from .control_plane.coordination.local_authority import (
     canonical_todo_summary_fields,
     claim_canonical_todo_if_promoted,
+    local_authority_is_promoted,
     read_canonical_todos_if_promoted,
 )
 from .control_plane.todos.handoff_mode import (
@@ -1064,7 +1065,9 @@ def update_goal_todo(
         raise ValueError(
             "todo update accepts either resume_when or clear_resume_when, not both"
         )
-    if claim_only:
+    if claim_only and local_authority_is_promoted(
+        runtime_root=shadow_runtime_root, goal_id=goal_id
+    ):
         unsupported_claim_values = (
             text, status, note, evidence, reason, task_class, action_kind,
             task_domain, task_repository, continuation_policy,

@@ -533,9 +533,12 @@ export async function claimLocalCoordinationTodo(
     const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
     const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
       new FileAuthorityStore(authorityDirectory(root), goalId);
-    const registeredAgents = Array.isArray(input.registered_agents)
-      ? input.registered_agents.map((value) => claimAgentValue(value, "registered agent"))
-      : [];
+    if (!Array.isArray(input.registered_agents)) {
+      throw new Error("registered_agents must be a JSON array");
+    }
+    const registeredAgents = input.registered_agents.map(
+      (value) => claimAgentValue(value, "registered agent"),
+    );
     const result = await executeCoordinationTodoClaim(store, {
       goal_id: goalId,
       todo_id: requireAuthorityStoreId(input.todo_id, "todo id"),

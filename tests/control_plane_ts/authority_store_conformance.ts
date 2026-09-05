@@ -224,7 +224,7 @@ export function registerAuthorityStoreConformance(
     });
     assert.equal(initialized.status, "applied");
 
-    const claimed = await executeCoordinationTodoClaim(store, {
+    const request = {
       goal_id: goalId,
       todo_id: "todo-claim",
       claimed_by: "agent-a",
@@ -234,7 +234,8 @@ export function registerAuthorityStoreConformance(
       operation_id: "claim-todo",
       dry_run: false,
       now: new Date("2026-09-05T04:30:00Z"),
-    });
+    };
+    const claimed = await executeCoordinationTodoClaim(store, request);
     assert.equal(claimed.status, "applied", JSON.stringify(claimed));
 
     const loaded = await store.loadAuthority();
@@ -244,5 +245,19 @@ export function registerAuthorityStoreConformance(
     assert.equal(todo?.claimed_by, "agent-a");
     assert.equal(todo?.note, "preserve complete canonical record");
     assert.equal((await store.readReceipt("claim-todo")).status, "found");
+    const noChangeRequest = {...request, operation_id: "claim-already-owned"};
+    const noChange = await executeCoordinationTodoClaim(store, noChangeRequest);
+    assert.equal(noChange.status, "no_change", JSON.stringify(noChange));
+    assert.equal(noChange.changed, false);
+    const afterNoChange = await store.loadAuthority();
+    assert.equal(afterNoChange.status, "loaded");
+    if (afterNoChange.status !== "loaded") return;
+    assert.deepEqual(afterNoChange.head, loaded.head);
+    assert.notEqual(afterNoChange.provider_revision, loaded.provider_revision);
+    assert.equal((await store.readReceipt(noChangeRequest.operation_id)).status, "found");
+    const replayed = await executeCoordinationTodoClaim(store,
+      {...noChangeRequest, registered_agents: []});
+    assert.deepEqual(replayed, {...noChange, status: "replayed"});
+    assert.deepEqual(await store.loadAuthority(), afterNoChange);
   });
 }

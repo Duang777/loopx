@@ -1,5 +1,5 @@
 import type { JsonObject } from "../effect_program.ts";
-import type { AuthorityStore, AuthorityStoreReceiptResult } from "./authority_store.ts";
+import type { AuthorityStore, AuthorityStoreCommit, AuthorityStoreReceiptResult } from "./authority_store.ts";
 import {
   AuthorityStoreProtocolError,
   canonicalAuthorityObject,
@@ -45,10 +45,13 @@ function normalizeAgent(value: unknown, label: string): string {
 }
 
 function normalizeRegisteredAgents(value: readonly string[]): string[] {
+  if (!Array.isArray(value)) {
+    throw new AuthorityStoreProtocolError("registered_agents must be an array");
+  }
   const normalized = value.map((agent, index) =>
     normalizeAgent(agent, `registered_agents[${index}]`)
   );
-  if (normalized.length === 0 || new Set(normalized).size !== normalized.length) {
+  if (new Set(normalized).size !== normalized.length) {
     throw new AuthorityStoreProtocolError(
       "registered_agents must contain unique public-safe agent ids",
     );
@@ -70,11 +73,9 @@ function claimAuthority(
   todo: JsonObject,
   input: CoordinationTodoClaimInput,
 ): { owner: string; actor: string | null; mode: string } | CoordinationTodoClaimResult {
-  const registered = normalizeRegisteredAgents(input.registered_agents);
-  const owner = normalizeAgent(input.claimed_by, "claimed_by");
-  const actor = input.actor_agent_id === null
-    ? null
-    : normalizeAgent(input.actor_agent_id, "actor_agent_id");
+  const registered = input.registered_agents;
+  const owner = input.claimed_by;
+  const actor = input.actor_agent_id;
   if (!registered.includes(owner)) {
     return failure("actor_not_registered", "claimed_by is not registered for this goal", {
       claimed_by: owner,
@@ -220,7 +221,9 @@ export async function executeCoordinationTodoClaim(
     try {
       result = canonicalAuthorityObject(original.result, "original claim result");
       if (result.todo_id !== input.todo_id || result.claimed_by !== input.claimed_by ||
-          typeof result.updated_at !== "string" || typeof result.handoff_mode !== "string" ||
+          (result.changed !== undefined && typeof result.changed !== "boolean") ||
+          (result.changed !== false && typeof result.updated_at !== "string") ||
+          typeof result.handoff_mode !== "string" ||
           result.mutation_authority === null || typeof result.mutation_authority !== "object") {
         throw new AuthorityStoreProtocolError("original claim result is invalid");
       }
@@ -231,8 +234,8 @@ export async function executeCoordinationTodoClaim(
     return {
       ...result,
       schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
-      status,
-      changed: status !== "replayed",
+      status: status === "applied" && result.changed === false ? "no_change" : status,
+      changed: status !== "replayed" && result.changed !== false,
       provider_revision: receipt.provider_revision,
       cursor: receipt.cursor,
       original_receipt: original,
@@ -304,48 +307,43 @@ export async function executeCoordinationTodoClaim(
       : {}),
   };
   const updatedAt = input.now.toISOString().replace(/\.\d{3}Z$/u, "Z");
-  const nextTodo = canonicalAuthorityObject({
-    ...todo,
+  const changed = todo.claimed_by !== authority.owner;
+  const result = {
+    todo_id: input.todo_id,
     claimed_by: authority.owner,
-    updated_at: updatedAt,
-  }, "claimed Todo");
-  if (todo.claimed_by === authority.owner) {
-    return {
-      schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
-      status: "no_change",
-      changed: false,
-      todo_id: input.todo_id,
-      claimed_by: authority.owner,
-      provider_revision: head.provider_revision,
-      cursor: head.cursor,
-      handoff_mode: handoffMode,
-      mutation_authority: mutationAuthority,
-    };
-  }
+    changed,
+    handoff_mode: handoffMode,
+    ...(changed ? {updated_at: updatedAt} : {}),
+    mutation_authority: mutationAuthority,
+  };
 
   if (input.dry_run) {
     return {
+      ...result,
       schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
-      status: "planned",
-      changed: true,
+      status: changed ? "planned" : "no_change",
       dry_run: true,
-      todo_id: input.todo_id,
-      claimed_by: authority.owner,
       provider_revision: head.provider_revision,
       cursor: head.cursor,
-      handoff_mode: handoffMode,
-      updated_at: updatedAt,
-      mutation_authority: mutationAuthority,
     };
   }
 
-  const commit = prepareCoordinationProjectionCommit({
+  // A successful no-op still consumes its operation identity. Commit only its
+  // receipt under the observed head's CAS; never fabricate a Todo mutation.
+  const commit: AuthorityStoreCommit = changed ? prepareCoordinationProjectionCommit({
     goal_id: input.goal_id,
     operation_id: input.operation_id,
     expected_provider_revision: head.provider_revision,
     projection: head.head,
-    mutations: [{ kind: "todo_upsert", todo: nextTodo }],
-  });
+    mutations: [{ kind: "todo_upsert", todo: {...todo,
+      claimed_by: authority.owner, updated_at: updatedAt} }],
+  }) : {
+    operation_id: input.operation_id,
+    expected_provider_revision: head.provider_revision,
+    next_projection: head.head,
+    events: [],
+    receipts: [],
+  };
   // Reuse the validated reduction and event, but persist claim intent/result:
   // a full replacement's digest depends on state and cannot identify a retry.
   commit.receipts = [{
@@ -353,13 +351,7 @@ export async function executeCoordinationTodoClaim(
     operation_id: input.operation_id,
     goal_id: input.goal_id,
     request_sha256: requestSha,
-    result: {
-      todo_id: input.todo_id,
-      claimed_by: authority.owner,
-      handoff_mode: handoffMode,
-      updated_at: updatedAt,
-      mutation_authority: mutationAuthority,
-    },
+    result,
   }];
   const committed = await store.commitAuthority(commit);
   const readback = replay(await store.readReceipt(input.operation_id),

@@ -43,7 +43,7 @@ class LocalCoordinationAuthorityUnavailable(RuntimeError):
         self.payload = dict(payload)
 
 
-def _local_authority_is_promoted(*, runtime_root: Path, goal_id: str) -> bool:
+def local_authority_is_promoted(*, runtime_root: Path, goal_id: str) -> bool:
     fence_path = legacy_coordination_writer_fence_path(
         runtime_root=runtime_root,
         goal_id=goal_id,
@@ -74,7 +74,7 @@ def claim_canonical_todo_if_promoted(
 ) -> dict[str, Any] | None:
     """Route a post-cutover claim to the TypeScript transaction owner."""
 
-    if not _local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
+    if not local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
         return None
     result = effect_runtime_result(
         LOCAL_COORDINATION_TODO_CLAIM_METHOD,
@@ -134,7 +134,7 @@ def read_canonical_todos_if_promoted(
     this read; callers must never recover by reading Markdown.
     """
 
-    if not _local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
+    if not local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
         return None
 
     result = effect_runtime_result(

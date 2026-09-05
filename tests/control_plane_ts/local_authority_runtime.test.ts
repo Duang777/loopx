@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { FileAuthorityStore } from "../../loopx/control_plane/coordination/file_authority_store.ts";
+import type { AuthorityStoreCommit } from "../../loopx/control_plane/coordination/authority_store.ts";
 import { canonicalAuthorityBytes } from "../../loopx/control_plane/coordination/authority_store_codec.ts";
 import {
   TODO_DOMAIN_ITEM_SCHEMA,
@@ -534,13 +535,15 @@ for (const native of [false, true]) {
     });
     assert.equal(completed.status, "applied");
     const afterB = await store.loadAuthority();
-    const replay = await claimLocalCoordinationTodo({...request,
-      registered_agents: ["agent-b"], observed_at: "2026-09-06T04:30:00Z"});
-    assert.equal(replay.status, "replayed", JSON.stringify(replay));
-    assert.equal(replay.changed, false);
-    assert.equal(replay.provider_revision, applied.provider_revision);
-    assert.deepEqual(replay.original_receipt, applied.original_receipt);
-    assert.equal(replay.updated_at, applied.updated_at);
+    for (const registered_agents of [["agent-b"], []]) {
+      const replay = await claimLocalCoordinationTodo({...request,
+        registered_agents, observed_at: "2026-09-06T04:30:00Z"});
+      assert.equal(replay.status, "replayed", JSON.stringify(replay));
+      assert.equal(replay.changed, false);
+      assert.equal(replay.provider_revision, applied.provider_revision);
+      assert.deepEqual(replay.original_receipt, applied.original_receipt);
+      assert.equal(replay.updated_at, applied.updated_at);
+    }
     for (const changedIntent of [{claimed_by: "agent-b"}, {actor_agent_id: "agent-b"},
       {todo_id: "todo_b"}, {role: "user"}, {dry_run: true}]) {
       const mismatch = await claimLocalCoordinationTodo({...request, ...changedIntent});
@@ -550,7 +553,130 @@ for (const native of [false, true]) {
     const fresh = await claimLocalCoordinationTodo({...request, operation_id: "claim-new"});
     assert.equal(fresh.reason_code, "todo_not_open");
   });
+
+  test(`no-change claim is a durable terminal result (${native ? "native" : "v0"})`, async () => {
+    for (const later of [{claimed_by: null}, {claimed_by: "agent-b"},
+      {status: "done", done: true, archive_state: "archive"}]) {
+      const root = await mkdtemp(join(tmpdir(), "loopx-claim-no-change-"));
+      const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+      const todo = todoRecord({claimed_by: "agent-a", note: "preserve original bytes"});
+      if (native) {
+        todo.schema_version = TODO_DOMAIN_ITEM_SCHEMA;
+        delete todo.source_section;
+      }
+      const projection = withTodoReadModel({goal_id: "goal-a", handoff_mode: "soft_claim",
+        todos: [todo], leases: []});
+      if (native) {
+        Object.assign(projection, {todo_read_model: {
+          schema_version: TODO_DOMAIN_READ_RECORD_SCHEMA, todo_count: 1,
+          records_sha256: sha256([todo]), contract_fields: [...TODO_DOMAIN_RECORD_CONTRACT.fields],
+        }});
+      }
+      await store.commitAuthority({expected_provider_revision: null, operation_id: "seed",
+        events: [], next_projection: projection, receipts: []});
+      const before = await store.loadAuthority();
+      const request = {
+        schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+        runtime_root: root, goal_id: "goal-a", todo_id: "todo_a", role: "agent",
+        claimed_by: "agent-a", actor_agent_id: "agent-a", registered_agents: ["agent-a"],
+        operation_id: "claim-no-change", observed_at: "2026-09-05T04:30:00Z", dry_run: false,
+      };
+      const preview = await claimLocalCoordinationTodo({...request, dry_run: true});
+      assert.equal(preview.status, "no_change");
+      assert.equal(preview.changed, false);
+      assert.deepEqual(await store.readReceipt(request.operation_id), {status: "missing"});
+      const freshEmpty = await claimLocalCoordinationTodo({...request, registered_agents: []});
+      assert.equal(freshEmpty.reason_code, "actor_not_registered");
+      assert.deepEqual(await store.loadAuthority(), before);
+      const accepted = await claimLocalCoordinationTodo(request);
+      assert.equal(accepted.status, "no_change", JSON.stringify(accepted));
+      assert.equal(accepted.changed, false);
+      const receipt = await store.readReceipt(request.operation_id);
+      assert.equal(receipt.status, "found");
+      const afterA = await store.loadAuthority();
+      assert.equal(afterA.status, "loaded");
+      if (afterA.status !== "loaded" || before.status !== "loaded") return;
+      assert.deepEqual(afterA.head, before.head);
+      assert.notEqual(afterA.provider_revision, before.provider_revision);
+      const scan = await store.scanCommitted(before.cursor, 10);
+      assert.equal(scan.status, "page");
+      if (scan.status !== "page") return;
+      assert.equal(scan.transactions.length, 1);
+      assert.deepEqual(scan.transactions[0]?.events, []);
+      const changed = await mutateLocalCoordinationAuthority({
+        schema_version: LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
+        runtime_root: root, goal_id: "goal-a", operation_id: "later-change",
+        expected_provider_revision: afterA.provider_revision,
+        mutations: [{kind: "todo_upsert", todo: {...todo, ...later}}],
+      });
+      assert.equal(changed.status, "applied");
+      const afterB = await store.loadAuthority();
+      const replayed = await claimLocalCoordinationTodo({...request, registered_agents: [],
+        observed_at: "2026-09-06T04:30:00Z"});
+      assert.deepEqual(replayed, {...accepted, status: "replayed"});
+      for (const changedIntent of [{claimed_by: "agent-b"}, {actor_agent_id: "agent-b"},
+        {todo_id: "todo_b"}, {role: "user"}, {dry_run: true}]) {
+        assert.equal((await claimLocalCoordinationTodo({...request, ...changedIntent})).reason_code,
+          "coordination_operation_identity_mismatch");
+      }
+      for (const registered_agents of [null, "agent-a", [null], [42], ["invalid!"],
+        ["agent-a", "agent-a"]]) {
+        assert.equal((await claimLocalCoordinationTodo({...request, registered_agents})).status, "failed");
+      }
+      assert.deepEqual(await store.loadAuthority(), afterB);
+      assert.deepEqual(await store.readReceipt(request.operation_id), receipt);
+    }
+  });
 }
+
+test("receipt-only claims require head CAS and recover a lost commit response", async () => {
+  for (const fault of ["conflict", "lost_response"] as const) {
+    const root = await mkdtemp(join(tmpdir(), "loopx-claim-no-change-fault-"));
+    const directory = join(root, "authority", "file-v0");
+    const store = new FileAuthorityStore(directory, "goal-a");
+    const projection = withTodoReadModel({goal_id: "goal-a", todos: [
+      todoRecord({claimed_by: "agent-a"}),
+    ], leases: []});
+    await store.commitAuthority({operation_id: "seed", expected_provider_revision: null,
+      events: [], receipts: [], next_projection: projection});
+    const before = await store.loadAuthority();
+    assert.equal(before.status, "loaded");
+    if (before.status !== "loaded") return;
+    class FaultStore extends FileAuthorityStore {
+      override async commitAuthority(commit: AuthorityStoreCommit) {
+        if (fault === "conflict") {
+          const concurrent = await store.commitAuthority({...commit, operation_id: "concurrent",
+            receipts: [], next_projection: withTodoReadModel({...projection,
+              todos: [todoRecord({claimed_by: "agent-b"})]})});
+          assert.equal(concurrent.status, "applied");
+          return super.commitAuthority(commit);
+        }
+        assert.equal((await super.commitAuthority(commit)).status, "applied");
+        return {status: "ambiguous" as const, reason_code: "lost_response",
+          reason: "commit response lost after persistence"};
+      }
+    }
+    const result = await claimLocalCoordinationTodo({
+      schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+      runtime_root: root, goal_id: "goal-a", todo_id: "todo_a", role: "agent",
+      claimed_by: "agent-a", actor_agent_id: "agent-a", registered_agents: ["agent-a"],
+      operation_id: "no-change", observed_at: "2026-09-05T04:30:00Z", dry_run: false,
+    }, {createStore: () => new FaultStore(directory, "goal-a")});
+    assert.equal(result.changed, false);
+    assert.equal(result.status, fault === "conflict" ? "conflict" : "recovered");
+    const receipt = await store.readReceipt("no-change");
+    assert.equal(receipt.status, fault === "conflict" ? "missing" : "found");
+    const after = await store.loadAuthority();
+    assert.equal(after.status, "loaded");
+    if (after.status !== "loaded") return;
+    if (fault === "conflict") {
+      assert.equal((after.head.todos as Record<string, unknown>[])[0]?.claimed_by, "agent-b");
+    } else {
+      assert.deepEqual(after.head, before.head);
+      assert.ok(result.original_receipt);
+    }
+  }
+});
 
 test("provider-first Todo claim validates authority and hard-lease ownership", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-claim-gates-"));
