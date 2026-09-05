@@ -132,11 +132,12 @@ def _shell_plan(
     def capture_sleep(seconds: float) -> None:
         raise _WaitScheduled(seconds)
 
-    monkeypatch.setattr(worker.time, "sleep", capture_sleep)
-    try:
-        return_code = worker.run_worker(_worker_args(cli=cli, state=state))
-    except _WaitScheduled as scheduled:
-        return {"stop": False, "minutes": int(scheduled.seconds / 60)}
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(worker.time, "sleep", capture_sleep)
+        try:
+            return_code = worker.run_worker(_worker_args(cli=cli, state=state))
+        except _WaitScheduled as scheduled:
+            return {"stop": False, "minutes": int(scheduled.seconds / 60)}
     assert return_code == 0
     return {"stop": True}
 
