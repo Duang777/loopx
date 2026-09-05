@@ -201,3 +201,12 @@ python3 packages/loopx-codex-provider-routing/smoke/recovery_contracts_smoke.py
 python3 -m pytest -q tests/extensions/test_colocated_extension_layout.py
 loopx check --scan-path packages/loopx-codex-provider-routing
 ```
+
+## Optional local operator
+
+Version 0.9 adds a separately invoked `loopx-cpa-operator` CLI for explicit local
+configuration, account enrollment, catalog generation, process supervision and
+readback. It ships the A/B/C Sol/Astra preset while preserving the managed
+extension's read-only protocol and the original A/B qualification default.
+See [Local CPA operator](OPERATOR.md) for activation, exact target boundaries,
+validation, rollback and disable commands.
