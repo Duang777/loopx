@@ -30,8 +30,12 @@ transaction for both native and v0 records. New claims require active, open
 Todos and the current actor/lease checks. Exact operation retries recover the
 original claim receipt before current-state eligibility; observation time and
 current registration facts are not request identity. Replaying a receipt does
-not renew a lease or assert current ownership. Invalid preview booleans fail
-before provider access. The CLI creates a fresh operation id per invocation;
+not renew a lease or assert current ownership. Successful non-preview
+`no_change` also persists a terminal receipt under head CAS: storage revision
+may advance, but Todo state, `updated_at`, and domain events do not change.
+A structurally valid empty registration list permits historical replay, never
+a fresh claim; malformed lists still fail. Preview remains zero-write, and
+invalid preview booleans fail before provider access. The CLI creates a fresh operation id per invocation;
 cross-invocation retry identity and combined claim/lease acquisition remain
 follow-up work, not guarantees of this claim-only transaction.
 
