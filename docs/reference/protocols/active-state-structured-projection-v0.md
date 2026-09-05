@@ -10,8 +10,15 @@ current active-state Markdown and does not grant write permission.
 
 The machine-owned Todo read subset is versioned separately in
 `coordination_state_contract_v0.json`. That provider-neutral contract is shared
-by Python and TypeScript and is the only accepted record shape for file, NoKV,
-or PostgreSQL authority heads. Provider-bound projection rejects an unknown
+by Python and TypeScript. It declares the legacy consumer record and a separate
+native domain record for file, NoKV, or PostgreSQL authority heads.
+`archive_state` is durable task state: archival changes handoff and succession
+eligibility independently of completion. `source_section` and optional `index`
+belong to the Markdown compatibility projection, not native creation inputs.
+Legacy v0 records retain those fields; importing them into the domain version
+requires explicit qualification, including preservation of priority tie ordering
+currently influenced by `index`. There is no automatic stored-head migration.
+Provider-bound projection rejects an unknown
 field instead of silently dropping it. Removing a declared field requires a
 reviewed compatibility decision and maintainer approval, including for fields
 that are persisted but not yet used by a decision path.

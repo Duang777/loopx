@@ -3,7 +3,7 @@
 - Status: Accepted, transaction-payoff phase in progress
 - Proposed by: LoopX maintainers
 - Date: 2026-08-15
-- Last revised: 2026-08-23
+- Last revised: 2026-09-05
 - Scope: an incremental, replacement-first migration of the LoopX control-plane
   core from Python to TypeScript without maintaining two semantic
   implementations
@@ -16,14 +16,40 @@
 
 ## Current implementation checkpoint
 
-The coordination path now uses one language-neutral
-`coordination_state_contract_v0.json` for canonical Todo read
-records. Python Markdown projection and the TypeScript authority/store boundary
-load the same artifact and fail closed on unversioned provider-bound fields.
-This removes a duplicated cross-language schema owner without changing the
-default Markdown write path. The next transaction-sized cutover can therefore
-move a complete mutation path into TypeScript without first reconciling two
-field allowlists.
+The coordination path uses one language-neutral
+`coordination_state_contract_v0.json`. Its native `TodoDomainRecord` keeps task
+semantics, including `archive_state`; `TodoProjectionMetadata` contains
+`source_section` and optional `index`. The TypeScript reducer and provider-first
+collection reader accept the separately versioned native domain manifest;
+native creation, archival, receipt replay, and store reopen are tested without
+Markdown metadata. Python only adapts the typed read result to the compatibility
+summary. This is a contract checkpoint, not a completed CLI lifecycle cutover.
+
+The old v0 consumer manifest remains readable and retains all existing fields.
+Default Markdown capture still emits v0; this PR neither rewrites stored heads
+nor auto-promotes a goal. The schema split is not permission to drop v0
+provenance or change legacy ordering during a later migration.
+
+### Next delivery sequence
+
+1. **One provider-first Todo transaction family.** Route native create, claim,
+   update, complete-with-successor, archive, and their lease effects through
+   the existing TS authority owner. Deliver coherent vertical slices with the
+   real CLI caller, replay/CAS/error tests, and removal of the replaced Python
+   decisions. A schema or constants-only PR does not satisfy this exit.
+2. **Qualification before activation.** Join that path with the shared-authority
+   RFC's explicit v0 import, consumer parity, writer fencing, capture/projection
+   outbox recovery, bounded retention, and fenced export. File qualification
+   does not wait for PostgreSQL service readiness. No default authority flip.
+3. **Retire the bridge, then converge entrypoints.** Delete the replaced
+   reference aggregate and Python facades when their last callers switch;
+   reuse the same kernel from native CLI/App and optional daemon. Report
+   product LOC removed, bridge LOC added, crossings, and remaining deletion
+   conditions per slice. Stop and replan after two scaffolding-only slices.
+
+Stacked schema-identifier cleanup is independent maintenance, not a prerequisite
+for this sequence. Absorb a downstream change only when the selected complete
+transaction actually needs it; rebase the remaining work after its base merges.
 
 ## 0. Decision in one example
 
