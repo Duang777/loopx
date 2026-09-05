@@ -73,6 +73,37 @@ golden 来让测试通过。
 
 ## Pull-Request Baseline / PR 基线
 
+### Refactor Real-Path Gate / 重构真实路径门
+
+Refactors must exercise the affected production entrypoint and real backend
+before delivery. Unit tests, mocks, and in-memory conformance remain useful,
+but cannot replace that proof. For changes affecting PostgreSQL authority,
+configure `LOOPX_TEST_POSTGRES_URL` to an isolated disposable server and run
+`npm run test:postgresql-authority-store`; a skipped suite is an evidence gap,
+not a pass. Record the exact commit, backend version, tested behavior, and
+failures or limits. If no safe real environment is available, hold delivery.
+
+重构交付前必须验证受影响的真实生产入口和真实后端。单测、mock 与内存 conformance
+不能替代这项证据。影响 PostgreSQL authority 时，配置指向隔离临时实例的
+`LOOPX_TEST_POSTGRES_URL`，运行 `npm run test:postgresql-authority-store`；跳过不算
+通过。记录精确 commit、后端版本、验证行为与失败或局限；没有安全的真实环境则暂停交付。
+
+Keep tests separate from active state: use a disposable database/tenant and
+runtime directory, with synthetic fixtures or an owner-authorized read-only
+snapshot. Never run the integration suite against a shared or production
+database: it creates roles and injects schema-level failure triggers. Never
+promote an active goal, change its provider, or mutate its registry, writer
+fence, Todos, or leases for a test. Keep private snapshots and raw outputs out
+of Git and public reviews; compare source fingerprints before and after an
+owner-authorized snapshot rehearsal. A concurrent source change is reported,
+not overwritten or restored by the test. Stop the temporary server afterward.
+
+测试使用独立临时数据库／tenant 和 runtime 目录，输入为合成 fixture 或经 owner 授权
+的只读快照。集成测试会创建角色并注入 schema 级失败 trigger，禁止连接共享或生产库。
+不为测试晋升正在运行的 goal、切换 provider，或修改其 registry、writer fence、Todo、
+lease。私有快照和原始输出不得进入 Git 或公开 review；快照演练前后比较源指纹。
+发现并发源变更只报告，不擅自覆盖或恢复。测试后停止临时数据库。
+
 Install the test dependencies once:
 
 ```bash

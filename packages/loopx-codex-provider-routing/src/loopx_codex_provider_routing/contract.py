@@ -341,10 +341,7 @@ def qualify_outage_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
         {
             "id": "degraded_binding_not_used_for_native",
             "passed": not native_requested
-            or (
-                not fallback_attempted
-                and (not outage_ended or degraded_cleared)
-            ),
+            or (not fallback_attempted and (not outage_ended or degraded_cleared)),
             "failure_code": "degraded_fallback_binding_used_for_native_request",
         }
     )
@@ -1603,6 +1600,22 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "gpt-5.6-luna",
         "ark/deepseek-v4-flash",
     }
+    preset = snapshot.get("routing_preset", "legacy-ab-sol")
+    if preset not in {"legacy-ab-sol", "abc-sol-astra"}:
+        raise ValueError("unsupported snapshot routing preset")
+    expected_hidden = {"gpt-5.6-sol"}
+    if preset == "abc-sol-astra":
+        from .selectors import MODEL_FAMILIES, ROUTES
+
+        expected_visible = set(ROUTES) | {
+            "ark/deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-ga-260731",
+            "deepseek-v4-pro-ga-260813",
+        }
+        expected_hidden = set(MODEL_FAMILIES)
+    expected_fast = {slug for slug in expected_visible if slug.startswith("fast/")}
+    expected_native = {slug for slug in expected_visible if "gpt-" in slug}
     checks: list[dict[str, Any]] = []
 
     def check(check_id: str, passed: bool, detail: str) -> None:
@@ -1615,11 +1628,11 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     check(
         "visible_routes",
         visible == expected_visible,
-        "selector exposes Standard and Fast Sol rows plus Luna and Ark",
+        "selector exposes the selected routing preset",
     )
     check(
         "hidden_alias",
-        "gpt-5.6-sol" in hidden,
+        expected_hidden <= hidden,
         "bare compatibility alias remains hidden",
     )
     modalities = snapshot.get("input_modalities")
@@ -1629,17 +1642,9 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "codex_image_admission",
         all(
             set(modalities.get(slug, [])) == {"text", "image"}
-            for slug in (
-                "auto/gpt-5.6-sol",
-                "fast/auto/gpt-5.6-sol",
-                "codex-a/gpt-5.6-sol",
-                "fast/codex-a/gpt-5.6-sol",
-                "codex-b/gpt-5.6-sol",
-                "fast/codex-b/gpt-5.6-sol",
-                "gpt-5.6-luna",
-            )
+            for slug in expected_native
         ),
-        "Standard/Fast Sol selectors and Luna declare text and image",
+        "subscription selectors declare text and image",
     )
     check(
         "ark_text_only",
@@ -1649,13 +1654,8 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     fast_models = set(_string_list(snapshot.get("fast_models"), "snapshot.fast_models"))
     check(
         "fast_projection",
-        fast_models
-        == {
-            "fast/auto/gpt-5.6-sol",
-            "fast/codex-a/gpt-5.6-sol",
-            "fast/codex-b/gpt-5.6-sol",
-        },
-        "Fast is exposed only as explicit Auto/Prefer A/Prefer B sibling rows",
+        fast_models == expected_fast,
+        "Fast is exposed as explicit sibling rows",
     )
     selector_tiers = snapshot.get("selector_default_service_tiers")
     if not isinstance(selector_tiers, Mapping):
@@ -1729,6 +1729,19 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             "fallback_tail": [],
         },
     }
+    if preset == "abc-sol-astra":
+        expected_traversal = {
+            slug: {
+                "entrypoint": "affinity_then_first"
+                if slug.removeprefix("fast/").startswith("auto/")
+                or slug == "gpt-5.6-luna"
+                else f"codex-{route['order'][0]}",
+                "ordered_candidates": [f"codex-{slot}" for slot in route["order"]]
+                + route["tail"],
+                "fallback_tail": route["tail"],
+            }
+            for slug, route in ROUTES.items()
+        }
     traversal_rows: dict[str, Mapping[str, Any]] = {}
     for slug in expected_traversal:
         raw_row = route_traversal.get(slug)
@@ -1751,7 +1764,7 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             == expected["ordered_candidates"]
             for slug, expected in expected_traversal.items()
         ),
-        "Standard/Fast Sol selectors and Luna use the expected ring entrypoint and order",
+        "subscription selectors use the expected ring entrypoint and order",
     )
     check(
         "terminal_fallback_tail",
@@ -1759,17 +1772,17 @@ def qualify_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             traversal_rows[slug].get("fallback_tail") == expected["fallback_tail"]
             for slug, expected in expected_traversal.items()
         ),
-        "only Standard Sol routes append Ark; Fast and Luna have no heterogeneous tail",
+        "only eligible Standard routes append Ark; Fast and Luna have no heterogeneous tail",
     )
     check(
         "fast_capable_only",
         all(
             traversal_rows[slug].get("ordered_candidates")
-            in (["codex-a", "codex-b"], ["codex-b", "codex-a"])
+            == expected_traversal[slug]["ordered_candidates"]
             and traversal_rows[slug].get("fallback_tail") == []
             for slug in fast_models
         ),
-        "Fast rows remain inside the A/B Fast-capable ring",
+        "Fast rows remain inside the selected Fast-capable account ring",
     )
     check(
         "single_cycle_traversal",

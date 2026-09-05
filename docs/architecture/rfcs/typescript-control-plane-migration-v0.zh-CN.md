@@ -3,7 +3,7 @@
 - Status：Accepted，transaction-payoff 阶段进行中
 - Proposed by：LoopX maintainers
 - Date：2026-08-15
-- Last revised：2026-08-23
+- Last revised：2026-09-05
 - Scope：LoopX 控制面核心从 Python 到 TypeScript 的增量、replacement-first
   迁移；不长期维护两份语义实现
 - Tracking issue：[#3225](https://github.com/huangruiteng/loopx/issues/3225)
@@ -12,6 +12,47 @@
   两者不一致视为缺陷。
 
 ---
+
+## 当前实现检查点
+
+coordination 路径使用同一份语言中立的 `coordination_state_contract_v0.json`。
+原生 `TodoDomainRecord` 持有任务语义，包括 `archive_state`；
+`TodoProjectionMetadata` 包含 `source_section` 和可选 `index`。TypeScript reducer
+与 provider-first collection reader 接受独立版本的原生 domain manifest；测试证明
+原生创建、归档、receipt replay 与 store reopen 不需要 Markdown metadata。Python
+仅将 typed read result 适配为兼容 summary。这是 contract 检查点，不是已经完成的
+CLI lifecycle cutover。
+
+显式 promotion 后，`todo claim` 现在只跨一次 runtime 边界，由 TS 事务同时处理原生
+和 v0 记录。新 claim 要求 active、open Todo，并检查当前 actor/lease；同一 operation
+的重试先恢复原 claim receipt，再考虑当前资格。观测时间和当前注册信息不属于请求
+身份。回放 receipt 不续租，也不表示当前仍持有任务。非 preview 的成功 `no_change`
+同样在 head CAS 下持久化终态 receipt：存储 revision 可以前进，但 Todo 状态、
+`updated_at` 和 domain events 不变。结构合法的空注册名单允许历史回放，不能发起
+新 claim；非法名单仍失败。preview 保持零写入，非法 preview boolean 在访问 provider
+前失败。CLI 每次调用仍生成新的 operation id；跨调用重试身份和 claim/lease
+联合获取仍是后续工作，不能视为当前 claim-only 事务已提供的保证。
+
+旧 v0 consumer manifest 继续可读，并保留所有已有字段。默认 Markdown capture 仍
+输出 v0；本 PR 不改写已存 head，也不自动晋升 goal。schema 分层不等于允许后续迁移
+丢失 v0 provenance 或改变旧排序。
+
+### 下一步交付顺序
+
+1. **一组 provider-first Todo 完整事务。** 原生 create、claim、update、
+   complete-with-successor、archive 及相关 lease effect 经过现有 TS authority owner。
+   每个内聚的纵向切片包含真实 CLI caller、replay/CAS/error 测试，并删除被替代的
+   Python decision。仅统一 schema 或常量不满足退出条件。
+2. **先资格化，再启用。** 与 shared-authority RFC 的显式 v0 import、consumer
+   parity、writer fencing、capture/projection outbox recovery、有界 retention、
+   fenced export 汇合。file 资格化不等待 PostgreSQL service 就绪；不默认切换 authority。
+3. **删除 bridge，再收敛入口。** 最后一个 caller 切换后，删除被替代的 reference
+   aggregate 与 Python facade；native CLI/App 和可选 daemon 复用同一 kernel。
+   每个切片报告删除的 product LOC、新增 bridge LOC、crossings 与剩余删除条件。
+   连续两个切片只有 scaffolding 时，停止并重新规划。
+
+stack 中的 schema identifier 清理是独立维护，不是上述路线的前置条件。只吸收所选
+完整事务确实依赖的下游改动；base 合并后，其余工作再 rebase。
 
 ## 0. 用一个例子说明决策
 

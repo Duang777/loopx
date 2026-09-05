@@ -102,6 +102,14 @@ observation 与 last-sync receipt，并把 Git 合并输入交给 LoopX core `in
 base/source/head 漂移都只产生 `sync_required`；monitor 不自动合并或 push。显式同步后必须重新
 执行 build、changed-seam matrix、字段级配置 diff 与 App Server readback，才允许更新部署指针。
 
+## A/B/C 与 Astra 的可执行维护入口
+
+`abc-sol-astra` preset 与独立 `loopx-cpa-operator` CLI 已在本 package 中维护。
+它把本机进程控制、账号元数据、模型目录生成及脱敏观测收拢到同一实现；
+私有配置通过显式路径传入，managed extension 仍只读。完整的三账号路由、
+Fast/Ark 边界、重试范围、部署与回滚操作见 [Local CPA operator](OPERATOR.md)。
+旧 A/B qualification 默认值保留；新 readback 显式指定 `routing_preset: abc-sol-astra`。
+
 ## 锁定的 qualification baseline
 
 在升级前锁定 commit，不直接跟随上游 `main`：

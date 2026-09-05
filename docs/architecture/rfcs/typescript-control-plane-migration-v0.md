@@ -3,7 +3,7 @@
 - Status: Accepted, transaction-payoff phase in progress
 - Proposed by: LoopX maintainers
 - Date: 2026-08-15
-- Last revised: 2026-08-23
+- Last revised: 2026-09-05
 - Scope: an incremental, replacement-first migration of the LoopX control-plane
   core from Python to TypeScript without maintaining two semantic
   implementations
@@ -13,6 +13,57 @@
   English version are semantic mirrors. A difference between them is a defect.
 
 ---
+
+## Current implementation checkpoint
+
+The coordination path uses one language-neutral
+`coordination_state_contract_v0.json`. Its native `TodoDomainRecord` keeps task
+semantics, including `archive_state`; `TodoProjectionMetadata` contains
+`source_section` and optional `index`. The TypeScript reducer and provider-first
+collection reader accept the separately versioned native domain manifest;
+native creation, archival, receipt replay, and store reopen are tested without
+Markdown metadata. Python only adapts the typed read result to the compatibility
+summary. This is a contract checkpoint, not a completed CLI lifecycle cutover.
+
+After explicit promotion, `todo claim` now crosses once into a TS-owned
+transaction for both native and v0 records. New claims require active, open
+Todos and the current actor/lease checks. Exact operation retries recover the
+original claim receipt before current-state eligibility; observation time and
+current registration facts are not request identity. Replaying a receipt does
+not renew a lease or assert current ownership. Successful non-preview
+`no_change` also persists a terminal receipt under head CAS: storage revision
+may advance, but Todo state, `updated_at`, and domain events do not change.
+A structurally valid empty registration list permits historical replay, never
+a fresh claim; malformed lists still fail. Preview remains zero-write, and
+invalid preview booleans fail before provider access. The CLI creates a fresh operation id per invocation;
+cross-invocation retry identity and combined claim/lease acquisition remain
+follow-up work, not guarantees of this claim-only transaction.
+
+The old v0 consumer manifest remains readable and retains all existing fields.
+Default Markdown capture still emits v0; this PR neither rewrites stored heads
+nor auto-promotes a goal. The schema split is not permission to drop v0
+provenance or change legacy ordering during a later migration.
+
+### Next delivery sequence
+
+1. **One provider-first Todo transaction family.** Route native create, claim,
+   update, complete-with-successor, archive, and their lease effects through
+   the existing TS authority owner. Deliver coherent vertical slices with the
+   real CLI caller, replay/CAS/error tests, and removal of the replaced Python
+   decisions. A schema or constants-only PR does not satisfy this exit.
+2. **Qualification before activation.** Join that path with the shared-authority
+   RFC's explicit v0 import, consumer parity, writer fencing, capture/projection
+   outbox recovery, bounded retention, and fenced export. File qualification
+   does not wait for PostgreSQL service readiness. No default authority flip.
+3. **Retire the bridge, then converge entrypoints.** Delete the replaced
+   reference aggregate and Python facades when their last callers switch;
+   reuse the same kernel from native CLI/App and optional daemon. Report
+   product LOC removed, bridge LOC added, crossings, and remaining deletion
+   conditions per slice. Stop and replan after two scaffolding-only slices.
+
+Stacked schema-identifier cleanup is independent maintenance, not a prerequisite
+for this sequence. Absorb a downstream change only when the selected complete
+transaction actually needs it; rebase the remaining work after its base merges.
 
 ## 0. Decision in one example
 
@@ -163,6 +214,7 @@ choice is now implemented rather than hypothetical.
 | Quota monitor-poll commit transaction | TypeScript owns monitor admission revalidation, target/event/result construction, effect replay/index CAS, provider intent, and repairable JSON/Markdown/index persistence | Python projects compact `should-run` facts, invokes the real Todo provider between at most two reductions, reloads legacy status, and holds the cross-writer index lock |
 | Runtime decoders ([#3443](https://github.com/huangruiteng/loopx/pull/3443)) | Stable primitive decoding has one small shared module; domain decoders remain local | No larger schema framework is justified |
 | Transaction payoff ([#3464](https://github.com/huangruiteng/loopx/pull/3464), [#3481](https://github.com/huangruiteng/loopx/pull/3481), and Todo completion) | Turn settlement, quota delivery routing, and Todo completion each cross one coarse TS boundary; the Todo transaction owns identity, replay fencing, validation planning/result reduction, continuation/recovery, and completion metadata | Python still executes explicitly external providers and materializes legacy Markdown/event results; other domains still need their own bounded cutovers |
+| Promoted-authority Todo claim | TypeScript owns the provider-head read, lifecycle validation, complete-record update, hard-lease check, CAS, receipt, and readback-safe result for claims after authority promotion | Default local Markdown mode remains on the legacy writer; other Todo mutations and Markdown regeneration remain bounded follow-ups |
 
 The scheduler facade exit now includes its first bounded Stage 3 route. A
 versioned `heartbeat_followup_cli.ts` accepts bounded compact host facts from
