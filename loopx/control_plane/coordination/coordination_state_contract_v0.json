@@ -81,6 +81,19 @@
       "source_section"
     ]
   },
+  "todo_domain_record": {
+    "schema_version": "loopx_todo_domain_read_record_v0",
+    "item_schema_version": "todo_domain_record_v0",
+    "fields_from": "todo_read_record",
+    "exclude_fields_from": "todo_projection_metadata",
+    "required_fields": [
+      "schema_version", "todo_id", "role", "status", "done", "text", "archive_state"
+    ]
+  },
+  "todo_projection_metadata": {
+    "fields": ["source_section", "index"],
+    "required_fields": ["source_section"]
+  },
   "compatibility": {
     "unknown_field_policy": "reject",
     "field_removal_policy": "maintainer_approval_required",

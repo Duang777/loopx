@@ -22,6 +22,14 @@ interface TodoRecordContract extends RecordContract {
 interface CoordinationStateContract {
   readonly schema_version: typeof COORDINATION_STATE_CONTRACT_SCHEMA;
   readonly todo_read_record: TodoRecordContract;
+  readonly todo_domain_record: {
+    readonly schema_version: string;
+    readonly item_schema_version: string;
+    readonly fields_from: "todo_read_record";
+    readonly exclude_fields_from: "todo_projection_metadata";
+    readonly required_fields: readonly string[];
+  };
+  readonly todo_projection_metadata: RecordContract;
   readonly compatibility: {
     readonly unknown_field_policy: "reject";
     readonly field_removal_policy: "maintainer_approval_required";
@@ -66,6 +74,14 @@ function loadCoordinationStateContract(): CoordinationStateContract {
     throw new AuthorityStoreProtocolError("coordination state contract schema mismatch");
   }
   const todo = canonicalAuthorityObject(raw.todo_read_record, "todo_read_record");
+  const domain = canonicalAuthorityObject(raw.todo_domain_record, "todo_domain_record");
+  const metadata = recordContract(raw.todo_projection_metadata, "todo_projection_metadata");
+  if (typeof domain.schema_version !== "string" || !domain.schema_version ||
+      typeof domain.item_schema_version !== "string" || !domain.item_schema_version ||
+      domain.fields_from !== "todo_read_record" ||
+      domain.exclude_fields_from !== "todo_projection_metadata") {
+    throw new AuthorityStoreProtocolError("Todo domain contract mismatch");
+  }
   const compatibility = canonicalAuthorityObject(raw.compatibility, "compatibility");
   if (typeof todo.schema_version !== "string" ||
       typeof todo.item_schema_version !== "string" ||
@@ -81,6 +97,14 @@ function loadCoordinationStateContract(): CoordinationStateContract {
       schema_version: todo.schema_version,
       item_schema_version: todo.item_schema_version,
     }),
+    todo_domain_record: Object.freeze({
+      schema_version: domain.schema_version,
+      item_schema_version: domain.item_schema_version,
+      fields_from: "todo_read_record",
+      exclude_fields_from: "todo_projection_metadata",
+      required_fields: stringList(domain.required_fields, "todo_domain_record.required_fields"),
+    }),
+    todo_projection_metadata: metadata,
     compatibility: Object.freeze({
       unknown_field_policy: "reject",
       field_removal_policy: "maintainer_approval_required",
@@ -98,6 +122,47 @@ export const TODO_CANONICAL_READ_RECORD_FIELDS =
   COORDINATION_STATE_CONTRACT.todo_read_record.fields;
 export const TODO_CANONICAL_REQUIRED_READ_FIELDS =
   COORDINATION_STATE_CONTRACT.todo_read_record.required_fields;
+
+// The legacy manifest remains an immutable compatibility contract. Native
+// provider records have their own version and never require Markdown location.
+export const TODO_DOMAIN_READ_RECORD_SCHEMA =
+  COORDINATION_STATE_CONTRACT.todo_domain_record.schema_version;
+export const TODO_DOMAIN_ITEM_SCHEMA =
+  COORDINATION_STATE_CONTRACT.todo_domain_record.item_schema_version;
+export const TODO_DOMAIN_RECORD_CONTRACT = recordContract({
+  fields: TODO_CANONICAL_READ_RECORD_FIELDS.filter((field) =>
+    !COORDINATION_STATE_CONTRACT.todo_projection_metadata.fields.includes(field)),
+  required_fields: COORDINATION_STATE_CONTRACT.todo_domain_record.required_fields,
+}, "todo_domain_record");
+
+export interface TodoDomainRecord extends JsonObject {
+  schema_version: string;
+  todo_id: string;
+  role: "user" | "agent";
+  status: "open" | "done" | "blocked" | "deferred";
+  done: boolean;
+  text: string;
+  archive_state: "active" | "archive";
+}
+
+export interface TodoProjectionMetadata {
+  readonly source_section: string;
+  readonly index?: number;
+}
+
+export function canonicalTodoDomainRecord(value: unknown, label = "Todo domain record"): TodoDomainRecord {
+  const record = canonicalCoordinationRecord(value, TODO_DOMAIN_RECORD_CONTRACT, label);
+  if (record.schema_version !== TODO_DOMAIN_ITEM_SCHEMA ||
+      typeof record.todo_id !== "string" || !record.todo_id ||
+      (record.role !== "user" && record.role !== "agent") ||
+      typeof record.status !== "string" ||
+      !["open", "done", "blocked", "deferred"].includes(String(record.status)) ||
+      typeof record.done !== "boolean" || typeof record.text !== "string" ||
+      (record.archive_state !== "active" && record.archive_state !== "archive")) {
+    throw new AuthorityStoreProtocolError(`${label} has invalid required semantics`);
+  }
+  return record as TodoDomainRecord;
+}
 
 export function canonicalCoordinationRecord(
   value: unknown,

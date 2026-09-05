@@ -5,10 +5,13 @@ import test from "node:test";
 
 import {
   canonicalCoordinationRecord,
+  canonicalTodoDomainRecord,
   canonicalCoordinationTodoRecord,
   COORDINATION_STATE_CONTRACT,
   TODO_CANONICAL_READ_RECORD_FIELDS,
   TODO_CANONICAL_READ_RECORD_SCHEMA,
+  TODO_DOMAIN_ITEM_SCHEMA,
+  TODO_DOMAIN_RECORD_CONTRACT,
 } from "../../loopx/control_plane/coordination/coordination_state_contract.ts";
 
 const TODO = {
@@ -56,6 +59,21 @@ test("coordination state contract is one packaged cross-language artifact", asyn
 
 test("provider-bound Todo records preserve every declared field", () => {
   assert.deepEqual(canonicalCoordinationTodoRecord(TODO), TODO);
+});
+
+test("domain and projection fields are disjoint without weakening legacy v0", () => {
+  const { source_section: _section, ...fields } = TODO;
+  const domain = { ...fields, schema_version: TODO_DOMAIN_ITEM_SCHEMA };
+  assert.deepEqual(canonicalTodoDomainRecord(domain), domain);
+  assert.ok(TODO_DOMAIN_RECORD_CONTRACT.fields.includes("archive_state"));
+  for (const field of COORDINATION_STATE_CONTRACT.todo_projection_metadata.fields) {
+    assert.ok(!TODO_DOMAIN_RECORD_CONTRACT.fields.includes(field));
+    assert.throws(() => canonicalTodoDomainRecord({ ...domain, [field]: "fake" }), /unversioned fields/);
+  }
+  assert.throws(() => canonicalCoordinationTodoRecord(fields), /omits required fields: source_section/);
+  assert.throws(() => canonicalTodoDomainRecord({ ...domain, archive_state: "deferred" }), /invalid required semantics/);
+  assert.throws(() => canonicalTodoDomainRecord({ ...domain, archive_state: null }), /invalid required semantics/);
+  assert.throws(() => canonicalTodoDomainRecord({ ...domain, status: ["open"] }), /invalid required semantics/);
 });
 
 test("provider-bound Todo records reject silent data loss", () => {

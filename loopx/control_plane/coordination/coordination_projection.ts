@@ -16,6 +16,9 @@ import {
 } from "./authority_store_codec.ts";
 import {
   canonicalCoordinationTodoRecord,
+  canonicalTodoDomainRecord,
+  TODO_DOMAIN_READ_RECORD_SCHEMA,
+  TODO_DOMAIN_RECORD_CONTRACT,
   TODO_CANONICAL_READ_RECORD_FIELDS,
   TODO_CANONICAL_READ_RECORD_SCHEMA,
 } from "./coordination_state_contract.ts";
@@ -137,7 +140,8 @@ export function validateCoordinationTodoReadModel(
     value.todo_read_model,
     "projection.todo_read_model",
   );
-  if (readModel.schema_version !== TODO_CANONICAL_READ_RECORD_SCHEMA) {
+  const domain = readModel.schema_version === TODO_DOMAIN_READ_RECORD_SCHEMA;
+  if (!domain && readModel.schema_version !== TODO_CANONICAL_READ_RECORD_SCHEMA) {
     throw new AuthorityStoreProtocolError("coordination Todo read-model schema mismatch");
   }
   if (readModel.todo_count !== records.length) {
@@ -147,32 +151,23 @@ export function validateCoordinationTodoReadModel(
     throw new AuthorityStoreProtocolError("coordination Todo read-model digest mismatch");
   }
   if (!canonicalAuthorityBytes(readModel.contract_fields).equals(
-    canonicalAuthorityBytes(TODO_CANONICAL_READ_RECORD_FIELDS)
+    canonicalAuthorityBytes(domain ? TODO_DOMAIN_RECORD_CONTRACT.fields : TODO_CANONICAL_READ_RECORD_FIELDS)
   )) {
     throw new AuthorityStoreProtocolError("coordination Todo read-model field contract mismatch");
   }
+  const validateRecord = domain ? canonicalTodoDomainRecord : canonicalCoordinationTodoRecord;
   for (const [recordIndex, record] of records.entries()) {
-    validateCoordinationTodoReadRecord(record, recordIndex);
+    validateRecord(record, `coordination Todo read record ${recordIndex}`);
   }
   return readModel;
 }
 
-function validateCoordinationTodoReadRecord(
-  record: JsonObject,
-  recordIndex: number,
-): void {
-  canonicalCoordinationTodoRecord(
-    record,
-    `coordination Todo read record ${recordIndex}`,
-  );
-}
-
-function todoReadModel(records: readonly JsonObject[]): JsonObject {
+function todoReadModel(records: readonly JsonObject[], previous: JsonObject): JsonObject {
   return {
-    schema_version: TODO_CANONICAL_READ_RECORD_SCHEMA,
+    schema_version: previous.schema_version,
+    contract_fields: previous.contract_fields,
     todo_count: records.length,
     records_sha256: canonicalAuthoritySha256(records),
-    contract_fields: [...TODO_CANONICAL_READ_RECORD_FIELDS],
   };
 }
 
@@ -285,6 +280,8 @@ export function reduceCoordinationProjection(
     throw new AuthorityStoreProtocolError("coordination projection mutation batch is empty");
   }
   const current = indexCoordinationProjection(value, expectedGoalId);
+  const readModel = value.todo_read_model === undefined
+    ? undefined : validateCoordinationTodoReadModel(value, expectedGoalId);
   const todos = new Map(current.todos);
   const leases = new Map(current.leases);
   const mutatedRecords = new Set<string>();
@@ -318,14 +315,18 @@ export function reduceCoordinationProjection(
     }
   }
   const nextTodos = sortedIds(todos.keys()).map((todoId) => todos.get(todoId)!);
-  return canonicalAuthorityObject({
+  const reduced = canonicalAuthorityObject({
     ...value,
     todos: nextTodos,
     leases: sortedIds(leases.keys()).map((todoId) => leases.get(todoId)!),
-    ...(value.todo_read_model === undefined
+    ...(readModel === undefined
       ? {}
-      : { todo_read_model: todoReadModel(nextTodos) }),
+      : { todo_read_model: todoReadModel(nextTodos, readModel) }),
   }, "coordination projection");
+  if (value.todo_read_model !== undefined) {
+    validateCoordinationTodoReadModel(reduced, expectedGoalId);
+  }
+  return reduced;
 }
 
 function mutationTarget(mutation: CoordinationProjectionMutation, index: number): string {
