@@ -3,7 +3,7 @@
 - Status: Draft, under maintainer review
 - Initially proposed by: NoKV Lab
 - Widened by: LoopX maintainers
-- Date: 2026-08-05; revised 2026-09-04
+- Date: 2026-08-05; revised 2026-09-05
 - Scope: one provider-neutral LoopX authority contract with built-in file,
   optional NoKV, and optional PostgreSQL provider profiles, complementing
   [`host-integration-surface-v0`](../../reference/protocols/host-integration-surface-v0.md)
@@ -21,6 +21,27 @@
 - Language note: the
   [Chinese version](./shared-goal-authority-state-provider-v0.zh-CN.md) and this
   English version are semantic mirrors. A difference between them is a defect.
+
+## Current implementation checkpoint
+
+The machine-owned coordination projection now has one packaged,
+provider-neutral record contract shared by Python and TypeScript. File, NoKV,
+and PostgreSQL candidates consume the same canonical Todo read shape; a
+provider-bound projection rejects an unknown field rather than silently losing
+it. Removing a declared field requires explicit compatibility evidence and
+maintainer approval, even when the field is stored but not yet read by a
+decision path.
+
+The native domain alternative now separates Markdown location metadata while
+retaining archival semantics. Appendix C's Todo domain/projection decision
+records the compatibility boundary and the next file-first qualification plan;
+the existing v0 capture and persisted heads are not silently migrated.
+
+This does not promote a provider or make the whole active-state Markdown file
+generated. Markdown remains canonical in default local mode. In a later,
+explicit shared-authority promotion, only sections covered by the typed
+contract become deterministic compatibility projections; free-form human
+narrative remains outside the coordination head.
 
 ## Document map and maintenance contract
 
@@ -2167,11 +2188,74 @@ that rewrite total. This rate is already enough to require provider-specific
 capacity, latency, response-size, and recovery tests. Retaining everything in
 one document is acceptable only for promotion bootstrap and bounded test goals.
 
+### Todo domain / projection decision (2026-09-05)
+
+The long-term boundary is semantic, not based on where a field was first
+parsed. `TodoDomainRecord` owns identity, role, status, text, task semantics,
+and **`archive_state: active | archive`**. Archival is independent of completion:
+the handoff gate and succession-tracked completion checks exclude archived
+records. `deferred` is a status, not an archive state. A renderer must not invent
+or change that decision by moving a heading.
+
+`TodoProjectionMetadata` owns `source_section` and optional `index`. The Markdown
+adapter derives them when rendering native records. An imported section name
+may be retained as compatibility provenance, but cannot become required input
+to provider-origin creation. One caveat is load-bearing: legacy `index` also
+breaks priority ties in the consumer pipeline. A migration must preserve that
+ordering through an explicit domain ordering policy or qualified compatibility
+provenance; deleting it and silently switching to identity order is not parity.
+Fresh native collections use deterministic Todo-id order before the existing
+priority projection; their display indexes are allocated by the adapter.
+
+The implementation checkpoint introduces the separate
+`loopx_todo_domain_read_record_v0` manifest and `todo_domain_record_v0` items.
+The existing reducer, file-store mutation path, and collection reader validate
+this shape without Markdown fields. Tests cover native insertion, archival,
+exact replay, reopen, and rejection of renderer metadata and incomplete
+replacement. This proves the storage/read boundary, not an authorized CLI
+creation or complete lifecycle transaction.
+
+Compatibility is explicit: `loopx_todo_canonical_read_record_v0` and its
+`todo_item_v0` records are unchanged. Existing heads, receipts, field manifests,
+and default Markdown capture retain every legal v0 field. No implicit conversion
+occurs in reads, mutations, or startup. Mixed native/legacy records under one
+manifest fail closed. Downgrading a native head to an older binary fails closed
+on its unknown manifest; rollback requires the reviewed export below, not
+merely installing the old binary. Historical operation receipts are never
+rewritten by a schema upgrade.
+
+Field inventory for this split: `active_state_todo_parser.py` produces section
+and index metadata and maps section membership into archival state;
+`todo_summary.py`, `handoff_gate.py`, and resume/continuation projections consume
+archival state; `todos/projection.py` consumes index for ordering. Existing
+runtime-shadow fixtures and the legacy TS insert fixture retain v0 provenance.
+The native contract adds an alternative; it removes no persisted v0 field and
+makes no claim that unknown external consumers have migrated. A future v0 import
+must inventory those consumers and prove render/export/rollback and selection
+parity at the same revision before changing a binding or manifest. Questions 8
+and 10's completeness rule applies to domain facts and retained compatibility
+provenance; it does not require native callers to manufacture Markdown addresses.
+
+### Next delivery and parallel provider work
+
+The immediate kernel sequence is: (1) a real provider-first Todo lifecycle caller
+with the replaced Python decisions removed; (2) explicit v0 import plus sustained
+consumer/capture/recovery qualification; (3) reviewed promotion with fenced
+export and cleanup. Each slice must prove an end-to-end transaction, not merely
+another schema identifier consolidation. Native contract acceptance alone is
+not permission to bypass any promotion hold.
+
+Choose the file profile for the first bounded local qualification. PostgreSQL
+service/deployment work remains parallel; it is not a dependency of file
+promotion. NoKV remains independently gated by its own lineage and recovery
+qualification. The shared authority owns decisions and receipts; providers own
+durable CAS/transactions, never a second Todo state machine.
+
 ### Parallel delivery plan
 
 | Lane | May start | Scope and exit condition | Dependency |
 | --- | --- | --- | --- |
 | P. PostgreSQL provider plane | Now, from current `main` | Keep the existing `AuthorityStore` contract; finish schema migration/install ownership, authenticated service and tenant authorization, restore-incarnation rotation, pool/cancellation/failover behavior, and reviewed indexes, partitioning, retention, and measured capacity. Live PostgreSQL conformance remains mandatory. | Does not depend on #3870 and must not stack on its branch. This lane alone creates no runtime caller or promotion claim. |
 | C. Canonical transaction capture | In implementation, based on #3870 | Transaction-bound outbox capture now targets the one `coordination.runtime_shadow` lineage and retains complete versioned Todo/lease records. Finish sustained mixed-writer parity, explicit-clear/omission coverage, and event-only Todo recovery evidence. | Can run in parallel with P, but both C and the selected provider profile must finish before parity or promotion integration. |
-| I. Binding and qualification integration | After P and C | Bind one exact provider lineage, field manifest, source revision, digest, and cursor; run sustained transaction parity and provider-specific recovery/capacity qualification without consulting legacy state for missing fields. | This is the merge point between provider work and capture work. |
-| F. Promotion and cleanup | After I and explicit maintainer approval | Add provider-first CLI routing, the lock-owning promotion orchestrator, compatibility projection outbox, post-promotion fenced export/rollback, then delete duplicate reference aggregates and flip the reviewed stage/hold declarations. | No profile is eligible until its exact implementation and lineage pass P, C, and I. |
+| I. Binding and qualification integration | After C and the selected profile's qualification | Bind one exact provider lineage, field manifest, source revision, digest, and cursor; qualify explicit v0 import, ordering/archival/consumer parity, and recovery/capacity without consulting legacy state for missing fields. | File does not wait for P. PostgreSQL joins only when its own P holds pass. |
+| F. Promotion and cleanup | After I and explicit maintainer approval | Complete provider-first CLI routing, the lock-owning promotion orchestrator, compatibility projection outbox, post-promotion fenced export/rollback, then delete duplicate reference aggregates and flip the reviewed stage/hold declarations. | Each profile must pass C, I, and its own provider qualification; PostgreSQL additionally requires P. |

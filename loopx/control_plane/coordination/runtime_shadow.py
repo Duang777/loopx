@@ -127,10 +127,10 @@ def build_todo_runtime_shadow_projection(
 ) -> dict[str, object]:
     """Persist the complete canonical Todo consumer record for provider cutover."""
 
-    from ..todos.todo_summary import (
+    from ..todos.todo_summary import canonical_todo_read_record
+    from .coordination_state_contract import (
         TODO_CANONICAL_READ_RECORD_FIELDS,
         TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION,
-        canonical_todo_read_record,
     )
 
     compact: list[dict[str, object]] = []
@@ -141,7 +141,7 @@ def build_todo_runtime_shadow_projection(
             todo_id = item.get("todo_id")
             if not isinstance(todo_id, str) or not todo_id:
                 continue
-            projected = canonical_todo_read_record(dict(item))
+            projected = canonical_todo_read_record(dict(item), reject_unknown=True)
             compact.append(projected)
     compact.sort(key=lambda item: str(item["todo_id"]))
     compact_leases: list[dict[str, object]] = []

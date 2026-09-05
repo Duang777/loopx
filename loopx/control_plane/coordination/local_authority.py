@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from ..effect_runtime import effect_runtime_result
+from .coordination_state_contract import (
+    TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION,
+    TODO_DOMAIN_READ_RECORD_SCHEMA_VERSION,
+    TODO_DOMAIN_ITEM_SCHEMA_VERSION,
+    TODO_ITEM_SCHEMA_VERSION,
+)
 from .legacy_writer_fence import legacy_coordination_writer_fence_path
 
 
@@ -81,7 +87,10 @@ def read_canonical_todos_if_promoted(
         or any(not isinstance(item, Mapping) for item in todos)
         or not isinstance(todo_read_model, Mapping)
         or todo_read_model.get("schema_version")
-        != "loopx_todo_canonical_read_record_v0"
+        not in {
+            TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION,
+            TODO_DOMAIN_READ_RECORD_SCHEMA_VERSION,
+        }
         or todo_read_model.get("todo_count") != len(todos)
     ):
         raise LocalCoordinationAuthorityUnavailable(
@@ -101,14 +110,35 @@ def canonical_todo_summary_fields(
     """Adapt canonical records into the existing Todo summary read model."""
 
     from ..todos.active_state_editing import TODO_SECTION_HEADINGS
-    from ..todos.todo_summary import compact_todo_group
+    from ..todos.todo_summary import compact_todo_group, count_advancement_todos
 
+    native_archived = {
+        item["todo_id"] for item in todos
+        if item.get("schema_version") == TODO_DOMAIN_ITEM_SCHEMA_VERSION
+        and item.get("archive_state") == "archive"
+    }
+    # Native provider records have no Markdown address. Allocate display
+    # positions from stable provider order; never read legacy Markdown here.
+    todos = [
+        {
+            **item,
+            "schema_version": TODO_ITEM_SCHEMA_VERSION,
+            "source_section": (
+                "Completed Work Archive" if item["archive_state"] == "archive"
+                else TODO_SECTION_HEADINGS[item["role"]]
+            ),
+            "index": index,
+        }
+        if item.get("schema_version") == TODO_DOMAIN_ITEM_SCHEMA_VERSION else item
+        for index, item in enumerate(todos, 1)
+    ]
     fields: dict[str, Any] = {}
     for role in ("user", "agent"):
         items = [
             item
             for item in todos
             if ("user" if item.get("role") == "user" else "agent") == role
+            and item.get("todo_id") not in native_archived
         ]
         summary = compact_todo_group(
             items,
@@ -119,5 +149,15 @@ def canonical_todo_summary_fields(
             item_limit=None,
         )
         if summary:
+            if role == "agent":
+                archived_done = count_advancement_todos([
+                    item for item in todos
+                    if item.get("todo_id") in native_archived and item.get("done") is True
+                ])
+                if archived_done:
+                    summary["archived_advancement_done_count"] = archived_done
+                    summary["advancement_done_count"] = (
+                        int(summary.get("advancement_done_count") or 0) + archived_done
+                    )
             fields[f"{role}_todos"] = summary
     return fields

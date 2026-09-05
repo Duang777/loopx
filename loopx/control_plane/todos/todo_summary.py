@@ -67,6 +67,13 @@ from .succession_warning import (
 from .resume_condition import evaluate_todo_resume_conditions
 from ..work_items.project_asset import build_project_asset_todo_summary
 from .user_gate import open_user_gate_todo_items
+from ..coordination.coordination_state_contract import (
+    TODO_CANONICAL_READ_RECORD_FIELDS,
+    TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION as TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION,
+    TODO_CANONICAL_REQUIRED_READ_FIELDS,
+    TODO_ITEM_SCHEMA_VERSION,
+    canonical_record_fields,
+)
 
 
 MAX_STATUS_TODOS_PER_ROLE = 12
@@ -79,90 +86,11 @@ MAX_DEPENDENCY_BLOCKERS = 4
 MAX_COMPLETED_SUCCESSION_WARNING_ITEMS = 5
 MAX_RECENT_COMPLETED_ADVANCEMENT_ITEMS = MAX_TODO_VISIBILITY_LANE_ITEMS
 
-TODO_ITEM_SCHEMA_VERSION = "todo_item_v0"
 TODO_SOURCE_PROOF_SCHEMA_VERSION = "todo_source_proof_v0"
 TODO_CLOSURE_INTENT_SCHEMA_VERSION = "todo_closure_intent_v0"
 TODO_TERMINAL_CLOSURE_PROOF_SCHEMA_VERSION = "todo_terminal_closure_proof_v0"
 TASK_ORCHESTRATION_AUTHORITY_SCHEMA_VERSION = "task_orchestration_authority_v0"
 TODO_ARCHIVE_STATE_ACTIVE = "active"
-TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION = "loopx_todo_canonical_read_record_v0"
-TODO_CANONICAL_READ_RECORD_FIELDS = (
-    "index",
-    "done",
-    "text",
-    "schema_version",
-    "todo_id",
-    "role",
-    "status",
-    "priority",
-    "title",
-    "archive_state",
-    "source_section",
-    "task_class",
-    "action_kind",
-    "task_domain",
-    "capability_binding_ref",
-    "task_repository",
-    "continuation_policy",
-    "removed_continuation_policy",
-    "required_write_scopes",
-    "required_capabilities",
-    "target_capabilities",
-    "explore_result_node_refs",
-    "decision_scope",
-    "required_decision_scopes",
-    "decision_outcome",
-    "decision_scope_outcomes",
-    "claimed_by",
-    "created_by",
-    "last_actor_agent_id",
-    "bound_agent",
-    "goal_bound",
-    "blocks_agent",
-    "excluded_agents",
-    "global_gate",
-    "unblocks_todo_id",
-    "resume_when",
-    "resume_monitor_generation",
-    "resume_condition",
-    "resume_ready",
-    "no_followup",
-    "successor_todo_ids",
-    "completion_continuation",
-    "completion_recovery",
-    "replan_obligation_id",
-    "target_key",
-    "cadence",
-    "next_due_at",
-    "expires_at",
-    "watch_only",
-    "last_checked_at",
-    "result_hash",
-    "consecutive_no_change",
-    "material_change",
-    "material_change_generation",
-    "max_no_change_before_replan",
-    "monitor_effect_id",
-    "note",
-    "evidence",
-    "reason",
-    "completed_at",
-    "completion_turn_key",
-    "updated_at",
-    "superseded_by",
-    "completion_validation_required",
-    "handoff_note",
-)
-TODO_CANONICAL_REQUIRED_READ_FIELDS = (
-    "schema_version",
-    "todo_id",
-    "role",
-    "status",
-    "done",
-    "text",
-    "archive_state",
-    "source_section",
-)
 AttentionItemBuilder = Callable[..., dict[str, Any]]
 GoalLifecycleFields = Callable[[dict[str, Any], Optional[dict[str, Any]]], dict[str, Any]]
 PublicSafeText = Callable[..., Optional[str]]
@@ -530,19 +458,20 @@ def compact_todo_item(item: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
-def canonical_todo_read_record(item: dict[str, Any]) -> dict[str, Any]:
+def canonical_todo_read_record(
+    item: dict[str, Any],
+    *,
+    reject_unknown: bool = False,
+) -> dict[str, Any]:
     """Copy one already-normalized Todo consumer record without re-deriving it."""
 
-    record = {
-        field: item[field]
-        for field in TODO_CANONICAL_READ_RECORD_FIELDS
-        if field in item and item[field] is not None
-    }
-    missing = [field for field in TODO_CANONICAL_REQUIRED_READ_FIELDS if field not in record]
-    if missing:
-        raise ValueError(
-            "canonical Todo read record omits required fields: " + ", ".join(missing)
-        )
+    record = canonical_record_fields(
+        item,
+        fields=TODO_CANONICAL_READ_RECORD_FIELDS,
+        required_fields=TODO_CANONICAL_REQUIRED_READ_FIELDS,
+        label="canonical Todo read record",
+        reject_unknown=reject_unknown,
+    )
     if (
         record["schema_version"] != TODO_ITEM_SCHEMA_VERSION
         or not isinstance(record["role"], str)

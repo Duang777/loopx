@@ -8,6 +8,21 @@ quota, review packets, dashboards, and future event-store migration.
 This is not a new canonical store. The projection is recomputable from the
 current active-state Markdown and does not grant write permission.
 
+The machine-owned Todo read subset is versioned separately in
+`coordination_state_contract_v0.json`. That provider-neutral contract is shared
+by Python and TypeScript. It declares the legacy consumer record and a separate
+native domain record for file, NoKV, or PostgreSQL authority heads.
+`archive_state` is durable task state: archival changes handoff and succession
+eligibility independently of completion. `source_section` and optional `index`
+belong to the Markdown compatibility projection, not native creation inputs.
+Legacy v0 records retain those fields; importing them into the domain version
+requires explicit qualification, including preservation of priority tie ordering
+currently influenced by `index`. There is no automatic stored-head migration.
+Provider-bound projection rejects an unknown
+field instead of silently dropping it. Removing a declared field requires a
+reviewed compatibility decision and maintainer approval, including for fields
+that are persisted but not yet used by a decision path.
+
 ## Shape
 
 ```json
@@ -101,6 +116,15 @@ Readers should treat this projection as:
 Writers must continue to use LoopX commands such as `loopx todo`,
 `loopx refresh-state`, `loopx operator-gate`, and future event append APIs.
 Directly editing a projection is not a state transition.
+
+## Markdown Ownership Boundary
+
+Markdown is not one undifferentiated database row. Its free-form rationale,
+notes, and operator narrative remain human-authored. Sections that correspond
+to the versioned coordination contract may later be regenerated as a
+deterministic compatibility projection after authority promotion. Promotion
+must not make unrelated prose generated or discard text that is outside the
+machine-owned record contract.
 
 ## Migration Path
 

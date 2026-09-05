@@ -132,9 +132,12 @@ def _shell_plan(
     def capture_sleep(seconds: float) -> None:
         raise _WaitScheduled(seconds)
 
-    monkeypatch.setattr(worker.time, "sleep", capture_sleep)
+    # Inject this worker invocation's wait without mutating the process-global
+    # ``time`` module, which may be in use by another full-suite thread.
     try:
-        return_code = worker.run_worker(_worker_args(cli=cli, state=state))
+        return_code = worker.run_worker(
+            _worker_args(cli=cli, state=state), sleep=capture_sleep
+        )
     except _WaitScheduled as scheduled:
         return {"stop": False, "minutes": int(scheduled.seconds / 60)}
     assert return_code == 0
