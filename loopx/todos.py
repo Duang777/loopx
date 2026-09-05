@@ -1087,29 +1087,14 @@ def update_goal_todo(
                 "todo claim only accepts todo_id, claimed_by, agent_id, optional role, "
                 "project, state_file, and dry_run"
             )
-        effective_claimed_by = require_registered_agent_id(
-            registry_path=registry_path,
-            goal_id=goal_id,
-            agent_id=claimed_by,
-        )
-        effective_agent_id = (
-            require_registered_agent_id(
-                registry_path=registry_path,
-                goal_id=goal_id,
-                agent_id=agent_id,
-                field="agent_id",
-            )
-            if agent_id
-            else None
-        )
         canonical_claim = claim_canonical_todo_if_promoted(
             registry_path=registry_path,
             runtime_root=shadow_runtime_root,
             goal_id=goal_id,
             todo_id=normalize_todo_id(todo_id) or todo_id,
             role=role,
-            claimed_by=effective_claimed_by,
-            actor_agent_id=effective_agent_id,
+            claimed_by=claimed_by or "",
+            actor_agent_id=agent_id,
             dry_run=dry_run,
         )
         if canonical_claim is not None:

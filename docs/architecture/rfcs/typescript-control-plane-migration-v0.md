@@ -25,6 +25,16 @@ native creation, archival, receipt replay, and store reopen are tested without
 Markdown metadata. Python only adapts the typed read result to the compatibility
 summary. This is a contract checkpoint, not a completed CLI lifecycle cutover.
 
+After explicit promotion, `todo claim` now crosses once into a TS-owned
+transaction for both native and v0 records. New claims require active, open
+Todos and the current actor/lease checks. Exact operation retries recover the
+original claim receipt before current-state eligibility; observation time and
+current registration facts are not request identity. Replaying a receipt does
+not renew a lease or assert current ownership. Invalid preview booleans fail
+before provider access. The CLI creates a fresh operation id per invocation;
+cross-invocation retry identity and combined claim/lease acquisition remain
+follow-up work, not guarantees of this claim-only transaction.
+
 The old v0 consumer manifest remains readable and retains all existing fields.
 Default Markdown capture still emits v0; this PR neither rewrites stored heads
 nor auto-promotes a goal. The schema split is not permission to drop v0

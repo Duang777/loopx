@@ -1,5 +1,5 @@
 import type { JsonObject } from "../effect_program.ts";
-import type { AuthorityStore } from "./authority_store.ts";
+import type { AuthorityStore, AuthorityStoreReceiptResult } from "./authority_store.ts";
 import {
   AuthorityStoreProtocolError,
   canonicalAuthorityObject,
@@ -7,14 +7,15 @@ import {
   requireAuthorityStoreId,
 } from "./authority_store_codec.ts";
 import {
-  COORDINATION_PROJECTION_MUTATION_RECEIPT_SCHEMA,
-  commitCoordinationProjectionMutation,
+  prepareCoordinationProjectionCommit,
   indexCoordinationProjection,
   validateCoordinationTodoReadModel,
 } from "./coordination_projection.ts";
 
 export const COORDINATION_TODO_CLAIM_RESULT_SCHEMA =
   "loopx_coordination_todo_claim_result_v0";
+export const COORDINATION_TODO_CLAIM_RECEIPT_SCHEMA =
+  "loopx_coordination_todo_claim_receipt_v0";
 
 export interface CoordinationTodoClaimInput {
   readonly goal_id: string;
@@ -108,6 +109,9 @@ function claimAuthority(
       todo_status: todo.status,
     });
   }
+  if (todo.archive_state !== "active") {
+    return failure("todo_archived", "Todo claim requires an active Todo");
+  }
   if (typeof todo.removed_continuation_policy === "string" &&
       todo.removed_continuation_policy.length > 0) {
     return failure(
@@ -168,7 +172,14 @@ export async function executeCoordinationTodoClaim(
       goal_id: requireAuthorityStoreId(rawInput.goal_id, "goal id"),
       todo_id: requireAuthorityStoreId(rawInput.todo_id, "todo id"),
       operation_id: requireAuthorityStoreId(rawInput.operation_id, "operation id"),
+      claimed_by: normalizeAgent(rawInput.claimed_by, "claimed_by"),
+      actor_agent_id: rawInput.actor_agent_id === null
+        ? null : normalizeAgent(rawInput.actor_agent_id, "actor_agent_id"),
+      registered_agents: normalizeRegisteredAgents(rawInput.registered_agents),
     };
+    if (typeof input.dry_run !== "boolean") {
+      throw new AuthorityStoreProtocolError("dry_run must be a boolean");
+    }
     if (!(input.now instanceof Date) || Number.isNaN(input.now.valueOf())) {
       throw new AuthorityStoreProtocolError("now must be a valid Date");
     }
@@ -178,6 +189,57 @@ export async function executeCoordinationTodoClaim(
       error instanceof Error ? error.message : "invalid Todo claim",
     );
   }
+
+  // Intent identity excludes observation time and current authorization facts.
+  // A receipt proves historical acceptance, never a renewed/current lease.
+  const requestSha = canonicalAuthoritySha256({
+    goal_id: input.goal_id,
+    todo_id: input.todo_id,
+    claimed_by: input.claimed_by,
+    actor_agent_id: input.actor_agent_id,
+    expected_role: input.expected_role,
+    dry_run: input.dry_run,
+  });
+  const replay = (
+    receipt: AuthorityStoreReceiptResult,
+    status: "replayed" | "applied" | "recovered",
+  ): CoordinationTodoClaimResult | null => {
+    if (receipt.status === "missing") return null;
+    if (receipt.status !== "found") {
+      return { schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA, ...receipt };
+    }
+    const original = receipt.receipts[0];
+    if (receipt.receipts.length !== 1 ||
+        original?.schema_version !== COORDINATION_TODO_CLAIM_RECEIPT_SCHEMA ||
+        original.operation_id !== input.operation_id || original.goal_id !== input.goal_id ||
+        original.request_sha256 !== requestSha) {
+      return failure("coordination_operation_identity_mismatch",
+        "operation id already names a different coordination request");
+    }
+    let result: JsonObject;
+    try {
+      result = canonicalAuthorityObject(original.result, "original claim result");
+      if (result.todo_id !== input.todo_id || result.claimed_by !== input.claimed_by ||
+          typeof result.updated_at !== "string" || typeof result.handoff_mode !== "string" ||
+          result.mutation_authority === null || typeof result.mutation_authority !== "object") {
+        throw new AuthorityStoreProtocolError("original claim result is invalid");
+      }
+    } catch (error) {
+      return failure("invalid_coordination_todo_claim_receipt",
+        error instanceof Error ? error.message : "invalid claim receipt");
+    }
+    return {
+      ...result,
+      schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
+      status,
+      changed: status !== "replayed",
+      provider_revision: receipt.provider_revision,
+      cursor: receipt.cursor,
+      original_receipt: original,
+    };
+  };
+  const existing = replay(await store.readReceipt(input.operation_id), "replayed");
+  if (existing !== null) return existing;
 
   const head = await store.loadAuthority();
   if (head.status !== "loaded") {
@@ -248,40 +310,6 @@ export async function executeCoordinationTodoClaim(
     updated_at: updatedAt,
   }, "claimed Todo");
   if (todo.claimed_by === authority.owner) {
-    const receipt = await store.readReceipt(input.operation_id);
-    if (receipt.status === "found") {
-      const expectedMutationSha = canonicalAuthoritySha256([
-        { kind: "todo_upsert", todo: nextTodo },
-      ]);
-      const exact = receipt.receipts.length === 1 &&
-        receipt.receipts[0]?.schema_version ===
-          COORDINATION_PROJECTION_MUTATION_RECEIPT_SCHEMA &&
-        receipt.receipts[0]?.operation_id === input.operation_id &&
-        receipt.receipts[0]?.goal_id === input.goal_id &&
-        receipt.receipts[0]?.mutation_sha256 === expectedMutationSha;
-      return exact
-        ? {
-          schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
-          status: "replayed",
-          changed: false,
-          todo_id: input.todo_id,
-          claimed_by: authority.owner,
-          provider_revision: receipt.provider_revision,
-          cursor: receipt.cursor,
-          handoff_mode: handoffMode,
-          mutation_authority: mutationAuthority,
-        }
-        : failure(
-          "coordination_operation_identity_mismatch",
-          "operation id already names a different coordination mutation",
-        );
-    }
-    if (receipt.status !== "missing") {
-      return {
-        schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
-        ...receipt,
-      } as CoordinationTodoClaimResult;
-    }
     return {
       schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
       status: "no_change",
@@ -311,21 +339,33 @@ export async function executeCoordinationTodoClaim(
     };
   }
 
-  const committed = await commitCoordinationProjectionMutation(store, {
+  const commit = prepareCoordinationProjectionCommit({
     goal_id: input.goal_id,
     operation_id: input.operation_id,
     expected_provider_revision: head.provider_revision,
+    projection: head.head,
     mutations: [{ kind: "todo_upsert", todo: nextTodo }],
   });
-  const changed = ["applied", "recovered", "replayed"].includes(committed.status);
-  return {
-    schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
-    ...committed,
-    changed,
-    todo_id: input.todo_id,
-    claimed_by: authority.owner,
-    handoff_mode: handoffMode,
-    updated_at: changed ? updatedAt : null,
-    mutation_authority: mutationAuthority,
-  };
+  // Reuse the validated reduction and event, but persist claim intent/result:
+  // a full replacement's digest depends on state and cannot identify a retry.
+  commit.receipts = [{
+    schema_version: COORDINATION_TODO_CLAIM_RECEIPT_SCHEMA,
+    operation_id: input.operation_id,
+    goal_id: input.goal_id,
+    request_sha256: requestSha,
+    result: {
+      todo_id: input.todo_id,
+      claimed_by: authority.owner,
+      handoff_mode: handoffMode,
+      updated_at: updatedAt,
+      mutation_authority: mutationAuthority,
+    },
+  }];
+  const committed = await store.commitAuthority(commit);
+  const readback = replay(await store.readReceipt(input.operation_id),
+    committed.status === "applied" ? "applied" : "recovered");
+  if (readback !== null) return readback;
+  return committed.status === "applied"
+    ? failure("coordination_commit_readback_mismatch", "applied claim lacks its durable receipt")
+    : { schema_version: COORDINATION_TODO_CLAIM_RESULT_SCHEMA, ...committed, changed: false };
 }

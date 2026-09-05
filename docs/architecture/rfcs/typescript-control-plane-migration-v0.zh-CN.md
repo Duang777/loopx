@@ -23,6 +23,13 @@ coordination 路径使用同一份语言中立的 `coordination_state_contract_v
 仅将 typed read result 适配为兼容 summary。这是 contract 检查点，不是已经完成的
 CLI lifecycle cutover。
 
+显式 promotion 后，`todo claim` 现在只跨一次 runtime 边界，由 TS 事务同时处理原生
+和 v0 记录。新 claim 要求 active、open Todo，并检查当前 actor/lease；同一 operation
+的重试先恢复原 claim receipt，再考虑当前资格。观测时间和当前注册信息不属于请求
+身份。回放 receipt 不续租，也不表示当前仍持有任务。非法 preview boolean 在访问
+provider 前失败。CLI 每次调用仍生成新的 operation id；跨调用重试身份和 claim/lease
+联合获取仍是后续工作，不能视为当前 claim-only 事务已提供的保证。
+
 旧 v0 consumer manifest 继续可读，并保留所有已有字段。默认 Markdown capture 仍
 输出 v0；本 PR 不改写已存 head，也不自动晋升 goal。schema 分层不等于允许后续迁移
 丢失 v0 provenance 或改变旧排序。

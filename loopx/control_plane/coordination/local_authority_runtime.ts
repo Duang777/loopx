@@ -526,12 +526,15 @@ export async function claimLocalCoordinationTodo(
     if (input.schema_version !== LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA) {
       throw new Error("local coordination Todo claim request schema mismatch");
     }
+    if (typeof input.dry_run !== "boolean") {
+      throw new Error("dry_run must be a JSON boolean");
+    }
     const root = runtimeRoot(input.runtime_root);
     const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
     const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
       new FileAuthorityStore(authorityDirectory(root), goalId);
     const registeredAgents = Array.isArray(input.registered_agents)
-      ? input.registered_agents.map((value) => String(value))
+      ? input.registered_agents.map((value) => claimAgentValue(value, "registered agent"))
       : [];
     const result = await executeCoordinationTodoClaim(store, {
       goal_id: goalId,
@@ -545,7 +548,7 @@ export async function claimLocalCoordinationTodo(
         : requireAuthorityStoreId(input.role, "role"),
       registered_agents: registeredAgents,
       operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
-      dry_run: input.dry_run === true,
+      dry_run: input.dry_run,
       now: claimObservedAt(input.observed_at),
     });
     return {

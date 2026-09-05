@@ -8,6 +8,11 @@ import test from "node:test";
 import { FileAuthorityStore } from "../../loopx/control_plane/coordination/file_authority_store.ts";
 import { canonicalAuthorityBytes } from "../../loopx/control_plane/coordination/authority_store_codec.ts";
 import {
+  TODO_DOMAIN_ITEM_SCHEMA,
+  TODO_DOMAIN_READ_RECORD_SCHEMA,
+  TODO_DOMAIN_RECORD_CONTRACT,
+} from "../../loopx/control_plane/coordination/coordination_state_contract.ts";
+import {
   TODO_CANONICAL_READ_RECORD_FIELDS,
   TODO_CANONICAL_READ_RECORD_SCHEMA,
 } from "../../loopx/control_plane/coordination/coordination_projection.ts";
@@ -467,6 +472,85 @@ test("provider-first Todo claim preserves the complete record and is replay-safe
   assert.equal(repeated.status, "no_change");
   assert.equal(repeated.changed, false);
 });
+
+for (const native of [false, true]) {
+  test(`claim rejects malformed previews and replays historical intent (${native ? "native" : "v0"})`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "loopx-claim-intent-"));
+    const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+    const todo = todoRecord();
+    if (native) {
+      todo.schema_version = TODO_DOMAIN_ITEM_SCHEMA;
+      delete todo.source_section;
+    }
+    const projection = withTodoReadModel({
+      goal_id: "goal-a", handoff_mode: "hard_lease", todos: [todo],
+      leases: [{todo_id: "todo_a", owner: "agent-a", status: "active",
+        expires_at: "2026-09-05T05:00:00Z"}],
+    });
+    if (native) {
+      Object.assign(projection, {todo_read_model: {
+        schema_version: TODO_DOMAIN_READ_RECORD_SCHEMA,
+        todo_count: 1, records_sha256: sha256([todo]),
+        contract_fields: [...TODO_DOMAIN_RECORD_CONTRACT.fields],
+      }});
+    }
+    await store.commitAuthority({
+      expected_provider_revision: null, operation_id: "seed", events: [],
+      next_projection: projection, receipts: [],
+    });
+    const request = {
+      schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+      runtime_root: root, goal_id: "goal-a", todo_id: "todo_a", role: "agent",
+      claimed_by: "agent-a", actor_agent_id: "agent-a", registered_agents: ["agent-a", "agent-b"],
+      operation_id: "claim-a", observed_at: "2026-09-05T04:30:00Z", dry_run: false,
+    };
+    const before = await store.loadAuthority();
+    for (const dry_run of ["true", 1, null, undefined]) {
+      const rejected = await claimLocalCoordinationTodo({...request, dry_run});
+      assert.equal(rejected.reason_code, "invalid_local_coordination_todo_claim_request");
+      assert.deepEqual(await store.loadAuthority(), before);
+      assert.deepEqual(await store.readReceipt("claim-a"), {status: "missing"});
+    }
+    assert.equal((await claimLocalCoordinationTodo({...request, dry_run: true})).status, "planned");
+    assert.deepEqual(await store.loadAuthority(), before);
+    const applied = await claimLocalCoordinationTodo(request);
+    assert.equal(applied.status, "applied", JSON.stringify(applied));
+    const claimed = await store.loadAuthority();
+    assert.equal(claimed.status, "loaded");
+    if (claimed.status !== "loaded") return;
+    const claimedTodo = (claimed.head.todos as Record<string, unknown>[])[0]!;
+    if (native) {
+      assert.equal(claimedTodo.source_section, undefined);
+      assert.equal(claimedTodo.index, undefined);
+    }
+    // Operation B completes/archives/reassigns the Todo. A retry of A must
+    // return A's receipt even after its actor registration and lease expire.
+    const completed = await mutateLocalCoordinationAuthority({
+      schema_version: LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
+      runtime_root: root, goal_id: "goal-a", operation_id: "complete-b",
+      expected_provider_revision: claimed.provider_revision,
+      mutations: [{kind: "todo_upsert", todo: {...claimedTodo, status: "done", done: true,
+        archive_state: "archive", claimed_by: "agent-b"}}],
+    });
+    assert.equal(completed.status, "applied");
+    const afterB = await store.loadAuthority();
+    const replay = await claimLocalCoordinationTodo({...request,
+      registered_agents: ["agent-b"], observed_at: "2026-09-06T04:30:00Z"});
+    assert.equal(replay.status, "replayed", JSON.stringify(replay));
+    assert.equal(replay.changed, false);
+    assert.equal(replay.provider_revision, applied.provider_revision);
+    assert.deepEqual(replay.original_receipt, applied.original_receipt);
+    assert.equal(replay.updated_at, applied.updated_at);
+    for (const changedIntent of [{claimed_by: "agent-b"}, {actor_agent_id: "agent-b"},
+      {todo_id: "todo_b"}, {role: "user"}, {dry_run: true}]) {
+      const mismatch = await claimLocalCoordinationTodo({...request, ...changedIntent});
+      assert.equal(mismatch.reason_code, "coordination_operation_identity_mismatch");
+    }
+    assert.deepEqual(await store.loadAuthority(), afterB);
+    const fresh = await claimLocalCoordinationTodo({...request, operation_id: "claim-new"});
+    assert.equal(fresh.reason_code, "todo_not_open");
+  });
+}
 
 test("provider-first Todo claim validates authority and hard-lease ownership", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-claim-gates-"));
