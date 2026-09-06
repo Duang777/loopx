@@ -83,8 +83,11 @@ longer requires a second App restart. Reloading the WebView cannot terminate
 the native startup supervisor.
 
 An update journal resumes an approved runtime installation after restart.
-Concurrent transactions and additional installs before a required restart are
-rejected. Service readiness is distinct from installer completion. macOS keeps
+If the app replacement itself fails, the journal is discarded instead of
+resuming, so the previously installed App and runtime keep starting normally
+and a journal naming a version that never shipped cannot wedge startup into
+the recovery panel. Concurrent transactions and additional installs before a
+required restart are rejected. Service readiness is distinct from installer completion. macOS keeps
 a verified previous App for **Restore previous version**; restart restores its
 matching runtime too. Goal state is neither deleted nor migrated backwards by
 this action, so data-schema compatibility still governs rollback suitability.
