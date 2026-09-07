@@ -29,8 +29,8 @@ OTHER_AGENT_ID = "codex-replan-gate-other-agent"
 STATE_TEXT = "# Active Goal State\n"
 
 
-def _completed_advancement_chain_state() -> str:
-    """Five completed slices with explicit lineage and no succession warning.
+def _completed_advancement_chain_state(count: int = 5) -> str:
+    """Completed slices with explicit lineage and no succession warning.
 
     The final non-advancement anchor keeps this fixture focused on the outcome
     checkpoint rule instead of the independent completed-without-successor
@@ -38,10 +38,10 @@ def _completed_advancement_chain_state() -> str:
     """
 
     lines = ["## Agent Todo", ""]
-    for index in range(5):
+    for index in range(count):
         successor_id = (
             f"todo_completed_slice_{index + 1}"
-            if index < 4
+            if index < count - 1
             else "todo_completed_outcome_anchor"
         )
         lines.extend(
@@ -1342,3 +1342,25 @@ def test_matching_non_successor_ack_clears_rotated_vision_obligation(
     )
 
     assert remaining is None
+
+
+@pytest.mark.parametrize("threshold", [2, 3])
+def test_writeback_uses_configured_completion_cadence(threshold: int) -> None:
+    state = _completed_advancement_chain_state(threshold)
+    arguments = {
+        "newest_first_runs": [], "state_text": state,
+        "agent_id": AGENT_ID, "goal_id": GOAL_ID,
+    }
+    default_obligation, _ = qualify_replan_writeback(**arguments)
+    assert default_obligation is None
+    goal = {"execution_profile": {"replan_after_completed_todos": threshold}}
+    obligation, _ = qualify_replan_writeback(**arguments, registry_goal=goal)
+    assert obligation is not None
+    assert any(
+        trigger.get("kind") == "vision_outcome_checkpoint_required"
+        and trigger.get("completed_todo_count") == threshold
+        and trigger.get("completed_todo_threshold") == threshold
+        for trigger in obligation["triggers"]
+    )
+    with pytest.raises(ReplanWritebackRejected):
+        enforce_open_replan_writeback(**arguments, registry_goal=goal)

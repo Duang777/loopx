@@ -1566,7 +1566,7 @@ def build_goal_frontier_projection_context_from_status(
             agent_todo_summary=agent_todo_summary,
             agent_id=agent_id,
             completed_todo_threshold=completed_todo_replan_threshold(
-                project_asset.get("execution_profile")
+                (project_asset or {}).get("execution_profile")
             ),
         )
     )
