@@ -595,6 +595,72 @@ fn runtime_search_path(
     env::join_paths(paths).unwrap_or_else(|_| inherited.unwrap_or_default())
 }
 
+/// Resolve `python3` inside the same bounded tool search the installer and
+/// owned services use, and ask it for its version. Returns
+/// (found, version): `found` is filesystem-level resolution only, so a
+/// Command Line Tools stub that never finishes still reports found with no
+/// version — exactly the state `install-local.sh` rejects. The version probe
+/// is bounded so the status polling path cannot hang on it.
+pub(crate) fn python3_environment() -> (bool, Option<String>) {
+    let search_path = runtime_search_path(env::var_os("HOME"), env::var_os("PATH"));
+    let resolved = resolve_executable_path("python3", Some(search_path.as_os_str()));
+    let found = resolved.is_some();
+    let version = resolved.and_then(|python| {
+        let mut probe = Command::new(python);
+        probe.arg("--version");
+        timed_output(probe)
+            .filter(|output| output.status.success())
+            .and_then(|output| parse_python_version(&output))
+    });
+    (found, version)
+}
+
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+pub(crate) fn timed_output(mut command: Command) -> Option<std::process::Output> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(command.output());
+    });
+    receiver
+        .recv_timeout(VERSION_PROBE_TIMEOUT)
+        .ok()
+        .and_then(|result| result.ok())
+}
+
+// `python3 --version` prints `Python 3.11.9`; accept the version on either
+// stream (some wrappers print to stderr) and keep only a strict
+// major.minor.patch prefix so odd output never enters diagnostics.
+fn parse_python_version(output: &std::process::Output) -> Option<String> {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_python_banner(&text)
+}
+
+fn parse_python_banner(text: &str) -> Option<String> {
+    let version = text.trim().strip_prefix("Python ")?;
+    let mut digits_or_dots = String::new();
+    for character in version.chars() {
+        if character.is_ascii_digit() || character == '.' {
+            digits_or_dots.push(character);
+        } else {
+            break;
+        }
+    }
+    let parts: Vec<&str> = digits_or_dots.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some(digits_or_dots)
+}
+
 fn resolve_executable_path(executable: &str, search_path: Option<&OsStr>) -> Option<PathBuf> {
     let requested = PathBuf::from(executable);
     if requested.components().count() > 1 {
@@ -849,6 +915,34 @@ mod tests {
             ),
             Probe::Stale
         );
+    }
+
+    #[test]
+    fn python_version_parsing_accepts_strict_triplets_only() {
+        assert_eq!(
+            parse_python_banner("Python 3.13.5\n"),
+            Some("3.13.5".to_string())
+        );
+        // Some wrappers and old interpreters print the banner to stderr; the
+        // Output-level wrapper reads both streams through this parser.
+        assert_eq!(
+            parse_python_banner("Python 3.9.6\n"),
+            Some("3.9.6".to_string())
+        );
+        // A trailing pre-release tag is truncated to its release triplet.
+        assert_eq!(
+            parse_python_banner("Python 3.11.0b4\n"),
+            Some("3.11.0".to_string())
+        );
+        // Stub chatter, missing prefixes and partial triplets never enter
+        // diagnostics as a version.
+        assert_eq!(
+            parse_python_banner("xcode-select: note: install requested"),
+            None
+        );
+        assert_eq!(parse_python_banner("Python 3"), None);
+        assert_eq!(parse_python_banner("Python 3.11"), None);
+        assert_eq!(parse_python_banner(""), None);
     }
 
     #[test]
