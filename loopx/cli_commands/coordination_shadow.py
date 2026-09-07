@@ -6,10 +6,15 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-from ..control_plane.coordination.runtime_shadow import (
+# The projection builder and lease loader are reached through this module by
+# tests that seed and read the shadow through the command surface; keep them
+# importable here even when the command does not call them directly.
+from ..control_plane.coordination.runtime_shadow import (  # noqa: F401
     bootstrap_coordination_runtime_shadow,
     build_runtime_shadow_source_snapshot,
+    build_todo_runtime_shadow_projection,
     inspect_coordination_runtime_shadow,
+    load_task_lease_runtime_shadow_records,
     qualify_coordination_runtime_shadow,
     read_coordination_runtime_shadow_todo_candidate,
     resolve_coordination_runtime_shadow_config,
