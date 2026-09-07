@@ -346,10 +346,10 @@ async fn perform(
             failed_install_left_previous_app_usable(app),
         );
         if may_discard_journal {
-            state.install_journal_discarded.store(
-                matches!(bundled_runtime::discard_journal(app), Ok(true) | Ok(false)),
-                Ordering::Release,
-            );
+            let discarded = bundled_runtime::discard_journal(app);
+            let discarded_ok = matches!(&discarded, Ok(_) );
+            state.install_journal_discarded.store(discarded_ok, Ordering::Release);
+            return Err(install_failure_state(true, discarded).into());
         }
         return Err(code.into());
     }
@@ -400,6 +400,25 @@ fn install_failure_recovery(previous_app_usable: bool) -> (&'static str, bool) {
         ("app_install_failed", true)
     } else {
         ("app_install_incomplete", false)
+    }
+}
+
+// The final install-failure state must fold in the journal effect: a usable
+// previous App only earns the safe-restart `app_install_failed` state when the
+// stale continuation journal was actually discarded; a failed discard keeps
+// the journal (the next boot would resume the abandoned install), so the
+// journal-preserving recovery state applies instead.
+fn install_failure_state(
+    previous_app_usable: bool,
+    journal_discarded: Result<bool, String>,
+) -> &'static str {
+    let (code, may_discard_journal) = install_failure_recovery(previous_app_usable);
+    if !may_discard_journal {
+        return code;
+    }
+    match journal_discarded {
+        Ok(_) => code,
+        Err(_) => "app_install_incomplete",
     }
 }
 pub fn resume(app: &AppHandle) -> Result<(), String> {
@@ -909,6 +928,34 @@ mod tests {
         assert_eq!(
             install_failure_recovery(mismatched),
             ("app_install_incomplete", false)
+        );
+    }
+}
+
+#[cfg(test)]
+mod install_failure_state_tests {
+    use super::install_failure_state;
+
+    #[test]
+    fn usable_app_with_discarded_journal_promises_safe_restart() {
+        assert_eq!(install_failure_state(true, Ok(true)), "app_install_failed");
+        assert_eq!(install_failure_state(true, Ok(false)), "app_install_failed");
+    }
+
+    #[test]
+    fn usable_app_with_failed_discard_keeps_the_journal_state() {
+        assert_eq!(
+            install_failure_state(true, Err("update_state_unavailable".into())),
+            "app_install_incomplete"
+        );
+    }
+
+    #[test]
+    fn unusable_app_never_promises_safe_restart() {
+        assert_eq!(install_failure_state(false, Ok(true)), "app_install_incomplete");
+        assert_eq!(
+            install_failure_state(false, Err("update_state_unavailable".into())),
+            "app_install_incomplete"
         );
     }
 }
