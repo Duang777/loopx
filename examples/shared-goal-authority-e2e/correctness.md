@@ -99,6 +99,93 @@ selecting another Goal cannot bypass the existing binding or fence. Unbound
 legacy shared-state writes retain their existing behavior; prose-only writes
 retain their separate maintenance boundary.
 
+### Fenced legacy write response
+
+A legacy Todo, handoff-mode, followup, registry-state, or native task-lease
+write against a goal whose durable legacy writer fence is present is rejected
+before its first primary side effect: no lease record, Markdown state,
+canonical store document, outbox entry, or lifecycle-fence receipt is written.
+The shared write check (`coordination.local_authority.legacy_write_check`) owns
+only the stable machine reason and the fence binding facts: `reason_code`
+`legacy_coordination_writer_fenced` with `authority_mode` and `fence_id` for an
+engaged fence; `legacy_writer_fence_read_failed` with the technical `reason`
+for a present but unreadable or invalid fence; every non-allowed result fails
+closed. Each caller adapter (the TypeScript
+`requireLegacyCoordinationPrimaryWriteAllowed` wrapper used by native acquire,
+renew, transfer, release, every terminal or holder verify branch, and a
+committed releasing fence-close; the Python
+`require_legacy_coordination_write_allowed` wrapper used by every legacy Todo,
+handoff, followup, registry, bootstrap, and monitor writer) maps the reason to
+`error_code`, carries the complete check result unchanged under `write_check`
+(never spread into its own envelope, so the envelope keeps its own
+`schema_version`), and renders one provider-neutral remediation for an engaged
+fence:
+
+```
+legacy coordination writer is fenced; use the promoted canonical authority
+(<authority_mode>) for goal <goal_id>; fence <fence_id>; the primary record
+was not changed
+```
+
+A fence that cannot be validated reports the check's technical reason
+verbatim. The profile label is opaque data from the check (`file_v0` today),
+never a provider path, table, or command, so a provider-neutral binding needs
+no template change.
+
+A native task-lease envelope keeps `schema_version: task_lease_v0` and its
+`action`; its settlement is `{effect_id, receipts: [], failure: {step:
+"validation", kind: "permission_denied", code: <reason_code>}}` at every
+native guard site alike: no receipt exists because no settlement step ran, and
+`permission_denied` marks the rejection terminal for this writer (RFC section
+5 `rejected` and its no-fabricated-receipt rule, section 5.6, question 11,
+Appendix C). `effect_id` follows each verb's existing rule: acquire reports
+`null` whenever no receipt exists; a lifecycle operation reports the
+settlement identity when the request carries `owner` and `idempotency_key`
+and `null` otherwise.
+
+Previews: `archive-completed` without `--execute` and `capture-followups
+--dry-run` skip every fence check and write nothing. A terminal Todo preview
+(`todo complete --dry-run`, `todo supersede --dry-run`) still enters the
+native verify path, which now checks the fence before its first receipt, so
+under a fence the preview reports the typed rejection with `dry_run: true`
+and leaves nothing behind; without a fence it behaves as before. A fenced
+committed releasing `fence_close` releases the caller's claimed mutation lock
+in `finally` while the lease stays `active` and its `held` receipt is
+untouched; the caller's fence token is spent, a retry reports
+`fence_token_invalid`, and recovery is lease expiry or a canonical release.
+
+The complete observable behaviour is pinned row by row in
+`tests/fixtures/control_plane/legacy_writer_fence_caller_parity_v0.json`
+(21 TypeScript entry rows, 25 real-process CLI rows; whole-object envelopes,
+exit status, exclusion-free effect snapshots, declared after-state) and
+enforced by `tests/control_plane_ts/legacy_writer_fence_caller_parity.test.ts`
+and `tests/control_plane/test_shadow_fence_caller_parity_e2e.py`; the
+`baseline` entries of that fixture document earlier revisions and are never
+executed.
+
+Baseline delta (0fb497af8 is the PR's diff baseline; ee1b17217 the previously
+reviewed head):
+
+| Row | 0fb497af8 | ee1b17217 | Now | Basis |
+| --- | --- | --- | --- | --- |
+| native acquire settlement | committed validation receipt, `durable_writeback` / `writeback_rejected` | `validation` / `writeback_rejected`, no receipt | `validation` / `permission_denied`, no receipt | the guard ran before `commitAcquire` on every revision; only the classifier drifted; RFC section 5 forbids a fabricated receipt for `rejected` |
+| native renew, transfer, release settlement | `validation` / `permission_denied` | same | same | unchanged; acquire now matches its siblings |
+| native error text | `legacy task-lease writer is fenced; use the canonical file authority` | `legacy coordination writer is fenced` | one rendered template | remediation belongs to the caller adapter and must not name a provider |
+| Python error text | `legacy coordination writer is fenced; use the canonical file authority` | same | one rendered template | same |
+| envelope `schema_version` | check schema overwrote `task_lease_v0`; every CLI lease rejection printed `RuntimeError` | same | `task_lease_v0` plus nested `write_check` | envelope-owned keys win; check result travels under its contract name |
+| Python Todo rejections | no `error_code` | flat check keys, `schema_version` injected | `error_code` plus `write_check` | same |
+| terminal or holder verify under a fence | fence bypassed on the held and holder branches; auto-acquire branch not consulted | auto-acquire branch guarded; held branch previews reported `ok: true` and wrote receipts | every verify branch guarded before its first receipt | a preview must not succeed for a write the fence forbids |
+| committed releasing fence-close | fence bypassed | guarded | guarded; lock released in `finally`, retry `fence_token_invalid` | declared and pinned |
+| generic CLI branch of `task-lease` and `turn` | typed payload spread after envelope keys | same | payload first, envelope keys win | `LocalCoordinationAuthorityUnavailable` carries a `schema_version` |
+
+Known gap, unchanged on both revisions: `loopx quota monitor-poll --execute`
+(and the scheduler monitor writeback it wraps) re-types every non-validation
+exception to `quota_unexpected_collection_error` with reason `quota collection
+failed`, so a fenced monitor writeback loses its `error_code` and remediation
+at that boundary. The fix belongs to the quota domain's public-safety
+contract (map the typed fence exception to its own code and pass `write_check`
+through) and is not part of this batch.
+
 Canonical FileAuthorityStore Todo updates, including compatibility v0 records
 already held by that authority, use the same M and maintenance boundary as
 canonical Todo creation. They retain their own transaction receipts and do not
