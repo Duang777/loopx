@@ -478,6 +478,8 @@ for (const expiresAt of [
   "0",
   "2030-01-01junk",
   "2099-02-30T00:00:00Z",
+  "2026-08-26T24:01:00Z",
+  "2026-08-26T24:00:00.0000001Z",
 ]) {
   test(`corrupt active expiration '${expiresAt}' fails closed`, async (t) => {
     const root = await workspace(t);
@@ -510,12 +512,19 @@ for (const { expiresAt, active } of [
   { expiresAt: "0099-01-01T00:00:00Z", active: false },
   { expiresAt: "2026-08-27T02:59:59.123456", active: false },
   { expiresAt: "2026-08-27T02:59:59.123456+00:00", active: false },
+  { expiresAt: "2026-08-27T02:59:59.1234567Z", active: false },
+  { expiresAt: "2026-08-27T02:59:59.123456789+00:00", active: false },
   { expiresAt: "2026-08-27T03:00:00.123456", active: true },
   { expiresAt: "2026-08-27T03:00:00.123456Z", active: true },
+  { expiresAt: "2026-08-27T03:00:00.1234567", active: true },
+  { expiresAt: "2026-08-27T03:00:00.123456789Z", active: true },
   { expiresAt: "2026-08-27T03:00:01", active: true },
   { expiresAt: "2026-08-27T03:00:01.1Z", active: true },
   { expiresAt: "2026-08-27T03:00:01.12+00:00", active: true },
   { expiresAt: "2026-08-27T03:00:01.123", active: true },
+  { expiresAt: "2026-08-26T24:00:00Z", active: false },
+  { expiresAt: "2026-08-26T24:00:00.0000000Z", active: false },
+  { expiresAt: "2026-08-27T24:00Z", active: true },
 ]) {
   test(`valid ${active ? "active" : "expired"} lease timestamp '${expiresAt}' remains compatible`, async (t) => {
     const root = await workspace(t);

@@ -573,7 +573,7 @@ export function leaseEpoch(lease: LeaseRecord | null): number {
 }
 
 export function parseLeaseTimestamp(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|z|[+-]\d{2}(?::?\d{2})?)?)?$/u.exec(
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|z|[+-]\d{2}(?::?\d{2})?)?)?$/u.exec(
     value.trim(),
   );
   if (match === null) return null;
@@ -587,12 +587,18 @@ export function parseLeaseTimestamp(value: string): Date | null {
     secondText ?? "0",
     (fraction ?? "").slice(0, 3).padEnd(3, "0") || "0",
   ].map(Number);
+  const endOfDay = hour === 24;
+  if (
+    endOfDay &&
+    (minute !== 0 || second !== 0 || (fraction !== undefined && /[1-9]/u.test(fraction)))
+  ) return null;
+  const calendarHour = endOfDay ? 0 : hour;
   const calendar = new Date(0);
-  calendar.setUTCHours(hour, minute, second, millisecond);
+  calendar.setUTCHours(calendarHour, minute, second, millisecond);
   calendar.setUTCFullYear(year, month - 1, day);
   if (
     calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 ||
-    calendar.getUTCDate() !== day || calendar.getUTCHours() !== hour ||
+    calendar.getUTCDate() !== day || calendar.getUTCHours() !== calendarHour ||
     calendar.getUTCMinutes() !== minute || calendar.getUTCSeconds() !== second ||
     calendar.getUTCMilliseconds() !== millisecond
   ) return null;
