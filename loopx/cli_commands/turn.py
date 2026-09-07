@@ -964,6 +964,7 @@ def handle_turn_command(
             raise ValueError("turn requires the `plan` or `run-once` subcommand")
     except Exception as exc:  # noqa: BLE001 - CLI boundary renders typed JSON failure
         payload = {
+            **({"error_code": exc.code, **getattr(exc, "payload", {})} if isinstance(getattr(exc, "code", None), str) else {}),
             "ok": False,
             "schema_version": (
                 LOOPX_TURN_EXECUTION_SCHEMA_VERSION
@@ -972,7 +973,6 @@ def handle_turn_command(
             ),
             "mode": "run_once" if args.turn_command == "run-once" else "plan",
             "error": str(exc),
-            **({"error_code": exc.code, **getattr(exc, "payload", {})} if isinstance(getattr(exc, "code", None), str) else {}),
             "effects": {
                 "host_invoked": False,
                 "state_written": False,

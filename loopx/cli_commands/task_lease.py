@@ -208,12 +208,12 @@ def handle_task_lease_command(
             )
     except TaskLeaseError as exc:
         payload = {
+            **exc.payload,
             "ok": False,
             "schema_version": "task_lease_v0",
             "action": getattr(args, "task_lease_command", None),
             "error": str(exc),
             "error_code": exc.code,
-            **exc.payload,
         }
     except LockAcquireTimeoutError as exc:
         payload = {
@@ -224,12 +224,18 @@ def handle_task_lease_command(
             **exc.to_payload(),
         }
     except Exception as exc:
+        # Envelope-owned keys always win over a typed exception payload.
+        typed_payload = (
+            dict(getattr(exc, "payload", {}) or {})
+            if isinstance(getattr(exc, "code", None), str)
+            else {}
+        )
         payload = {
+            **typed_payload,
             "ok": False,
             "schema_version": "task_lease_v0",
             "action": getattr(args, "task_lease_command", None),
             "error": str(exc),
-            **({"error_code": exc.code, **getattr(exc, "payload", {})} if isinstance(getattr(exc, "code", None), str) else {}),
             "error_code": getattr(exc, "code", exc.__class__.__name__),
         }
     print_payload(payload, output_format(args), render_task_lease_markdown)
