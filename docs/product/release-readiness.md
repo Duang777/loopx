@@ -1,6 +1,6 @@
 # Release Readiness
 
-Status: v0.x maintainer contract.
+Status: stable maintainer contract.
 
 LoopX can move quickly without making every merged PR feel like a product
 release. This note defines the small mental model maintainers should use before
@@ -133,7 +133,7 @@ option is read-only and accepted only by `update check`.
 
 ## Named Version Contract
 
-LoopX v0.x releases are tagged and built from GitHub. The release workflow
+LoopX releases are tagged and built from GitHub. The release workflow
 publishes artifacts to GitHub Releases and, when its Trusted Publisher gate
 passes, PyPI; each stable promotion still needs one package version name. The
 version source is `loopx.__version__`, mirrored by `pyproject.toml`; the
@@ -542,6 +542,14 @@ path, and canary route rather than as a user-facing release baseline.
   promoted claim retry identity from #3987); multi-agent Goal Channels ship
   with per-agent connection resolution (#3969); and reward-memory recall
   guides outbound messages behind a digest-bound review loop (#3968).
+- `v1.0.1` on 2026-09-08 06:51 +08:00: post-1.0 reliability release at the
+  matching `v1.0.1` tag (`7f2a020b`). Goal Channels gain resumable multi-Agent
+  onboarding and Agent-authorized typed report requests; Desktop recovery gains
+  bounded diagnostics and verified signed updates; Todo ownership, projection
+  recovery, and Stage 2C management use stronger typed transaction boundaries;
+  and frozen bundles install the same version-bound workflow skills as package
+  distributions. The exact-tag Python, PyPI, macOS, Windows, signed-update,
+  public-smoke, and live-model gates passed before `stable` fast-forwarded.
 
 When a new public release is promoted, add it here only after the matching tag,
 release note, stable ref, update path, and focused release canary agree.
