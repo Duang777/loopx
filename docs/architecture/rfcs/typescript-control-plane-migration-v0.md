@@ -3,7 +3,7 @@
 - Status: Accepted, transaction-payoff phase in progress
 - Proposed by: LoopX maintainers
 - Date: 2026-08-15
-- Last revised: 2026-09-05
+- Last revised: 2026-09-07
 - Scope: an incremental, replacement-first migration of the LoopX control-plane
   core from Python to TypeScript without maintaining two semantic
   implementations
@@ -64,7 +64,7 @@ mode without writing or promoting anything; omit it to retain default behavior.
 It grants neither a lease nor current ownership on historical replay. Combined
 claim/lease acquisition remains follow-up work.
 
-The next replacement slice makes promoted `todo add` a native create
+Promoted `todo add` is a native create
 transaction on that same authority owner. Python validates the established CLI
 arguments and adapts them once into the versioned domain record; TypeScript
 owns duplicate identity, replay, actor/owner eligibility, CAS, receipt, and
@@ -73,6 +73,31 @@ after deleting the Markdown state file, so promotion cannot silently regain a
 Markdown write path. Completion-validation argv remains typed data rather than
 a shell-encoded compatibility field. Default, unpromoted goals retain their
 existing Markdown transaction until their explicit promotion boundary.
+
+The terminal-lifecycle stage package extends that boundary to promoted
+`complete`, `supersede`, and role-scoped `archive`. TypeScript owns admission,
+claim/lease fencing, successor validation, completion-policy reduction, CAS,
+receipts, projection intent, and archive selection. Python projects registry
+facts, executes an explicitly declared validation effect between typed
+reductions, and drains compatibility projections; it no longer recreates the
+terminal state machine for promoted goals. The canonical Todo stores only a
+validation-required marker and declaration digest. Raw argv remains in a
+0600 host-local sidecar and must match that digest on recovery before the
+effect may run. Imported v0 Todos retain legacy `index` archive ordering;
+provider-native records use durable completion/update time and Todo identity.
+Historical lease files absent from the current Todo graph remain audit history
+and are not projected back into the canonical live head.
+
+This stage is qualified with a three-arm rehearsal from one read-only,
+production-complex snapshot: an immutable legacy baseline clone, an isolated
+file provider, and an isolated real PostgreSQL provider. The provider heads
+must match exactly and the legacy arm must match semantically after normalizing
+only declared provider provenance; all non-target records and the source
+snapshot remain unchanged. A deterministic public-safe scale fixture exercises
+the same status mix, current/retired leases, standing decisions, validation,
+successor, replay, concurrency, and archive pressure in every provider suite.
+That fixture is durable regression coverage, not a substitute for the current
+read-only three-arm rehearsal.
 
 The old v0 consumer manifest remains readable and retains all existing fields.
 Default Markdown capture still emits v0; this PR neither rewrites stored heads

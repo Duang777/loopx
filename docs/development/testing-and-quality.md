@@ -172,6 +172,22 @@ failures or limits. If no safe real environment is available, hold delivery.
 `LOOPX_TEST_POSTGRES_URL`，运行 `npm run test:postgresql-authority-store`；跳过不算
 通过。记录精确 commit、后端版本、验证行为与失败或局限；没有安全的真实环境则暂停交付。
 
+When one semantic owner fronts multiple authority providers, use a three-arm
+refactor comparison: the immutable legacy baseline, the file provider, and a
+real PostgreSQL provider. All three arms must start from the same
+production-complex snapshot and execute the same public operations. Compare
+the two provider heads exactly, then compare the baseline semantically after
+normalizing only declared provider provenance. File/PostgreSQL agreement alone
+is not compatibility evidence because both providers execute the same new
+rule. Verify that every non-target record and the source snapshot are unchanged.
+
+当同一个 semantic owner 服务多个 authority provider 时，重构对照必须包含三臂：
+不可变 legacy baseline、file provider、真实 PostgreSQL provider。三臂从同一份生产
+复杂度快照出发，执行相同 public operation；两个 provider head 要精确相等，baseline
+只允许在显式声明的 provider provenance 上做归一化后再比较语义。File/PostgreSQL
+一致不能单独证明兼容，因为它们执行的是同一套新规则。还要验证所有非目标记录与源
+快照保持不变。
+
 Keep tests separate from active state: use a disposable database/tenant and
 runtime directory, with synthetic fixtures or an owner-authorized read-only
 snapshot. Never run the integration suite against a shared or production
@@ -187,6 +203,23 @@ not overwritten or restored by the test. Stop the temporary server afterward.
 不为测试晋升正在运行的 goal、切换 provider，或修改其 registry、writer fence、Todo、
 lease。私有快照和原始输出不得进入 Git 或公开 review；快照演练前后比较源指纹。
 发现并发源变更只报告，不擅自覆盖或恢复。测试后停止临时数据库。
+
+Keep a deterministic, public-safe production-scale fixture beside the focused
+cases. Its envelope should cover realistic role/status distributions,
+multi-agent claims, user gates and standing decisions, current and retired
+leases, successor links, validation markers, archival pressure, and enough
+history to exercise ordering and capacity-sensitive paths. Generate content
+from public-safe seeds rather than copying production text or identifiers, and
+run the same fixture through every provider conformance suite. This fixture is
+a durable regression layer; it complements, but never substitutes for, the
+read-only three-arm rehearsal against current production-complex state.
+
+在聚焦用例之外，长期保留确定性、public-safe 的生产规模 fixture。其 envelope 应覆盖
+真实的 role/status 分布、多 Agent claim、User gate 与 standing decision、当前与已退役
+lease、successor link、validation marker、归档压力，以及足以触发顺序和容量敏感路径的
+历史规模。内容必须由公开安全的 seed 生成，不复制生产文本或标识；同一 fixture 要进入
+所有 provider conformance suite。它是持久回归层，只补充、不替代针对当前生产复杂状态
+的只读三臂演练。
 
 Install the test dependencies once:
 

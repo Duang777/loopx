@@ -3,7 +3,7 @@
 - 状态：Draft，正在接受 maintainer review
 - 最初提案方：NoKV Lab
 - 扩展修订方：LoopX maintainer
-- 日期：2026-08-05；修订于 2026-09-05
+- 日期：2026-08-05；修订于 2026-09-07
 - 范围：一个 provider-neutral 的 LoopX 权威合同，支持内置 file、可选 NoKV
   与可选 PostgreSQL provider profile，用来补充
   [`host-integration-surface-v0`](../../reference/protocols/host-integration-surface-v0.md)
@@ -1858,12 +1858,12 @@ integrity chain、确定性 scan 与 recovery readback。物理 profile 可以�
   提交到既有 `coordination.runtime_shadow` file-v0 lineage，不再创建第二套 local-shadow
   candidate。晋升前仍需补持续 mixed-writer parity、event-only Todo 覆盖和所选 provider
   profile 的 recovery/capacity 证据。
-- 补齐兼容投影 outbox 与 file、NoKV、PostgreSQL 的 conformance row。首个
-  provider-first 切片已把 committed authority journal 复用为 native Todo create、
-  claim 和窄 update 的持久 intent，再以幂等 replay 把 native active/archive record
-  渲染到机器所有的 Markdown region。其余 native Todo mutation、lease-file 投影、
-  backlog/status 回读和 provider-neutral authority binding 仍需落实同一合同。三个
-  provider 不必同时晋升，但每个 profile 都必须先通过该合同才具备资格。
+- 补齐兼容投影 outbox 与 file、NoKV、PostgreSQL 的 conformance row。Provider-first
+  create、claim、窄 update、complete、supersede 与按 role 执行的 archive 已把 committed
+  authority journal 复用为持久 intent，再以幂等 replay 把 native active/archive record
+  渲染到机器所有的 Markdown region。lease-file 投影、backlog/status 回读、
+  provider-neutral authority binding 与剩余 command inventory 仍需落实同一合同。
+  三个 provider 不必同时晋升，但每个 profile 都必须先通过该合同才具备资格。
 - 首个晋升 profile 的 retention、fast path 与实测 capacity；参考执行器的删除与
   status flip（问题 13）。
 - 晋升后的 rollback：已交付的 rollback 隔离的是晋升前 lineage。首次权威写
@@ -1917,10 +1917,33 @@ render/export/rollback 与 selection parity，再改变 binding 或 manifest。�
 的完整性要求覆盖 domain fact 与保留的 compatibility provenance，但不要求原生
 caller 伪造 Markdown 地址。
 
+### Provider-first terminal lifecycle 检查点（2026-09-07）
+
+Promotion 后的 `complete`、`supersede` 与按 role 执行的 `archive`，现在在 file、
+NoKV、PostgreSQL 上使用同一笔 TypeScript 原生事务。authority owner 决定
+actor/claim/lease admission，校验生成的 successor，reduce completion policy，以 CAS
+提交 Todo/lease/head/outbox write set，并持久化 replay receipt。Python 只保留 registry
+fact、caller-approved validation effect 与兼容投影 drain 的 adapter 职责，不再针对
+不同 provider 选择另一种 terminal outcome。
+
+Validation declaration 只以 required marker 与 SHA-256 digest 跨越 canonical 边界。
+raw argv 留在权限为 0600 的 host-local sidecar，恢复时必须先证明 digest 匹配才可执行。
+这使 provider head 保持可移植、public-safe，同时不会让 recovery 静默绕过 validation。
+导入 v0 的 `index` 继续作为归档顺序兼容事实；native record 回退到持久
+completion/update 时间与 Todo identity。Todo 已不在当前 canonical collection 中的
+legacy lease file 继续作为历史审计材料保留，但不进入 live projection。
+
+资格验证使用同一份只读、生产复杂度快照做三臂对照：不可变 legacy baseline clone、
+隔离 file store、隔离的真实 PostgreSQL tenant。两个 provider head 精确比较；legacy
+结果只允许归一化已声明的 provider provenance 后再比较语义；全部非目标记录与源快照
+必须不变。受检入的确定性 public-safe 规模 fixture 在每个 provider conformance suite
+中制造同样的分布和压力。它不能替代只读三臂演练，因为所有 provider 共享新的 semantic
+owner，可能同时同意同一个回归。
+
 ### 下一步交付与并行 provider 工作
 
-kernel 的近期顺序是：（1）真实 provider-first Todo lifecycle caller，并删除被替代
-的 Python decision；（2）显式 v0 import 加持续 consumer/capture/recovery 资格化；
+kernel 的近期顺序是：（1）在同一 runtime boundary 后补完剩余 provider-first Todo
+command inventory；（2）显式 v0 import 加持续 consumer/capture/recovery 资格化；
 （3）具备 fenced export 和 cleanup 的已评审 promotion。每个切片必须证明端到端
 transaction，不能只做另一轮 schema identifier 统一。接受 native contract 不等于
 可以绕过任何 promotion hold。

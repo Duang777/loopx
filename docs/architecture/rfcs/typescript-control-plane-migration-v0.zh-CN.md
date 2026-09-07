@@ -3,7 +3,7 @@
 - Status：Accepted，transaction-payoff 阶段进行中
 - Proposed by：LoopX maintainers
 - Date：2026-08-15
-- Last revised：2026-09-05
+- Last revised：2026-09-07
 - Scope：LoopX 控制面核心从 Python 到 TypeScript 的增量、replacement-first
   迁移；不长期维护两份语义实现
 - Tracking issue：[#3225](https://github.com/huangruiteng/loopx/issues/3225)
@@ -53,13 +53,32 @@ preview 不消耗该 id。legacy 模式会拒绝此选项，不写入也不自�
 选项即可保持默认行为。历史 replay 不授予 lease 或当前所有权，claim/lease 联合
 获取仍是后续工作。
 
-下一 replacement slice 让 promotion 后的 `todo add` 成为同一 authority owner 上的
+Promotion 后的 `todo add` 已成为同一 authority owner 上的
 原生 create transaction。Python 只校验既有 CLI 参数并一次性适配为带版本的 domain
 record；语义重复、replay、actor/owner 资格、CAS、receipt 和 projection-outbox
 mutation 都由 TypeScript 持有。preview 与真实 subprocess CLI 路径会先删除 Markdown
 state file 再验证，因此 promotion 不会悄悄恢复 Markdown 写入。completion-validation
 argv 保持 typed data，不退回 shell 编码的兼容字段。未 promotion 的默认 goal 在显式
 promotion 边界前继续使用既有 Markdown transaction。
+
+terminal-lifecycle stage package 将该边界扩展到 promotion 后的 `complete`、
+`supersede` 与按 role 执行的 `archive`。TypeScript 持有 admission、claim/lease fence、
+successor 校验、completion-policy reduction、CAS、receipt、projection intent 与归档
+选择；Python 只投影 registry fact，在两次 typed reduction 之间执行显式声明的
+validation effect，并 drain 兼容投影，不再为 promoted goal 重建 terminal state
+machine。canonical Todo 只保存 validation-required marker 与声明摘要；raw argv 留在
+权限为 0600 的 host-local sidecar，恢复时必须先匹配摘要，才允许执行 effect。导入的
+v0 Todo 继续按旧 `index` 归档；provider-native record 按持久 completion/update 时间
+和 Todo identity 排序。当前 Todo graph 中已经不存在的历史 lease file 继续作为审计
+历史保留，不再投影回 canonical live head。
+
+该阶段使用同一份只读、生产复杂度快照做三臂资格验证：不可变 legacy baseline clone、
+隔离 file provider、隔离的真实 PostgreSQL provider。两个 provider head 必须精确相等；
+legacy 臂只允许归一化已声明的 provider provenance 后再比较语义；所有非目标记录与
+源快照必须不变。同时提供确定性、public-safe 的规模 fixture，让每个 provider suite
+覆盖相同的 status 组合、当前／已退役 lease、standing decision、validation、successor、
+replay、concurrency 与归档压力。该 fixture 是持久回归覆盖，不能替代对当前状态的只读
+三臂演练。
 
 旧 v0 consumer manifest 继续可读，并保留所有已有字段。默认 Markdown capture 仍
 输出 v0；本 PR 不改写已存 head，也不自动晋升 goal。schema 分层不等于允许后续迁移
