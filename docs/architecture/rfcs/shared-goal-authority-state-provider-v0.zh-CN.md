@@ -1944,6 +1944,11 @@ legacy lease file 继续作为历史审计材料保留，但不进入 live proje
 fence。它不能替代只读三臂演练，因为所有 provider 共享新的 semantic owner，可能同时
 同意同一个回归。
 
+凡声称推进本 RFC 的 PR，都必须遵守
+[production-scale fixture 维护契约](../../development/testing-and-quality.md#production-scale-fixture-stewardship--生产规模-fixture-维护契约)：
+声明 fixture 影响、覆盖所有受影响的 provider arm，并把只读三臂演练保留为独立的
+promotion gate。
+
 ### 下一步交付与并行 provider 工作
 
 kernel 的近期顺序是：（1）在同一 runtime boundary 后补完剩余 provider-first Todo

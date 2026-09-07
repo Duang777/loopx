@@ -2453,6 +2453,11 @@ pressure, including hard-lease fences, across every provider conformance suite. 
 read-only three-arm rehearsal because all providers share the new semantic
 owner and can therefore agree on the same regression.
 
+Every pull request that claims progress against this RFC follows the
+[production-scale fixture stewardship contract](../../development/testing-and-quality.md#production-scale-fixture-stewardship--生产规模-fixture-维护契约).
+It declares fixture impact, exercises every affected provider arm, and keeps
+the read-only three-arm rehearsal as a separate promotion gate.
+
 ### Next delivery and parallel provider work
 
 The immediate kernel sequence is: (1) finish the remaining provider-first Todo

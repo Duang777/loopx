@@ -91,6 +91,11 @@ provider 保留的 archive 记录及其历史 lease，并且只有先证明每�
 replay、concurrency、归档压力与 hard-lease fence。该 fixture 是持久回归覆盖，不能替代
 对当前状态的只读三臂演练。
 
+从该 checkpoint 起，凡声称推进本 RFC 的 PR，都必须遵守
+[production-scale fixture 维护契约](../../development/testing-and-quality.md#production-scale-fixture-stewardship--生产规模-fixture-维护契约)：
+声明 fixture 影响、覆盖所有受影响的 provider arm，并把只读三臂演练保留为独立的
+promotion gate。
+
 旧 v0 consumer manifest 继续可读，并保留所有已有字段。默认 Markdown capture 仍
 输出 v0；本 PR 不改写已存 head，也不自动晋升 goal。schema 分层不等于允许后续迁移
 丢失 v0 provenance 或改变旧排序。

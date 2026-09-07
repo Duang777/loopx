@@ -246,6 +246,47 @@ lease、successor link、validation marker、归档压力，以及足以触发�
 所有 provider conformance suite。它是持久回归层，只补充、不替代针对当前生产复杂状态
 的只读三臂演练。
 
+### Production-scale fixture stewardship / 生产规模 fixture 维护契约
+
+Treat `tests/fixtures/control_plane/coordination_production_scale_v0.json`
+and its generator as a shared acceptance input for both the TypeScript
+control-plane migration and shared-goal-authority RFCs. A pull request that
+changes provider-neutral fields, coordination semantics, or capacity and
+retention assumptions must carry a fixture impact declaration: extend the
+fixture and an independently derived assertion through every affected provider
+arm, or state why the existing dimensions fully cover the change. Storage-only
+provider work may use the unchanged fixture, but still runs the affected arm.
+Runtime routing, promotion, or compatibility work also runs the read-only
+three-arm rehearsal; the fixture never upgrades synthetic agreement into live
+promotion evidence.
+
+Fixture improvements are welcome when they encode an accepted RFC invariant or
+a reproduced public regression that the current envelope misses. Keep each
+addition deterministic, bounded, and public-safe; derive expected behavior
+from the invariant rather than the generator output. Add at least one negative
+or mutation-style assertion that would fail if the new dimension were ignored,
+reuse the same envelope and generator across providers, and do not weaken or
+remove an existing dimension without a reviewed compatibility reason. Never
+copy production text, identifiers, paths, logs, credentials, or private
+snapshots into the fixture. Report the fixture schema, semantic dimension,
+provider arms, and intentional deltas in the PR validation evidence.
+
+将 `tests/fixtures/control_plane/coordination_production_scale_v0.json` 及其
+generator 视为 TypeScript control-plane migration 与 shared-goal-authority 两份 RFC
+共用的验收输入。修改 provider-neutral field、coordination 语义，或容量／保留假设的 PR，
+必须附带 fixture 影响声明：扩展 fixture 与独立推导的断言，并让它通过所有受影响的
+provider arm；或者说明现有维度为何已经完整覆盖该改动。仅修改 provider 物理存储时可以
+复用未变化的 fixture，但仍要运行受影响的 arm。涉及 runtime routing、promotion 或
+compatibility 的工作还要执行只读三臂演练；fixture 绝不能把合成数据一致性升级为真实
+promotion 证据。
+
+欢迎开发者把已接受的 RFC invariant 或已复现、但当前 envelope 尚未覆盖的公共回归沉淀
+进 fixture。每次增强都要保持确定性、有界且 public-safe；expected behavior 必须从
+invariant 独立推导，不能从 generator 当前输出反推。至少增加一个在忽略新维度时会失败的
+negative 或 mutation-style 断言，并让各 provider 复用同一 envelope 和 generator；没有
+经 review 的兼容理由，不得削弱或删除已有维度。禁止复制生产文本、标识、路径、日志、
+凭据或私有快照。PR 验证证据需报告 fixture schema、语义维度、provider arms 与有意差异。
+
 Install the test dependencies once:
 
 ```bash

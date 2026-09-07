@@ -114,6 +114,12 @@ successor, replay, concurrency, archive pressure, and hard-lease fences in every
 That fixture is durable regression coverage, not a substitute for the current
 read-only three-arm rehearsal.
 
+From this checkpoint onward, every pull request that claims progress against
+this RFC follows the
+[production-scale fixture stewardship contract](../../development/testing-and-quality.md#production-scale-fixture-stewardship--生产规模-fixture-维护契约).
+It declares fixture impact, exercises every affected provider arm, and keeps
+the read-only three-arm rehearsal as a separate promotion gate.
+
 The old v0 consumer manifest remains readable and retains all existing fields.
 Default Markdown capture still emits v0; this PR neither rewrites stored heads
 nor auto-promotes a goal. The schema split is not permission to drop v0
