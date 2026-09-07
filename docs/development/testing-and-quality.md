@@ -73,6 +73,46 @@ golden 来让测试通过。
 
 ## Pull-Request Baseline / PR 基线
 
+### Required Merge Check / 必需合并检查
+
+`python-tests.yml` publishes `merge-gate` for every pull request. Code,
+workflow, policy and unknown paths require the existing `pytest` aggregate
+(including TypeScript checks and both Python shards), Stage 2C correctness
+aggregate, and Windows tests to succeed. Failed, cancelled, missing or
+unexpectedly skipped results cannot pass the gate.
+
+For a change limited to allowlisted root Markdown or `docs/**/*.md`, the
+classifier explicitly skips the expensive core jobs and the aggregate checks
+that they were skipped. Runtime prompts, executable documentation, deleted
+code and code renamed into docs are not documentation-only exemptions. A
+missing Git base or failed classification fails closed.
+
+`Sign-off` and `merge-gate` form the required-check contract, bound to GitHub
+Actions. The [live ruleset](https://github.com/huangruiteng/loopx/rules/18121976)
+is authoritative for activation. The lead maintainer alone retains the
+existing bypass exception; record the exact head, reason, validation and known
+failures whenever using it. A bypass does not turn failed tests into a pass.
+
+每个 PR 都会收到 `merge-gate` 结果。代码、工作流、治理规则和未知路径必须通过
+原有核心测试；失败、取消、缺失或意外跳过均不能通过。仅白名单根目录 Markdown
+或 `docs/**/*.md` 的修改可显式跳过昂贵测试；运行时 prompt、可执行文档、代码删除
+及代码移入文档均不享受豁免。实际启用状态以在线规则为准，使用 owner bypass
+必须留下版本、原因、验证和已知失败的记录。
+
+To validate or change the classifier locally:
+
+```bash
+python -m unittest discover -s scripts/ci -p test_review_gate.py
+python scripts/ci/review_gate.py classify --base origin/main --head HEAD
+```
+
+Changes to the classifier or workflow need both code-path and documentation-only
+qualification. Keep required check names stable and never require a
+workflow-level path-filtered check that cannot report on every PR.
+
+PRs opened before activation may need a branch update to produce the new
+required check; an old green suite alone does not supply a missing aggregate.
+
 ### Refactor Real-Path Gate / 重构真实路径门
 
 The PR review capability's `observable_semantics` evidence gate applies to
