@@ -874,7 +874,10 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
       await route.fulfill({ contentType: "application/json", json: {
         ok: true,
         schema_version: "loopx_lark_apps_v0",
-        apps: [{ active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true }],
+        apps: [
+          { active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true },
+          { active: true, app_ref: "mew-research", brand: "feishu", label: "LoopX Research", ready: true, reply_ready: true },
+        ],
       }, status: 200 });
       return;
     }
@@ -908,7 +911,7 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
           runtime.larkConnections.push({
             agent_id: binding.agent_id ?? null,
             connection_id: connectionId,
-            app_label: "LoopX Mew", app_ref: binding.app_ref, chat_name: body.chat_name, enabled: true,
+            app_label: binding.app_ref === "mew-research" ? "LoopX Research" : "LoopX Mew", app_ref: binding.app_ref, chat_name: body.chat_name, enabled: true,
             capture_scope: body.capture_scope,
             event_count: 0, health_error_code: "lark_event_delivery_unverified",
             goal_id: body.goal_id, goal_title: goal?.id ?? body.goal_id, incoming_mode: body.incoming_mode,
@@ -2296,10 +2299,21 @@ async function main() {
     if (await editDialog.getByLabel("接收范围").inputValue() !== "configured_chat_all") throw new Error("Lark edit mode did not restore capture_scope");
     if (!await editDialog.getByRole("group", { name: "Agent 入站方式" }).getByLabel("异步收件箱").isChecked()) throw new Error("Lark edit mode did not restore ingress_mode");
     if (await editDialog.getByLabel("目标 Agent").inputValue() !== api.larkWrites[0].agent_id) throw new Error("Lark edit mode did not restore agent_id");
-    await editDialog.getByLabel("目标 Agent").selectOption("codex-latest-lane");
-    await editDialog.getByRole("button", { name: "保存连接", exact: true }).click();
+    await editDialog.getByRole("button", { name: "取消", exact: true }).click();
     await editDialog.waitFor({ state: "hidden" });
-    if (api.larkWrites.length !== 2 || api.larkConnections.length !== 2) throw new Error("Peer Agent route did not coexist");
+    await page.locator(".personal-lark-toolbar").getByRole("button", { name: /连接 Lark App/ }).click();
+    const batchDialog = page.getByRole("dialog", { name: "连接 Lark App" });
+    await batchDialog.getByRole("option", { name: "Product group" }).waitFor({ state: "attached" });
+    await batchDialog.getByLabel("群聊").selectOption({ label: "Product group" });
+    await batchDialog.getByLabel("绑定到 Goal").selectOption("multi-agent-projection");
+    await batchDialog.getByRole("checkbox", { name: "连接全部已注册 Agent" }).check();
+    const agentAppGroup = batchDialog.getByRole("group", { name: "每个 Agent 的 Lark App" });
+    await agentAppGroup.getByLabel(/codex-older-lane 的 Lark App/).selectOption("mew-research");
+    await batchDialog.getByRole("button", { name: "一键连接 2 个 Agent", exact: true }).click();
+    await batchDialog.waitFor({ state: "hidden" });
+    if (api.larkWrites.length !== 3 || api.larkConnections.length !== 2) throw new Error("Per-Agent App batch did not preserve both Agent routes");
+    const perAgentAppWrites = Object.fromEntries(api.larkWrites.slice(1).map((item) => [item.agent_id, item.app_ref]));
+    if (perAgentAppWrites["codex-older-lane"] !== "mew-research" || perAgentAppWrites["codex-latest-lane"] !== "mew") throw new Error(`Per-Agent App selection was not preserved: ${JSON.stringify(perAgentAppWrites)}`);
     if (!api.larkConnections.some((item) => item.agent_id === "codex-older-lane") || !api.larkConnections.some((item) => item.agent_id === "codex-latest-lane")) throw new Error("One-click Goal Channel lost a peer Agent route");
     const removedConnection = api.larkConnections.find((item) => item.agent_id === "codex-older-lane");
     const originalAgent = removedConnection.agent_id;
