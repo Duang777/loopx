@@ -370,7 +370,7 @@ def main() -> None:
 
     doc = compact(read(DOC))
     for required in [
-        "Status: v0.x maintainer contract.",
+        "Status: stable maintainer contract.",
         "## Supported Install And Update Paths",
         "loopx update check",
         "loopx update plan",
@@ -384,7 +384,7 @@ def main() -> None:
         "canary_only_untrusted_checkout",
         "explicit_override",
         "## Named Version Contract",
-        "LoopX v0.x releases are tagged and built from GitHub",
+        "LoopX releases are tagged and built from GitHub",
         "when its Trusted Publisher gate passes, PyPI",
         "The version source is `loopx.__version__`, mirrored by `pyproject.toml`",
         "examples/release/release-version-contract-smoke.py",
