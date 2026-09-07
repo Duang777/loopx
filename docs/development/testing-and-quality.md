@@ -187,6 +187,12 @@ File/PostgreSQL agreement alone is not compatibility evidence because both
 providers execute the same new rule. Verify that every non-target record and
 the source snapshot are unchanged.
 
+The source snapshot's `lease_inventory` is byte-level audit evidence for every
+legacy lease file observed under the source locks. It is intentionally broader
+than canonical `projection.leases`, which contains only live edges whose Todo is
+present in the current canonical graph. Historical orphan lease files remain in
+the source inventory and never enter the canonical head.
+
 当同一个 semantic owner 服务多个 authority provider 时，重构对照必须包含三臂：
 不可变 legacy baseline、file provider、真实 PostgreSQL provider。三臂从同一份生产
 复杂度快照出发，执行相同 public operation；两个 provider head 要精确相等，baseline
@@ -196,6 +202,11 @@ the source snapshot are unchanged.
 provenance 也可不同。domain 字段、归档选择、相对顺序、active lease 和非目标记录均
 不得归一化。File/PostgreSQL 一致不能单独证明兼容，因为它们执行的是同一套新规则。
 还要验证所有非目标记录与源快照保持不变。
+
+源快照中的 `lease_inventory` 是在 source lock 下观察到的全部 legacy lease 文件的
+字节级审计证据；它有意比 canonical `projection.leases` 更宽。后者只包含当前 canonical
+Todo 图中仍有对应 Todo 的 live edge。历史 orphan lease 文件继续留在 source inventory，
+但绝不进入 canonical head。
 
 The archive rehearsal is executable and emits only bounded counts and digest
 prefixes. It never prints raw projections, Todo identifiers, source paths, or

@@ -521,6 +521,20 @@ exactly-once 保证；原 handler 可能仍存活时，caller 不得启动第二
 | 锁迁移债务 | PID liveness、token claim、stale reclaim 与抗替换文件身份使 Python/Node 共享锁可安全恢复。handoff-mode transition 与所有剩余 Python lease-lock holder 进程内迁移后，删除这层有界协议。 |
 | 非目标 | 本次 cutover 共享 ordinary lifecycle decision，但不实现 #3669 的 shared-provider execution、CAS 或 authority receipt；也不承诺 client timeout 后原 Node handler 仍运行时，第二个请求具备 exactly-once execution。 |
 
+#### Todo terminal lifecycle 迁移经济账
+
+| 字段 | 回执 |
+| --- | --- |
+| Canonical owner | 迁移前，Python 持有 terminal admission 与 archive retention，completion reduction 和 lease operation 则跨越更窄的 TS 边界。迁移后，`todo_terminal_decision.ts`、`todo_terminal_lifecycle.ts` 与 `todo_archive_selection.ts` 成为 terminal admission、lease release、completion reduction、successor validation、CAS、receipt replay 与 archive selection 的 typed owner。Native transaction 直接 import 同一 archive selector；legacy Markdown 每个 archive batch 只调用它一次。 |
+| 删除的旧语义代码 | 从 Python 语义 ownership 删除 74 行产品代码：49 行 terminal decision 与 25 行 archive eligibility/order/standing-receipt selector。其余 Python complete/supersede body 是未 promotion 路径的 compatibility writer，不是第二个 promoted authority。其他删除属于 adapter reshaping 或搬移，不计为 payoff。 |
+| 新增的 bridge 代码 | 有界 transport/compatibility 共 732 行 gross 产品代码：`provider_terminal_lifecycle.py` 中除 111 行 successor proposal derivation 外的 514 行、local TS request decoder/router 171 行、legacy archive result adapter 33 行、handler registration 8 行、projection settlement 6 行。29 行 `resolve_todo_state_path` extraction 是搬移，不是收益。Host-local validation declaration 的存储与执行是保留的 external effect，不冒充已删除 bridge。 |
+| Successor ownership | Public caller 持有请求的 successor text 与 option。Python `_successor_record`/`_build_successors` 当前仍持有 111 行 compatibility-time business derivation：priority inheritance、capability binding、user binding、exclusion 与 `unblocks_todo_id`；JSON record construction 属于 transport。TypeScript 校验完整 proposal 并原子提交，但该 derivation 是明确的 facade-exit 项，不能声称 authority 已删除。 |
+| 跨 runtime 调用 | 从 public facade 实测：promotion 后无 validation 的 complete、supersede 与 archive 均为三次 request/response（`todo_list`、terminal/archive transaction、projection readback）。带 validation 的 complete 为四次（`todo_list`、terminal preflight、terminal finalization、projection readback），另执行一次声明式 host-local validation effect。注入 post-commit projection crash 后，首次尝试为两次调用，receipt replay 为三次。该 cutover 前不存在合法 promoted happy path；legacy terminal 路径在兼容期新增一次 TS decision call。 |
+| 产品代码净增减 | 最终 merge-base 分类为产品代码 +3,254/−145，净增 3,109；test/fixture/example 为 +2,956/−154，净增 2,802；generated contract 为 +3/−0，docs 不计入。该增长交付完整 provider-neutral transaction、真实 File/PostgreSQL conformance、public facade parity 与持久 mutation gate，不记作 deletion payoff。 |
+| 迁移 scaffolding | Production-scale fixture、三臂演练、provider conformance、public legacy/promoted parity matrix 与 mutation case 因表达持久迁移 contract 而保留。Compatibility facade 及其 call-count assertion 随 facade 退出；provider-neutral transaction 与 archive-order mutation coverage 保留。 |
+| Facade 退出 | 顶层 Todo CLI 在进程内执行 TypeScript、registry/lifecycle fact 由 native caller 提供、validation 由 native host adapter 执行、typed successor intent 替代 `_build_successors`、compatibility consumer 直接 drain canonical journal 后，删除 `provider_terminal_lifecycle.py`、Python call-count test 与 `resolve_todo_state_path`。默认 Markdown archive writer 迁移后，删除 legacy `todo.archive.select` crossing。 |
+| 正确性证据 | 独立 archive order/standing receipt 语义可以 kill oldest-selection mutant；可选 `note`/`evidence`/`reason` 覆盖 promotion 前后的 `None`、empty、ordinary、Python Unicode 纯空白与空白压缩；Stage 2C 证明 provider-first fence routing、live-lease import、orphan-history filtering、management-lock exclusion、replay 与 zero-write preview。File 与真实 PostgreSQL provider 执行同一 terminal conformance，独立 legacy 臂仍是强制 compatibility evidence。 |
+
 Monitor-poll cutover 删除了 Python admission-policy、monitor-target module，以及
 Python event/replay/artifact writer。它的 bounded facade 会在 quota `should-run`、
 Todo monitor persistence、status projection 与剩余 run-index writer 都进入原生
