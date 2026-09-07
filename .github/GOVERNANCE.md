@@ -126,7 +126,7 @@ losing attribution for their work. Silence is not acceptance or approval.
 | Post-writeback hooks and reporting | [`@now-ing`](https://github.com/now-ing) | Write invitation sent; invited to select one cohesive initial review scope. No CODEOWNERS route until access is active and the scope is accepted. |
 | TypeScript transaction migration | [`@hhyykk`](https://github.com/hhyykk) | Proposed paired review of complete transaction cutovers and Python/TypeScript parity; scope confirmation pending. |
 | Task leases and scheduler boundaries | [`@yuefengw`](https://github.com/yuefengw) | Proposed paired review of lease lifecycle and boundary regressions; scope confirmation pending. |
-| DSH and optional integrations | [`@cocolord`](https://github.com/cocolord) | Proposed integration-review scope; shared replan and lifecycle contracts stay separately reviewed. Scope confirmation pending. |
+| DSH integration | [`@wujc12`](https://github.com/wujc12) | Designated first-review contact for the DSH plugin, installation and host-integration regressions. Shared replan and lifecycle contracts stay separately reviewed. |
 | Reliability diagnostics | [`@songoow`](https://github.com/songoow) | Proposed diagnostic/readback review scope; privacy and first-write data boundaries stay separately reviewed. Scope confirmation pending. |
 
 Start by linking a real cross-author PR, not by creating a quota of new

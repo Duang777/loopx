@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -84,9 +85,15 @@ class ReviewGateTests(unittest.TestCase):
         script = str(Path(__file__).with_name("review_gate.py"))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            # pytest-cov injects subprocess startup variables. The synthetic
+            # checkout must not contribute temporary source paths to real CI.
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("PYTEST", "COVERAGE", "COV_CORE"))}
 
             def git(*args):
-                return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+                return subprocess.check_output(
+                    ["git", *args], cwd=root, env=env, text=True
+                ).strip()
 
             git("init", "-q")
             git("config", "user.name", "CI Fixture")
@@ -103,19 +110,19 @@ class ReviewGateTests(unittest.TestCase):
             git("commit", "-qam", "docs")
             result = subprocess.check_output(
                 [sys.executable, script, "classify", "--base", base, "--head", "HEAD"],
-                cwd=root, text=True,
+                cwd=root, env=env, text=True,
             )
             self.assertEqual(result.strip(), "core_tests=false")
             git("mv", "loopx/code.py", "docs/code.md")
             git("commit", "-qm", "move code into docs")
             result = subprocess.check_output(
                 [sys.executable, script, "classify", "--base", base, "--head", "HEAD"],
-                cwd=root, text=True,
+                cwd=root, env=env, text=True,
             )
             self.assertEqual(result.strip(), "core_tests=true")
             failed = subprocess.run(
                 [sys.executable, script, "classify", "--base", "missing-ref", "--head", "HEAD"],
-                cwd=root, capture_output=True, text=True,
+                cwd=root, env=env, capture_output=True, text=True,
             )
             self.assertNotEqual(failed.returncode, 0)
             self.assertNotIn("core_tests=false", failed.stdout)
