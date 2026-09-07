@@ -59,7 +59,15 @@ def render_refresh_recovery_markdown(payload: dict[str, Any]) -> str | None:
         lines.append(str(payload["error"]))
     elif checkpoint.get("satisfied") is False:
         lines.append(
-            "Retry the same refresh command and Turn with --vision-unchanged-reason if an existing vision still applies, or --agent-vision-json for a valid vision patch. Do not repeat work or begin a new Turn for this checkpoint."
+            "Submit a checkpoint-only refresh with the same Goal, Agent, Todo/obligation, "
+            "Turn, and delivery fields. Remove previously executed state-mutation options, "
+            "even when their values are unchanged: --next-action, --autonomous-replan-recorded, "
+            "--repair-delta-kind, --usage-json, and --usage-codex-session. "
+            "Add only one valid vision decision: a valid --agent-vision-json packet or "
+            "inline --vision-* patch, or --vision-unchanged-reason only if a persisted "
+            "vision exists and its scope and acceptance still apply. Do not repeat work "
+            "or begin a new Turn solely to repair this checkpoint. Recovery remains "
+            "subject to existing validation."
         )
     return "\n".join(lines)
 
