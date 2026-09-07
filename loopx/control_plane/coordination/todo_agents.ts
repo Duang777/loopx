@@ -21,6 +21,11 @@ export function stripPythonWhitespace(value: string): string {
   return value.replace(PYTHON_LEADING_TRAILING_WHITESPACE, "");
 }
 
+/** Match Python's ``" ".join(str(value).strip().split())`` text compaction. */
+export function compactPythonWhitespace(value: string): string {
+  return stripPythonWhitespace(value).replace(PYTHON_WHITESPACE_RUN, " ");
+}
+
 /** Match Python's bool(str(value).strip()) presence contract. */
 export function hasPythonNonWhitespaceText(value: string): boolean {
   return stripPythonWhitespace(value).length > 0;
@@ -34,8 +39,7 @@ export function normalizeTodoAgent(value: unknown, label: string): string {
   // typed with any Python whitespace (including U+0085 NEL, U+001C..U+001F,
   // tabs, and NBSP) fold exactly like the Python kernel's compact_todo_text path
   // (loopx/control_plane/todos/contract.py normalize_todo_claimed_by).
-  const stripped = stripPythonWhitespace(value);
-  const candidate = stripped.toLowerCase().replace(PYTHON_WHITESPACE_RUN, "-");
+  const candidate = compactPythonWhitespace(value).toLowerCase().replaceAll(" ", "-");
   if (!/^[a-z][a-z0-9_.:@-]{0,79}$/u.test(candidate)) {
     throw new AuthorityStoreProtocolError(`${label} must be a public-safe agent id`);
   }

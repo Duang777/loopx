@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from json import loads as json_loads
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, cast
 
 from ...history import load_registry
 from ...materials import find_registry_goal, goal_repo
@@ -12,15 +13,13 @@ from ..runtime.validation_command import (
     run_caller_validation,
 )
 from .active_state_editing import find_todo_block
-from .contract import TODO_STATUS_DONE, normalize_todo_status
-from .event_writeback import event_projection_source_authority, event_projection_todo_context
-from .completion_transaction import (
-    reduce_todo_completion_transaction,
-    todo_completion_source_snapshot,
-)
 from .completion_policy import (
     build_completion_policy_request,
     linked_successors_from_state,
+)
+from .completion_transaction import (
+    reduce_todo_completion_transaction,
+    todo_completion_source_snapshot,
 )
 from .completion_validation_projection import (
     completion_validation_declaration,
@@ -30,7 +29,11 @@ from .completion_validation_store import (
     persist_completion_validation_declaration,
     read_completion_validation_declaration,
 )
-
+from .contract import TODO_STATUS_DONE, normalize_todo_status
+from .event_writeback import (
+    event_projection_source_authority,
+    event_projection_todo_context,
+)
 
 # Kept safely under the 30s outer CLI/MCP subprocess budget so a timed-out
 # validation still produces a typed receipt before the outer call is killed.
@@ -313,7 +316,7 @@ def resolve_private_completion_validation_declaration(
             todo_id=todo_id,
             declaration=declaration,
         )
-    return cast(dict[str, Any], declaration)
+    return declaration
 
 
 def run_completion_validation_gate_with_source(

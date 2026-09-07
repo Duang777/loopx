@@ -63,6 +63,7 @@ import {
   normalizeIdempotencyKey,
   normalizeTtl,
 } from "../work_items/task_lease_acquire.ts";
+import { compactPythonWhitespace } from "./todo_agents.ts";
 
 export const LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA =
   "loopx_local_coordination_todo_claim_request_v0";
@@ -111,6 +112,14 @@ function claimAgentValue(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string`);
   }
   return value;
+}
+
+function optionalProseValue(value: unknown, label: string): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string or null`);
+  }
+  return compactPythonWhitespace(value) || null;
 }
 
 function claimObservedAt(value: unknown): Date {
@@ -827,12 +836,9 @@ export async function terminalLifecycleLocalCoordinationTodo(
             ) as "turn_settlement" | "unscoped_completion" | "lifecycle_reentry",
         linked_successor_todo_ids: linkedSuccessorTodoIds,
         successors,
-        note: input.note === null || input.note === undefined
-          ? null : claimAgentValue(input.note, "note"),
-        evidence: input.evidence === null || input.evidence === undefined
-          ? null : claimAgentValue(input.evidence, "evidence"),
-        reason: input.reason === null || input.reason === undefined
-          ? null : claimAgentValue(input.reason, "reason"),
+        note: optionalProseValue(input.note, "note"),
+        evidence: optionalProseValue(input.evidence, "evidence"),
+        reason: optionalProseValue(input.reason, "reason"),
         clear_claim: input.clear_claim as boolean,
         validation_declaration:
           input.validation_declaration === null || input.validation_declaration === undefined

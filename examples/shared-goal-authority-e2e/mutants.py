@@ -8,18 +8,18 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import dataclass
 import difflib
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 COORDINATION = "loopx/control_plane/coordination/"
 
@@ -129,9 +129,20 @@ def remove_fence(source: str) -> str:
     return "".join(lines[:function.body[0].lineno - 1]) + "    return\n" + "".join(lines[function.end_lineno:])
 
 
+def typescript_exported_function_span(source: str, name: str) -> tuple[int, int]:
+    """Bound one top-level exported function without depending on its successor."""
+
+    signature = f"export async function {name}("
+    start = source.index(signature)
+    next_export = re.search(r"(?m)^export (?:async )?function ", source[start + len(signature):])
+    end = len(source) if next_export is None else start + len(signature) + next_export.start()
+    return start, end
+
+
 def remove_native_update_maintenance(source: str) -> str:
-    start = source.index("export async function updateLocalCoordinationTodo(")
-    end = source.index("export async function editLocalCoordinationTodo(", start)
+    start, end = typescript_exported_function_span(
+        source, "updateLocalCoordinationTodo"
+    )
     function = source[start:end]
     function = replacement(
         "return await withCanonicalWriter(root, goalId, input.dry_run === true, async () => {",
@@ -181,6 +192,10 @@ CASES.extend([
     Case("native_update_maintenance", ((COORDINATION + "local_authority_runtime.ts",
          remove_native_update_maintenance),),
          "tests/control_plane/test_shadow_native_todo_update_e2e.py::test_native_update_holds_before_primary_for_management[native-bootstrapping-cli]"),
+    Case("archive_oldest_selection", ((COORDINATION + "todo_archive_selection.ts", replacement(
+        "movable.slice(0, moveCount)", "movable.slice(-moveCount)")),),
+         "tests/control_plane_ts/todo_archive_selection.test.ts",
+         "archive selection preserves imported order"),
     Case("remove_fence", ((COORDINATION + "legacy_writer_fence.py", remove_fence),), FENCE_TEST),
     Case("fence_outside_lock", ((COORDINATION + "legacy_writer_fence.py",
          move_guard_outside_lock("require_legacy_coordination_write_allowed")),), FENCE_TEST),
@@ -216,7 +231,7 @@ CASES.extend([
     if (left > right) return 1;
     return 0;
   });''', ".sort((left, right) => left.localeCompare(right));")),),
-         "tests/control_plane/test_runtime_shadow_bounded_e2e.py::test_source_snapshot_preserves_ordinal_mixed_case_lease_inventory"),
+         "tests/control_plane/test_runtime_shadow_bounded_e2e.py::test_source_snapshot_preserves_inventory_without_projecting_orphan_leases"),
 ])
 
 # Restore both halves of the obsolete mirror: the public CLI hook and an actual
@@ -259,7 +274,7 @@ CASES.append(Case("python_fence_remediation_truncated", (
     (COORDINATION + "legacy_writer_fence.py", replacement(
         'LEGACY_WRITER_FENCED_REMEDIATION = (\n    "legacy coordination writer is fenced; use the promoted canonical authority "\n    "({authority_mode}) for goal {goal_id}; fence {fence_id}; "\n    "the primary record was not changed"\n)',
         'LEGACY_WRITER_FENCED_REMEDIATION = "legacy coordination writer is fenced"')),
-), "tests/control_plane/test_shadow_fence_caller_parity_e2e.py::test_fence_caller_parity[cli-todo_complete-engaged]"))
+), "tests/control_plane/test_shadow_fence_caller_parity_e2e.py::test_fence_caller_parity[cli-todo_update_status-engaged]"))
 CASES.append(Case("fence_envelope_schema_leak", (
     (COORDINATION + "legacy_writer_fence.ts", replacement(
         "    this.payload = { write_check: writeCheck };",
@@ -282,7 +297,7 @@ def run(case: Case, directory: Path, log: Path) -> subprocess.CompletedProcess[s
                    if not key.startswith(("PYTHON", "LOOPX", "NODE", "COVERAGE"))}
     environment.update(PYTHONPATH=str(directory), PYTHONNOUSERSITE="1")
     result = subprocess.run(case.command(), cwd=directory, env=environment,
-                            capture_output=True, text=True, timeout=120)
+                            capture_output=True, text=True, timeout=120, check=False)
     log.write_text(result.stdout + result.stderr, encoding="utf-8")
     return result
 

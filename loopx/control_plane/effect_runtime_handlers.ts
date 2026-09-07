@@ -128,6 +128,7 @@ import {
 } from "./coordination/local_authority_runtime.ts";
 import { evaluateCoordinationTodoClaimDecision } from "./coordination/todo_claim.ts";
 import { evaluateCoordinationTodoTerminalDecision } from "./coordination/todo_terminal_decision.ts";
+import { evaluateCoordinationTodoArchiveSelection } from "./coordination/todo_archive_selection.ts";
 import {
   checkLegacyCoordinationWriteAllowed,
   engageLegacyCoordinationWriterFence,
@@ -378,6 +379,7 @@ export function createEffectRuntimeHandlers(
       ),
     ],
     ["todo.terminal.decide", evaluateCoordinationTodoTerminalDecision],
+    ["todo.archive.select", evaluateCoordinationTodoArchiveSelection],
     ["todo.completion.reduce", reduceTodoCompletionTransaction],
     ["todo.completion_policy.resolve", resolveTodoCompletionPolicy],
     ["todo.next_action.transition", transitionTodoNextAction],

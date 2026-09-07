@@ -1131,6 +1131,124 @@ test("terminal and archive wire adapters reject coercible numeric values", async
   assert.equal(opened, 2, "legal integers must cross the wire boundary unchanged");
 });
 
+test("terminal wire preserves legacy optional prose semantics", async (t) => {
+  const cases = [
+    {field: "note", value: null, expected: "existing-note"},
+    {field: "note", value: "", expected: "existing-note"},
+    {field: "note", value: "ordinary note", expected: "ordinary note"},
+    {field: "note", value: " \u0085 ", expected: "existing-note"},
+    {field: "note", value: " first\u0085  second ", expected: "first second"},
+    {field: "evidence", value: null, expected: "existing-evidence"},
+    {field: "evidence", value: "", expected: "existing-evidence"},
+    {field: "evidence", value: "ordinary evidence", expected: "ordinary evidence"},
+    {field: "evidence", value: " \u0085 ", expected: "existing-evidence"},
+    {field: "evidence", value: " first\u0085  second ", expected: "first second"},
+    {field: "reason", value: null, expected: "existing-reason", command: "supersede"},
+    {field: "reason", value: "", expected: "existing-reason", command: "supersede"},
+    {field: "reason", value: "ordinary reason", expected: "ordinary reason", command: "supersede"},
+    {field: "reason", value: " \u0085 ", expected: "existing-reason", command: "supersede"},
+    {field: "reason", value: " first\u0085  second ", expected: "first second", command: "supersede"},
+  ] as const;
+
+  for (const [index, item] of cases.entries()) {
+    const root = await mkdtemp(join(tmpdir(), `loopx-terminal-prose-${index}-`));
+    t.after(() => rm(root, {recursive: true, force: true}));
+    const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+    assert.equal((await store.commitAuthority({
+      expected_provider_revision: null,
+      operation_id: `seed-prose-${index}`,
+      events: [],
+      next_projection: withTodoReadModel({
+        goal_id: "goal-a",
+        handoff_mode: "soft_claim",
+        todos: [todoRecord({
+          claimed_by: "agent-a",
+          note: "existing-note",
+          evidence: "existing-evidence",
+          reason: "existing-reason",
+        })],
+        leases: [],
+      }),
+      receipts: [],
+    })).status, "applied");
+    const request = {
+      schema_version: LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+      runtime_root: root,
+      goal_id: "goal-a",
+      todo_id: "todo_a",
+      role: "agent",
+      command: "command" in item ? item.command : "complete",
+      actor_agent_id: "agent-a",
+      registered_agents: ["agent-a"],
+      lifecycle_grants: [],
+      authority_reason: null,
+      decision_outcome: null,
+      operation_id: `terminal-prose-${index}`,
+      lease_idempotency_key: null,
+      lease_expected_version: null,
+      allow_user_gate_auto_acquire: false,
+      requested_no_followup: true,
+      requested_completion_turn_key: null,
+      requested_completion_identity_source: null,
+      linked_successor_todo_ids: [],
+      successors: [],
+      note: item.field === "note" ? item.value : null,
+      evidence: item.field === "evidence" ? item.value : null,
+      reason: item.field === "reason" ? item.value : null,
+      clear_claim: false,
+      validation_declaration: null,
+      validation_receipt: null,
+      completion_policy_request: null,
+      dry_run: false,
+      observed_at: "2026-09-08T04:00:00Z",
+    };
+    const result = await terminalLifecycleLocalCoordinationTodo(request);
+    assert.equal(result.status, "applied", `${item.field}=${JSON.stringify(item.value)}: ${JSON.stringify(result)}`);
+    const loaded = await store.loadAuthority();
+    assert.equal(loaded.status, "loaded");
+    if (loaded.status !== "loaded") continue;
+    const todo = (loaded.head.todos as Record<string, unknown>[])[0]!;
+    assert.equal(todo[item.field], item.expected, `${item.field}=${JSON.stringify(item.value)}`);
+  }
+
+  for (const field of ["note", "evidence", "reason"] as const) {
+    const invalid = await terminalLifecycleLocalCoordinationTodo({
+      schema_version: LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+      runtime_root: join(tmpdir(), "loopx-invalid-terminal-prose"),
+      goal_id: "goal-a",
+      todo_id: "todo-a",
+      role: "agent",
+      command: field === "reason" ? "supersede" : "complete",
+      actor_agent_id: "agent-a",
+      registered_agents: ["agent-a"],
+      lifecycle_grants: [],
+      authority_reason: null,
+      decision_outcome: null,
+      operation_id: `terminal-invalid-${field}`,
+      lease_idempotency_key: null,
+      lease_expected_version: null,
+      allow_user_gate_auto_acquire: false,
+      requested_no_followup: true,
+      requested_completion_turn_key: null,
+      requested_completion_identity_source: null,
+      linked_successor_todo_ids: [],
+      successors: [],
+      note: field === "note" ? 1 : null,
+      evidence: field === "evidence" ? 1 : null,
+      reason: field === "reason" ? 1 : null,
+      clear_claim: false,
+      validation_declaration: null,
+      validation_receipt: null,
+      completion_policy_request: null,
+      dry_run: false,
+      observed_at: "2026-09-08T04:00:00Z",
+    }, {createStore: (directory, goalId) =>
+      new FileAuthorityStore(directory, goalId, {existingOnly: true})});
+    assert.equal(invalid.status, "failed");
+    assert.match(String(invalid.reason), new RegExp(`${field} must be a string or null`));
+  }
+});
+
 test("engaged promotion fence blocks every native legacy task-lease writer", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-lease-fence-"));
   const shadow = await qualifiedShadow(root);

@@ -7,7 +7,16 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from canonical_authority_fixture import initialize_canonical_authority
 
+from loopx.control_plane.coordination import local_authority as local_authority_module
+from loopx.control_plane.coordination.coordination_state_contract import (
+    TODO_DOMAIN_READ_RECORD_SCHEMA_VERSION,
+    TODO_DOMAIN_RECORD_FIELDS,
+)
+from loopx.control_plane.coordination.legacy_writer_fence import (
+    legacy_coordination_writer_fence_path,
+)
 from loopx.control_plane.coordination.local_authority import (
     LocalCoordinationAuthorityRejection,
     LocalCoordinationAuthorityUnavailable,
@@ -17,16 +26,12 @@ from loopx.control_plane.coordination.local_authority import (
 from loopx.control_plane.coordination.runtime_shadow import (
     build_todo_runtime_shadow_projection,
 )
-from loopx.control_plane.coordination.coordination_state_contract import (
-    TODO_DOMAIN_READ_RECORD_SCHEMA_VERSION,
-    TODO_DOMAIN_RECORD_FIELDS,
+from loopx.control_plane.todos import provider_projection, provider_terminal_lifecycle
+from loopx.control_plane.todos.active_state_editing import (
+    TODO_SECTION_HEADINGS,
+    section_bounds,
+    todo_blocks,
 )
-from loopx.control_plane.todos.active_state_editing import TODO_SECTION_HEADINGS
-from loopx.control_plane.todos import provider_projection
-from loopx.control_plane.coordination.legacy_writer_fence import (
-    legacy_coordination_writer_fence_path,
-)
-from canonical_authority_fixture import initialize_canonical_authority
 from loopx.control_plane.todos.completion_validation_projection import (
     project_completion_validation_authority,
 )
@@ -805,6 +810,7 @@ def test_canonical_hard_lease_claim_cli_atomically_acquires_ownership(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert initial_failure.returncode == 1
     failure_payload = json.loads(initial_failure.stdout)
@@ -873,6 +879,7 @@ def test_canonical_hard_lease_claim_cli_atomically_acquires_ownership(
 
 def test_promoted_terminal_lifecycle_commits_successors_and_archive_natively(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_root = tmp_path / "runtime"
     project = tmp_path / "project"
@@ -980,6 +987,30 @@ Continue provider-first delivery.
         projection,
         state_path=state_file,
     )
+    runtime_calls: list[str] = []
+    original_effect_runtime_result = provider_terminal_lifecycle.effect_runtime_result
+    original_authority_runtime_result = local_authority_module.effect_runtime_result
+
+    def count_runtime_call(method: str, params: dict[str, object]) -> object:
+        runtime_calls.append(method)
+        return original_effect_runtime_result(method, params)
+
+    def count_authority_runtime_call(
+        method: str, params: dict[str, object]
+    ) -> object:
+        runtime_calls.append(method)
+        return original_authority_runtime_result(method, params)
+
+    monkeypatch.setattr(
+        provider_terminal_lifecycle,
+        "effect_runtime_result",
+        count_runtime_call,
+    )
+    monkeypatch.setattr(
+        local_authority_module,
+        "effect_runtime_result",
+        count_authority_runtime_call,
+    )
 
     completed = complete_goal_todo(
         registry_path=registry_path,
@@ -1002,8 +1033,15 @@ Continue provider-first delivery.
     assert completed["validation_receipt"]["command_label"] == (
         "provider terminal integration"
     )
+    assert runtime_calls == [
+        "coordination.local_authority.todo_list",
+        "coordination.local_authority.todo_terminal",
+        "coordination.local_authority.todo_terminal",
+        "coordination.local_authority.todo_list",
+    ]
     successor_id = completed["generated_successor_todo_ids"][0]
 
+    runtime_calls.clear()
     superseded = supersede_goal_todo(
         registry_path=registry_path,
         runtime_root_arg=str(runtime_root),
@@ -1018,6 +1056,11 @@ Continue provider-first delivery.
     assert superseded["status"] == "applied"
     assert superseded["superseded"] is True
     assert superseded["projection_delivery"] == "delivered"
+    assert runtime_calls == [
+        "coordination.local_authority.todo_list",
+        "coordination.local_authority.todo_terminal",
+        "coordination.local_authority.todo_list",
+    ]
 
     canonical = read_canonical_todos_if_promoted(
         runtime_root=runtime_root,
@@ -1031,6 +1074,7 @@ Continue provider-first delivery.
     assert by_id["todo_supersede_native"]["status"] == "done"
     assert by_id["todo_supersede_native"]["superseded_by"] in by_id
 
+    runtime_calls.clear()
     archived = archive_completed_todos(
         registry_path=registry_path,
         runtime_root_arg=str(runtime_root),
@@ -1042,6 +1086,11 @@ Continue provider-first delivery.
     assert archived["status"] == "applied"
     assert archived["moved_count"] == 2
     assert archived["projection_delivery"] == "delivered"
+    assert runtime_calls == [
+        "coordination.local_authority.todo_list",
+        "coordination.local_authority.todo_archive",
+        "coordination.local_authority.todo_list",
+    ]
     canonical_after_archive = read_canonical_todos_if_promoted(
         runtime_root=runtime_root,
         goal_id="goal-a",
@@ -1056,6 +1105,154 @@ Continue provider-first delivery.
     rendered = state_file.read_text(encoding="utf-8")
     assert "Human narrative remains outside canonical Todo authority." in rendered
     assert "Continue provider-first delivery." in rendered
+
+
+def test_public_terminal_optional_prose_matches_before_and_after_promotion(
+    tmp_path: Path,
+) -> None:
+    cases = [
+        ("note", None, None),
+        ("note", "", None),
+        ("note", " \u0085 ", None),
+        ("note", "ordinary note", "ordinary note"),
+        ("note", " first\u0085  second ", "first second"),
+        ("evidence", None, None),
+        ("evidence", "", None),
+        ("evidence", " \u0085 ", None),
+        ("evidence", "ordinary evidence", "ordinary evidence"),
+        ("evidence", " first\u0085  second ", "first second"),
+        ("reason", None, None),
+        ("reason", "", None),
+        ("reason", " \u0085 ", None),
+        ("reason", "ordinary reason", "ordinary reason"),
+        ("reason", " first\u0085  second ", "first second"),
+    ]
+
+    def exercise(root: Path, *, promoted: bool) -> dict[str, object]:
+        runtime_root = root / "runtime"
+        project = root / "project"
+        state_file = project / "ACTIVE_GOAL_STATE.md"
+        project.mkdir(parents=True)
+        records: list[dict[str, object]] = []
+        todo_lines: list[str] = []
+        for index, (field, _value, _expected) in enumerate(cases, start=1):
+            todo_id = f"todo_prose_{index:02d}"
+            text = f"Exercise optional {field} case {index}"
+            metadata = format_todo_metadata_line(
+                todo_id=todo_id,
+                status="open",
+                task_class="advancement_task",
+                claimed_by="agent-a",
+            )
+            todo_lines.extend([f"- [ ] {text}", str(metadata)])
+            records.append(
+                {
+                    "schema_version": "todo_item_v0",
+                    "index": index,
+                    "done": False,
+                    "text": text,
+                    "todo_id": todo_id,
+                    "role": "agent",
+                    "status": "open",
+                    "archive_state": "active",
+                    "source_section": TODO_SECTION_HEADINGS["agent"],
+                    "task_class": "advancement_task",
+                    "claimed_by": "agent-a",
+                }
+            )
+        state_file.write_text(
+            "# Goal\n\n## User Todo / Owner Review Reading Queue\n\n"
+            "## Agent Todo\n\n" + "\n".join(todo_lines) +
+            "\n\n## Completed Work Archive\n",
+            encoding="utf-8",
+        )
+        registry_path = root / "registry.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "common_runtime_root": str(runtime_root),
+                    "goals": [
+                        {
+                            "id": "goal-a",
+                            "status": "active",
+                            "repo": str(project),
+                            "state_file": state_file.name,
+                            "coordination": {
+                                "agent_model": "peer_v1",
+                                "registered_agents": ["agent-a"],
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        if promoted:
+            initialize_canonical_authority(
+                runtime_root,
+                "goal-a",
+                build_todo_runtime_shadow_projection(
+                    goal_id="goal-a",
+                    todos=records,
+                    handoff_mode="soft_claim",
+                ),
+                state_path=state_file,
+            )
+
+        for index, (field, value, _expected) in enumerate(cases, start=1):
+            common = {
+                "registry_path": registry_path,
+                "runtime_root_arg": str(runtime_root),
+                "goal_id": "goal-a",
+                "todo_id": f"todo_prose_{index:02d}",
+                "role": "agent",
+                "agent_id": "agent-a",
+            }
+            if field == "reason":
+                result = supersede_goal_todo(**common, reason=value)
+                assert result["superseded"] is True
+            else:
+                result = complete_goal_todo(
+                    **common,
+                    claimed_by="agent-a",
+                    no_followup=True,
+                    **{field: value},
+                )
+                assert result["completed"] is True
+
+        if promoted:
+            projection = read_canonical_todos_if_promoted(
+                runtime_root=runtime_root,
+                goal_id="goal-a",
+            )
+            assert projection is not None
+            todos = projection["todos"]
+        else:
+            lines = state_file.read_text(encoding="utf-8").splitlines()
+            bounds = section_bounds(lines, "agent")
+            assert bounds is not None
+            todos = todo_blocks(
+                lines,
+                bounds[0],
+                bounds[1],
+                role="agent",
+                source_section=bounds[2],
+            )
+        by_id = {todo["todo_id"]: todo for todo in todos}
+        return {
+            f"{field}:{index}": by_id[f"todo_prose_{index:02d}"].get(field)
+            for index, (field, _value, _expected) in enumerate(cases, start=1)
+        }
+
+    legacy = exercise(tmp_path / "legacy", promoted=False)
+    canonical = exercise(tmp_path / "canonical", promoted=True)
+    expected = {
+        f"{field}:{index}": value
+        for index, (field, _input, value) in enumerate(cases, start=1)
+    }
+    assert legacy == expected
+    assert canonical == expected
 
 
 @pytest.mark.parametrize(
@@ -1194,6 +1391,30 @@ def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
     initialize_canonical_authority(
         runtime_root, "goal-a", projection, state_path=state_file
     )
+    runtime_calls: list[str] = []
+    original_effect_runtime_result = provider_terminal_lifecycle.effect_runtime_result
+    original_authority_runtime_result = local_authority_module.effect_runtime_result
+
+    def count_runtime_call(method: str, params: dict[str, object]) -> object:
+        runtime_calls.append(method)
+        return original_effect_runtime_result(method, params)
+
+    def count_authority_runtime_call(
+        method: str, params: dict[str, object]
+    ) -> object:
+        runtime_calls.append(method)
+        return original_authority_runtime_result(method, params)
+
+    monkeypatch.setattr(
+        provider_terminal_lifecycle,
+        "effect_runtime_result",
+        count_runtime_call,
+    )
+    monkeypatch.setattr(
+        local_authority_module,
+        "effect_runtime_result",
+        count_authority_runtime_call,
+    )
     original_settle = provider_projection.settle_canonical_todo_projection
 
     def _crash_projection(*_args: object, **_kwargs: object) -> dict[str, object]:
@@ -1217,6 +1438,10 @@ def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
     }
     with pytest.raises(OSError, match="projection delivery crash"):
         complete_goal_todo(**request)
+    assert runtime_calls == [
+        "coordination.local_authority.todo_list",
+        "coordination.local_authority.todo_terminal",
+    ]
 
     monkeypatch.setattr(
         "loopx.control_plane.todos.provider_terminal_lifecycle.settle_canonical_todo_projection",
@@ -1224,6 +1449,13 @@ def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
     )
     replay = complete_goal_todo(**request)
     assert replay["status"] == "replayed"
+    assert runtime_calls == [
+        "coordination.local_authority.todo_list",
+        "coordination.local_authority.todo_terminal",
+        "coordination.local_authority.todo_list",
+        "coordination.local_authority.todo_terminal",
+        "coordination.local_authority.todo_list",
+    ]
     canonical = read_canonical_todos_if_promoted(
         runtime_root=runtime_root, goal_id="goal-a"
     )
@@ -1501,7 +1733,9 @@ def test_real_canonical_provider_preserves_complete_complex_todo_semantics(
     changed_intent = [
         "agent-b" if part == "agent-a" else part for part in claim_command
     ]
-    rejected = subprocess.run(changed_intent, capture_output=True, text=True)
+    rejected = subprocess.run(
+        changed_intent, capture_output=True, text=True, check=False
+    )
     assert rejected.returncode != 0
     assert (
         json.loads(rejected.stdout)["error"]
@@ -1509,7 +1743,10 @@ def test_real_canonical_provider_preserves_complete_complex_todo_semantics(
     )
     for invalid_key in ("", " padded-operation "):
         invalid = subprocess.run(
-            [*claim_command[:-1], invalid_key], capture_output=True, text=True
+            [*claim_command[:-1], invalid_key],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         assert invalid.returncode != 0
     assert not state_file.exists()

@@ -8,14 +8,13 @@ Nothing is mocked; the fence is engaged by the real TypeScript owner.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 import json
-from pathlib import Path
 import shutil
 import sys
+from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import pytest
-
 from test_shadow_observable_e2e import Caller
 from test_shadow_observable_native_e2e import native
 
@@ -24,7 +23,8 @@ pytestmark = pytest.mark.stage2c_e2e
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "control_plane" / "legacy_writer_fence_caller_parity_v0.json"
 BUILDER = (
     "from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection as build; "
-    "import json,sys; value=build(goal_id='observable', todos=json.loads(sys.argv[1])); "
+    "import json,sys; value=build(goal_id='observable', todos=json.loads(sys.argv[1]), "
+    "leases=json.loads(sys.argv[2])); "
     "value['handoff_mode']='hard_lease'; print(json.dumps(value))"
 )
 PLACEHOLDERS = ("runtime_root", "todo_a", "todo_b", "todo_gate")
@@ -49,7 +49,9 @@ class Workspace:
         return {k for k in self.w.files() if k.startswith("runtime/authority-shadow/outbox/")}
 
     def fence_path(self) -> Path:
-        from loopx.control_plane.coordination.legacy_writer_fence import legacy_coordination_writer_fence_path
+        from loopx.control_plane.coordination.legacy_writer_fence import (
+            legacy_coordination_writer_fence_path,
+        )
 
         return legacy_coordination_writer_fence_path(runtime_root=self.w.root, goal_id="observable")
 
@@ -79,8 +81,14 @@ class Workspace:
 
 def seed_and_fence(ws: Workspace, todo_keys: tuple[str, ...]) -> None:
     records = [ws.w.read(ws.ids[key]) for key in todo_keys]
+    lease_path = (
+        ws.w.root / "goals" / "observable" / "task-leases" /
+        f"{ws.ids['todo_b']}.json"
+    )
+    leases = [json.loads(lease_path.read_text(encoding="utf-8"))]
     projection = ws.w.invoke(
-        [sys.executable, "-c", BUILDER, json.dumps(records)], ["fixture-projection", json.dumps(records)]
+        [sys.executable, "-c", BUILDER, json.dumps(records), json.dumps(leases)],
+        ["fixture-projection", json.dumps(records), "<lease-fixture>"],
     )
     assert native(ws.w, "seed", projection)["status"] == "applied"
 

@@ -8,11 +8,11 @@ TypeScript transaction is the sole owner of lifecycle admission and writes.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import wraps
 from inspect import signature
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any
 from uuid import uuid4
 
 from ...agent_registry import load_goal_from_registry, registered_agent_ids_for_goal
@@ -27,11 +27,11 @@ from .completion_policy import (
     build_completion_policy_request,
     linked_successor_from_todo,
 )
+from .completion_transaction import require_completion_successor_todo_ids
 from .completion_validation import (
     resolve_private_completion_validation_declaration,
     run_declared_completion_validation_effect,
 )
-from .completion_transaction import require_completion_successor_todo_ids
 from .contract import (
     build_todo_id,
     normalize_todo_metadata_for_write,
@@ -42,7 +42,6 @@ from .mutation_authority import normalize_todo_lifecycle_authority
 from .path_resolution import resolve_todo_state_path
 from .provider_projection import settle_canonical_todo_projection
 from .text import inherit_todo_priority
-
 
 _TERMINAL_REQUEST_SCHEMA = "loopx_local_coordination_todo_terminal_lifecycle_request_v0"
 _ARCHIVE_REQUEST_SCHEMA = "loopx_local_coordination_todo_archive_request_v0"
@@ -58,7 +57,8 @@ def _non_negative_integer(value: Any, label: str, *, optional: bool) -> int | No
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         suffix = " or None" if optional else ""
         raise ValueError(f"{label} must be a non-negative integer{suffix}")
-    return cast(int, value)
+    result: int = value
+    return result
 
 
 def _route_terminal_call(command: str, call: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -452,7 +452,7 @@ def terminal_canonical_todo_if_promoted(
         (
             "loopx-provider-terminal-operation-v0\0"
             f"{command}\0{goal_id}\0{todo_id}\0{operation_identity}"
-        ).encode("utf-8")
+        ).encode()
     ).hexdigest()
     operation_id = f"todo-terminal:{operation_digest[:32]}"
     validation_declaration = None

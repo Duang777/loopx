@@ -6,7 +6,6 @@ import type {
 } from "./authority_store.ts";
 import {
   AuthorityStoreProtocolError,
-  authorityUnicodeCompare,
   canonicalAuthorityObject,
   canonicalAuthoritySha256,
   requireAuthorityStoreId,
@@ -40,6 +39,7 @@ import {
   normalizeAgent,
   normalizeWriteScopes,
 } from "../work_items/task_lease_acquire.ts";
+import { selectCoordinationTodoArchive } from "./todo_archive_selection.ts";
 
 export const COORDINATION_TODO_TERMINAL_LIFECYCLE_RESULT_SCHEMA =
   "loopx_coordination_todo_terminal_lifecycle_result_v0";
@@ -58,7 +58,6 @@ const COMPLETION_IDENTITY_SOURCES = [
   "unscoped_completion",
   "lifecycle_reentry",
 ] as const;
-const STANDING_DECISION_GRANULARITIES = new Set(["goal", "project", "global"]);
 const USER_TODO_TASK_CLASSES = new Set(["user_action", "user_gate"]);
 
 type TerminalCommand = typeof TERMINAL_COMMANDS[number];
@@ -968,37 +967,6 @@ export async function executeCoordinationTodoTerminalLifecycle(
     };
 }
 
-function isStandingDecisionReceipt(todo: JsonObject): boolean {
-  if (todo.role !== "user" || todo.task_class !== "user_gate" || todo.status !== "done" ||
-      typeof todo.unblocks_todo_id === "string") return false;
-  const scope = todo.decision_scope;
-  if (scope === null || typeof scope !== "object" || Array.isArray(scope) ||
-      typeof (scope as JsonObject).granularity !== "string" ||
-      !STANDING_DECISION_GRANULARITIES.has(String((scope as JsonObject).granularity)) ||
-      !DECISION_OUTCOMES.includes(todo.decision_outcome as typeof DECISION_OUTCOMES[number])) {
-    return false;
-  }
-  return todo.global_gate === true || typeof todo.blocks_agent === "string";
-}
-
-function archiveOrder(left: JsonObject, right: JsonObject): number {
-  const leftIndex = Number.isSafeInteger(left.index) && Number(left.index) >= 0
-    ? Number(left.index) : null;
-  const rightIndex = Number.isSafeInteger(right.index) && Number(right.index) >= 0
-    ? Number(right.index) : null;
-  if (leftIndex !== null || rightIndex !== null) {
-    if (leftIndex === null) return 1;
-    if (rightIndex === null) return -1;
-    if (leftIndex !== rightIndex) return leftIndex - rightIndex;
-  }
-  const leftTime = typeof left.completed_at === "string"
-    ? left.completed_at : typeof left.updated_at === "string" ? left.updated_at : "";
-  const rightTime = typeof right.completed_at === "string"
-    ? right.completed_at : typeof right.updated_at === "string" ? right.updated_at : "";
-  if (leftTime !== rightTime) return authorityUnicodeCompare(leftTime, rightTime);
-  return authorityUnicodeCompare(String(left.todo_id), String(right.todo_id));
-}
-
 function normalizeArchiveInput(raw: CoordinationTodoArchiveInput): CoordinationTodoArchiveInput {
   if (!Number.isSafeInteger(raw.max_active_done) || raw.max_active_done < 0) {
     throw new AuthorityStoreProtocolError("max_active_done must be a non-negative safe integer");
@@ -1085,29 +1053,22 @@ export async function executeCoordinationTodoArchiveCompleted(
       error instanceof Error ? error.message : "invalid coordination projection",
     );
   }
-  const completed = projection.todo_ids
-    .map((todoId) => projection.todos.get(todoId)!)
-    .filter((todo) => todo.role === input.role && todo.archive_state === "active" &&
-      todo.status === "done")
-    // Compatibility records retain their Markdown position as `index`; that
-    // order is the legacy definition of "older". Provider-native records have
-    // no projection index and fall back to their durable terminal timestamp.
-    .sort(archiveOrder);
-  const retainedStanding = input.role === "user"
-    ? completed.filter(isStandingDecisionReceipt) : [];
-  const movable = completed.filter((todo) => !retainedStanding.includes(todo));
-  const moveCount = Math.min(movable.length, Math.max(0, completed.length - input.max_active_done));
-  const moved = movable.slice(0, moveCount);
+  const selection = selectCoordinationTodoArchive({
+    role: input.role,
+    max_active_done: input.max_active_done,
+    todos: projection.todo_ids.map((todoId) => projection.todos.get(todoId)!),
+  });
+  const moved = selection.moved_todo_ids.map((todoId) => projection.todos.get(todoId)!);
   const updatedAt = input.now.toISOString().replace(/\.\d{3}Z$/u, "Z");
   const result: JsonObject = {
-    role: input.role,
+    role: selection.role,
     changed: moved.length > 0,
-    active_done_before: completed.length,
-    active_done_after: completed.length - moved.length,
-    max_active_done: input.max_active_done,
-    moved_count: moved.length,
-    moved_todo_ids: moved.map((todo) => todo.todo_id),
-    retained_standing_decision_count: retainedStanding.length,
+    active_done_before: selection.active_done_before,
+    active_done_after: selection.active_done_after,
+    max_active_done: selection.max_active_done,
+    moved_count: selection.moved_count,
+    moved_todo_ids: selection.moved_todo_ids,
+    retained_standing_decision_count: selection.retained_standing_decision_count,
   };
   if (input.dry_run) {
     return {
