@@ -110,6 +110,9 @@ Changes to the classifier or workflow need both code-path and documentation-only
 qualification. Keep required check names stable and never require a
 workflow-level path-filtered check that cannot report on every PR.
 
+PRs opened before activation may need a branch update to produce the new
+required check; an old green suite alone does not supply a missing aggregate.
+
 ### Refactor Real-Path Gate / 重构真实路径门
 
 The PR review capability's `observable_semantics` evidence gate applies to
