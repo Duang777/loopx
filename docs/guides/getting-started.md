@@ -447,10 +447,12 @@ dist/loopx-sidecar --format json slash-commands --install --surface codex --code
 ```
 
 Expect `source.kind: frozen_bundle`, successful installation, then
-`install_required: false`. Static slash commands are generated from bundled
-Python code and do not require the workflow-skill data tree. `--skills-dir`
-selects the installation destination, not a source override. Skill installation
-does not enable schedulers, launch goals, or grant the host additional authority.
+`install_required: false`. The managed readback records the frozen bundle's
+LoopX package version, so a newer sidecar reports the older installed skills as
+requiring refresh. Static slash commands are generated from bundled Python code
+and do not require the workflow-skill data tree. `--skills-dir` selects the
+installation destination, not a source override. Skill installation does not
+enable schedulers, launch goals, or grant the host additional authority.
 
 Rebuild with the new pinned wheel and reinstall skills when upgrading the host;
 restart the agent host to reload them. Keep the previous sidecar for rollback and

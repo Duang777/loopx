@@ -260,10 +260,24 @@ def test_frozen_bundle_install_lifecycle(
     installed = workflow_skill_install(skills_dir=target, execute=True)
     assert installed["ok"] is True
     assert installed["after"]["ready"] is True
+    manifest = json.loads(
+        (target / SKILL_INSTALL_READBACK_FILENAME).read_text(encoding="utf-8")
+    )
+    assert manifest["source"]["kind"] == "frozen_bundle"
+    assert (
+        installed["after"]["source_revision"]
+        == install_module.__version__
+    )
+    assert installed["after"]["source_revision_matches"] is True
     for skill_id in PACKAGED_HOST_SKILL_IDS:
         assert install_module.hash_skill_tree(target / skill_id) == install_module.hash_skill_tree(canonical / skill_id)
     repeated = workflow_skill_install(skills_dir=target, execute=True)
     assert set(repeated["installed"].values()) == {"unchanged"}
+    monkeypatch.setattr(install_module, "__version__", "999.0.0")
+    upgraded_bundle = workflow_skill_install(skills_dir=target)
+    assert upgraded_bundle["ok"] is True
+    assert upgraded_bundle["install_required"] is True
+    assert upgraded_bundle["before"]["source_revision_matches"] is False
     # Uninstall must remain usable even if a subsequent bundle loses its data.
     shutil.rmtree(bundled_skills)
     removed = workflow_skill_install(skills_dir=target, execute=True, uninstall=True)

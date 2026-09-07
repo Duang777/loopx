@@ -11,6 +11,7 @@ import sys
 import tempfile
 from typing import Any, Iterator, Mapping
 
+from . import __version__
 from .file_lock import exclusive_file_lock
 from .skill_install_readback import (
     ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS,
@@ -76,6 +77,7 @@ def resolve_workflow_skill_source() -> dict[str, Any]:
             "kind": "frozen_bundle" if available else "missing",
             "skills_root": bundled_skills if available else None,
             "source_root": bundle_root,
+            "distribution_version": __version__ if available else None,
             "reason": (
                 "workflow skills are available from the frozen application bundle"
                 if available
@@ -257,10 +259,17 @@ def workflow_skill_install(
     target_root = (skills_dir or default_workflow_skills_dir()).expanduser().resolve()
     source = resolve_workflow_skill_source()
     source_root = Path(source["source_root"])
+    frozen_source_revision = (
+        str(source["distribution_version"])
+        if source.get("kind") == "frozen_bundle"
+        and source.get("distribution_version")
+        else None
+    )
     before = inspect_skill_install_readback(
         skills_dir=target_root,
         required_skill_ids=ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS,
         source_root=source_root,
+        expected_source_revision_override=frozen_source_revision,
     )
     if uninstall:
         result = (
@@ -367,6 +376,10 @@ def workflow_skill_install(
             skills_dir=target_root,
             skill_ids=ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS,
             source_root=source_root,
+            source_kind_override=(
+                "frozen_bundle" if frozen_source_revision else None
+            ),
+            source_revision_override=frozen_source_revision,
             owner=PYTHON_DISTRIBUTION_SKILL_INSTALL_OWNER,
             integration_mode=PYTHON_DISTRIBUTION_SKILL_INSTALL_MODE,
         )
@@ -375,6 +388,7 @@ def workflow_skill_install(
         skills_dir=target_root,
         required_skill_ids=ARK_MANAGED_AGENT_REQUIRED_SKILL_IDS,
         source_root=source_root,
+        expected_source_revision_override=frozen_source_revision,
     )
     return {
         "ok": bool(after.get("ready")),
