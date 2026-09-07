@@ -23,22 +23,13 @@ def exact_blocked_successor_wait_state(value: Any) -> dict[str, Any]:
         return {}
     candidate = value
     if value.get("schema_version") != GOAL_VISION_WAIT_STATE_SCHEMA_VERSION:
-        candidate = (
-            value.get("vision_wait_state")
-            if isinstance(value.get("vision_wait_state"), dict)
-            else {}
-        )
+        raw_candidate = value.get("vision_wait_state")
+        candidate = raw_candidate if isinstance(raw_candidate, dict) else {}
         if not candidate:
-            projection = (
-                value.get("goal_frontier_projection")
-                if isinstance(value.get("goal_frontier_projection"), dict)
-                else {}
-            )
-            candidate = (
-                projection.get("vision_wait_state")
-                if isinstance(projection.get("vision_wait_state"), dict)
-                else {}
-            )
+            raw_projection = value.get("goal_frontier_projection")
+            projection = raw_projection if isinstance(raw_projection, dict) else {}
+            raw_candidate = projection.get("vision_wait_state")
+            candidate = raw_candidate if isinstance(raw_candidate, dict) else {}
     if (
         candidate.get("schema_version") != GOAL_VISION_WAIT_STATE_SCHEMA_VERSION
         or candidate.get("state") != "waiting"
@@ -113,7 +104,8 @@ def _acceptance_gap_causal_todo_ids(
             "successor_todo_ids",
             "completed_todo_ids",
         ):
-            values = gap.get(key) if isinstance(gap.get(key), list) else []
+            raw_values = gap.get(key)
+            values = raw_values if isinstance(raw_values, list) else []
             todo_ids.update(
                 todo_id for value in values if (todo_id := normalize_todo_id(value))
             )
@@ -164,12 +156,8 @@ def _covered_wait_items(
             "current_agent_blocker_items": source_items,
         }
 
-    blocker_items = (
-        agent_todo_summary.get("current_agent_blocker_items")
-        if isinstance(agent_todo_summary, dict)
-        and isinstance(agent_todo_summary.get("current_agent_blocker_items"), list)
-        else []
-    )
+    raw_blockers = (agent_todo_summary or {}).get("current_agent_blocker_items")
+    blocker_items = raw_blockers if isinstance(raw_blockers, list) else []
     safe_agent_id = normalize_todo_claimed_by(agent_id)
     blocker_items = [
         item

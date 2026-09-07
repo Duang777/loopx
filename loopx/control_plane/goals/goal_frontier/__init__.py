@@ -39,7 +39,13 @@ from ..goal_vision_policy import (
 )
 from ..goal_vision_state import (
     goal_vision_state_is_closed,
-    goal_vision_state_requires_successor,
+)
+from ..goal_vision_read_model import (
+    VISION_ACCEPTANCE_GAP_TRIGGER as VISION_ACCEPTANCE_GAP_TRIGGER,
+    VISION_SUCCESSOR_GAP_TRIGGER as VISION_SUCCESSOR_GAP_TRIGGER,
+    _compact_projection_text,
+    acceptance_gaps_from_agent_vision as acceptance_gaps_from_agent_vision,
+    parse_vision_todo_delta_entries as parse_vision_todo_delta_entries,
 )
 from ..goal_vision_wait import build_goal_vision_wait_state
 from . import outcome_continuity
@@ -53,7 +59,6 @@ from .fallback_disposition import (
     agent_scoped_selectable_advancement_todo_ids,  # noqa: F401
     declared_fallback_gap_from_agent_vision,
     parse_fallback_declarations,  # noqa: F401
-    parse_vision_todo_delta_entries,
 )
 from .long_todo_chain import (
     LONG_TODO_CHAIN_TRIGGER,
@@ -93,8 +98,6 @@ AUTONOMOUS_REPLAN_OBLIGATION_SCHEMA_VERSION = "autonomous_replan_obligation_v0"
 AUTONOMOUS_REPLAN_REQUIRED_MODE = "autonomous_replan_required"
 FRONTIER_EXHAUSTED_MONITOR_TRIGGER = "frontier_exhausted_monitor_lane"
 MONITOR_NO_CHANGE_STREAK_TRIGGER = "monitor_no_change_streak"
-VISION_ACCEPTANCE_GAP_TRIGGER = "vision_acceptance_gap"
-VISION_SUCCESSOR_GAP_TRIGGER = "vision_successor_required"
 VISION_PROFILE_MISSING_TRIGGER = "required_agent_vision_missing"
 TODO_SUCCESSION_GAP_TRIGGER = TODO_SUCCESSION_WARNING_REASON_CODE
 TODO_TASK_CLASS_ADVANCEMENT = "advancement_task"
@@ -305,13 +308,6 @@ def autonomous_replan_scope_decision(
     return payload
 
 
-def _compact_projection_text(value: Any, *, limit: int = 360) -> str | None:
-    text = " ".join(str(value or "").strip().split())
-    if not text:
-        return None
-    return text[:limit]
-
-
 def projected_autonomous_replan_ack_for_agent(
     item: dict[str, Any],
     project_asset: dict[str, Any] | None,
@@ -329,87 +325,6 @@ def projected_autonomous_replan_ack_for_agent(
         if autonomous_replan_ack_matches_agent(normalized, agent_id=agent_id):
             return normalized
     return None
-
-
-def acceptance_gaps_from_agent_vision(
-    agent_vision: dict[str, Any] | None,
-    *,
-    goal_status: str | None = None,
-) -> list[dict[str, Any]]:
-    """Convert bounded vision replan triggers into goal-frontier gap records."""
-
-    if not isinstance(agent_vision, dict):
-        return []
-    patch = agent_vision.get("vision_patch") if isinstance(agent_vision.get("vision_patch"), dict) else {}
-    state = str(agent_vision.get("state") or "").strip()
-    if goal_vision_state_is_closed(state):
-        normalized_goal_status = str(goal_status or "").strip().lower()
-        active_goal = normalized_goal_status == "active" or normalized_goal_status.startswith(
-            "active-"
-        )
-        if goal_vision_state_requires_successor(state) and active_goal:
-            return [
-                {
-                    "kind": VISION_SUCCESSOR_GAP_TRIGGER,
-                    "source": "latest_agent_vision",
-                    "agent_id": agent_vision.get("agent_id"),
-                    "state": agent_vision.get("state"),
-                    "goal_status": normalized_goal_status,
-                    "replan_trigger_summary": (
-                        "the current stage vision is closed while the registry goal "
-                        "remains active; establish a successor vision before continuing"
-                    ),
-                    "acceptance_summary": (
-                        "Write the next bounded agent vision, or explicitly retire, "
-                        "supersede, or close the lane with no_followup."
-                    ),
-                    "advancement_policy": "repeat_until_closed",
-                    "generated_at": agent_vision.get("generated_at"),
-                }
-            ]
-        return []
-    acceptance = _compact_projection_text(patch.get("acceptance_summary"), limit=420)
-    explicit_trigger = _compact_projection_text(
-        patch.get("replan_trigger_summary"),
-        limit=240,
-    )
-    trigger = explicit_trigger
-    if not trigger and acceptance:
-        trigger = "active agent vision remains open with acceptance evidence still required"
-    if not trigger:
-        return []
-    gap: dict[str, Any] = {
-        "kind": VISION_ACCEPTANCE_GAP_TRIGGER,
-        "source": "latest_agent_vision",
-        "agent_id": agent_vision.get("agent_id"),
-        "state": agent_vision.get("state"),
-        "replan_trigger_summary": trigger,
-        "replan_trigger_source": (
-            "explicit_vision_trigger"
-            if explicit_trigger
-            else "implicit_open_acceptance"
-        ),
-    }
-    if acceptance:
-        gap["acceptance_summary"] = acceptance
-    vision_todo_ids = [
-        todo_id
-        for _, todo_id in parse_vision_todo_delta_entries(
-            agent_vision.get("todo_delta")
-        )
-    ]
-    if vision_todo_ids:
-        gap["vision_todo_ids"] = list(dict.fromkeys(vision_todo_ids))
-    advancement_policy = _compact_projection_text(
-        patch.get("advancement_policy"),
-        limit=32,
-    )
-    if advancement_policy:
-        gap["advancement_policy"] = advancement_policy
-    generated_at = _compact_projection_text(agent_vision.get("generated_at"), limit=80)
-    if generated_at:
-        gap["generated_at"] = generated_at
-    return [gap]
 
 
 def acceptance_gaps_from_agent_profile_requirement(

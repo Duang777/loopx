@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from ..todos.projection import agent_scoped_selectable_advancement_todo_ids
+from .goal_vision_read_model import (
+    acceptance_gaps_from_agent_vision,
+    latest_agent_vision_from_runs,
+)
 from .goal_vision_wait import build_goal_vision_wait_state
 
 
@@ -22,8 +26,6 @@ def attach_active_vision_waits(
     """
     if role != "agent" or not runs:
         return
-    from .goal_frontier import acceptance_gaps_from_agent_vision
-    from .goal_frontier.semantic_history import latest_agent_vision_from_runs
 
     agent_ids = {
         str(

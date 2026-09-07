@@ -10,13 +10,13 @@ from ...todos.deferred_resume import todo_summary_blocked_successor_items
 from ...todos.projection import (
     agent_scoped_selectable_advancement_todo_ids,
 )
+from ..goal_vision_read_model import (
+    VISION_FRONTIER_TODO_DELTA_ACTIONS as VISION_FRONTIER_TODO_DELTA_ACTIONS,
+    VISION_TODO_DELTA_ID_LIMIT as VISION_TODO_DELTA_ID_LIMIT,
+    parse_vision_todo_delta_entries as parse_vision_todo_delta_entries,
+)
 from ..goal_vision_state import goal_vision_state_is_closed
 
-# Single owner of the vision todo_delta action contract shared by the
-# acceptance-gap projection and this module.
-VISION_FRONTIER_TODO_DELTA_ACTIONS = frozenset(
-    {"activate", "create", "reopen", "resume", "retain"}
-)
 # create/reopen entries are bounded successor declarations and resolve the
 # fallback disposition on their own; activate/resume/retain entries only link
 # the vision to existing Todos and still need a selectable frontier match.
@@ -24,7 +24,6 @@ VISION_TODO_DELTA_SUCCESSOR_ACTIONS = frozenset({"create", "reopen"})
 VISION_TODO_DELTA_LINKAGE_ACTIONS = frozenset(
     VISION_FRONTIER_TODO_DELTA_ACTIONS - VISION_TODO_DELTA_SUCCESSOR_ACTIONS
 )
-VISION_TODO_DELTA_ID_LIMIT = 120
 VISION_FALLBACK_DECLARATION_ENTRY_LIMIT = 4
 VISION_FALLBACK_DECLARATION_FIELDS = ("target_todo_id", "successor_todo_id")
 VISION_FALLBACK_GAP_TRIGGER = "vision_fallback_unresolved"
@@ -66,25 +65,6 @@ class FallbackDeclaration:
 
 def _compact_text(value: Any, *, limit: int) -> str:
     return " ".join(str(value or "").strip().split())[:limit]
-
-
-def parse_vision_todo_delta_entries(entries: Any) -> list[tuple[str, str]]:
-    """Parse ``action:todo_id`` vision todo_delta entries once for consumers."""
-
-    parsed: list[tuple[str, str]] = []
-    for value in entries or []:
-        if not isinstance(value, str):
-            continue
-        action, separator, raw_todo_id = value.strip().partition(":")
-        todo_id = _compact_text(raw_todo_id, limit=VISION_TODO_DELTA_ID_LIMIT)
-        normalized_action = action.strip().lower()
-        if (
-            separator
-            and todo_id
-            and normalized_action in (VISION_FRONTIER_TODO_DELTA_ACTIONS)
-        ):
-            parsed.append((normalized_action, todo_id))
-    return parsed
 
 
 def parse_fallback_declarations(
