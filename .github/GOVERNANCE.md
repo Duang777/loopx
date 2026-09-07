@@ -151,13 +151,14 @@ review, code-owner approval where applicable, dismissal of stale approvals,
 approval of the last push by another reviewer, resolved review threads, and
 required status checks against an up-to-date base.
 
-The initial required check is `Sign-off`, bound to the GitHub Actions app.
-The `merge-gate` job in `python-tests.yml` is the core-test rollout target:
-activate it in the ruleset only after the workflow is merged and both a code
-change and a documentation-only change have produced the intended results.
-It must fail for missing, failed, cancelled or unexpectedly skipped core jobs;
-only an explicitly classified documentation-only change may skip those jobs.
-Keep this section synchronized when the required-check list changes.
+The required-check contract is `Sign-off` plus `merge-gate`, both bound to the
+GitHub Actions app. `merge-gate` in `python-tests.yml` aggregates core
+qualification. During initial rollout, activate that second check only after
+the workflow is merged and both a code change and a documentation-only change
+have produced the intended results. It must fail for missing, failed, cancelled
+or unexpectedly skipped core jobs; only an explicitly classified
+documentation-only change may skip those jobs. See the live ruleset for the
+currently activated checks, rather than inferring activation from this file.
 
 Only `@huangruiteng` retains the existing `always` bypass entry. Write access
 does not grant bypass. A bypass is an exception, not a validation substitute:
