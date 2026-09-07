@@ -72,7 +72,7 @@ interface PostWritebackSource extends JsonObject {
   event_kind: string;
   status: string;
   durable: boolean;
-  identity: JsonObject & { goal_id: string };
+  identity: JsonObject & { goal_id: string; todo_id: string | null };
   state_version: string;
   committed_at: string;
   projection: JsonObject;
@@ -191,7 +191,13 @@ function stripPythonWhitespace(value: string): string {
   return value.slice(start, end);
 }
 
-/** Match Python json.dumps(sort_keys=True, separators=(",", ":")) identity bytes. */
+/**
+ * Match Python json.dumps(sort_keys=True, separators=(",", ":")) identity
+ * bytes for the string, boolean, and null shapes this contract carries.
+ * Floats and integers beyond Number.MAX_SAFE_INTEGER differ from CPython's
+ * repr (exponent zero-padding and format thresholds), so cross-language
+ * digest equality must not rely on those shapes.
+ */
 function pythonCanonicalJson(value: unknown): string {
   const chunks: string[] = [];
   const tasks: CanonicalJsonTask[] = [{ kind: "value", value }];
@@ -263,6 +269,14 @@ function pythonStrippedString(value: unknown, label: string): string {
     throw new EffectRuntimeRequestError(`${label} must be a non-empty string`);
   }
   return stripped;
+}
+
+function optionalPythonStrippedString(
+  value: unknown,
+  label: string,
+): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  return pythonStrippedString(value, label);
 }
 
 function boundedTransactionResult(result: JsonObject): JsonObject {
@@ -369,10 +383,16 @@ function decodeSource(value: unknown): PostWritebackSource {
     ["goal_id", "agent_id", "todo_id", "turn_instance_id", "effect_id"],
     "source.identity",
   );
-  const normalizedIdentity: JsonObject & { goal_id: string } = {
+  const normalizedIdentity: JsonObject & {
+    goal_id: string;
+    todo_id: string | null;
+  } = {
     goal_id: pythonStrippedString(identity.goal_id, "source.identity.goal_id"),
     agent_id: pythonStrippedString(identity.agent_id, "source.identity.agent_id"),
-    todo_id: pythonStrippedString(identity.todo_id, "source.identity.todo_id"),
+    todo_id: optionalPythonStrippedString(
+      identity.todo_id,
+      "source.identity.todo_id",
+    ),
     turn_instance_id: pythonStrippedString(
       identity.turn_instance_id,
       "source.identity.turn_instance_id",
