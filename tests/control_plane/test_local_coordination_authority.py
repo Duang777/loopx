@@ -489,7 +489,6 @@ def _seed_promoted_store(
     """Promote one open agent Todo through the real TypeScript runtime."""
 
     projection = build_todo_runtime_shadow_projection(
-        handoff_mode=handoff_mode,
         goal_id="goal-a",
         todos=[
             {
@@ -505,6 +504,8 @@ def _seed_promoted_store(
             }
         ],
     )
+    if handoff_mode is not None:
+        projection["handoff_mode"] = str(handoff_mode)
     canonical_bytes = json.dumps(
         projection,
         ensure_ascii=False,
@@ -650,12 +651,25 @@ def test_promoted_claim_protocol_failure_stays_infrastructure_outage(
 
 
 def test_promoted_claim_folds_agent_id_whitespace_like_legacy(tmp_path: Path) -> None:
-    """Tabs in claimed_by must fold to "-" before and after promotion alike.
-
-    Legacy normalize_todo_claimed_by collapses any whitespace run (Python
-    compact_todo_text) to a single "-"; the TypeScript owner now folds the
-    same way, so the identical claim command keeps succeeding post-cutover.
+    """Every Python whitespace character (including U+0085 NEL, U+001C..U+001F,
+    tabs, NBSP) in claimed_by must fold to '-' identically before and after promotion.
     """
+    from loopx.control_plane.todos.contract import normalize_todo_claimed_by
+
+    variants = [
+        "Agent A",
+        "Agent\tA",
+        "Agent\u0085A",
+        "Agent\u001cA",
+        "Agent\u001dA",
+        "Agent\u001eA",
+        "Agent\u001fA",
+        "Agent\u00a0A",
+        "\u0085 Agent \t A \u001c ",
+    ]
+    for variant in variants:
+        assert normalize_todo_claimed_by(variant) == "agent-a"
+
     _seed_promoted_store(tmp_path)
     result = claim_canonical_todo_if_promoted(
         registry_path=_claim_registry(tmp_path),
@@ -663,8 +677,8 @@ def test_promoted_claim_folds_agent_id_whitespace_like_legacy(tmp_path: Path) ->
         goal_id="goal-a",
         todo_id="todo_a",
         role="agent",
-        claimed_by="Agent\tA",
-        actor_agent_id=None,
+        claimed_by="Agent\u0085A",
+        actor_agent_id="\u0085 Agent \t A \u001c ",
         dry_run=False,
     )
     assert result is not None and result["ok"] is True
@@ -805,7 +819,7 @@ def test_promoted_hard_lease_claim_cli_atomically_acquires_ownership(
     )
     state_file.unlink()
 
-    command = [
+    base_command = [
         sys.executable,
         "-m",
         "loopx.cli",
@@ -825,6 +839,27 @@ def test_promoted_hard_lease_claim_cli_atomically_acquires_ownership(
         "agent-a",
         "--claim-operation-id",
         "atomic-cli-claim",
+    ]
+    initial_failure = subprocess.run(
+        base_command,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert initial_failure.returncode == 1
+    failure_payload = json.loads(initial_failure.stdout)
+    assert failure_payload["ok"] is False
+    assert failure_payload["error_code"] == "handoff_mode_requires_lease"
+    assert failure_payload["handoff_mode"] == "hard_lease"
+    assert "loopx todo claim --task-lease-idempotency-key" in failure_payload["error"]
+    assert "--task-lease-expected-version" in failure_payload["error"]
+    recovery = failure_payload.get("recovery") or {}
+    assert recovery.get("command") == "loopx todo claim"
+    assert recovery.get("requires_flags") == ["--task-lease-idempotency-key"]
+    assert "--task-lease-expected-version" in (recovery.get("optional_flags") or [])
+
+    command = [
+        *base_command,
         "--task-lease-idempotency-key",
         "turn:atomic-cli-claim",
         "--task-lease-expected-version",
@@ -1355,10 +1390,11 @@ def test_hard_lease_eligibility_rejection_is_valueerror(
 ) -> None:
     """A real hard-lease Todo without a lease rejects with a usable repair path.
 
-    The unpromoted path raises TaskLeaseError (a ValueError) pointing at
-    ``loopx task-lease acquire``; the promoted path must keep that caller
-    contract and carry the same actionable recovery guidance, while leaving
-    the canonical state untouched.
+    The unpromoted path raises TaskLeaseError (a ValueError) when a hard-lease
+    Todo has no matching active lease; the promoted path must keep that caller
+    contract and leave the canonical state untouched. The canonical recovery
+    operation is to supply a task-lease idempotency key to acquire the lease
+    atomically with the claim.
     """
 
     _seed_promoted_store(tmp_path, handoff_mode="hard_lease")
@@ -1382,10 +1418,54 @@ def test_hard_lease_eligibility_rejection_is_valueerror(
         )
     assert isinstance(exc_info.value, LocalCoordinationAuthorityRejection)
     assert exc_info.value.code == "handoff_mode_requires_lease"
-    assert "loopx task-lease acquire" in str(exc_info.value)
+    assert (
+        "hard_lease Todo claim requires an active canonical lease held by the claiming agent"
+        in str(exc_info.value)
+    )
+    assert "loopx todo claim --task-lease-idempotency-key" in str(exc_info.value)
+    assert "--task-lease-expected-version" in str(exc_info.value)
+    assert (
+        exc_info.value.payload.get("recovery", {}).get("requires_flags")
+        == ["--task-lease-idempotency-key"]
+    )
     store_after = json.loads(
         (
             tmp_path / "authority" / "file-v0" / "authority-store-bf21e67b01a351a1.json"
         ).read_text(encoding="utf-8")
     )
     assert json.dumps(store_after.get("head", {}), sort_keys=True) == head_before
+
+    # Canonical recovery path: supply task_lease_idempotency_key to acquire
+    # the lease atomically during claim.
+    recovered = claim_canonical_todo_if_promoted(
+        registry_path=registry_path,
+        runtime_root=tmp_path,
+        goal_id="goal-a",
+        todo_id="todo_a",
+        role="agent",
+        claimed_by="agent-a",
+        actor_agent_id="agent-a",
+        dry_run=False,
+        task_lease_idempotency_key="turn:claim-and-acquire",
+        task_lease_expected_version=0,
+    )
+    assert recovered is not None and recovered["status"] == "applied"
+    assert recovered["changed"] is True
+    assert recovered["lease"]["owner"] == "agent-a"
+    assert recovered["lease"]["status"] == "active"
+    assert recovered["lease"]["idempotency_key"] == "turn:claim-and-acquire"
+
+    # With the active lease now persisted, subsequent claims succeed without
+    # requiring a new lease request.
+    subsequent = claim_canonical_todo_if_promoted(
+        registry_path=registry_path,
+        runtime_root=tmp_path,
+        goal_id="goal-a",
+        todo_id="todo_a",
+        role="agent",
+        claimed_by="agent-a",
+        actor_agent_id="agent-a",
+        dry_run=False,
+    )
+    assert subsequent is not None
+    assert subsequent["status"] in {"applied", "no_change", "replayed"}
