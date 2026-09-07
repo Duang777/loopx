@@ -100,8 +100,7 @@ fn bundle_executable_is_present(executable: &Path, bundle: &Path) -> bool {
     }
     match declared_bundle_executable(bundle) {
         Some(declared) => {
-            !declared.is_empty()
-                && bundle.join("Contents/MacOS").join(declared).is_file()
+            !declared.is_empty() && bundle.join("Contents/MacOS").join(declared).is_file()
         }
         None => true,
     }
@@ -189,8 +188,7 @@ pub fn restore(app: &AppHandle) -> Result<(), String> {
     // must pass verification (`copy` re-checks its codesign signature).
     let executable = std::env::current_exe().map_err(|_| "app_bundle_required")?;
     let previous = root(app)?.join("previous");
-    let version = fs::read_to_string(previous.join("version"))
-        .map_err(|_| "backup_unavailable")?;
+    let version = fs::read_to_string(previous.join("version")).map_err(|_| "backup_unavailable")?;
     let handle = app.clone();
     restore_verified_backup(&executable, &previous, move || {
         crate::bundled_runtime::record_pending(&handle, version.trim(), "rollback")
@@ -242,7 +240,8 @@ fn replace_bundle(bundle: &Path, candidate: &Path, failed: &Path) -> Result<(), 
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) mod signed_app_test_support {
     use std::{
-        fs, path::{Path, PathBuf},
+        fs,
+        path::{Path, PathBuf},
         process::{Command, Stdio},
     };
 
@@ -273,7 +272,10 @@ pub(crate) mod signed_app_test_support {
             .stderr(Stdio::null())
             .status()
             .unwrap();
-        assert!(signed.success(), "ad-hoc codesign must succeed on the synthetic App");
+        assert!(
+            signed.success(),
+            "ad-hoc codesign must succeed on the synthetic App"
+        );
         assert!(
             crate::update_backup::signature_verifies_for_test(&app),
             "the freshly signed synthetic App must verify before damage is applied"
@@ -288,11 +290,9 @@ pub(crate) mod signed_app_test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[cfg(target_os = "macos")]
-    use super::signed_app_test_support::{
-        ad_hoc_signed_synthetic_app, synthetic_executable,
-    };
+    use super::signed_app_test_support::{ad_hoc_signed_synthetic_app, synthetic_executable};
+    use super::*;
 
     #[test]
     fn failed_replacement_restores_original() {
@@ -381,10 +381,7 @@ mod tests {
         .unwrap();
         let survivor = contents.join("MacOS/unrelated-helper");
         fs::write(&survivor, "binary").unwrap();
-        assert_eq!(
-            app_bundle_at(&survivor),
-            Err("app_bundle_required".into())
-        );
+        assert_eq!(app_bundle_at(&survivor), Err("app_bundle_required".into()));
         // With the declared executable restored beside the survivor the
         // bundle is a runnable layout again.
         let declared = contents.join("MacOS/loopx-control-plane");
@@ -452,24 +449,27 @@ mod tests {
         // Missing executable: layout alone rejects.
         let no_binary = ad_hoc_signed_synthetic_app(dir.path(), "NoBinary.app");
         fs::remove_file(synthetic_executable(&no_binary)).unwrap();
-        assert!(!installed_bundle_verifies(&synthetic_executable(&no_binary)));
+        assert!(!installed_bundle_verifies(&synthetic_executable(
+            &no_binary
+        )));
 
         // Missing sealed resource with executable and plist intact: layout
         // still passes, only the shared signature gate rejects it.
-        let sealed_missing =
-            ad_hoc_signed_synthetic_app(dir.path(), "SealedMissing.app");
+        let sealed_missing = ad_hoc_signed_synthetic_app(dir.path(), "SealedMissing.app");
         assert!(app_bundle_at(&synthetic_executable(&sealed_missing)).is_ok());
-        fs::remove_file(sealed_missing.join("Contents/Resources/sealed-resource.txt"))
-            .unwrap();
+        fs::remove_file(sealed_missing.join("Contents/Resources/sealed-resource.txt")).unwrap();
         assert!(app_bundle_at(&synthetic_executable(&sealed_missing)).is_ok());
-        assert!(!installed_bundle_verifies(&synthetic_executable(&sealed_missing)));
+        assert!(!installed_bundle_verifies(&synthetic_executable(
+            &sealed_missing
+        )));
 
         // Unparseable (replaced, binary) Info.plist: layout's plist read
         // degrades, the signature gate rejects the mutated bundle.
-        let plist_mutated =
-            ad_hoc_signed_synthetic_app(dir.path(), "PlistMutated.app");
+        let plist_mutated = ad_hoc_signed_synthetic_app(dir.path(), "PlistMutated.app");
         fs::write(plist_mutated.join("Contents/Info.plist"), [0u8, 1, 2, 3]).unwrap();
-        assert!(!installed_bundle_verifies(&synthetic_executable(&plist_mutated)));
+        assert!(!installed_bundle_verifies(&synthetic_executable(
+            &plist_mutated
+        )));
 
         // Unsigned bundle (the pre-signing synthetic layouts): signature
         // verification fails closed even though the layout is complete.
@@ -506,15 +506,21 @@ mod tests {
             app_bundle_at(&synthetic_executable(&target_a)),
             Err("app_bundle_required".into())
         );
-        assert!(restore_verified_backup(&synthetic_executable(&target_a), &previous, || Ok(())).is_ok());
-        assert!(target_a.join("Contents/Resources/sealed-resource.txt").is_file());
+        assert!(
+            restore_verified_backup(&synthetic_executable(&target_a), &previous, || Ok(())).is_ok()
+        );
+        assert!(target_a
+            .join("Contents/Resources/sealed-resource.txt")
+            .is_file());
         assert!(installed_bundle_verifies(&synthetic_executable(&target_a)));
 
         // Damaged target B: a sealed resource deleted; rollback repairs it too.
         let target_b = ad_hoc_signed_synthetic_app(dir.path(), "SealedDamaged.app");
         fs::remove_file(target_b.join("Contents/Resources/sealed-resource.txt")).unwrap();
         assert!(!installed_bundle_verifies(&synthetic_executable(&target_b)));
-        assert!(restore_verified_backup(&synthetic_executable(&target_b), &previous, || Ok(())).is_ok());
+        assert!(
+            restore_verified_backup(&synthetic_executable(&target_b), &previous, || Ok(())).is_ok()
+        );
         assert!(installed_bundle_verifies(&synthetic_executable(&target_b)));
 
         // Moved-away target: the boundary is derived from the executable's

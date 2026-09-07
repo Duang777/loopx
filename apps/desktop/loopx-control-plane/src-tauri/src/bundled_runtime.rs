@@ -100,9 +100,8 @@ fn resolve_journal(path: &Path, running_version: &str) -> Result<JournalResoluti
     if !path.exists() {
         return Ok(JournalResolution::Absent);
     }
-    let state: Value =
-        serde_json::from_slice(&fs::read(path).map_err(|_| "update_state_invalid")?)
-            .map_err(|_| "update_state_invalid")?;
+    let state: Value = serde_json::from_slice(&fs::read(path).map_err(|_| "update_state_invalid")?)
+        .map_err(|_| "update_state_invalid")?;
     if state["version"] != running_version {
         // A journal naming a different version means the approved installation
         // never completed: the app update failed before replacing the app, or
@@ -125,7 +124,7 @@ pub fn discard_journal(app: &AppHandle) -> Result<bool, String> {
     discard_journal_at(&journal(app)?)
 }
 
-fn discard_journal_at(path: &Path) -> Result<bool, String> {
+pub(crate) fn discard_journal_at(path: &Path) -> Result<bool, String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),

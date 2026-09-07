@@ -342,16 +342,12 @@ async fn perform(
         // discard the journal and promise a safe restart; anything else keeps
         // the journal and surfaces the distinct recovery state so the
         // verified backup remains the rollback path.
-        let (code, may_discard_journal) = install_failure_recovery(
+        return Err(finalize_install_failure(
+            &state,
             failed_install_left_previous_app_usable(app),
-        );
-        if may_discard_journal {
-            let discarded = bundled_runtime::discard_journal(app);
-            let discarded_ok = discarded.is_ok();
-            state.install_journal_discarded.store(discarded_ok, Ordering::Release);
-            return Err(install_failure_state(true, discarded).into());
-        }
-        return Err(code.into());
+            || bundled_runtime::discard_journal(app),
+        )
+        .into());
     }
     *state.pending.lock().unwrap() = None;
     Ok(state.publish("restart_required", json!({"version":target})))
@@ -404,10 +400,10 @@ fn install_failure_recovery(previous_app_usable: bool) -> (&'static str, bool) {
 }
 
 // The final install-failure state must fold in the journal effect: a usable
-// previous App only earns the safe-restart `app_install_failed` state when the
-// stale continuation journal was actually discarded; a failed discard keeps
-// the journal (the next boot would resume the abandoned install), so the
-// journal-preserving recovery state applies instead.
+// previous App earns the safe-restart `app_install_failed` state only when the
+// stale continuation journal is absent after the effect (removed or already
+// absent). A failed discard keeps the journal, so the journal-preserving
+// recovery state applies instead.
 fn install_failure_state(
     previous_app_usable: bool,
     journal_discarded: Result<bool, String>,
@@ -421,15 +417,25 @@ fn install_failure_state(
         Err(_) => "app_install_incomplete",
     }
 }
-pub fn resume(app: &AppHandle) -> Result<(), String> {
-    let result = resume_runtime(app);
-    if let Err(error) = &result {
-        if error != "runtime_setup_required" {
-            app.state::<Maintenance>()
-                .publish("error", json!({"code":error}));
-        }
+
+// Own the complete install-failure decision at one testable boundary. The
+// public diagnostic reports whether this call removed a file; safe restart is
+// a separate invariant and also accepts an already-absent journal.
+fn finalize_install_failure(
+    state: &Maintenance,
+    previous_app_usable: bool,
+    discard_journal: impl FnOnce() -> Result<bool, String>,
+) -> &'static str {
+    let (code, may_discard_journal) = install_failure_recovery(previous_app_usable);
+    if !may_discard_journal {
+        return code;
     }
-    result
+    let journal_result = discard_journal();
+    let journal_removed = journal_result.as_ref().is_ok_and(|removed| *removed);
+    state
+        .install_journal_discarded
+        .store(journal_removed, Ordering::Release);
+    install_failure_state(previous_app_usable, journal_result)
 }
 
 // True when the installed runtime's source_revision equals the bundled
@@ -448,9 +454,8 @@ fn runtime_revisions_pair(bundled: Option<&Value>, installed: Option<&Value>) ->
 // connect only when the installed runtime pairs with the bundled snapshot.
 fn require_paired_runtime(state: &Maintenance, app: &AppHandle) -> Result<(), String> {
     let bundled = bundled_runtime::identity(app)?;
-    let installed = crate::services::runtime_identity_for_executable(
-        &crate::services::loopx_executable(),
-    );
+    let installed =
+        crate::services::runtime_identity_for_executable(&crate::services::loopx_executable());
     if !runtime_revisions_pair(Some(&bundled), installed.as_ref()) {
         state.publish(
             "runtime_required",
@@ -512,9 +517,7 @@ fn resume_runtime(app: &AppHandle) -> Result<(), String> {
         if pending["version"] != app.package_info().version.to_string() {
             state.publish("installing_runtime", json!({}));
             let resolved = bundled_runtime::resume_pending(app);
-            return startup_after_resume(&state, resolved, || {
-                require_paired_runtime(&state, app)
-            });
+            return startup_after_resume(&state, resolved, || require_paired_runtime(&state, app));
         }
     }
     state.prepare_runtime(matches, explicit_override, Instant::now(), || {
@@ -734,7 +737,9 @@ mod tests {
     #[test]
     fn install_failures_report_journal_discard_exactly_once() {
         let state = Maintenance::default();
-        state.install_journal_discarded.store(true, Ordering::Release);
+        state
+            .install_journal_discarded
+            .store(true, Ordering::Release);
         let failure = state.publish_failure("app_install_failed", "stable");
         assert_eq!(failure["details"]["journal_discarded"], true);
         // The diagnostics flag is consumed with the failure it describes.
@@ -745,7 +750,9 @@ mod tests {
     #[test]
     fn unrelated_failures_do_not_report_journal_discard() {
         let state = Maintenance::default();
-        state.install_journal_discarded.store(true, Ordering::Release);
+        state
+            .install_journal_discarded
+            .store(true, Ordering::Release);
         let failure = state.publish_failure("update_network_failed", "stable");
         assert!(failure["details"].get("journal_discarded").is_none());
         // Unrelated failures leave the flag for the install failure that owns it.
@@ -774,12 +781,12 @@ mod tests {
     fn stale_journal_start_connects_only_through_the_pairing_gate() {
         // Stale journal + paired App/runtime: the start may connect.
         let state = Maintenance::default();
-        assert!(startup_after_resume(
-            &state,
-            Ok(bundled_runtime::Resume::StaleDiscarded),
-            || Ok(())
-        )
-        .is_ok());
+        assert!(
+            startup_after_resume(&state, Ok(bundled_runtime::Resume::StaleDiscarded), || Ok(
+                ()
+            ))
+            .is_ok()
+        );
         assert_eq!(state.snapshot.lock().unwrap()["phase"], "connecting");
 
         // Stale journal + mismatched or missing runtime identity: no
@@ -793,16 +800,15 @@ mod tests {
             }),
             Err("runtime_setup_required".into())
         );
-        assert_ne!(
-            state.snapshot.lock().unwrap()["phase"],
-            json!("connecting")
-        );
+        assert_ne!(state.snapshot.lock().unwrap()["phase"], json!("connecting"));
     }
 
     #[test]
     fn applied_journals_connect_and_resume_errors_surface_without_connecting() {
-        for resolved in [Ok(bundled_runtime::Resume::Applied), Ok(bundled_runtime::Resume::Absent)]
-        {
+        for resolved in [
+            Ok(bundled_runtime::Resume::Applied),
+            Ok(bundled_runtime::Resume::Absent),
+        ] {
             let state = Maintenance::default();
             assert_eq!(
                 startup_after_resume(&state, resolved, || panic!("gate must not rerun")),
@@ -815,10 +821,7 @@ mod tests {
             startup_after_resume(&state, Err("update_state_invalid".into()), || Ok(())),
             Err("update_state_invalid".into())
         );
-        assert_eq!(
-            state.snapshot.lock().unwrap()["phase"],
-            json!("error")
-        );
+        assert_eq!(state.snapshot.lock().unwrap()["phase"], json!("error"));
         assert_eq!(
             state.snapshot.lock().unwrap()["details"]["code"],
             json!("update_state_invalid")
@@ -829,10 +832,7 @@ mod tests {
     fn only_verified_previous_apps_keep_the_safe_restart_promise() {
         // Verified App bundle + pairing runtime: safe-restart class, journal
         // may be discarded.
-        assert_eq!(
-            install_failure_recovery(true),
-            ("app_install_failed", true)
-        );
+        assert_eq!(install_failure_recovery(true), ("app_install_failed", true));
         // Unknown state (second rename failed, original location emptied, or
         // identity unavailable): keep the journal under the recovery code.
         assert_eq!(
@@ -894,18 +894,18 @@ mod tests {
             Some(&bundled("a")),
         );
         assert!(usable);
-        assert_eq!(install_failure_recovery(usable), ("app_install_failed", true));
+        assert_eq!(
+            install_failure_recovery(usable),
+            ("app_install_failed", true)
+        );
 
         // Missing sealed resource (executable + Info.plist intact): layout
         // passes, only the signature gate rejects. The journal is retained:
         // may_discard_journal stays false, so `perform` never reaches
         // discard_journal and the recovery panel keeps the rollback path.
-        let sealed_missing =
-            support::ad_hoc_signed_synthetic_app(dir.path(), "SealedMissing.app");
-        std::fs::remove_file(
-            sealed_missing.join("Contents/Resources/sealed-resource.txt"),
-        )
-        .unwrap();
+        let sealed_missing = support::ad_hoc_signed_synthetic_app(dir.path(), "SealedMissing.app");
+        std::fs::remove_file(sealed_missing.join("Contents/Resources/sealed-resource.txt"))
+            .unwrap();
         let damaged = previous_installation_is_usable(
             &support::synthetic_executable(&sealed_missing),
             Some(&bundled("a")),
@@ -934,28 +934,70 @@ mod tests {
 
 #[cfg(test)]
 mod install_failure_state_tests {
-    use super::install_failure_state;
+    use super::{finalize_install_failure, Maintenance};
 
     #[test]
-    fn usable_app_with_discarded_journal_promises_safe_restart() {
-        assert_eq!(install_failure_state(true, Ok(true)), "app_install_failed");
-        assert_eq!(install_failure_state(true, Ok(false)), "app_install_failed");
+    fn existing_journal_is_removed_before_safe_restart_is_reported() {
+        let state = Maintenance::default();
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("desktop-update.json");
+        std::fs::write(&journal, "{\"version\":\"1.2.3\"}").unwrap();
+
+        let code = finalize_install_failure(&state, true, || {
+            crate::bundled_runtime::discard_journal_at(&journal)
+        });
+
+        assert_eq!(code, "app_install_failed");
+        assert!(!journal.exists(), "the journal must be absent on readback");
+        let failure = state.publish_failure(code, "stable");
+        assert_eq!(failure["details"]["journal_discarded"], true);
     }
 
     #[test]
-    fn usable_app_with_failed_discard_keeps_the_journal_state() {
-        assert_eq!(
-            install_failure_state(true, Err("update_state_unavailable".into())),
-            "app_install_incomplete"
+    fn already_absent_journal_is_safe_but_not_reported_as_discarded() {
+        let state = Maintenance::default();
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("desktop-update.json");
+
+        let code = finalize_install_failure(&state, true, || {
+            crate::bundled_runtime::discard_journal_at(&journal)
+        });
+
+        assert_eq!(code, "app_install_failed");
+        assert!(!journal.exists(), "absence must remain durable");
+        let failure = state.publish_failure(code, "stable");
+        assert_eq!(failure["details"]["journal_discarded"], false);
+    }
+
+    #[test]
+    fn failed_discard_keeps_the_journal_and_incomplete_state() {
+        let state = Maintenance::default();
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("desktop-update.json");
+        std::fs::create_dir(&journal).unwrap();
+
+        let code = finalize_install_failure(&state, true, || {
+            crate::bundled_runtime::discard_journal_at(&journal)
+        });
+
+        assert_eq!(code, "app_install_incomplete");
+        assert!(
+            journal.exists(),
+            "the failed effect must preserve the journal"
+        );
+        let failure = state.publish_failure(code, "stable");
+        assert!(
+            failure["details"].get("journal_discarded").is_none(),
+            "incomplete recovery must not claim a completed discard"
         );
     }
 
     #[test]
-    fn unusable_app_never_promises_safe_restart() {
-        assert_eq!(install_failure_state(false, Ok(true)), "app_install_incomplete");
-        assert_eq!(
-            install_failure_state(false, Err("update_state_unavailable".into())),
-            "app_install_incomplete"
-        );
+    fn unusable_app_keeps_recovery_state_without_touching_the_journal() {
+        let state = Maintenance::default();
+        let code = finalize_install_failure(&state, false, || {
+            panic!("an unusable App must not discard recovery state")
+        });
+        assert_eq!(code, "app_install_incomplete");
     }
 }
