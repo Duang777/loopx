@@ -2078,7 +2078,10 @@ async function fenceVerify(
     } else {
       receipt = lockedReceipt;
     }
-    await requireShadowPrimaryWriteAllowed(request.runtime_root, request.goal_id);
+    // Every legacy verify branch (held replay, holder verification, user-gate
+    // auto-acquire) persists a receipt; the promoted authority's fence is
+    // checked once here, before that first side effect.
+    await requireLegacyCoordinationPrimaryWriteAllowed(request.runtime_root, request.goal_id);
     const initialTodo = authorityTodo(request);
     // Publish the token before semantic validation. If the response is lost
     // after acquisition, a retry can adopt this exact lock and finish the
@@ -2250,7 +2253,6 @@ async function fenceVerify(
     const explicitFence = request.idempotency_key !== null || request.expected_version !== null;
     const autoAcquire = allowsUserGateAutoAcquire(request, todo);
     if (autoAcquire && !effective && !active) {
-      await requireLegacyCoordinationPrimaryWriteAllowed(request.runtime_root, request.goal_id);
       if (!request.owner) {
         throw new TaskLeaseLifecycleError("hard_lease handoff mode auto-acquire requires an attributed actor; provide --agent-id", "handoff_mode_requires_lease", { goal_id: request.goal_id, todo_id: request.todo_id, reason: "missing_actor", lease_path: leasePath });
       }

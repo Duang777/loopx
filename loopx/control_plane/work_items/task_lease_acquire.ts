@@ -147,6 +147,8 @@ interface TaskLeaseFailure {
   code: string;
   message: string;
   payload: JsonObject;
+  stage?: "validation" | "durable_writeback";
+  kind?: string;
 }
 
 interface ExecutionContext {
@@ -1180,16 +1182,24 @@ function failureKind(code: string): string {
   return "writeback_rejected";
 }
 
+/**
+ * A fenced legacy writer is a terminal permission decision taken by the
+ * promoted authority before this verb's first side effect: no settlement step
+ * ran, so no receipt exists and the rejection is a validation-stage denial.
+ */
+function fencedFailure(error: LegacyCoordinationWriteError): TaskLeaseFailure {
+  return { code: error.code, message: error.message, payload: error.payload, stage: "validation", kind: "permission_denied" };
+}
+
 function failureEnvelope(
   failure: TaskLeaseFailure,
   context: ExecutionContext,
 ): TaskLeaseAcquireEnvelope {
-  const step = (VALIDATION_FAILURE_CODES.has(failure.code)
-    || failure.code.startsWith("shadow_management_")
-    || failure.code.startsWith("legacy_"))
+  const step = failure.stage ?? ((VALIDATION_FAILURE_CODES.has(failure.code)
+    || failure.code.startsWith("shadow_management_"))
     ? "validation"
-    : "durable_writeback";
-  const kind = failureKind(failure.code);
+    : "durable_writeback");
+  const kind = failure.kind ?? failureKind(failure.code);
   const receipts = step === "validation" || context.effectId === null
     ? []
     : [{ step: "validation", status: "committed", effect_id: context.effectId }];
@@ -1403,7 +1413,10 @@ export async function executeTaskLeaseAcquire(
       }),
     );
   } catch (error) {
-    if (error instanceof TaskLeaseAcquireError || error instanceof ShadowManagementError || error instanceof LegacyCoordinationWriteError) {
+    if (error instanceof LegacyCoordinationWriteError) {
+      return failureEnvelope(fencedFailure(error), context);
+    }
+    if (error instanceof TaskLeaseAcquireError || error instanceof ShadowManagementError) {
       return failureEnvelope(
         { code: error.code, message: error.message, payload: error.payload },
         context,
