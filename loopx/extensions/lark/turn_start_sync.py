@@ -32,7 +32,7 @@ from .event_inbox import (
     load_lark_event_inbox_config,
 )
 from .goal_channel_contracts import LarkTopicEventDecisionReason
-from .goal_topic_connections import decide_lark_topic_route_event
+from .goal_topic_routing import decide_lark_topic_route_event
 from .group_history import (
     _canonical_events,
     _page_digest,
