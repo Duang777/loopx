@@ -7,6 +7,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import shlex
+import sys
 import tempfile
 from typing import Any, Iterator, Mapping
 
@@ -49,9 +50,29 @@ def _valid_source_root(path: Path) -> bool:
 
 
 def resolve_workflow_skill_source() -> dict[str, Any]:
-    """Find the canonical workflow skills in a checkout or installed wheel."""
+    """Find canonical skills belonging to the active runtime installation."""
 
     checkout_root = Path(__file__).resolve().parents[1]
+    # A frozen executable must not borrow skills from an unrelated checkout or
+    # Python installation, even when its own bundle omitted the data files.
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", checkout_root)).resolve()
+        bundled_skills = bundle_root / "share" / "loopx" / "skills"
+        available = _valid_source_root(bundled_skills)
+        return {
+            "available": available,
+            "kind": "frozen_bundle" if available else "missing",
+            "skills_root": bundled_skills if available else None,
+            "source_root": bundle_root,
+            "reason": (
+                "workflow skills are available from the frozen application bundle"
+                if available
+                else "the frozen LoopX bundle does not contain the packaged workflow skills; "
+                "rebuild it with the complete share/loopx/skills tree from the same LoopX "
+                "version (PyInstaller --add-data SOURCE:share/loopx/skills)"
+            ),
+        }
+
     checkout_skills = checkout_root / "skills"
     if _valid_source_root(checkout_skills):
         return {
