@@ -185,7 +185,15 @@ typed evidence groups before a verdict:
   ownership. Prefer the nearest existing owner; justify independent boundaries
   with evidence, not green CI or conflict-free coexistence. For alternative
   views of one resource, validate consumer switching and concurrent updates
-  where relevant. Repeat the comparison after base integration or head changes;
+  where relevant. Before accepting introduced or newly enforced state, classify
+  it as an authoritative fact, irreducible intent, derived projection or
+  diagnostic hint. Trace whether existing canonical state can derive the
+  outcome before adding another declaration to maintain. Require the actual
+  producer, triggering workflow, authoring discovery and update/retirement
+  owner; a generic JSON writer plus a hand-filled fixture proves transport,
+  not an ordinary workflow. Intent such as consent or an alternative relation
+  cannot be invented from unrelated records. Repeat the comparison after base
+  integration or head changes;
 - caller-observable semantic parity for every behavior-bearing change, whether
   or not its title says refactor or migration. Inventory legacy caller branches,
   then run the same synthetic fixture through the public entrypoint and affected
@@ -196,7 +204,13 @@ typed evidence groups before a verdict:
   case must make the real path fail on the historical defect or a deliberate
   dropped-field/detail or stronger-precondition mutation, then pass at the fixed
   head. New-rule provider conformance and prose-only claims do not establish
-  before/after compatibility;
+  before/after compatibility. When state/projections drive behavior, vary only
+  redundant annotations, display order/pagination and unrelated-item count
+  beyond display caps, holding authoritative facts fixed. Admission must not
+  change merely because a record falls off a diagnostic page. Check completed,
+  superseded and archived references against the actual acceptance/lifecycle
+  contract; source incompleteness is not proven absence. Do not confuse a real
+  intent or priority change with a presentation-only counterfactual;
 - exact changed-line classification across production, tests/fixtures, docs,
   generated output, and mechanical moves;
 - a 2-5 item exact-head symbol map for code-changing PRs, including caller,
@@ -245,8 +259,10 @@ are `reused`, `separation_justified`, `no_existing_candidate`,
 `unjustified_duplication`, or `not_yet_proven`. A negative search must name its
 scope and limitations; an empty candidate list is not proof of absence.
 Unjustified duplication or missing evidence requires a request-changes
-conclusion. Similar-looking code with distinct invariants or compatibility
-needs may legitimately remain separate. Ordinary docs retain their existing
+conclusion, including missing state derivation, producer/trigger or completeness
+proof in `state_model_assessment`. The same existing gate applies; there is no
+second semantic classifier. Similar-looking code with distinct invariants or
+compatibility needs may legitimately remain separate. Ordinary docs retain their existing
 review path; smoke-only changes retain `durable_smoke_value` coverage review.
 This is a reviewer-executed contract projected by the packet, not an automatic
 repository search or a semantic validator of published prose. Tests establish
@@ -501,6 +517,48 @@ absolute paths, private source bodies, or hidden CI artifacts.
 ```
 
 ## Review Flow
+
+Follow `review_execution_contract.decision_procedure` before writing the review:
+challenge whether the design should ship, falsify its strongest material claim,
+inspect the whole implementation, then reconcile the verdict. The goal is justified
+acceptance, not more rejections. Read the target repository's architecture rules;
+do not export LoopX-specific kernel/provider or TypeScript placement to other repos.
+
+A re-review has two scopes: the latest corrective diff and the complete base-to-head
+PR. Reuse observations only after checking their revisions and assumptions against
+changed callers, platforms, dependencies and promises. Prior approval is not reusable
+evidence. In particular, replacing an OS test with a deterministic mock must not erase
+the real lifecycle invariant the test was meant to prove.
+
+After filling the existing result template, run:
+
+```bash
+loopx --format json pr-review --check-result review-result.json --packet review-packet.json
+```
+
+This opt-in local check performs no network reads, GitHub writes, state changes or
+merge operations. It rebuilds requirements from the installed capability, matches
+the saved exact head, and rejects an APPROVE inconsistent with required evidence or
+blocking findings. A successful check is **not** proof of factual evidence, review
+quality, current remote head, or merge permission. Re-read the head and publish the
+human-readable evidence separately. Existing queue/monitor behavior is unchanged;
+omit these two flags to use normal queue discovery. An older saved packet may need
+fresh review evidence when the installed contract has advanced.
+
+Behavioral qualification lives in `tests/capabilities/test_pr_review_behavior.py`:
+paired synthetic cases include valid designs as well as counterexamples. The optional
+live no-tools test uses the existing Doubao transport with a runtime-injected key:
+
+```bash
+LOOPX_REVIEW_LIVE_TEST=1 python -m pytest -q tests/capabilities/test_pr_review_behavior.py -k live
+```
+
+The default model is `doubao-seed-evolving`; `LOOPX_MODEL_BEHAVIOR_MODEL` can
+explicitly select another allowlisted model for comparative qualification.
+
+It sends only public synthetic cases, never repository contents or credentials in
+the prompt. Ordinary tests never contact the provider. These bounded decision tests
+do not establish model-wide reliability or replace a real repository review.
 
 The packet should let a reviewer move through PRs in order:
 

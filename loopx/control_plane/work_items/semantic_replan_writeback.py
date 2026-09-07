@@ -266,7 +266,7 @@ def qualify_replan_writeback(
                 else {}
             )
         },
-        project_asset=None,
+        project_asset={"execution_profile": (registry_goal or {}).get("execution_profile")},
         user_todo_summary=user_todos,
         agent_todo_summary=agent_todos,
         agent_todo_source_items=agent_todo_source_items,

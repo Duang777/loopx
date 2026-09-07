@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ...file_lock import exclusive_file_lock
+from ...file_lock import exclusive_cross_runtime_file_lock
 from ...history import load_registry
 from ...state_refresh import resolve_goal_state
 from ..coordination.local_authority import (
@@ -93,7 +93,9 @@ def project_current_canonical_todos(
     if not state_path.exists():
         raise ValueError("Todo Markdown projection target does not exist")
 
-    with exclusive_file_lock(state_path, operation="project_canonical_todo_sections"):
+    with exclusive_cross_runtime_file_lock(
+        state_path, operation="project_canonical_todo_sections"
+    ):
         authority_read = read_canonical_todos_if_promoted(
             runtime_root=runtime_root,
             goal_id=goal_id,
@@ -120,6 +122,19 @@ def project_current_canonical_todos(
             provider_revision=provider_revision,
         )
         if execute and projection.changed:
+            # The projection is a primary-state write: it must respect the
+            # same source-ownership and shadow-management fences as every
+            # other Markdown writer, checked under the state lock it holds.
+            from ..coordination.legacy_writer_fence import (
+                require_registry_source_write_allowed,
+            )
+
+            require_registry_source_write_allowed(
+                registry_path=registry_path,
+                runtime_root=runtime_root,
+                goal_id=goal_id,
+                state_file=state_path,
+            )
             _atomic_write_text(state_path, projection.markdown)
             if _read_text_exact(state_path) != projection.markdown:
                 raise RuntimeError("Todo Markdown projection readback mismatch")

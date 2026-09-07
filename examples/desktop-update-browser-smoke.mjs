@@ -111,7 +111,72 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   nativeState = null;
   failUpdate = false;
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" });
   await page.goto(`${origin}/boot/index.html`);
+
+  const startupPanel = page.locator("main");
+  const startupDots = page.locator(".status-dots");
+  const startupMotion = async () => page.evaluate(() => ({
+    markAnimation: getComputedStyle(document.querySelector(".mark")).animationName,
+    dotAnimation: getComputedStyle(document.querySelector(".status-dots i")).animationName,
+    progressAnimation: getComputedStyle(document.querySelector(".progress"), "::after").animationName,
+    progressTransform: getComputedStyle(document.querySelector(".progress"), "::after").transform,
+    progressWidth: Number.parseFloat(getComputedStyle(document.querySelector(".progress"), "::after").width),
+    trackWidth: Number.parseFloat(getComputedStyle(document.querySelector(".progress")).width),
+    warning: getComputedStyle(document.documentElement).getPropertyValue("--warning").trim(),
+  }));
+
+  assert.equal(await startupPanel.getAttribute("data-state"), "loading");
+  assert.equal(await startupPanel.getAttribute("aria-busy"), "true");
+  assert.equal(await startupDots.isVisible(), true);
+  const progressTransforms = [];
+  for (let index = 0; index < 4; index += 1) {
+    progressTransforms.push((await startupMotion()).progressTransform);
+    await page.waitForTimeout(120);
+  }
+  const loadingMotion = await startupMotion();
+  assert.equal(loadingMotion.markAnimation, "mark-breathe");
+  assert.equal(loadingMotion.dotAnimation, "dot-pulse");
+  assert.equal(loadingMotion.progressAnimation, "boot-progress");
+  assert.ok(new Set(progressTransforms).size > 1, "startup progress indicator must visibly move");
+  assert.equal(loadingMotion.warning, "#f5a623");
+  await page.screenshot({ path: resolve(output, "startup-loading-light.png") });
+
+  await page.evaluate(() => window.loopxBootFailed("启动失败，请重试。"));
+  assert.equal(await startupPanel.getAttribute("data-state"), "error");
+  assert.equal(await startupPanel.getAttribute("aria-busy"), "false");
+  assert.equal(await page.locator("#status").innerText(), "启动失败，请重试。");
+  assert.equal(await startupDots.isVisible(), false);
+  const failedMotion = await startupMotion();
+  assert.equal(failedMotion.markAnimation, "none");
+  assert.equal(failedMotion.progressAnimation, "none");
+  assert.ok(Math.abs(failedMotion.progressWidth - failedMotion.trackWidth) < 0.5, "failure progress indicator must fill its track");
+  await page.screenshot({ path: resolve(output, "startup-error-light.png") });
+
+  await page.evaluate(() => window.loopxBootRetrying());
+  assert.equal(await startupPanel.getAttribute("data-state"), "loading");
+  assert.equal(await startupPanel.getAttribute("aria-busy"), "true");
+  assert.equal(await page.locator("#status").innerText(), "正在重新连接本地控制面");
+  assert.equal(await startupDots.isVisible(), true);
+  const retryMotion = await startupMotion();
+  assert.equal(retryMotion.markAnimation, "mark-breathe");
+  assert.equal(retryMotion.dotAnimation, "dot-pulse");
+  assert.equal(retryMotion.progressAnimation, "boot-progress");
+
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "no-preference" });
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--canvas").trim()), "#09090b");
+  await page.screenshot({ path: resolve(output, "startup-retry-dark.png") });
+
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+  const reducedMotion = await startupMotion();
+  assert.equal(reducedMotion.markAnimation, "none");
+  assert.equal(reducedMotion.dotAnimation, "none");
+  assert.equal(reducedMotion.progressAnimation, "none");
+  assert.equal(reducedMotion.progressTransform, "none");
+  assert.ok(Math.abs(reducedMotion.progressWidth - reducedMotion.trackWidth) < 0.5, "reduced-motion progress indicator must fill its track");
+  await page.screenshot({ path: resolve(output, "startup-reduced-motion.png") });
+
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" });
   await page.getByText("恢复与更新 / Recovery & updates").click();
   await page.getByRole("button", { name: "检查更新 / Check for updates" }).click();
   await page.getByRole("button", { name: "更新并准备重启 / Install update" }).waitFor();
@@ -131,7 +196,7 @@ try {
     assert.equal(await page.locator(selector).isEnabled(), true, `${selector} remains usable after service failure`);
   }
   await page.screenshot({ path: resolve(output, "startup-recovery.png") });
-  console.log("desktop-update-browser-smoke: passed (confirmation, failure redaction, mobile, missing assets + reload, startup recovery)");
+  console.log("desktop-update-browser-smoke: passed (confirmation, failure redaction, mobile, missing assets + reload, startup motion states, startup recovery)");
 } finally {
   await browser.close();
   await new Promise((done) => server.close(done));

@@ -76,7 +76,7 @@ def build_review_template(item: Mapping[str, Any]) -> dict[str, Any]:
             _section(
                 "改动思路",
                 "300-500字",
-                "Use `architecture_flow`, `repository_reuse`, and `walkthroughs`: entry point, authoritative state, decision boundary, positive path, existing implementation comparison, and ownership trade-off.",
+                "Use `architecture_flow`, `repository_reuse`, and `walkthroughs`: entry point, authoritative state, decision boundary, positive path, existing implementation comparison, and ownership trade-off. For introduced or newly enforced state, explain derivation versus irreducible intent and the real producer/trigger, not just its serializer.",
             ),
             _section(
                 "具体改动",
@@ -110,6 +110,47 @@ def build_review_execution_contract() -> dict[str, Any]:
             "host skills route this contract but must not reimplement it."
         ),
         "evidence_status_values": ["verified", "unverified", "not_applicable"],
+        "decision_procedure": {
+            "order": ["challenge_design", "falsify_claims", "inspect_implementation", "reconcile_verdict"],
+            "challenge_design": (
+                "Before explaining how the patch works, make the strongest evidence-backed "
+                "case for not shipping it. Compare doing nothing, a smaller fix in the existing "
+                "owner, and the proposed design. Read the target repository's architecture "
+                "and contribution rules: identify canonical state, decision/effect owner, "
+                "and capability/provider placement. A new CLI calling a new helper proves "
+                "reachability, not demand or correct ownership. Prefer derived state over "
+                "manual synchronization and deletion/relocation over a second authority. "
+                "Do not impose LoopX-specific architecture on other repositories."
+            ),
+            "falsify_claims": (
+                "Choose the strongest material promise, not the easiest failing input. "
+                "Ask what could still be false when the author's tests pass, then probe "
+                "that counterexample through the owning real boundary. Parent exit does "
+                "not prove descendants drained; receipt/hash existence does not prove "
+                "authentic execution; feature-on success does not prove baseline parity. "
+                "If a mock supplies the very postcondition under review, it is not proof. "
+                "Inspect related open/merged changes sharing the contract, not only files "
+                "that conflict textually. Bound the search to shared callers/owners; do "
+                "not require an unrelated whole-queue audit."
+            ),
+            "inspect_implementation": (
+                "Run the applicable evidence plan for the whole base-to-head PR. On every "
+                "re-review, separately record last-review-to-head fixes and the current "
+                "whole-PR judgment. Reuse prior evidence only with its source revision, "
+                "still-valid assumptions, and an explicit invalidation check for changed "
+                "base, callers, platform, dependencies, or claims. Never inherit APPROVE."
+            ),
+            "reconcile_verdict": (
+                "Approve only when positive value, architecture fit, and applicable "
+                "evidence are established. No reproduced bug is not proof of a good design. "
+                "Unresolved material evidence means hold/request changes with the exact "
+                "missing observation, not an invented defect. Reject a mechanism when a "
+                "smaller boundary solves the demonstrated problem; do not keep adding "
+                "machinery to satisfy each review round. Conversely, approve justified "
+                "cohesive changes: no rejection quota, line-count cutoff, author/model "
+                "reputation rule, compulsory TS rewrite, or speculative edge-case veto."
+            ),
+        },
         "evidence_requirements": [
             {
                 "evidence_id": "problem_context",
@@ -147,13 +188,46 @@ def build_review_execution_contract() -> dict[str, Any]:
                 "fields": [
                     "searched_revisions", "queries_and_paths", "existing_candidates",
                     "semantic_comparison", "reuse_or_separation_reason",
-                    "validation_evidence", "verdict",
+                    "state_model_assessment", "validation_evidence", "verdict",
                 ],
                 "comparison_dimensions": [
                     "resource_and_caller", "data_scope_and_filters",
                     "ordering_and_pagination", "authority_and_sanitization",
                     "state_retry_and_failure_owner",
                 ],
+                "state_model_assessment": {
+                    "required_when": "introduced_or_newly_enforced_state",
+                    "classification_values": [
+                        "authoritative_fact", "irreducible_intent",
+                        "derived_projection", "diagnostic_hint",
+                    ],
+                    "item_fields": [
+                        "field_or_relation", "classification", "existing_canonical_sources",
+                        "derivation_or_irreducibility_evidence", "producer_and_trigger",
+                        "authoring_discovery_path", "update_retire_and_replay_owner",
+                        "missing_stale_or_conflicting_value_behavior", "source_completeness",
+                        "counterfactual_validation", "decision",
+                    ],
+                    "rule": (
+                        "Before accepting each added or newly enforced declaration, flag, "
+                        "relation or journal field, classify it and trace existing canonical "
+                        "facts/relations that could derive the required outcome. Prefer a "
+                        "projection over a second manually synchronized state. Identify the "
+                        "real producer, triggering workflow, authoring discovery path and "
+                        "update/retirement/replay owner. A generic JSON writer, schema "
+                        "acceptance, reader call site or hand-filled fixture proves transport, "
+                        "not that an ordinary agent/user will author the fact when needed. "
+                        "Do not invent intent: a system cannot infer an alternative, consent "
+                        "or commitment from unrelated records; genuinely irreducible intent "
+                        "needs an explicit scoped authoring contract. Trace any diagnostic "
+                        "slice back to its completeness boundary: absence from a bounded "
+                        "view is not proof of absence in canonical state. Record no applicable "
+                        "state with a reason, not a fabricated producer. Unjustified duplicate "
+                        "state makes repository_reuse unjustified_duplication; missing "
+                        "derivation, producer or completeness proof makes it not_yet_proven. "
+                        "These are reviewer evidence, not automatic semantic detection."
+                    ),
+                },
                 "rule": (
                     "Before judging the proposed architecture, search the base and "
                     "exact-head repository by caller outcome, resource, routes and "
@@ -197,9 +271,32 @@ def build_review_execution_contract() -> dict[str, Any]:
                     "normalization_rules",
                     "intentional_deltas",
                     "regression_sensitivity",
+                    "state_projection_counterfactuals",
                     "unverified_dimensions",
                     "verdict",
                 ],
+                "state_projection_counterfactuals": {
+                    "required_when": "state_or_projection_drives_behavior",
+                    "cases": [
+                        "same_canonical_state_without_redundant_annotation",
+                        "unrelated_items_beyond_display_limit",
+                        "equivalent_pagination_or_display_order",
+                        "completed_superseded_or_archived_reference",
+                        "incomplete_source_is_not_proven_absence",
+                    ],
+                    "rule": (
+                        "Run applicable counterfactuals through the real public caller, "
+                        "using comparison_rows and execution_receipts. Hold authoritative "
+                        "facts fixed when removing redundant annotations or changing only "
+                        "display order, pagination or unrelated-item count beyond a cap; "
+                        "these must not change admission or obligations. Derive the oracle "
+                        "from an independent invariant, not the new helper. Do not remove "
+                        "genuine user intent or change semantic priority and demand parity. "
+                        "For reference lifecycle changes assert the documented new outcome; "
+                        "done is not automatically proof of goal acceptance. Explain cases "
+                        "that do not apply; an untested applicable case is not_yet_proven."
+                    ),
+                },
                 "comparison_dimensions": [
                     "accepted_inputs_and_defaults",
                     "eligibility_and_rejection_precedence",
@@ -302,7 +399,9 @@ def build_review_execution_contract() -> dict[str, Any]:
                     "verify a shipped behavior and at least one active production "
                     "call site or automatic installation/loading path in the reviewed "
                     "branch. For instructions, verify the audience and activation "
-                    "scope reached by that path. Test-only coverage of an unused "
+                    "scope reached by that path. A consumer or serializer alone does not "
+                    "prove the producer/trigger in repository_reuse.state_model_assessment. "
+                    "Test-only coverage of an unused "
                     "module or uninstalled instruction is not a shipped behavior; "
                     "name the gap and treat it as blocking unless an explicit, owner-accepted "
                     "coverage-only boundary is recorded."
@@ -379,6 +478,10 @@ def build_review_execution_contract() -> dict[str, Any]:
                     "rollback_or_recovery",
                     "minimum_repair",
                     "regression_test",
+                    "claim_under_test",
+                    "counterexample_when_existing_tests_pass",
+                    "real_boundary_and_mock_limits",
+                    "related_contract_changes",
                 ],
             },
             {
@@ -414,6 +517,9 @@ def build_review_execution_contract() -> dict[str, Any]:
                     "maintenance_and_migration_cost",
                     "alternatives_considered",
                     "scope_growth_since_initial_review",
+                    "repository_architecture_constraints",
+                    "strongest_case_against_shipping",
+                    "why_smaller_or_existing_owner_is_insufficient",
                     "verdict",
                 ],
                 "rule": (
@@ -637,6 +743,13 @@ def build_review_execution_contract() -> dict[str, Any]:
         "completion_gate": {
             "metadata_only_verdict_allowed": False,
             "required_status": "Every applicable evidence item is verified or explicitly unverified with a reason.",
+            "approval_requires": (
+                "All required evidence verified with substantive supporting detail, no "
+                "blocking evidence verdict, and no unresolved blocking finding. An "
+                "unverified result may explain REQUEST_CHANGES but never APPROVE. "
+                "Run pr-review --check-result RESULT --packet PACKET before publishing; "
+                "this checks consistency, not evidence truth or remote freshness."
+            ),
             "code_change_symbol_minimum": 2,
             "exact_head_recheck_required": True,
             "stale_head_verdict_allowed": False,
@@ -668,7 +781,9 @@ def build_review_execution_contract() -> dict[str, Any]:
             "open_pr_unresolved_reuse": (
                 "REQUEST_CHANGES when repository_reuse is unjustified_duplication "
                 "or not_yet_proven, including missing/unverified search evidence; "
-                "request reuse, an evidence-backed separation, or further investigation"
+                "request reuse, an evidence-backed separation, or further investigation; "
+                "this includes unproved state derivation, producer/trigger and "
+                "projection completeness, even when the new reader is typed and tested"
             ),
             "open_pr_unresolved_proportionality": (
                 "REQUEST_CHANGES when change_proportionality is disproportionate "
@@ -832,6 +947,7 @@ def build_agent_response_contract() -> dict[str, Any]:
         },
         "instructions": [
             "Use review_groups as the queue and require result_completeness.complete=true for exhaustive review.",
+            "Start with review_execution_contract.decision_procedure, before implementation narration or prior-comment closure.",
             "Execute each pull_requests[].review_plan against the shared review_execution_contract before drafting prose.",
             "Do not infer verified evidence from title, labels, changed-file counts, metadata_risk_hint, or green CI alone.",
             "Recheck the exact remote head before verdict and publication.",
