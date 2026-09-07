@@ -455,7 +455,26 @@ assert.match(larkSettings, /lark\.health\.notAddressed/, "Ignored unaddressed me
 assert.match(larkSettings, /lark\.health\.routeMismatch/, "Route mismatches receive an actionable connection repair hint");
 assert.match(larkSettings, /connectLarkGoalTopic\([^)]*execute:\s*false/s, "Connect flow previews before execution");
 assert.match(larkSettings, /connectLarkGoalTopic\([^)]*execute:\s*true/s, "Connect flow performs the approved external write");
-assert.match(larkSettings, /connectAllAgents[\s\S]*agentBindings:\s*targetAgentIds\.map/, "One guided action submits every registered Agent as one resumable batch");
+assert.match(
+  larkSettings,
+  /connectAllAgents[\s\S]*targetAgentBindings\s*=\s*goalAgents\.map\(\(agent\)\s*=>\s*\(\{[\s\S]*agentId:\s*agent\.agentId,[\s\S]*appRef:\s*agentAppRefs\[agent\.agentId\]\s*\?\?\s*appRef/,
+  "One guided action creates one binding per registered Agent with an explicit-App override and default-App fallback",
+);
+assert.match(
+  larkSettings,
+  /targetAgentIds\s*=\s*targetAgentBindings\.map\(\(binding\)\s*=>\s*binding\.agentId\)/,
+  "Batch cardinality is derived from the complete per-Agent binding set",
+);
+assert.match(
+  larkSettings,
+  /targetAppsReady\s*=\s*targetAgentBindings\.length\s*>\s*0\s*&&\s*targetAgentBindings\.every/,
+  "Connect readiness requires every selected Agent App to be reply-ready",
+);
+assert.match(
+  larkSettings,
+  /const input\s*=\s*\{[\s\S]*agentBindings:\s*targetAgentBindings,/,
+  "Preview and execution receive the complete per-Agent binding set",
+);
 assert.match(i18n, /Connect every registered Agent/, "Multi-Agent Goal Channel onboarding is explicit");
 assert.match(i18n, /Register another Lark App/, "App chooser exposes localized Feishu registration");
 assert.match(larkSettings, /startLarkAppSetup/, "Registration starts through the local setup API");
