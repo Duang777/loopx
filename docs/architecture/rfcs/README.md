@@ -133,6 +133,12 @@ changes.
 
 ## Runtime, Capability, And Collaboration Integration
 
+- [Single-Owner Local Daemon v0](single-owner-local-daemon-v0.md)
+  - **RFC status:** Draft.
+  - **Delivery on `main`:** Proposal only; existing Desktop ownership repair is shipped.
+  - **Current boundary:** Service-profile identity, component readiness, supervised
+    composition, and recoverable migration are proposed for #3930. A unified
+    `loopxd` service has not shipped.
 - [Provider-Neutral Turn-Start Inbox Hook v0](provider-neutral-turn-start-inbox-hook-v0.md)
   - **RFC status:** Implemented behind explicit provider configuration.
   - **Delivery on `main`:** Implemented, opt-in.
