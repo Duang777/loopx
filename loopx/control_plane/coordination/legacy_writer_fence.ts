@@ -31,13 +31,45 @@ export {
   LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
 };
 
+// Caller adapter: remediation is rendered here, never inside
+// checkLegacyCoordinationWriteAllowed, which owns only the stable typed reason
+// and the fence binding facts.  Tokens are substituted in one pass, so a data
+// value is never re-scanned for tokens.  Keep byte-identical with the Python
+// LEGACY_WRITER_FENCED_REMEDIATION.
+export const LEGACY_WRITER_FENCED_REMEDIATION =
+  "legacy coordination writer is fenced; use the promoted canonical authority ({authority_mode}) for goal {goal_id}; fence {fence_id}; the primary record was not changed";
+
+function guardText(value: unknown, fallback: string): string {
+  return typeof value === "string" && value !== "" ? value : fallback;
+}
+
+/** Operator-facing text for a non-allowed write check; the machine reason stays `reason_code`. */
+export function legacyCoordinationWriteRemediation(goalId: string, guard: JsonObject): string {
+  if (guard.status !== "blocked") {
+    return guardText(guard.reason, "legacy coordination writer fence check failed");
+  }
+  const values: Record<string, string> = {
+    authority_mode: guardText(guard.authority_mode, "unknown_fail_closed"),
+    goal_id: goalId,
+    fence_id: guardText(guard.fence_id, "unknown"),
+  };
+  return LEGACY_WRITER_FENCED_REMEDIATION.replace(
+    /\{(authority_mode|goal_id|fence_id)\}/g,
+    (_match, token: string) => values[token],
+  );
+}
+
 export class LegacyCoordinationWriteError extends Error {
   code: string;
+  write_check: JsonObject;
   payload: JsonObject;
-  constructor(code: string, payload: JsonObject) {
-    super(String(payload.reason ?? "legacy coordination writer is fenced"));
+  constructor(code: string, writeCheck: JsonObject, message: string) {
+    super(message);
     this.code = code;
-    this.payload = payload;
+    this.write_check = writeCheck;
+    // The complete check result travels under its contract name; spreading it
+    // into a caller envelope must never overwrite the envelope's own keys.
+    this.payload = { write_check: writeCheck };
   }
 }
 
@@ -49,7 +81,11 @@ export async function requireLegacyCoordinationPrimaryWriteAllowed(root: string,
     runtime_root: root, goal_id: goalId,
   });
   if (guard.status !== "allowed") {
-    throw new LegacyCoordinationWriteError(String(guard.reason_code ?? "legacy_writer_fence_check_failed"), guard);
+    throw new LegacyCoordinationWriteError(
+      String(guard.reason_code ?? "legacy_writer_fence_check_failed"),
+      guard,
+      legacyCoordinationWriteRemediation(goalId, guard),
+    );
   }
 }
 

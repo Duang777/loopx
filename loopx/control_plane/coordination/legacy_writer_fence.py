@@ -8,8 +8,10 @@ delegates every present-fence decision to the canonical handler.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -24,6 +26,7 @@ from .shadow_management import (
 )
 from .coordination_state_contract_generated import (
     LEGACY_COORDINATION_WRITE_CHECK_REQUEST_SCHEMA,
+    LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
 )
 
 
@@ -32,8 +35,42 @@ LEGACY_COORDINATION_WRITE_CHECK_METHOD = (
 )
 
 
+# Caller adapter: remediation is rendered here, never inside the TypeScript
+# write check, which owns only the stable typed reason and the fence binding
+# facts.  Tokens are substituted in one pass, so a data value is never
+# re-scanned for tokens.  Keep byte-identical with the TypeScript
+# LEGACY_WRITER_FENCED_REMEDIATION.
+LEGACY_WRITER_FENCED_REMEDIATION = (
+    "legacy coordination writer is fenced; use the promoted canonical authority "
+    "({authority_mode}) for goal {goal_id}; fence {fence_id}; "
+    "the primary record was not changed"
+)
+_REMEDIATION_TOKENS = re.compile(r"\{(authority_mode|goal_id|fence_id)\}")
+
+
+def _guard_text(value: object, fallback: str) -> str:
+    return value if isinstance(value, str) and value != "" else fallback
+
+
+def legacy_coordination_write_remediation(goal_id: str, result: Mapping[str, Any]) -> str:
+    """Operator-facing text for a non-allowed write check; ``reason_code`` stays the machine reason."""
+
+    if result.get("status") != "blocked":
+        return _guard_text(result.get("reason"), "legacy coordination writer fence check failed")
+    values = {
+        "authority_mode": _guard_text(result.get("authority_mode"), "unknown_fail_closed"),
+        "goal_id": goal_id,
+        "fence_id": _guard_text(result.get("fence_id"), "unknown"),
+    }
+    return _REMEDIATION_TOKENS.sub(lambda match: values[match.group(1)], LEGACY_WRITER_FENCED_REMEDIATION)
+
+
 class LegacyCoordinationWriterFenced(RuntimeError):
-    """Raised when a legacy writer is no longer an authority."""
+    """Raised when a legacy writer is no longer an authority.
+
+    ``payload`` carries the complete write-check result under ``write_check``
+    so a CLI envelope can spread it without losing its own keys.
+    """
 
     def __init__(self, message: str, *, code: str, payload: dict[str, Any]) -> None:
         super().__init__(message)
@@ -190,7 +227,15 @@ def require_legacy_coordination_write_allowed(
         raise LegacyCoordinationWriterFenced(
             "legacy coordination writer fence cannot be inspected",
             code="legacy_writer_fence_read_failed",
-            payload={"authority_mode": "unknown_fail_closed"},
+            payload={
+                "write_check": {
+                    "schema_version": LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
+                    "status": "failed",
+                    "reason_code": "legacy_writer_fence_read_failed",
+                    "reason": "legacy coordination writer fence cannot be inspected",
+                    "authority_mode": "unknown_fail_closed",
+                }
+            },
         ) from exc
 
     result = effect_runtime_result(
@@ -205,7 +250,15 @@ def require_legacy_coordination_write_allowed(
         raise LegacyCoordinationWriterFenced(
             "legacy coordination writer fence returned an invalid result",
             code="legacy_writer_fence_invalid_result",
-            payload={"authority_mode": "unknown_fail_closed"},
+            payload={
+                "write_check": {
+                    "schema_version": LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
+                    "status": "failed",
+                    "reason_code": "legacy_writer_fence_invalid_result",
+                    "reason": "legacy coordination writer fence returned an invalid result",
+                    "authority_mode": "unknown_fail_closed",
+                }
+            },
         )
     if (
         result.get("status") == "allowed"
@@ -214,12 +267,11 @@ def require_legacy_coordination_write_allowed(
         return
 
     code = str(result.get("reason_code") or "legacy_writer_fence_check_failed")
-    message = (
-        "legacy coordination writer is fenced; use the canonical file authority"
-        if result.get("status") == "blocked"
-        else str(result.get("reason") or "legacy coordination writer fence check failed")
+    raise LegacyCoordinationWriterFenced(
+        legacy_coordination_write_remediation(goal_id, result),
+        code=code,
+        payload={"write_check": result},
     )
-    raise LegacyCoordinationWriterFenced(message, code=code, payload=result)
 
 
 @contextmanager
