@@ -102,6 +102,28 @@ direction review. Neither is this completed-Todo counter. The periodic review
 window of 20 material run records and long-open-Todo-chain triggers also retain
 their existing thresholds.
 
+### Governed Turn Execution
+
+`loopx turn plan` / `loopx turn run-once` is a separate execution surface from
+fine-grained planning. A new Turn reads live quota, and successful material
+execution goes through result validation, durable writeback, quota settlement,
+and a fresh scheduler/quota readback. Its host result must declare an unchanged
+path with a reason or a material replan with a bounded vision/path packet.
+This path declaration is checked at each material Turn boundary; it is not an
+automatic change of plan or independent proof of complete Goal acceptance.
+
+The completed-Todo hyperparameter applies to the shared quota frontier and
+write-time replan gate used by Turn execution. It does not change the per-Turn
+result contract or count partial-progress Turns as completed Todos.
+
+The separate [Turn Loop Controller](reference/protocols/turn-loop-controller-v0.md)
+can request replan when a caller-provided budget for continued progress on one
+Todo is exhausted. That budget has no default, and the `turn` CLI does not
+invoke this controller or maintain that counter. `run-once` executes one Turn;
+an outer caller still owns repeated execution. A completed-Todo threshold, a
+per-Turn path declaration, and a same-Todo continuation budget are different
+controls.
+
 ## Minimal Contract
 
 The compact status shape can start with a small object:
