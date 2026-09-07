@@ -19,6 +19,11 @@ from .contract import (
     normalize_todo_task_class,
     todo_done_for_status,
 )
+from .completion_validation_projection import (
+    completion_validation_declaration,
+    project_completion_validation_authority,
+)
+from .completion_validation_store import persist_completion_validation_declaration
 from .provider_projection import settle_canonical_todo_projection
 
 
@@ -39,6 +44,21 @@ def create_canonical_todo_if_promoted(
         role=role, source_section=section, index=same_role_count + 1, text=text
     )
     normalized_metadata = normalize_todo_metadata_for_write(metadata)
+    validation_source = {
+        **normalized_metadata,
+        **{
+            field: metadata[field]
+            for field in (
+                "validation_command",
+                "validation_command_argv",
+                "validation_label",
+                "validation_timeout_seconds",
+            )
+            if field in metadata
+        },
+    }
+    validation_declaration = completion_validation_declaration(validation_source)
+    provider_metadata = project_completion_validation_authority(validation_source)
     todo = {
         "schema_version": "todo_domain_record_v0",
         "todo_id": todo_id,
@@ -48,12 +68,19 @@ def create_canonical_todo_if_promoted(
         "text": text,
         "archive_state": "active",
         "task_class": normalize_todo_task_class(
-            normalized_metadata.get("task_class"), text=text,
-            action_kind=normalized_metadata.get("action_kind"),
+            provider_metadata.get("task_class"), text=text,
+            action_kind=provider_metadata.get("action_kind"),
         ),
-        **normalized_metadata,
+        **provider_metadata,
         **({"claimed_by": claimed_by} if claimed_by else {}),
     }
+    if validation_declaration is not None and not dry_run:
+        persist_completion_validation_declaration(
+            runtime_root=runtime_root,
+            goal_id=goal_id,
+            todo_id=todo_id,
+            declaration=validation_declaration,
+        )
     result = effect_runtime_result(
         "coordination.local_authority.todo_create",
         {

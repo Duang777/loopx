@@ -28,6 +28,7 @@ from .machine_section_projection import (
     TodoSectionProjectionError,
     render_canonical_todo_sections,
 )
+from .completion_validation_store import load_completion_validation_declarations
 
 
 TODO_PROJECTION_DELIVERY_SCHEMA = "loopx_todo_projection_delivery_v0"
@@ -120,6 +121,11 @@ def project_current_canonical_todos(
             source,
             authority_read["todos"],
             provider_revision=provider_revision,
+            private_validation_declarations=load_completion_validation_declarations(
+                runtime_root=runtime_root,
+                goal_id=goal_id,
+                todos=authority_read["todos"],
+            ),
         )
         if execute and projection.changed:
             # The projection is a primary-state write: it must respect the

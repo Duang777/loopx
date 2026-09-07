@@ -127,6 +127,8 @@ from .control_plane.coordination.local_authority import (
 )
 from .control_plane.todos.provider_compatibility_edit import edit_canonical_todo_if_promoted
 from .control_plane.todos.provider_create import create_canonical_todo_if_promoted
+from .control_plane.todos.path_resolution import resolve_todo_state_path
+from .control_plane.todos.provider_terminal_lifecycle import provider_first_terminal_lifecycle
 from .control_plane.todos.handoff_mode import (
     enter_added_todo_ownership_handoff_gate,
     enter_todo_ownership_handoff_gate,
@@ -164,27 +166,6 @@ def require_registered_todo_excluded_agents(
         )
         for agent_id in require_todo_excluded_agents(excluded_agents, field=field)
     )
-
-
-def resolve_todo_state_path(
-    *,
-    registry_path: Path,
-    goal_id: str,
-    project: Path | None = None,
-    state_file: Path | None = None,
-) -> tuple[Path | None, Path]:
-    registry = load_registry(registry_path)
-    goal, resolved_project, resolved_state_file = resolve_goal_state(
-        registry=registry,
-        goal_id=goal_id,
-        project_override=project,
-        state_file_override=state_file,
-    )
-    if goal is None:
-        raise ValueError(f"goal {goal_id!r} is not present in the registry")
-    if not resolved_state_file.exists():
-        raise ValueError(f"active state file does not exist: {resolved_state_file}")
-    return resolved_project, resolved_state_file
 
 
 def list_goal_todos(
@@ -1582,6 +1563,7 @@ def update_goal_todo(
     )
 
 
+@provider_first_terminal_lifecycle("complete")
 def complete_goal_todo(
     *,
     registry_path: Path,
@@ -1996,6 +1978,7 @@ def complete_goal_todo(
         goal_id=goal_id, write_class="todo_complete", capture=shadow_capture,
     )
 
+@provider_first_terminal_lifecycle("supersede")
 def supersede_goal_todo(
     *,
     registry_path: Path,
@@ -2219,6 +2202,7 @@ def supersede_goal_todo(
     )
 
 
+@provider_first_terminal_lifecycle("archive")
 def archive_completed_todos(
     *,
     registry_path: Path,

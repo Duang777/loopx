@@ -176,6 +176,7 @@ export const COORDINATION_STATE_CONTRACT = deepFreeze({
       "updated_at",
       "superseded_by",
       "completion_validation_required",
+      "completion_validation_sha256",
       "handoff_note"
     ],
     "required_fields": [
