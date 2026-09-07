@@ -506,6 +506,8 @@ def normalize_state_event(event: dict[str, Any], *, append_sequence: int | None 
 
     sequence = append_sequence if append_sequence is not None else event.get("append_sequence")
     if sequence is not None:
+        if isinstance(sequence, bool):
+            raise StateEventError("append_sequence must be an integer")
         try:
             sequence = int(sequence)
         except (TypeError, ValueError) as exc:
