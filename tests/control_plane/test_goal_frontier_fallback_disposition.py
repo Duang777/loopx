@@ -210,7 +210,7 @@ def test_declared_fallback_survives_prepare_compact_and_readback() -> None:
     assert readback["fallback_declarations"] == vision["fallback_declarations"]
 
 
-def test_declared_fallback_without_resolution_projects_single_gap() -> None:
+def test_uncovered_causal_todo_requires_replan_independently_of_fallback_advice() -> None:
     # The structured declaration links the fallback direction to a Todo id,
     # but no runnable Todo with that id exists on this agent's frontier.
     payload = _status_payload(
@@ -224,12 +224,10 @@ def test_declared_fallback_without_resolution_projects_single_gap() -> None:
 
     frontier = _frontier_projection(payload)
 
-    # The blocked-successor wait state clears ordinary acceptance gaps; the
-    # declared fallback would disappear silently without the dedicated field.
-    assert frontier["acceptance_gaps"] == []
-    wait = frontier["vision_wait_state"]
-    assert wait["reason_code"] == "exact_blocked_successor"
-    assert wait["selected_todo_id"] == PRIMARY_WAIT_ID
+    # The ordinary acceptance links both routes. A wait for the primary alone
+    # cannot cover the other causal Todo; the fallback field stays advisory.
+    assert [gap["kind"] for gap in frontier["acceptance_gaps"]] == ["vision_acceptance_gap"]
+    assert "vision_wait_state" not in frontier
     gaps = frontier["fallback_gaps"]
     assert len(gaps) == 1
     gap = gaps[0]
@@ -239,7 +237,7 @@ def test_declared_fallback_without_resolution_projects_single_gap() -> None:
     assert gap["unresolved_todo_ids"] == [FALLBACK_ID]
     assert "fallback" in gap["recommended_action"]
     assert "do not invent a user gate" in gap["recommended_action"]
-    assert frontier["replan_required"] is False
+    assert frontier["replan_required"] is True
 
     decision = build_quota_should_run(
         payload,

@@ -106,6 +106,7 @@
     "tests/control_plane_ts/turn_journal.test.ts",
     "tests/control_plane_ts/turn_journal_effects.test.ts",
     "tests/control_plane_ts/vision_checkpoint.test.ts",
+    "tests/control_plane_ts/vision_wait_coverage.test.ts",
     "tests/control_plane_ts/shared_goal_alignment.test.ts",
     "tests/control_plane_ts/goal_amendment_proposal.test.ts"
   ]

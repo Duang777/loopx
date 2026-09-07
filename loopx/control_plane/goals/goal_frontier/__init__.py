@@ -1046,6 +1046,14 @@ def derive_goal_frontier_replan_obligation_from_summaries(
     compact_acceptance_gaps = [
         item for item in (acceptance_gaps or []) if isinstance(item, dict)
     ]
+    if any(gap.get("vision_todo_ids") for gap in compact_acceptance_gaps):
+        # Diagnostic claim counts retain executor-excluded work. A causal
+        # acceptance obligation needs an actually selectable Todo identity.
+        selectable_frontier_advancement = len(
+            agent_scoped_selectable_advancement_todo_ids(
+                agent_todo_summary, agent_id=agent_id,
+            )
+        )
     successor_vision_required = any(
         item.get("kind")
         in {VISION_SUCCESSOR_GAP_TRIGGER, VISION_PROFILE_MISSING_TRIGGER}
@@ -1597,6 +1605,7 @@ def build_goal_frontier_projection_context_from_status(
     )
     vision_wait_state = build_goal_vision_wait_state(
         agent_todo_summary=agent_todo_summary,
+        source_items=agent_todo_source_items,
         agent_id=agent_id,
         acceptance_gaps=source_acceptance_gaps,
         selectable_advancement_count=(

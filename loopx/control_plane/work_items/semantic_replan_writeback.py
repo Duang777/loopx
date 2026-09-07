@@ -19,7 +19,7 @@ from ..status.autonomous_replan_projection import (
 )
 from ..todos.active_state_todo_parser import parse_active_state_todos
 from ..todos.quota_summary import (
-    select_quota_todo_source_items,
+    select_planning_inventory_source_items,
     select_quota_todo_summary,
 )
 from ..todos.succession_warning import todo_succession_gap_items
@@ -204,7 +204,10 @@ def qualify_replan_writeback(
     safe_agent_id = str(agent_id or "").strip()
     if not safe_agent_id:
         return None, None
-    todo_projection = parse_active_state_todos(state_text, item_limit=None)
+    todo_projection = parse_active_state_todos(
+        state_text, item_limit=None,
+        goal={**(registry_goal or {}), "latest_runs": list(newest_first_runs or [])},
+    )
     registered_agent_ids = registered_agent_ids_for_goal(registry_goal)
     agent_identity = (
         build_quota_agent_identity(registry_goal, agent_id=safe_agent_id)
@@ -227,9 +230,10 @@ def qualify_replan_writeback(
         None,
         agent_identity=agent_identity,
     )
-    agent_todo_source_items = select_quota_todo_source_items(
+    agent_todo_source_items = select_planning_inventory_source_items(
         raw_agent_todos,
         None,
+        include_terminal=True,
     )
     agent_todo_completion_items = (
         [

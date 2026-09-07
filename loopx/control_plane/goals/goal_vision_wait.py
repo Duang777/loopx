@@ -4,6 +4,8 @@ import hashlib
 import json
 from typing import Any
 
+from ..effect_runtime import effect_runtime_result
+from ..todos.projection import todo_item_excludes_agent
 from ..todos.contract import (
     TODO_TASK_CLASS_BLOCKER,
     normalize_todo_claimed_by,
@@ -113,87 +115,54 @@ def _acceptance_gap_causal_todo_ids(
         ):
             values = gap.get(key) if isinstance(gap.get(key), list) else []
             todo_ids.update(
-                todo_id
-                for value in values
-                if (todo_id := normalize_todo_id(value))
+                todo_id for value in values if (todo_id := normalize_todo_id(value))
             )
     return todo_ids
 
 
-def _causal_blocked_successor_items(
-    candidates: list[dict[str, Any]],
-    *,
-    causal_todo_ids: set[str],
-) -> list[dict[str, Any]]:
-    """Keep only waits in the active vision's explicit Todo lineage."""
-
-    if not causal_todo_ids:
-        return []
-    lineage_ids = set(causal_todo_ids)
-    changed = True
-    while changed:
-        changed = False
-        for item in candidates:
-            todo_id = normalize_todo_id(item.get("todo_id"))
-            condition = (
-                item.get("resume_condition")
-                if isinstance(item.get("resume_condition"), dict)
-                else {}
-            )
-            target_todo_id = normalize_todo_id(
-                condition.get("target_todo_id") or condition.get("target")
-            )
-            successor_todo_ids = {
-                successor_todo_id
-                for value in (
-                    item.get("successor_todo_ids")
-                    if isinstance(item.get("successor_todo_ids"), list)
-                    else []
-                )
-                if (successor_todo_id := normalize_todo_id(value))
-            }
-            if not (
-                (todo_id and todo_id in lineage_ids)
-                or (target_todo_id and target_todo_id in lineage_ids)
-                or successor_todo_ids.intersection(lineage_ids)
-            ):
-                continue
-            expanded = {
-                value
-                for value in (todo_id, target_todo_id, *successor_todo_ids)
-                if value
-            }
-            if not expanded.issubset(lineage_ids):
-                lineage_ids.update(expanded)
-                changed = True
-    return [
-        item
-        for item in candidates
-        if normalize_todo_id(item.get("todo_id")) in lineage_ids
-    ]
+def _wait_lineage_edges(items: list[dict[str, Any]]) -> list[list[str]]:
+    edges: set[tuple[str, str]] = set()
+    for item in items:
+        todo_id = normalize_todo_id(item.get("todo_id"))
+        if not todo_id:
+            continue
+        for value in item.get("successor_todo_ids") or []:
+            successor = normalize_todo_id(value)
+            if successor:
+                edges.add((todo_id, successor))
+        condition = item.get("resume_condition")
+        if isinstance(condition, dict) and condition.get("satisfied") is False:
+            target = normalize_todo_id(condition.get("target_todo_id"))
+            if target:
+                # A prerequisite can explain its waiting successor, never the
+                # reverse: shared prerequisites do not cover unrelated siblings.
+                edges.add((target, todo_id))
+    return [list(edge) for edge in sorted(edges)]
 
 
-def build_goal_vision_wait_state(
+def _covered_wait_items(
     *,
     agent_todo_summary: dict[str, Any] | None,
     agent_id: str | None,
-    acceptance_gaps: list[dict[str, Any]] | None,
-    selectable_advancement_count: int,
-) -> dict[str, Any] | None:
-    """Project a temporary vision wait over an authoritative blocked frontier.
-
-    This is deliberately a read model, not a new todo or vision lifecycle
-    state. It may defer only ordinary open-vision acceptance gaps. Missing
-    checkpoints and closed-stage successor requirements remain strict.
-    """
-
-    gaps = [gap for gap in (acceptance_gaps or []) if isinstance(gap, dict)]
-    if not gaps or any(gap.get("kind") != VISION_ACCEPTANCE_GAP_KIND for gap in gaps):
-        return None
-    if selectable_advancement_count > 0:
-        return None
-
-    causal_todo_ids = _acceptance_gap_causal_todo_ids(gaps)
+    causal_todo_ids: set[str],
+    source_items: list[dict[str, Any]] | None,
+    lineage_source_items: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if source_items is not None:
+        # Source rows have already passed the canonical resume evaluator. Never
+        # rebuild them from the quota's bounded deferred/backlog display lanes.
+        agent_todo_summary = {
+            "items": source_items,
+            "deferred_items": [
+                i for i in source_items if i.get("status") == "deferred"
+            ],
+            "resume_blocked_items": [
+                i
+                for i in source_items
+                if i.get("resume_ready") is False and i.get("status") == "open"
+            ],
+            "current_agent_blocker_items": source_items,
+        }
 
     blocker_items = (
         agent_todo_summary.get("current_agent_blocker_items")
@@ -210,19 +179,89 @@ def build_goal_vision_wait_state(
         and item.get("task_class") == TODO_TASK_CLASS_BLOCKER
         and normalize_todo_status(item.get("status")) == "blocked"
         and str(item.get("reason") or "").strip()
-        and normalize_todo_claimed_by(item.get("claimed_by"))
-        == safe_agent_id
-        and normalize_todo_id(item.get("todo_id")) in causal_todo_ids
+        and normalize_todo_claimed_by(item.get("claimed_by")) == safe_agent_id
+        and not todo_item_excludes_agent(item, agent_id=safe_agent_id)
     ]
-    candidates = []
-    if not blocker_items:
-        candidates = _causal_blocked_successor_items(
-            todo_summary_blocked_successor_items(
-                agent_todo_summary or {},
-                agent_id=agent_id,
+    candidates = todo_summary_blocked_successor_items(
+        agent_todo_summary or {}, agent_id=agent_id
+    )
+    coverage = effect_runtime_result(
+        "goal.vision_wait.coverage",
+        {
+            "causal_todo_ids": sorted(causal_todo_ids),
+            "waiting_todo_ids": [i["todo_id"] for i in candidates if i.get("todo_id")],
+            "blocker_todo_ids": [
+                i["todo_id"] for i in blocker_items if i.get("todo_id")
+            ],
+            "edges": _wait_lineage_edges(
+                lineage_source_items
+                if lineage_source_items is not None
+                else source_items
+                if source_items is not None
+                else candidates
             ),
-            causal_todo_ids=causal_todo_ids,
-        )
+        },
+    )
+    if (
+        not isinstance(coverage, dict)
+        or coverage.get("schema_version") != "vision_wait_coverage_v0"
+    ):
+        raise RuntimeError("TypeScript vision wait coverage shape mismatch")
+    if coverage.get("covered") is not True:
+        return [], []
+    witnesses = set(coverage["witness_todo_ids"])
+    blocker_items = [i for i in blocker_items if i.get("todo_id") in witnesses]
+    candidates = (
+        []
+        if blocker_items
+        else [i for i in candidates if i.get("todo_id") in witnesses]
+    )
+    return blocker_items, candidates
+
+
+def build_goal_vision_wait_state(
+    *,
+    agent_todo_summary: dict[str, Any] | None,
+    agent_id: str | None,
+    acceptance_gaps: list[dict[str, Any]] | None,
+    selectable_advancement_count: int,
+    source_items: list[dict[str, Any]] | None = None,
+    lineage_source_items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Project a temporary vision wait over an authoritative blocked frontier.
+
+    This is deliberately a read model, not a new todo or vision lifecycle
+    state. It may defer only ordinary open-vision acceptance gaps. Missing
+    checkpoints and closed-stage successor requirements remain strict.
+    """
+
+    gaps = [gap for gap in (acceptance_gaps or []) if isinstance(gap, dict)]
+    if not gaps or any(gap.get("kind") != VISION_ACCEPTANCE_GAP_KIND for gap in gaps):
+        return None
+    if selectable_advancement_count > 0:
+        return None
+
+    # A gap with no causal link cannot borrow another gap's wait witness.
+    if any(not _acceptance_gap_causal_todo_ids([gap]) for gap in gaps):
+        return None
+    causal_todo_ids = _acceptance_gap_causal_todo_ids(gaps)
+    if agent_todo_summary:
+        for proof in (agent_todo_summary or {}).get("vision_wait_states") or []:
+            if (
+                isinstance(proof, dict)
+                and proof.get("schema_version") == GOAL_VISION_WAIT_STATE_SCHEMA_VERSION
+                and proof.get("state") == "waiting"
+                and proof.get("agent_id") == agent_id
+                and proof.get("causal_todo_ids") == sorted(causal_todo_ids)
+            ):
+                return dict(proof)
+    blocker_items, candidates = _covered_wait_items(
+        agent_todo_summary=agent_todo_summary,
+        agent_id=agent_id,
+        causal_todo_ids=causal_todo_ids,
+        source_items=source_items,
+        lineage_source_items=lineage_source_items,
+    )
     if candidates:
         selected = candidates[0]
         waiting_todo_ids = [
@@ -247,6 +286,7 @@ def build_goal_vision_wait_state(
             "resume_condition": _compact_resume_condition(
                 selected.get("resume_condition")
             ),
+            "causal_todo_ids": sorted(causal_todo_ids),
             "deferred_acceptance_gap_count": len(gaps),
             "deferred_acceptance_gap_kinds": [VISION_ACCEPTANCE_GAP_KIND],
             "automatic_resume": True,
@@ -279,6 +319,7 @@ def build_goal_vision_wait_state(
         "selected_todo_priority": selected.get("priority"),
         "selected_todo_claimed_by": selected.get("claimed_by"),
         "blocker_reason": str(selected.get("reason") or "").strip(),
+        "causal_todo_ids": sorted(causal_todo_ids),
         "deferred_acceptance_gap_count": len(gaps),
         "deferred_acceptance_gap_kinds": [VISION_ACCEPTANCE_GAP_KIND],
         "automatic_resume": False,
