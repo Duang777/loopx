@@ -11,7 +11,7 @@
   --glow: rgba(0, 112, 243, .07);
   --pulse: rgba(23, 23, 23, .14);
   --pulse-clear: rgba(23, 23, 23, 0);
-  --warning: #d97706;
+  --warning: #f5a623;
 }
 * { box-sizing: border-box; }
 body {

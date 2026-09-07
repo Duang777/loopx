@@ -200,6 +200,7 @@ mod tests {
         assert!(style.contains("@keyframes mark-breathe"));
         assert!(style.contains("prefers-reduced-motion: reduce"));
         assert!(style.contains("main[data-state=\"error\"] .progress::after"));
+        assert!(style.contains("--warning: #f5a623"));
         assert!(script.contains("desktop_update_status"));
         assert!(script.contains("window.loopxBootRetrying"));
     }
