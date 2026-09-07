@@ -20,7 +20,8 @@ WORKFLOW = (
 def test_stage2c_gate_requires_all_lanes(result: str) -> None:
     gate = WORKFLOW.split("  stage2c-correctness-e2e:", 1)[1].split("  windows-powershell:", 1)[0]
     assert "if: always()" in gate
-    assert "needs: [stage2c-suite]" in gate
+    assert "needs: [changes, stage2c-suite]" in gate
+    assert "if: always() && needs.changes.outputs.core_tests == 'true'" in gate
     assert "STAGE2C_RESULT: ${{ needs.stage2c-suite.result }}" in gate
     script = gate.split("run: ", 1)[1].strip()
     actual = subprocess.run(
@@ -31,7 +32,7 @@ def test_stage2c_gate_requires_all_lanes(result: str) -> None:
     suite = WORKFLOW.split("  stage2c-suite:", 1)[1].split("  stage2c-correctness-e2e:", 1)[0]
     assert "fail-fast: false" in suite
     assert "suite: [e2e, mutants, installed]" in suite
-    assert "    if:" not in suite.split("    steps:", 1)[0]
+    assert "if: needs.changes.outputs.core_tests == 'true'" in suite.split("    steps:", 1)[0]
     steps = {step.splitlines()[0]: step for step in suite.split("      - name: ")[1:]}
     for name, lane in [
         ("Qualify real CLI, mixed writers, process death, and recovery", "e2e"),
@@ -99,7 +100,23 @@ def test_required_pytest_check_rejects_incomplete_upstream_jobs(
         check=False,
     )
     assert (result.returncode == 0) == (checks == shards == "success")
-    assert "if: always()\n    needs: [checks, test-shard]" in WORKFLOW
+    assert "if: always() && needs.changes.outputs.core_tests == 'true'" in WORKFLOW
+    assert "needs: [changes, checks, test-shard]" in WORKFLOW
+
+
+def test_merge_gate_runs_on_all_prs_and_checks_every_core_aggregate() -> None:
+    trigger = WORKFLOW.split("  pull_request:", 1)[1].split("  push:", 1)[0]
+    assert "paths:" not in trigger and "paths-ignore:" not in trigger
+    gate = WORKFLOW.split("  merge-gate:", 1)[1]
+    assert "if: always()" in gate
+    assert "needs: [changes, pytest, stage2c-correctness-e2e, windows-powershell]" in gate
+    assert "NEEDS_JSON: ${{ toJSON(needs) }}" in gate
+    assert "run: python scripts/ci/review_gate.py verify" in gate
+    assert "continue-on-error" not in gate
+    for name in ("checks", "test-shard", "stage2c-suite", "windows-powershell"):
+        job = WORKFLOW.split(f"  {name}:\n", 1)[1].split("    steps:", 1)[0]
+        assert "needs: changes" in job
+        assert "if: needs.changes.outputs.core_tests == 'true'" in job
 
 
 def test_two_shards_execute_each_test_once_and_merge_portable_coverage(
