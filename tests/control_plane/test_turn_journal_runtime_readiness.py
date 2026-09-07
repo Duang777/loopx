@@ -48,6 +48,14 @@ def test_runtime_fingerprint_reuses_hash_until_source_snapshot_changes(
     (tmp_path / "runtime_decode.ts").write_text("export {};\n", encoding="utf-8")
     (tmp_path / "turn_transaction_contract.json").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(effect_runtime, "_control_plane_root", lambda: tmp_path)
+    # Some filesystems preserve directory metadata across rapid entry changes.
+    # The source inventory must not rely on that metadata to discover new files.
+    monkeypatch.setattr(
+        effect_runtime,
+        "_runtime_directory_snapshot",
+        lambda *_args: (("", 0, 0),),
+        raising=False,
+    )
     original_read_bytes = Path.read_bytes
     reads: list[Path] = []
 
@@ -71,6 +79,121 @@ def test_runtime_fingerprint_reuses_hash_until_source_snapshot_changes(
     added.unlink()
     assert effect_runtime._runtime_fingerprint() == original
     assert len(reads) == 5
+
+
+def test_runtime_fingerprint_rescans_when_a_discovered_file_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kept = tmp_path / "kept.ts"
+    removed = tmp_path / "removed.ts"
+    kept.write_text("export const kept = true;\n", encoding="utf-8")
+    removed.write_text("export const removed = true;\n", encoding="utf-8")
+    original_scan = effect_runtime._scan_runtime_source_files
+    scans: list[tuple[str, ...]] = []
+
+    def scan_then_remove(root: Path) -> tuple[str, ...]:
+        files = original_scan(root)
+        scans.append(files)
+        if len(scans) == 1:
+            removed.unlink()
+        return files
+
+    monkeypatch.setattr(effect_runtime, "_scan_runtime_source_files", scan_then_remove)
+
+    monkeypatch.setattr(effect_runtime, "_control_plane_root", lambda: tmp_path)
+
+    assert len(effect_runtime._runtime_fingerprint()) == 64
+    assert scans == [("kept.ts", "removed.ts"), ("kept.ts",)]
+
+
+def test_runtime_fingerprint_rescans_when_a_snapshotted_file_disappears_while_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first.ts"
+    later = tmp_path / "later.ts"
+    first.write_text("export const first = true;\n", encoding="utf-8")
+    later.write_text("export const later = true;\n", encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+    reads: list[str] = []
+
+    def remove_later_after_first_read(path: Path) -> bytes:
+        reads.append(path.name)
+        content = original_read_bytes(path)
+        if path == first and later.exists():
+            later.unlink()
+        return content
+
+    monkeypatch.setattr(effect_runtime, "_control_plane_root", lambda: tmp_path)
+    monkeypatch.setattr(Path, "read_bytes", remove_later_after_first_read)
+
+    assert len(effect_runtime._runtime_fingerprint()) == 64
+    assert reads == ["first.ts", "later.ts", "first.ts"]
+
+
+def _install_persistent_stat_read_churn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, ...]]:
+    first = tmp_path / "first.ts"
+    later = tmp_path / "later.ts"
+    first.write_text("export const first = true;\n", encoding="utf-8")
+    original_scan = effect_runtime._scan_runtime_source_files
+    original_read_bytes = Path.read_bytes
+    scans: list[tuple[str, ...]] = []
+
+    def restore_then_scan(root: Path) -> tuple[str, ...]:
+        later.write_text("export const later = true;\n", encoding="utf-8")
+        files = original_scan(root)
+        scans.append(files)
+        return files
+
+    def remove_later_after_first_read(path: Path) -> bytes:
+        content = original_read_bytes(path)
+        if path == first:
+            later.unlink()
+        return content
+
+    monkeypatch.setattr(effect_runtime, "_control_plane_root", lambda: tmp_path)
+    monkeypatch.setattr(effect_runtime, "_scan_runtime_source_files", restore_then_scan)
+    monkeypatch.setattr(Path, "read_bytes", remove_later_after_first_read)
+    return scans
+
+
+def test_runtime_source_churn_has_a_stable_readiness_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scans = _install_persistent_stat_read_churn(tmp_path, monkeypatch)
+    monkeypatch.setattr(effect_runtime.shutil, "which", lambda _name: "node")
+    monkeypatch.setattr(
+        effect_runtime.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Completed(stdout="v22.6.0\n"),
+    )
+    result = effect_runtime.collect_effect_runtime_readiness()
+
+    assert result["status"] == "package_invalid"
+    assert result["ready"] is False
+    assert (
+        result["runtime_lifecycle"]["diagnostic_code"]
+        == "packaged_runtime_source_unstable"
+    )
+    assert scans == [("first.ts", "later.ts"), ("first.ts", "later.ts")]
+
+
+def test_runtime_request_source_churn_raises_a_stable_startup_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scans = _install_persistent_stat_read_churn(tmp_path, monkeypatch)
+
+    with pytest.raises(effect_runtime.EffectRuntimeStartupError) as error:
+        effect_runtime.effect_runtime_request("runtime.ping", {})
+
+    assert error.value.diagnostic_code == "packaged_runtime_source_unstable"
+    assert scans == [("first.ts", "later.ts"), ("first.ts", "later.ts")]
 
 
 def test_missing_node_blocks_the_typescript_control_plane_and_is_actionable(
