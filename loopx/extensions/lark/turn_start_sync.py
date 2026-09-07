@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from ...file_lock import (
     LockAcquireTimeoutError,
@@ -29,9 +29,10 @@ from .event_collector_runtime import (
 from .event_inbox import (
     MESSAGE_ID_PATTERN,
     ROUTE_KEY_PATTERN,
-    lark_event_mentions_bot,
     load_lark_event_inbox_config,
 )
+from .goal_channel_contracts import LarkTopicEventDecisionReason
+from .goal_topic_connections import decide_lark_topic_route_event
 from .group_history import (
     _canonical_events,
     _page_digest,
@@ -113,13 +114,11 @@ def _turn_start_config(
 
     kind = lark_inbox_config_kind(project=project, config_path=config_path)
     if kind == "collector":
-        return cast(
-            dict[str, Any],
-            load_lark_event_collector_config(
-                project=project,
-                config_path=config_path,
-            ),
+        collector_config: Mapping[str, Any] = load_lark_event_collector_config(
+            project=project,
+            config_path=config_path,
         )
+        return dict(collector_config)
 
     root = Path(project).expanduser().resolve()
     path = Path(config_path).expanduser()
@@ -140,6 +139,11 @@ def _turn_start_config(
         raise ValueError(
             "enabled direct Lark turn-start sync requires an explicit reply profile"
         )
+    topic_root_message_id = str(inbox.get("topic_root_message_id") or "")
+    if not MESSAGE_ID_PATTERN.fullmatch(topic_root_message_id):
+        raise ValueError(
+            "enabled direct Lark turn-start sync requires a Goal Topic root"
+        )
     config_ref = path.relative_to(root).as_posix()
     return {
         "schema_version": "lark_turn_start_direct_inbox_v0",
@@ -152,6 +156,7 @@ def _turn_start_config(
             {
                 "route_key": "default",
                 "chat_id": str(reply["chat_id"]),
+                "topic_root_message_id": topic_root_message_id,
                 "event_inbox_config_ref": config_ref,
                 "inbox": inbox,
             }
@@ -166,16 +171,14 @@ def _route_source_fingerprint(
     inbox_path_ref = Path(route["inbox"]["inbox_path"]).relative_to(
         project_root
     ).as_posix()
-    return cast(
-        str,
-        group_history_source_fingerprint(
-            route_key=str(route["route_key"]),
-            profile=str(config["profile"]),
-            chat_id=str(route["chat_id"]),
-            event_inbox_config_ref=str(route["event_inbox_config_ref"]),
-            inbox_path_ref=inbox_path_ref,
-            capture_scope=str(route["inbox"]["capture_scope"]),
-        ),
+    return group_history_source_fingerprint(
+        route_key=str(route["route_key"]),
+        profile=str(config["profile"]),
+        chat_id=str(route["chat_id"]),
+        event_inbox_config_ref=str(route["event_inbox_config_ref"]),
+        inbox_path_ref=inbox_path_ref,
+        capture_scope=str(route["inbox"]["capture_scope"]),
+        route_binding_ref=str(route.get("topic_root_message_id") or ""),
     )
 
 
@@ -187,17 +190,17 @@ def _events_for_route(
     inbox = route["inbox"]
     if inbox["capture_scope"] == "configured_chat_all":
         return events
-    reply = inbox["reply"]
     return [
         event
         for event in events
-        if lark_event_mentions_bot(
-            event,
-            bot_display_name=str(reply["bot_display_name"]),
-            bot_app_id=str(reply.get("bot_app_id") or ""),
-            bot_open_id=str(reply.get("bot_open_id") or ""),
-            allow_text_fallback=True,
+        if decide_lark_topic_route_event(
+            event=event,
+            chat_id=str(route["chat_id"]),
+            topic_root_message_id=str(route.get("topic_root_message_id") or ""),
+            capture_scope=str(inbox["capture_scope"]),
+            identity=inbox["reply"],
         )
+        is LarkTopicEventDecisionReason.MATCHED
     ]
 
 

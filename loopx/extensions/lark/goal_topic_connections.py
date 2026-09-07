@@ -300,6 +300,7 @@ def _agent_inbox_config(
     chat_id: str,
     bot_display_name: str,
     capture_scope: str,
+    topic_root_message_id: str | None = None,
 ) -> tuple[Path, str, dict[str, Any]]:
     project = Path(str(goal.get("repo") or "")).expanduser().resolve()
     if not project.is_dir():
@@ -317,6 +318,11 @@ def _agent_inbox_config(
         # the local inbox declaration identical prevents an addressed-only
         # stream from being projected as thread-complete.
         "capture_scope": capture_scope,
+        **(
+            {"topic_root_message_id": topic_root_message_id}
+            if topic_root_message_id
+            else {}
+        ),
         "reply": {
             "enabled": True,
             "sender_profile": app_ref,
@@ -511,18 +517,13 @@ def connect_lark_goal_topic(
         )
 
     if inbox_config is not None:
-        config_path, preflight_config_ref, inbox_payload = inbox_config
+        _config_path, _preflight_config_ref, inbox_payload = inbox_config
         reply = inbox_payload.get("reply")
         if isinstance(reply, dict):
             reply["bot_display_name"] = str(identity["label"])
             reply["bot_app_id"] = str(identity["app_id"])
             if identity.get("open_id"):
                 reply["bot_open_id"] = str(identity["open_id"])
-        _write_agent_inbox_config(
-            config_path=config_path,
-            config_ref=preflight_config_ref,
-            payload=inbox_payload,
-        )
 
     target_name = (
         matched[0] if matched is not None else _target_name(profile, safe_chat_id)
@@ -636,6 +637,15 @@ def connect_lark_goal_topic(
             blocker="readback_mismatch",
             public_summary="the Goal Topic could not be verified; binding preserved",
             external_write_performed=membership_added or not bool(reusable_root),
+        )
+
+    if inbox_config is not None:
+        config_path, preflight_config_ref, inbox_payload = inbox_config
+        inbox_payload["topic_root_message_id"] = root_message_id
+        _write_agent_inbox_config(
+            config_path=config_path,
+            config_ref=preflight_config_ref,
+            payload=inbox_payload,
         )
 
     connector_binding: dict[str, Any] | None = None
@@ -1073,6 +1083,50 @@ def is_event_addressed_to_bot(
     return False
 
 
+def decide_lark_topic_route_event(
+    *,
+    event: Mapping[str, Any],
+    chat_id: str,
+    topic_root_message_id: str,
+    capture_scope: str,
+    identity: Mapping[str, Any],
+) -> LarkTopicEventDecisionReason:
+    """Apply the shared structural authority for one resolved Goal Topic route."""
+
+    event_chat_id = str(event.get("chat_id") or "")
+    root_id = str(event.get("root_id") or "")
+    message_id = str(event.get("message_id") or "")
+    if not (
+        CHAT_ID_PATTERN.fullmatch(event_chat_id)
+        and MESSAGE_ID_PATTERN.fullmatch(root_id)
+        and MESSAGE_ID_PATTERN.fullmatch(message_id)
+    ):
+        return LarkTopicEventDecisionReason.INVALID_EVENT
+    try:
+        normalized_capture_scope = CaptureScope(capture_scope)
+    except ValueError:
+        return LarkTopicEventDecisionReason.INVALID_ROUTING_STATE
+    if event_chat_id != chat_id:
+        return LarkTopicEventDecisionReason.CHAT_MISMATCH
+    if (
+        root_id != topic_root_message_id
+        and normalized_capture_scope is not CaptureScope.CONFIGURED_CHAT_ALL
+    ):
+        return LarkTopicEventDecisionReason.TOPIC_MISMATCH
+    sender_id = str(event.get("sender_id") or "")
+    if sender_id and sender_id in {
+        str(identity.get("bot_app_id") or ""),
+        str(identity.get("bot_open_id") or ""),
+    }:
+        return LarkTopicEventDecisionReason.SELF_MESSAGE
+    if (
+        normalized_capture_scope is not CaptureScope.CONFIGURED_CHAT_ALL
+        and not is_event_addressed_to_bot(event, identity)
+    ):
+        return LarkTopicEventDecisionReason.NOT_ADDRESSED
+    return LarkTopicEventDecisionReason.MATCHED
+
+
 def decide_lark_topic_event(
     *,
     target_payload: Mapping[str, Any],
@@ -1225,24 +1279,18 @@ def decide_lark_topic_event(
 
     selected = eligible[0]
     identity = selected["identity"]
-    sender_id = str(event.get("sender_id") or "")
-    if sender_id and sender_id in {
-        str(identity.get("bot_app_id") or ""),
-        str(identity.get("bot_open_id") or ""),
-    }:
-        return {
-            "matched": False,
-            "reason": LarkTopicEventDecisionReason.SELF_MESSAGE.value,
-            "route": None,
-        }
     capture_scope = str(selected["capture_scope"])
-    if (
-        capture_scope != CaptureScope.CONFIGURED_CHAT_ALL.value
-        and not is_event_addressed_to_bot(event, identity)
-    ):
+    route_decision = decide_lark_topic_route_event(
+        event=event,
+        chat_id=chat_id,
+        topic_root_message_id=str(selected["topic_root"]),
+        capture_scope=capture_scope,
+        identity=identity,
+    )
+    if route_decision is not LarkTopicEventDecisionReason.MATCHED:
         return {
             "matched": False,
-            "reason": LarkTopicEventDecisionReason.NOT_ADDRESSED.value,
+            "reason": route_decision.value,
             "route": None,
         }
     binding = selected["binding"]
