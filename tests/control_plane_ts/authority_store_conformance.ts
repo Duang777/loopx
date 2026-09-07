@@ -557,9 +557,9 @@ export function registerAuthorityStoreConformance(
       lifecycle_grants: [],
       authority_reason: null,
       decision_outcome: null,
-      operation_id: "supersede-terminal",
       lease_idempotency_key: null,
       lease_expected_version: null,
+      operation_id: "supersede-terminal",
       allow_user_gate_auto_acquire: false,
       requested_no_followup: false,
       requested_completion_turn_key: null,
@@ -649,6 +649,7 @@ export function registerAuthorityStoreConformance(
     const {store} = await factory(t);
     const goalId = "goal-production-scale";
     const fixture = productionScaleCoordinationFixture(goalId);
+    assert.equal(fixture.projection.handoff_mode, "hard_lease");
     const initialized = await store.commitAuthority({
       expected_provider_revision: null,
       operation_id: "initialize-production-scale",
@@ -683,6 +684,8 @@ export function registerAuthorityStoreConformance(
       todo_id: fixture.completion_todo_id,
       command: "complete",
       actor_agent_id: "agent-a",
+      lease_idempotency_key: fixture.completion_lease_idempotency_key,
+      lease_expected_version: fixture.completion_lease_expected_version,
       operation_id: "complete-production-scale",
       requested_no_followup: true,
       validation_declaration: PRODUCTION_SCALE_VALIDATION_DECLARATION,
@@ -700,11 +703,19 @@ export function registerAuthorityStoreConformance(
       now: new Date("2026-09-07T07:00:00Z"),
     });
     assert.equal(completed.status, "applied", JSON.stringify(completed));
+    const completedDecision = completed.terminal_decision as {
+      lease_fence?: unknown;
+      next_lease?: {status?: unknown};
+    };
+    assert.equal(completedDecision.lease_fence, "required");
+    assert.equal(completedDecision.next_lease?.status, "released");
     const superseded = await executeCoordinationTodoTerminalLifecycle(store, {
       ...common,
       todo_id: fixture.supersede_todo_id,
       command: "supersede",
       actor_agent_id: "agent-b",
+      lease_idempotency_key: fixture.supersede_lease_idempotency_key,
+      lease_expected_version: fixture.supersede_lease_expected_version,
       operation_id: "supersede-production-scale",
       requested_no_followup: false,
       validation_declaration: null,
@@ -713,6 +724,12 @@ export function registerAuthorityStoreConformance(
       now: new Date("2026-09-07T07:01:00Z"),
     });
     assert.equal(superseded.status, "applied", JSON.stringify(superseded));
+    const supersededDecision = superseded.terminal_decision as {
+      lease_fence?: unknown;
+      next_lease?: {status?: unknown};
+    };
+    assert.equal(supersededDecision.lease_fence, "required");
+    assert.equal(supersededDecision.next_lease?.status, "released");
     const agentArchive = await executeCoordinationTodoArchiveCompleted(store, {
       goal_id: goalId,
       role: "agent",

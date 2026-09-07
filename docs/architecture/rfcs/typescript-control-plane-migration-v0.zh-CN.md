@@ -72,13 +72,24 @@ v0 Todo 继续按旧 `index` 归档；provider-native record 按持久 completio
 和 Todo identity 排序。当前 Todo graph 中已经不存在的历史 lease file 继续作为审计
 历史保留，不再投影回 canonical live head。
 
+所有非 preview 的 terminal/archive 入口都会取得 bootstrap 与 rollback 共用的逐 goal
+shadow-maintenance mutex，并在打开 canonical provider 之前重新检查持久 management
+state。因此 lifecycle write 不能与 bootstrap/rollback transition 重叠，也不能绕过其
+write hold。durable promotion fence 已存在但 canonical head 缺失时，调用方收到 typed
+canonical-authority outage 和明确的“恢复后再重试”动作；该错误不会被重新包装成 legacy
+writer fence，也绝不授权回退 Markdown。
+
 该阶段使用同一份只读、生产复杂度快照做三臂资格验证：不可变 legacy baseline clone、
 隔离 file provider、隔离的真实 PostgreSQL provider。两个 provider head 必须精确相等；
-legacy 臂只允许归一化已声明的 provider provenance 后再比较语义；所有非目标记录与
-源快照必须不变。同时提供确定性、public-safe 的规模 fixture，让每个 provider suite
+legacy 臂按显式 compatibility projection 比较。归档时仅从 legacy hot view 排除
+provider 保留的 archive 记录及其历史 lease，并且只有先证明每个 role 的相对顺序完全
+一致，才可忽略导入 `index` 的绝对值；domain 字段、归档选择、active lease 与非目标
+记录不得归一化，源快照必须不变。可复现命令位于
+`examples/control_plane/authority-three-arm-rehearsal.py`。同时提供确定性、public-safe
+的规模 fixture，让每个 provider suite
 覆盖相同的 status 组合、当前／已退役 lease、standing decision、validation、successor、
-replay、concurrency 与归档压力。该 fixture 是持久回归覆盖，不能替代对当前状态的只读
-三臂演练。
+replay、concurrency、归档压力与 hard-lease fence。该 fixture 是持久回归覆盖，不能替代
+对当前状态的只读三臂演练。
 
 旧 v0 consumer manifest 继续可读，并保留所有已有字段。默认 Markdown capture 仍
 输出 v0；本 PR 不改写已存 head，也不自动晋升 goal。schema 分层不等于允许后续迁移

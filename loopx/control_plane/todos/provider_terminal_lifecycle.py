@@ -7,11 +7,12 @@ TypeScript transaction is the sole owner of lifecycle admission and writes.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from functools import wraps
 from inspect import signature
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 from uuid import uuid4
 
 from ...agent_registry import load_goal_from_registry, registered_agent_ids_for_goal
@@ -51,17 +52,27 @@ _ACCEPTED = {"applied", "recovered", "replayed", "no_change", "planned"}
 TodoMutation = Callable[..., dict[str, Any]]
 
 
+def _non_negative_integer(value: Any, label: str, *, optional: bool) -> int | None:
+    if value is None and optional:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        suffix = " or None" if optional else ""
+        raise ValueError(f"{label} must be a non-negative integer{suffix}")
+    return cast(int, value)
+
+
 def _route_terminal_call(command: str, call: Mapping[str, Any]) -> dict[str, Any] | None:
     registry_path = Path(call["registry_path"])
     goal_id = str(call["goal_id"])
     runtime_root = effective_runtime_root(registry_path, call.get("runtime_root_arg"))
     if command == "archive":
         role = str(call["role"])
-        max_active_done = int(call["max_active_done"])
+        max_active_done = _non_negative_integer(
+            call["max_active_done"], "max_active_done", optional=False
+        )
+        assert max_active_done is not None
         if role not in {"user", "agent"}:
             raise ValueError("todo role must be one of: user, agent")
-        if max_active_done < 0:
-            raise ValueError("max_active_done must be non-negative")
         project, state_file = resolve_todo_state_path(
             registry_path=registry_path,
             goal_id=goal_id,
@@ -109,7 +120,11 @@ def _route_terminal_call(command: str, call: Mapping[str, Any]) -> dict[str, Any
             call.get("completion_identity_source") if complete else None
         ),
         task_lease_idempotency_key=call.get("task_lease_idempotency_key"),
-        task_lease_expected_version=call.get("task_lease_expected_version"),
+        task_lease_expected_version=_non_negative_integer(
+            call.get("task_lease_expected_version"),
+            "task_lease_expected_version",
+            optional=True,
+        ),
         no_followup=bool(call.get("no_followup")) if complete else False,
         successor_todo_ids=(
             require_completion_successor_todo_ids(call.get("successor_todo_ids"))
@@ -183,22 +198,24 @@ def _todo_by_id(
 
 def _successor_record(
     *,
-    todos: Sequence[Mapping[str, Any]],
     role: str,
     text: str,
     actor_agent_id: str | None,
     metadata: Mapping[str, Any],
+    predecessor_todo_id: str,
     offset: int,
 ) -> dict[str, Any]:
     section = "Agent Todo" if role == "agent" else "User Todo"
-    same_role_count = sum(1 for todo in todos if todo.get("role") == role)
     normalized = normalize_todo_metadata_for_write(dict(metadata))
     return {
         "schema_version": "todo_domain_record_v0",
         "todo_id": build_todo_id(
             role=role,
             source_section=section,
-            index=same_role_count + offset,
+            # Provider retries rebuild the proposal from the new canonical
+            # head. Bind identity to the predecessor rather than the mutable
+            # collection length so a committed successor replays byte-for-byte.
+            index=f"{predecessor_todo_id}:{offset}",
             text=text,
         ),
         "role": role,
@@ -240,10 +257,10 @@ def _build_successors(
     if next_agent_todo:
         successors.append(
             _successor_record(
-                todos=todos,
                 role="agent",
                 text=inherit_todo_priority(next_agent_todo, target_text),
                 actor_agent_id=actor_agent_id,
+                predecessor_todo_id=target_id,
                 offset=1,
                 metadata={
                     "task_class": next_task_class or "advancement_task",
@@ -274,10 +291,10 @@ def _build_successors(
         )
         successors.append(
             _successor_record(
-                todos=todos,
                 role="user",
                 text=inherit_todo_priority(next_user_todo, target_text),
                 actor_agent_id=actor_agent_id,
+                predecessor_todo_id=target_id,
                 offset=1,
                 metadata={
                     "task_class": effective_task_class,
@@ -365,9 +382,25 @@ def terminal_canonical_todo_if_promoted(
     project: Path | None = None,
     state_file: Path | None = None,
 ) -> dict[str, Any] | None:
-    canonical = read_canonical_todos_if_promoted(
-        runtime_root=runtime_root, goal_id=goal_id
-    )
+    try:
+        canonical = read_canonical_todos_if_promoted(
+            runtime_root=runtime_root, goal_id=goal_id
+        )
+    except LocalCoordinationAuthorityUnavailable as exc:
+        payload = dict(exc.payload)
+        if exc.code == "local_authority_todo_list_unavailable" and payload.get(
+            "status"
+        ) == "missing":
+            payload["recovery"] = {
+                "action": "restore_canonical_authority",
+                "runtime_root": str(runtime_root.expanduser().resolve(strict=False)),
+                "goal_id": goal_id,
+                "legacy_markdown_fallback_allowed": False,
+                "retry_after": "canonical_provider_readback_loaded",
+            }
+        raise LocalCoordinationAuthorityUnavailable(
+            str(exc), code=exc.code, payload=payload
+        ) from exc
     if canonical is None:
         return None
     todos = [dict(todo) for todo in canonical["todos"]]
@@ -414,7 +447,14 @@ def terminal_canonical_todo_if_promoted(
         if command == "complete"
         else None
     )
-    operation_id = f"todo-terminal:{command}:{goal_id}:{todo_id}:{uuid4().hex}"
+    operation_identity = completion_turn_key or "unscoped"
+    operation_digest = hashlib.sha256(
+        (
+            "loopx-provider-terminal-operation-v0\0"
+            f"{command}\0{goal_id}\0{todo_id}\0{operation_identity}"
+        ).encode("utf-8")
+    ).hexdigest()
+    operation_id = f"todo-terminal:{operation_digest[:32]}"
     validation_declaration = None
     if command == "complete" and target.get("completion_validation_required") is True:
         if state_file is None:

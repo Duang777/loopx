@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -24,14 +24,18 @@ import {
 import {
   LOCAL_COORDINATION_PROMOTION_REQUEST_SCHEMA,
   LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
+  LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_LIST_REQUEST_SCHEMA,
+  LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+  archiveLocalCoordinationTodos,
   listLocalCoordinationTodos,
   claimLocalCoordinationTodo,
   mutateLocalCoordinationAuthority,
   promoteLocalCoordinationAuthority,
   readLocalCoordinationTodo,
+  terminalLifecycleLocalCoordinationTodo,
 } from "../../loopx/control_plane/coordination/local_authority_runtime.ts";
 import {
   COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
@@ -1029,6 +1033,102 @@ test("local canonical runtime never falls back when provider state is missing", 
   assert.equal(result.status, "missing");
   assert.equal(result.decision_read_from_provider, true);
   assert.equal(result.legacy_fallback_used, false);
+});
+
+test("terminal and archive wire adapters reject coercible numeric values", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-strict-numbers-"));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const terminalRequest = (leaseExpectedVersion: unknown) => ({
+    schema_version: LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo-a",
+    role: "agent",
+    command: "complete",
+    actor_agent_id: "agent-a",
+    registered_agents: ["agent-a"],
+    lifecycle_grants: [],
+    authority_reason: null,
+    decision_outcome: null,
+    operation_id: "terminal-strict-number",
+    lease_idempotency_key: null,
+    lease_expected_version: leaseExpectedVersion,
+    allow_user_gate_auto_acquire: false,
+    requested_no_followup: true,
+    requested_completion_turn_key: null,
+    requested_completion_identity_source: null,
+    linked_successor_todo_ids: [],
+    successors: [],
+    note: null,
+    evidence: "strict wire validation",
+    reason: null,
+    clear_claim: false,
+    validation_declaration: null,
+    validation_receipt: null,
+    completion_policy_request: null,
+    dry_run: false,
+    observed_at: "2026-09-07T12:00:00Z",
+  });
+  const archiveRequest = (maxActiveDone: unknown) => ({
+    schema_version: LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    role: "agent",
+    max_active_done: maxActiveDone,
+    operation_id: "archive-strict-number",
+    dry_run: false,
+    observed_at: "2026-09-07T12:00:00Z",
+  });
+
+  for (const invalid of [true, "1", 1.5]) {
+    let terminalOpened = 0;
+    const terminal = await terminalLifecycleLocalCoordinationTodo(
+      terminalRequest(invalid),
+      {createStore: (directory, goalId) => {
+        terminalOpened += 1;
+        return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+      }},
+    );
+    assert.equal(terminal.status, "failed");
+    assert.equal(
+      terminal.reason_code,
+      "invalid_local_coordination_todo_terminal_lifecycle_request",
+    );
+    assert.match(String(terminal.reason), /lease_expected_version.*safe integer/);
+    assert.equal(terminalOpened, 0);
+
+    let archiveOpened = 0;
+    const archive = await archiveLocalCoordinationTodos(
+      archiveRequest(invalid),
+      {createStore: (directory, goalId) => {
+        archiveOpened += 1;
+        return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+      }},
+    );
+    assert.equal(archive.status, "failed");
+    assert.equal(archive.reason_code, "invalid_local_coordination_todo_archive_request");
+    assert.match(String(archive.reason), /max_active_done.*safe integer/);
+    assert.equal(archiveOpened, 0);
+  }
+
+  let opened = 0;
+  const terminal = await terminalLifecycleLocalCoordinationTodo(
+    terminalRequest(1),
+    {createStore: (directory, goalId) => {
+      opened += 1;
+      return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+    }},
+  );
+  const archive = await archiveLocalCoordinationTodos(
+    archiveRequest(1),
+    {createStore: (directory, goalId) => {
+      opened += 1;
+      return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+    }},
+  );
+  assert.equal(terminal.status, "missing");
+  assert.equal(archive.status, "missing");
+  assert.equal(opened, 2, "legal integers must cross the wire boundary unchanged");
 });
 
 test("engaged promotion fence blocks every native legacy task-lease writer", async () => {

@@ -139,6 +139,19 @@ function requiredPositiveSafeInteger(value: unknown, label: string): number {
   return Number(value);
 }
 
+function requiredNonNegativeSafeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new TypeError(`${label} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function optionalNonNegativeSafeInteger(value: unknown, label: string): number | null {
+  return value === null || value === undefined
+    ? null
+    : requiredNonNegativeSafeInteger(value, label);
+}
+
 function requiredUniqueStrings(value: unknown, label: string): string[] {
   if (!Array.isArray(value) || value.length > 32) {
     throw new Error(`${label} must be an array with at most 32 entries`);
@@ -761,74 +774,83 @@ export async function terminalLifecycleLocalCoordinationTodo(
     }
     const root = runtimeRoot(input.runtime_root);
     const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
-    const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
-      new FileAuthorityStore(authorityDirectory(root), goalId);
-    return {...await executeCoordinationTodoTerminalLifecycle(store, {
-      goal_id: goalId,
-      todo_id: requireAuthorityStoreId(input.todo_id, "todo id"),
-      expected_role: input.role === null || input.role === undefined
-        ? null : requireAuthorityStoreId(input.role, "role") as "agent" | "user",
-      command: requireAuthorityStoreId(input.command, "command") as "complete" | "supersede",
-      actor_agent_id: input.actor_agent_id === null || input.actor_agent_id === undefined
-        ? null : claimAgentValue(input.actor_agent_id, "actor_agent_id"),
-      registered_agents: input.registered_agents.map((agent) =>
-        claimAgentValue(agent, "registered agent")),
-      lifecycle_grants: input.lifecycle_grants.map((grant, index) =>
-        requireJsonObject(grant, `lifecycle_grants[${index}]`)),
-      authority_reason: input.authority_reason === null || input.authority_reason === undefined
-        ? null : claimAgentValue(input.authority_reason, "authority_reason"),
-      decision_outcome: input.decision_outcome === null || input.decision_outcome === undefined
-        ? null : requireAuthorityStoreId(input.decision_outcome, "decision_outcome") as
-          "approve" | "reject" | "cancel",
-      operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
-      lease_idempotency_key:
-        input.lease_idempotency_key === null || input.lease_idempotency_key === undefined
-          ? null : requireAuthorityStoreId(input.lease_idempotency_key, "lease idempotency key"),
-      lease_expected_version:
-        input.lease_expected_version === null || input.lease_expected_version === undefined
-          ? null : Number(input.lease_expected_version),
-      allow_user_gate_auto_acquire: input.allow_user_gate_auto_acquire as boolean,
-      requested_no_followup: input.requested_no_followup as boolean,
-      requested_completion_turn_key:
-        input.requested_completion_turn_key === null ||
-          input.requested_completion_turn_key === undefined
-          ? null : claimAgentValue(
-            input.requested_completion_turn_key,
-            "requested_completion_turn_key",
-          ),
-      requested_completion_identity_source:
-        input.requested_completion_identity_source === null ||
-          input.requested_completion_identity_source === undefined
-          ? null : requireAuthorityStoreId(
-            input.requested_completion_identity_source,
-            "requested_completion_identity_source",
-          ) as "turn_settlement" | "unscoped_completion" | "lifecycle_reentry",
-      linked_successor_todo_ids: input.linked_successor_todo_ids.map((todoId) =>
-        requireAuthorityStoreId(todoId, "linked successor Todo id")),
-      successors: input.successors.map((todo, index) =>
-        requireJsonObject(todo, `successors[${index}]`)),
-      note: input.note === null || input.note === undefined
-        ? null : claimAgentValue(input.note, "note"),
-      evidence: input.evidence === null || input.evidence === undefined
-        ? null : claimAgentValue(input.evidence, "evidence"),
-      reason: input.reason === null || input.reason === undefined
-        ? null : claimAgentValue(input.reason, "reason"),
-      clear_claim: input.clear_claim as boolean,
-      validation_declaration:
-        input.validation_declaration === null || input.validation_declaration === undefined
-          ? null : requireJsonObject(input.validation_declaration, "validation_declaration"),
-      validation_receipt: input.validation_receipt === null || input.validation_receipt === undefined
-        ? null : requireJsonObject(input.validation_receipt, "validation_receipt"),
-      completion_policy_request:
-        input.completion_policy_request === null || input.completion_policy_request === undefined
-          ? null : requireJsonObject(input.completion_policy_request, "completion_policy_request"),
-      dry_run: input.dry_run as boolean,
-      now: claimObservedAt(input.observed_at),
-    }), ...providerEvidence};
+    const leaseExpectedVersion = optionalNonNegativeSafeInteger(
+      input.lease_expected_version,
+      "lease_expected_version",
+    );
+    const registeredAgents = input.registered_agents.map((agent) =>
+      claimAgentValue(agent, "registered agent"));
+    const lifecycleGrants = input.lifecycle_grants.map((grant, index) =>
+      requireJsonObject(grant, `lifecycle_grants[${index}]`));
+    const linkedSuccessorTodoIds = input.linked_successor_todo_ids.map((todoId) =>
+      requireAuthorityStoreId(todoId, "linked successor Todo id"));
+    const successors = input.successors.map((todo, index) =>
+      requireJsonObject(todo, `successors[${index}]`));
+    return await withCanonicalWriter(root, goalId, input.dry_run === true, async () => {
+      const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
+        new FileAuthorityStore(authorityDirectory(root), goalId);
+      return {...await executeCoordinationTodoTerminalLifecycle(store, {
+        goal_id: goalId,
+        todo_id: requireAuthorityStoreId(input.todo_id, "todo id"),
+        expected_role: input.role === null || input.role === undefined
+          ? null : requireAuthorityStoreId(input.role, "role") as "agent" | "user",
+        command: requireAuthorityStoreId(input.command, "command") as "complete" | "supersede",
+        actor_agent_id: input.actor_agent_id === null || input.actor_agent_id === undefined
+          ? null : claimAgentValue(input.actor_agent_id, "actor_agent_id"),
+        registered_agents: registeredAgents,
+        lifecycle_grants: lifecycleGrants,
+        authority_reason: input.authority_reason === null || input.authority_reason === undefined
+          ? null : claimAgentValue(input.authority_reason, "authority_reason"),
+        decision_outcome: input.decision_outcome === null || input.decision_outcome === undefined
+          ? null : requireAuthorityStoreId(input.decision_outcome, "decision_outcome") as
+            "approve" | "reject" | "cancel",
+        operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
+        lease_idempotency_key:
+          input.lease_idempotency_key === null || input.lease_idempotency_key === undefined
+            ? null : requireAuthorityStoreId(input.lease_idempotency_key, "lease idempotency key"),
+        lease_expected_version: leaseExpectedVersion,
+        allow_user_gate_auto_acquire: input.allow_user_gate_auto_acquire as boolean,
+        requested_no_followup: input.requested_no_followup as boolean,
+        requested_completion_turn_key:
+          input.requested_completion_turn_key === null ||
+            input.requested_completion_turn_key === undefined
+            ? null : claimAgentValue(
+              input.requested_completion_turn_key,
+              "requested_completion_turn_key",
+            ),
+        requested_completion_identity_source:
+          input.requested_completion_identity_source === null ||
+            input.requested_completion_identity_source === undefined
+            ? null : requireAuthorityStoreId(
+              input.requested_completion_identity_source,
+              "requested_completion_identity_source",
+            ) as "turn_settlement" | "unscoped_completion" | "lifecycle_reentry",
+        linked_successor_todo_ids: linkedSuccessorTodoIds,
+        successors,
+        note: input.note === null || input.note === undefined
+          ? null : claimAgentValue(input.note, "note"),
+        evidence: input.evidence === null || input.evidence === undefined
+          ? null : claimAgentValue(input.evidence, "evidence"),
+        reason: input.reason === null || input.reason === undefined
+          ? null : claimAgentValue(input.reason, "reason"),
+        clear_claim: input.clear_claim as boolean,
+        validation_declaration:
+          input.validation_declaration === null || input.validation_declaration === undefined
+            ? null : requireJsonObject(input.validation_declaration, "validation_declaration"),
+        validation_receipt: input.validation_receipt === null || input.validation_receipt === undefined
+          ? null : requireJsonObject(input.validation_receipt, "validation_receipt"),
+        completion_policy_request:
+          input.completion_policy_request === null || input.completion_policy_request === undefined
+            ? null : requireJsonObject(input.completion_policy_request, "completion_policy_request"),
+        dry_run: input.dry_run as boolean,
+        now: claimObservedAt(input.observed_at),
+      }), ...providerEvidence};
+    });
   } catch (error) {
     return {schema_version: COORDINATION_TODO_TERMINAL_LIFECYCLE_RESULT_SCHEMA,
       status: "failed", changed: false,
-      reason_code: "invalid_local_coordination_todo_terminal_lifecycle_request",
+      reason_code: error instanceof ShadowManagementError ? error.reason_code :
+        "invalid_local_coordination_todo_terminal_lifecycle_request",
       reason: error instanceof Error ? error.message : "invalid local Todo terminal request",
       ...providerEvidence};
   }
@@ -848,20 +870,27 @@ export async function archiveLocalCoordinationTodos(
     }
     const root = runtimeRoot(input.runtime_root);
     const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
-    const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
-      new FileAuthorityStore(authorityDirectory(root), goalId);
-    return {...await executeCoordinationTodoArchiveCompleted(store, {
-      goal_id: goalId,
-      role: requireAuthorityStoreId(input.role, "role") as "agent" | "user",
-      max_active_done: Number(input.max_active_done),
-      operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
-      dry_run: input.dry_run as boolean,
-      now: claimObservedAt(input.observed_at),
-    }), ...providerEvidence};
+    const maxActiveDone = requiredNonNegativeSafeInteger(
+      input.max_active_done,
+      "max_active_done",
+    );
+    return await withCanonicalWriter(root, goalId, input.dry_run === true, async () => {
+      const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
+        new FileAuthorityStore(authorityDirectory(root), goalId);
+      return {...await executeCoordinationTodoArchiveCompleted(store, {
+        goal_id: goalId,
+        role: requireAuthorityStoreId(input.role, "role") as "agent" | "user",
+        max_active_done: maxActiveDone,
+        operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
+        dry_run: input.dry_run as boolean,
+        now: claimObservedAt(input.observed_at),
+      }), ...providerEvidence};
+    });
   } catch (error) {
     return {schema_version: COORDINATION_TODO_ARCHIVE_RESULT_SCHEMA,
       status: "failed", changed: false,
-      reason_code: "invalid_local_coordination_todo_archive_request",
+      reason_code: error instanceof ShadowManagementError ? error.reason_code :
+        "invalid_local_coordination_todo_archive_request",
       reason: error instanceof Error ? error.message : "invalid local Todo archive request",
       ...providerEvidence};
   }

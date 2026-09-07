@@ -37,6 +37,10 @@ export interface ProductionScaleCoordinationFixture {
   readonly registered_agents: readonly string[];
   readonly completion_todo_id: string;
   readonly supersede_todo_id: string;
+  readonly completion_lease_idempotency_key: string;
+  readonly completion_lease_expected_version: number;
+  readonly supersede_lease_idempotency_key: string;
+  readonly supersede_lease_expected_version: number;
   readonly expected_initial_todo_count: number;
   readonly expected_current_lease_count: number;
   readonly expected_agent_archive_count_after_terminals: number;
@@ -118,7 +122,11 @@ export function productionScaleCoordinationFixture(
   supersedeTodo.claimed_by = "agent-b";
   const todos = [...agents, ...users]
     .sort((left, right) => String(left.todo_id).localeCompare(String(right.todo_id)));
-  const leasedIds = [String(completionTodo.todo_id), ...agents.map((todo) => String(todo.todo_id))]
+  const leasedIds = [
+    String(completionTodo.todo_id),
+    String(supersedeTodo.todo_id),
+    ...agents.map((todo) => String(todo.todo_id)),
+  ]
     .filter((value, index, values) => values.indexOf(value) === index)
     .slice(0, envelope.current_lease_count);
   const leases = leasedIds.map((leasedTodoId, index) => ({
@@ -132,14 +140,17 @@ export function productionScaleCoordinationFixture(
     lease_epoch: index + 1,
     acquired_at: observedAt(index),
     updated_at: observedAt(index),
-    expires_at: observedAt(index + 1),
-    status: "released",
+    expires_at: index < 2 ? "2027-01-01T00:00:00Z" : observedAt(index + 1),
+    status: index < 2 ? "active" : "released",
   })).sort((left, right) => left.todo_id.localeCompare(right.todo_id));
+  const completionLease = leases.find((lease) => lease.todo_id === completionTodo.todo_id)!;
+  const supersedeLease = leases.find((lease) => lease.todo_id === supersedeTodo.todo_id)!;
   const initialAgentDone = envelope.agent_status_counts.done ?? 0;
   return {
     projection: {
       goal_id: goalId,
       source_authority: "synthetic_production_scale_fixture",
+      handoff_mode: "hard_lease",
       todos,
       leases,
       todo_read_model: {
@@ -154,6 +165,10 @@ export function productionScaleCoordinationFixture(
     registered_agents: ["agent-a", "agent-b"],
     completion_todo_id: String(completionTodo.todo_id),
     supersede_todo_id: String(supersedeTodo.todo_id),
+    completion_lease_idempotency_key: completionLease.idempotency_key,
+    completion_lease_expected_version: completionLease.version,
+    supersede_lease_idempotency_key: supersedeLease.idempotency_key,
+    supersede_lease_expected_version: supersedeLease.version,
     expected_initial_todo_count: todos.length,
     expected_current_lease_count: leases.length,
     expected_agent_archive_count_after_terminals: initialAgentDone + 2 - 5,

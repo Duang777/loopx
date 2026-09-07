@@ -59,6 +59,55 @@ def _todo_read_model(todo_count: int) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("invalid", [True, "1", 1.5])
+def test_python_terminal_adapter_rejects_coercible_numeric_values(
+    tmp_path: Path,
+    invalid: object,
+) -> None:
+    state_file = tmp_path / "ACTIVE_GOAL_STATE.md"
+    state_file.write_text("# Goal\n\n## Agent Todo\n", encoding="utf-8")
+    runtime_root = tmp_path / "runtime"
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "common_runtime_root": str(runtime_root),
+                "goals": [
+                    {
+                        "id": "goal-a",
+                        "repo": str(tmp_path),
+                        "state_file": state_file.name,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="max_active_done must be a non-negative integer"):
+        archive_completed_todos(
+            registry_path=registry,
+            goal_id="goal-a",
+            max_active_done=invalid,  # type: ignore[arg-type]
+            dry_run=False,
+        )
+    with pytest.raises(
+        ValueError,
+        match="task_lease_expected_version must be a non-negative integer or None",
+    ):
+        complete_goal_todo(
+            registry_path=registry,
+            goal_id="goal-a",
+            todo_id="todo-a",
+            evidence="strict adapter validation",
+            task_lease_idempotency_key="lease-a",
+            task_lease_expected_version=invalid,  # type: ignore[arg-type]
+            next_agent_todo="Continue after strict validation.",
+            next_task_class="advancement_task",
+        )
+    assert not runtime_root.exists()
+
+
 def test_absent_fence_preserves_legacy_path_without_starting_typescript(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -339,7 +388,9 @@ Continue.
         ),
         encoding="utf-8",
     )
-    projection = build_todo_runtime_shadow_projection(goal_id="goal-a", todos=[])
+    projection = build_todo_runtime_shadow_projection(
+        goal_id="goal-a", todos=[], handoff_mode="soft_claim"
+    )
     projection["todo_read_model"] = {
         **projection["todo_read_model"],
         "schema_version": TODO_DOMAIN_READ_RECORD_SCHEMA_VERSION,
@@ -921,6 +972,7 @@ Continue provider-first delivery.
     projection = build_todo_runtime_shadow_projection(
         goal_id="goal-a",
         todos=[project_completion_validation_authority(todo) for todo in todos],
+        handoff_mode="soft_claim",
     )
     initialize_canonical_authority(
         runtime_root,
@@ -1004,6 +1056,185 @@ Continue provider-first delivery.
     rendered = state_file.read_text(encoding="utf-8")
     assert "Human narrative remains outside canonical Todo authority." in rendered
     assert "Continue provider-first delivery." in rendered
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "version_mismatch",
+        "lease_cas_mismatch",
+        "actor_not_registered",
+        "handoff_mode_requires_lease",
+    ],
+)
+def test_promoted_terminal_rejection_code_survives_public_python_facade(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reason_code: str,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    project = tmp_path / "project"
+    state_file = project / "ACTIVE_GOAL_STATE.md"
+    project.mkdir()
+    state_file.write_text("# Goal\n\n## Agent Todo\n", encoding="utf-8")
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "common_runtime_root": str(runtime_root),
+                "goals": [
+                    {
+                        "id": "goal-a",
+                        "repo": str(project),
+                        "state_file": state_file.name,
+                        "coordination": {"registered_agents": ["agent-a"]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    projection = build_todo_runtime_shadow_projection(
+        goal_id="goal-a",
+        todos=[
+            {
+                "schema_version": "todo_item_v0",
+                "index": 1,
+                "done": False,
+                "text": "Complete through the promoted provider",
+                "todo_id": "todo_terminal",
+                "role": "agent",
+                "status": "open",
+                "archive_state": "active",
+                "source_section": TODO_SECTION_HEADINGS["agent"],
+                "task_class": "advancement_task",
+                "claimed_by": "agent-a",
+            }
+        ],
+        handoff_mode="soft_claim",
+    )
+    initialize_canonical_authority(
+        runtime_root, "goal-a", projection, state_path=state_file
+    )
+
+    monkeypatch.setattr(
+        "loopx.control_plane.todos.provider_terminal_lifecycle.effect_runtime_result",
+        lambda *_args, **_kwargs: {
+            "schema_version": "loopx_coordination_todo_terminal_lifecycle_result_v0",
+            "status": "failed",
+            "changed": False,
+            "reason_code": reason_code,
+            "reason": f"terminal request rejected: {reason_code}",
+            "source_authority": "file_v0",
+            "decision_read_from_provider": True,
+            "legacy_fallback_used": False,
+        },
+    )
+
+    with pytest.raises(LocalCoordinationAuthorityUnavailable) as exc_info:
+        complete_goal_todo(
+            registry_path=registry_path,
+            goal_id="goal-a",
+            todo_id="todo_terminal",
+            claimed_by="agent-a",
+            agent_id="agent-a",
+            no_followup=True,
+        )
+    assert exc_info.value.code == reason_code
+    assert exc_info.value.payload["reason_code"] == reason_code
+
+
+def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    project = tmp_path / "project"
+    state_file = project / "ACTIVE_GOAL_STATE.md"
+    project.mkdir()
+    state_file.write_text("# Goal\n\n## Agent Todo\n", encoding="utf-8")
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "common_runtime_root": str(runtime_root),
+                "goals": [
+                    {
+                        "id": "goal-a",
+                        "repo": str(project),
+                        "state_file": state_file.name,
+                        "coordination": {"registered_agents": ["agent-a"]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    projection = build_todo_runtime_shadow_projection(
+        goal_id="goal-a",
+        todos=[
+            {
+                "schema_version": "todo_item_v0",
+                "index": 1,
+                "done": False,
+                "text": "Complete once despite a projection crash",
+                "todo_id": "todo_terminal",
+                "role": "agent",
+                "status": "open",
+                "archive_state": "active",
+                "source_section": TODO_SECTION_HEADINGS["agent"],
+                "task_class": "advancement_task",
+                "claimed_by": "agent-a",
+            }
+        ],
+        handoff_mode="soft_claim",
+    )
+    initialize_canonical_authority(
+        runtime_root, "goal-a", projection, state_path=state_file
+    )
+    original_settle = provider_projection.settle_canonical_todo_projection
+
+    def _crash_projection(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise OSError("injected projection delivery crash")
+
+    # The adapter imports this symbol directly, so fail only the compatibility
+    # delivery after the canonical transaction has committed.
+    monkeypatch.setattr(
+        "loopx.control_plane.todos.provider_terminal_lifecycle.settle_canonical_todo_projection",
+        _crash_projection,
+    )
+    request = {
+        "registry_path": registry_path,
+        "goal_id": "goal-a",
+        "todo_id": "todo_terminal",
+        "claimed_by": "agent-a",
+        "agent_id": "agent-a",
+        "next_agent_todo": "Continue after the recovered projection.",
+        "next_claimed_by": "agent-a",
+        "next_task_class": "advancement_task",
+    }
+    with pytest.raises(OSError, match="projection delivery crash"):
+        complete_goal_todo(**request)
+
+    monkeypatch.setattr(
+        "loopx.control_plane.todos.provider_terminal_lifecycle.settle_canonical_todo_projection",
+        original_settle,
+    )
+    replay = complete_goal_todo(**request)
+    assert replay["status"] == "replayed"
+    canonical = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root, goal_id="goal-a"
+    )
+    assert canonical is not None
+    successors = [
+        todo
+        for todo in canonical["todos"]
+        if todo["todo_id"] != "todo_terminal"
+    ]
+    assert len(successors) == 1
+    assert successors[0]["text"] == "Continue after the recovered projection."
 
 
 def test_real_canonical_provider_preserves_complete_complex_todo_semantics(

@@ -177,16 +177,41 @@ refactor comparison: the immutable legacy baseline, the file provider, and a
 real PostgreSQL provider. All three arms must start from the same
 production-complex snapshot and execute the same public operations. Compare
 the two provider heads exactly, then compare the baseline semantically after
-normalizing only declared provider provenance. File/PostgreSQL agreement alone
-is not compatibility evidence because both providers execute the same new
-rule. Verify that every non-target record and the source snapshot are unchanged.
+the declared compatibility projection. The allowed archive normalization is
+narrow: omit provider-retained `archive_state=archive` records from the legacy
+hot view, omit their historical leases from that hot view, and ignore absolute
+imported `index` values only after separately proving identical per-role
+relative order. Provider provenance may also differ. No domain field, archive
+selection, relative order, active lease, or non-target record may be normalized.
+File/PostgreSQL agreement alone is not compatibility evidence because both
+providers execute the same new rule. Verify that every non-target record and
+the source snapshot are unchanged.
 
 当同一个 semantic owner 服务多个 authority provider 时，重构对照必须包含三臂：
 不可变 legacy baseline、file provider、真实 PostgreSQL provider。三臂从同一份生产
 复杂度快照出发，执行相同 public operation；两个 provider head 要精确相等，baseline
-只允许在显式声明的 provider provenance 上做归一化后再比较语义。File/PostgreSQL
-一致不能单独证明兼容，因为它们执行的是同一套新规则。还要验证所有非目标记录与源
-快照保持不变。
+按显式 compatibility projection 比较。归档场景只允许三项窄归一化：legacy hot view
+不包含 provider 保留的 `archive_state=archive` 记录、不包含这些记录的历史 lease；并且
+只有先单独证明每个 role 的相对顺序完全一致，才可忽略导入 `index` 的绝对值。provider
+provenance 也可不同。domain 字段、归档选择、相对顺序、active lease 和非目标记录均
+不得归一化。File/PostgreSQL 一致不能单独证明兼容，因为它们执行的是同一套新规则。
+还要验证所有非目标记录与源快照保持不变。
+
+The archive rehearsal is executable and emits only bounded counts and digest
+prefixes. It never prints raw projections, Todo identifiers, source paths, or
+the PostgreSQL URL. The URL must name a disposable isolated server:
+
+```bash
+LOOPX_TEST_POSTGRES_URL="$DISPOSABLE_POSTGRES_URL" \
+python examples/control_plane/authority-three-arm-rehearsal.py \
+  --registry "$REGISTRY_PATH" \
+  --goal-id "$GOAL_ID" \
+  --execute-isolated-postgresql
+```
+
+归档三臂演练可直接执行，且只输出有界计数和 digest 前缀；不输出 raw projection、
+Todo 标识、源路径或 PostgreSQL URL。URL 必须指向一次性隔离服务。命令中的显式
+`--execute-isolated-postgresql` 只是安全确认，不会授权连接共享或生产数据库。
 
 Keep tests separate from active state: use a disposable database/tenant and
 runtime directory, with synthetic fixtures or an owner-authorized read-only

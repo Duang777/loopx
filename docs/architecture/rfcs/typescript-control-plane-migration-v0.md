@@ -88,14 +88,29 @@ provider-native records use durable completion/update time and Todo identity.
 Historical lease files absent from the current Todo graph remain audit history
 and are not projected back into the canonical live head.
 
+Every non-preview terminal or archive entrypoint acquires the same per-goal
+shadow-maintenance mutex used by bootstrap and rollback, then rechecks the
+durable management state before opening the canonical provider. A lifecycle
+write therefore cannot overlap a bootstrap/rollback transition or bypass its
+write hold. After the durable promotion fence is present, a missing canonical
+head is reported as a typed canonical-authority outage with an explicit
+restore-before-retry recovery action. It is not relabeled as a legacy-writer
+fence, and it never authorizes a Markdown fallback.
+
 This stage is qualified with a three-arm rehearsal from one read-only,
 production-complex snapshot: an immutable legacy baseline clone, an isolated
 file provider, and an isolated real PostgreSQL provider. The provider heads
 must match exactly and the legacy arm must match semantically after normalizing
-only declared provider provenance; all non-target records and the source
-snapshot remain unchanged. A deterministic public-safe scale fixture exercises
+the declared compatibility projection. For archive, that projection excludes
+provider-retained archived records and their historical leases from the legacy
+hot view, and ignores absolute imported indexes only after proving identical
+per-role relative order. It never normalizes domain fields, archive selection,
+active leases, or non-target records; the source snapshot remains unchanged.
+The versioned rehearsal command lives in
+`examples/control_plane/authority-three-arm-rehearsal.py`. A deterministic
+public-safe scale fixture exercises
 the same status mix, current/retired leases, standing decisions, validation,
-successor, replay, concurrency, and archive pressure in every provider suite.
+successor, replay, concurrency, archive pressure, and hard-lease fences in every provider suite.
 That fixture is durable regression coverage, not a substitute for the current
 read-only three-arm rehearsal.
 

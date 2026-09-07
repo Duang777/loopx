@@ -1935,10 +1935,14 @@ legacy lease file 继续作为历史审计材料保留，但不进入 live proje
 
 资格验证使用同一份只读、生产复杂度快照做三臂对照：不可变 legacy baseline clone、
 隔离 file store、隔离的真实 PostgreSQL tenant。两个 provider head 精确比较；legacy
-结果只允许归一化已声明的 provider provenance 后再比较语义；全部非目标记录与源快照
-必须不变。受检入的确定性 public-safe 规模 fixture 在每个 provider conformance suite
-中制造同样的分布和压力。它不能替代只读三臂演练，因为所有 provider 共享新的 semantic
-owner，可能同时同意同一个回归。
+结果按显式 compatibility projection 比较。归档时仅从 legacy hot view 排除 provider
+保留的 archive 记录及其历史 lease，并且只有先证明每个 role 的相对顺序完全一致，才可
+忽略导入 `index` 的绝对值；domain 字段、归档选择、active lease 与非目标记录不得归一化，
+源快照必须不变。可执行演练为
+`examples/control_plane/authority-three-arm-rehearsal.py`。受检入的确定性 public-safe
+规模 fixture 在每个 provider conformance suite 中制造同样的分布、压力与 hard-lease
+fence。它不能替代只读三臂演练，因为所有 provider 共享新的 semantic owner，可能同时
+同意同一个回归。
 
 ### 下一步交付与并行 provider 工作
 

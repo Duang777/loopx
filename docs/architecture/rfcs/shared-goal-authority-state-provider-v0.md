@@ -2441,10 +2441,15 @@ historical audit material and are excluded from live projection.
 Qualification uses one read-only, production-complex snapshot for three arms:
 an immutable legacy baseline clone, an isolated file store, and an isolated
 real PostgreSQL tenant. The provider heads compare exactly; the legacy result
-compares semantically after normalizing only declared provider provenance; all
-non-target records and the source snapshot must remain unchanged. A checked-in,
+compares through the declared compatibility projection. Archive comparison
+removes provider-retained archived records and their historical leases from the
+legacy hot view, and ignores absolute imported indexes only after separately
+proving identical per-role relative order. Domain fields, archive selection,
+active leases, and non-target records are never normalized; the source snapshot
+must remain unchanged. The executable rehearsal is
+`examples/control_plane/authority-three-arm-rehearsal.py`. A checked-in,
 deterministic, public-safe scale fixture exercises the same distribution and
-pressure across every provider conformance suite. It cannot replace the
+pressure, including hard-lease fences, across every provider conformance suite. It cannot replace the
 read-only three-arm rehearsal because all providers share the new semantic
 owner and can therefore agree on the same regression.
 

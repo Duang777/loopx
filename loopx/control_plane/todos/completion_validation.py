@@ -266,6 +266,10 @@ def resolve_private_completion_validation_declaration(
         raise ValueError(
             "canonical Todo requires completion validation but omits its digest"
         )
+    # A missing sidecar is an availability case: the digest-bound Markdown or
+    # event projection may rehydrate it below. A present sidecar that fails its
+    # identity or digest checks is corruption/tamper evidence and deliberately
+    # raises instead of falling back, so a second source cannot mask the fault.
     declaration = read_completion_validation_declaration(
         runtime_root=runtime_root,
         goal_id=goal_id,
@@ -309,7 +313,7 @@ def resolve_private_completion_validation_declaration(
             todo_id=todo_id,
             declaration=declaration,
         )
-    return declaration
+    return cast(dict[str, Any], declaration)
 
 
 def run_completion_validation_gate_with_source(
