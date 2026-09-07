@@ -40,11 +40,14 @@ def group_history_source_fingerprint(
     event_inbox_config_ref: str,
     inbox_path_ref: str,
     capture_scope: str,
+    route_binding_ref: str = "",
 ) -> str:
     value = (
         f"{route_key}\0{profile}\0{chat_id}\0{event_inbox_config_ref}"
         f"\0{inbox_path_ref}\0{capture_scope}"
     ).encode()
+    if route_binding_ref:
+        value += f"\0{route_binding_ref}".encode()
     return f"sha256:{hashlib.sha256(value).hexdigest()[:24]}"
 
 

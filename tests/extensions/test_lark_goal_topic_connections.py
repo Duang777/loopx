@@ -615,6 +615,10 @@ def test_async_inbox_registration_failure_preserves_verified_write_receipt(
     assert result["external_write_performed"] is True
     assert result["readback_verified"] is True
     assert not (tmp_path / "binding.json").exists()
+    inbox_configs = list((tmp_path / ".loopx/config/lark-goal-topics").glob("*.json"))
+    assert len(inbox_configs) == 1
+    inbox_config = json.loads(inbox_configs[0].read_text(encoding="utf-8"))
+    assert inbox_config["topic_root_message_id"] == "om_topic_alpha"
 
 
 @pytest.mark.parametrize("missing_prerequisite", ["registry_path", "goal_repository"])
