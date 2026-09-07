@@ -9,9 +9,7 @@ from pathlib import Path
 from ..control_plane.coordination.runtime_shadow import (
     bootstrap_coordination_runtime_shadow,
     build_runtime_shadow_source_snapshot,
-    build_todo_runtime_shadow_projection,
     inspect_coordination_runtime_shadow,
-    load_task_lease_runtime_shadow_records,
     qualify_coordination_runtime_shadow,
     read_coordination_runtime_shadow_todo_candidate,
     resolve_coordination_runtime_shadow_config,
