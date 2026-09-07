@@ -11,6 +11,13 @@ a model, sleep, write state, or spend quota. Scheduler process management,
 host-specific wake adapters, and operator presentation are later slices in the
 Turn Loop Controller plan.
 
+The controller is an exported transition API, not a loop implicitly started by
+`loopx turn run-once`. The CLI does not currently call `decide_loop_disposition`
+or persist a `BoundedTurnBudget`. Both `max_turns` and `completed_turns` must be
+supplied by an integrating caller; there is no CLI or product default of three
+Turns. The budget applies to continued `validated_progress` on the same Todo,
+not a chain of completed Todos and not fine-grained planning mode.
+
 ## Inputs
 
 | Input | Shape | Notes |

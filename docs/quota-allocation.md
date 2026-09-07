@@ -52,6 +52,78 @@ depending on the executor:
 - a shared controller loop can use the same number as a weighted selection
   ratio between eligible goals.
 
+## Completed-Todo Review Cadence
+
+`execution_profile.replan_after_completed_todos` is a Goal-level integer
+hyperparameter, default **5** in both standard and fine-grained Turn modes.
+Set it to 2 or 3 for earlier review. Supported values are 1–5: the current
+agent projection retains five recent completions, so larger values are rejected.
+Restoring 5 removes the override and preserves the existing default behavior.
+
+```bash
+# Preview, apply, and read back the Goal setting.
+loopx configure-goal --goal-id example --execution-replan-after-todos 3
+loopx configure-goal --goal-id example --execution-replan-after-todos 3 --execute
+loopx configure-goal --goal-id example
+
+# Restore the default cadence.
+loopx configure-goal --goal-id example --execution-replan-after-todos 5 --execute
+```
+
+The Dashboard's Goal configuration catalog exposes **Goal review cadence** as
+an integer field through the existing preview/apply flow. This is a setting of
+the built-in goal control plane, with no provider or plugin installation.
+
+The count includes completed advancement Todos claimed by the same Agent, with
+valid completion timestamps, after the latest qualifying outcome checkpoint.
+Open Todos, other Agents' work, and protocol steps do not count. A checkpoint
+must satisfy the existing material-outcome and acceptance-evidence rules;
+a generic refresh or an unqualified replan ACK does not reset the window.
+A closed Agent vision is excluded by the existing terminal-state rule.
+
+At the threshold, the next `quota should-run --goal-id example --agent-id agent-a`
+evaluation contributes a `vision_outcome_checkpoint_required` acceptance gap
+with `completed_todo_count` and `completed_todo_threshold`, through the existing
+replan obligation path. This is a machine-evaluated review obligation, subject
+to existing lane arbitration. The review can retain the current path with
+`continue` or `no_change`, or choose `replan`; reaching the threshold does not
+require changing a correct plan. No permission or quota boundary changes, and
+no external data is published by this setting.
+
+This counter does not interrupt the host or schedule a continuation turn.
+For review during a long turn, the executor must write completion state as
+work finishes and re-enter quota before starting the next Todo. Completing all
+Todos in one batch at closeout or never re-entering quota can defer review until
+after implementation. Lowering the threshold alone cannot repair that gap.
+
+Other cadences are independent: the standard profile's two-small-delivery
+streak suggests widening work; fine mode's five-small-delivery streak suggests
+direction review. Neither is this completed-Todo counter. The periodic review
+window of 20 material run records and long-open-Todo-chain triggers also retain
+their existing thresholds.
+
+### Governed Turn Execution
+
+`loopx turn plan` / `loopx turn run-once` is a separate execution surface from
+fine-grained planning. A new Turn reads live quota, and successful material
+execution goes through result validation, durable writeback, quota settlement,
+and a fresh scheduler/quota readback. Its host result must declare an unchanged
+path with a reason or a material replan with a bounded vision/path packet.
+This path declaration is checked at each material Turn boundary; it is not an
+automatic change of plan or independent proof of complete Goal acceptance.
+
+The completed-Todo hyperparameter applies to the shared quota frontier and
+write-time replan gate used by Turn execution. It does not change the per-Turn
+result contract or count partial-progress Turns as completed Todos.
+
+The separate [Turn Loop Controller](reference/protocols/turn-loop-controller-v0.md)
+can request replan when a caller-provided budget for continued progress on one
+Todo is exhausted. That budget has no default, and the `turn` CLI does not
+invoke this controller or maintain that counter. `run-once` executes one Turn;
+an outer caller still owns repeated execution. A completed-Todo threshold, a
+per-Turn path declaration, and a same-Todo continuation budget are different
+controls.
+
 ## Minimal Contract
 
 The compact status shape can start with a small object:
