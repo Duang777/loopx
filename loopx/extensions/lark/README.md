@@ -14,6 +14,7 @@ evidence, or recovery authority.
 | `lark-goal-channel` | Bind one verified Lark group and projection surface to one LoopX goal | [`goal_channel.py`](goal_channel.py), [`goal_channel_setup.py`](goal_channel_setup.py) |
 | `lark-explore-projection` | Project canonical Explore results into Lark tables, cards, and whiteboards | [`presentation/explore_results.py`](presentation/explore_results.py) |
 | `lark-periodic-report-announcement` | Deliver a periodic report through the current Goal Channel's verified project Bot while mentioning only recipients selected by its typed audience plan | [`periodic_report_delivery.py`](periodic_report_delivery.py) |
+| `lark-periodic-report-source` | Bind and settle one exact Agent-selected Goal Channel source for a typed report action without classifying message text | [`periodic_report_request.py`](periodic_report_request.py) |
 | `lark-miaoda-html-report` | Publish an already-rendered periodic report to an operator-selected existing Miaoda app | [`presentation/periodic_report.py`](presentation/periodic_report.py) |
 
 Mention-bearing text delivery is owned by the extension's shared outbound
@@ -52,6 +53,18 @@ membership, performs a provider dry-run, sends idempotently, and reads the
 created message back. It returns no profile, chat id, message body, or raw
 provider payload. Installation and the command itself grant no new Lark scope
 or external-write authority.
+
+When an Agent semantically interprets one inbox item as a report request, it
+passes that item's exact `message_id` to `loopx periodic-report request`.
+`periodic_report_request.py` validates only user authorship, provider-native
+addressing, the selected Goal/Agent binding, provider target, and inbox
+identity. It neither scans other inbox items nor inspects text for report
+keywords. Its bind/settle ports are discovered from `extension.toml`; source
+ACK happens only after the capability has persisted `delivery_ready` state.
+Transient ACK failures remain replayable. A missing source or binding/receipt
+identity drift is recorded as a terminal settlement failure and left un-ACKed;
+after correcting the configuration or retention issue, re-deliver the request
+as a new Lark message and invoke the typed action with its new `message_id`.
 
 The [event inbox guide](docs/lark-event-inbox.md) documents the complete
 collector, processing, reply, reaction, and acknowledgement lifecycle. The
@@ -246,6 +259,14 @@ permission or silently enables an external write.
   `im:message.group_msg`、`im:message.group_msg.include_bot:read`、
   `im:message.p2p_msg:readonly`
 - 交互/文档 sink：`cardkit:card:read/write`、`docs:document.comment:read/create/delete`
+
+`im:chat.members:read` 是原生 @ 身份校验的核心权限，也适用于 @ 机器人。
+发送前使用 `im +chat-members-list --member-types user,bot --page-all` 查询
+精确成员身份；旧的 `chat.members get` 不能作为机器人不在群内的证据。
+默认权限清单不代表已有应用已获授权：旧应用仍需在开发者后台申请并完成审核，
+LoopX 不会自动授予权限，也不会在成员读取失败时绕过 @ 校验。
+若消息回读将机器人标为 `app_id`，仅接受当前群机器人列表中已验证且无歧义的
+`member_id` ↔ `app_id` 映射；名称相同不构成身份验证。
 
 拿到 App ID（`cli_xxx`）后，可在开发者后台一键批量申请：
 

@@ -4,10 +4,12 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from loopx.chat_lark_api import LarkChatRequestMixin
 from loopx.control_plane.quota.goal_boundary import goal_boundary
 from loopx.extensions.lark.goal_channel_contracts import (
     GOAL_CHANNEL_BINDING_SCHEMA_VERSION,
@@ -33,6 +35,8 @@ from loopx.extensions.lark.goal_topic_connections import (
     reply_lark_goal_topic,
     route_lark_topic_event,
 )
+from loopx.extensions.lark.goal_topic_batch import connect_lark_goal_topics
+from loopx.extensions.lark.goal_topic_runtime import LarkGoalTopicRuntimeService
 from loopx.file_lock import LockAcquireTimeoutError
 from loopx.registry import atomic_write_json
 
@@ -184,6 +188,191 @@ def test_connections_for_two_agents_coexist(tmp_path: Path) -> None:
     }
 
 
+def test_batch_preflights_every_agent_before_any_provider_write(tmp_path: Path) -> None:
+    registry = _registry(tmp_path)
+    registry["goals"][0]["coordination"] = {
+        "registered_agents": ["agent-alpha", "agent-beta"]
+    }
+    state: dict[str, Any] = {}
+    base_runner = _runner(state)
+
+    def runner(args: list[str], cwd: object, timeout: object) -> dict[str, Any]:
+        profile = args[args.index("--profile") + 1] if "--profile" in args else ""
+        if "auth" in args and "status" in args and profile == "broken":
+            state.setdefault("calls", []).append(list(args))
+            return {
+                "returncode": 1,
+                "stdout": json.dumps({"identities": {}}),
+                "stderr": "",
+            }
+        return base_runner(args, cwd, timeout)
+
+    result = connect_lark_goal_topics(
+        registry=registry,
+        goal_id="goal-alpha",
+        target_path=tmp_path / "targets.json",
+        binding_path=tmp_path / "binding.json",
+        app_refs_by_agent={"agent-alpha": "mew", "agent-beta": "broken"},
+        chat_id=CHAT_ID,
+        chat_name="Product group",
+        ingress_mode="direct_session",
+        execute=True,
+        runner=runner,
+        cli_bin="fake-lark",
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert result["details"]["failed_agent_id"] == "agent-beta"
+    assert not any("chat.members" in call for call in state["calls"])
+    assert not any("+messages-send" in call for call in state["calls"])
+    assert not (tmp_path / "binding.json").exists()
+
+
+def test_batch_retry_resumes_after_partial_provider_failure(tmp_path: Path) -> None:
+    registry = _registry(tmp_path)
+    registry["goals"][0]["coordination"] = {
+        "registered_agents": ["agent-alpha", "agent-beta"]
+    }
+    state: dict[str, Any] = {}
+    base_runner = _runner(state)
+    fail_beta_once = True
+    send_count = 0
+
+    def runner(args: list[str], cwd: object, timeout: object) -> dict[str, Any]:
+        nonlocal fail_beta_once, send_count
+        if "+messages-send" in args:
+            send_count += 1
+            state.setdefault("calls", []).append(list(args))
+            if send_count == 2 and fail_beta_once:
+                fail_beta_once = False
+                return {"returncode": 1, "stdout": "", "stderr": "temporary"}
+        return base_runner(args, cwd, timeout)
+
+    kwargs = {
+        "registry": registry,
+        "goal_id": "goal-alpha",
+        "target_path": tmp_path / "targets.json",
+        "binding_path": tmp_path / "binding.json",
+        "app_refs_by_agent": {"agent-alpha": "mew", "agent-beta": "mew"},
+        "chat_id": CHAT_ID,
+        "chat_name": "Product group",
+        "ingress_mode": "direct_session",
+        "execute": True,
+        "runner": runner,
+        "cli_bin": "fake-lark",
+    }
+    first = connect_lark_goal_topics(**kwargs)
+    second = connect_lark_goal_topics(**kwargs)
+
+    assert first["ok"] is False
+    assert first["status"] == "partially_connected"
+    assert first["details"]["completed_agent_ids"] == ["agent-alpha"]
+    assert first["details"]["failed_agent_id"] == "agent-beta"
+    assert second["ok"] is True
+    assert second["details"]["completed_agent_ids"] == [
+        "agent-alpha",
+        "agent-beta",
+    ]
+    assert send_count == 3
+
+
+def test_batch_api_partial_success_starts_committed_app_worker(tmp_path: Path) -> None:
+    registry = _registry(tmp_path)
+    registry["goals"][0]["coordination"] = {
+        "registered_agents": ["agent-alpha", "agent-beta"]
+    }
+    target_path = tmp_path / "targets.json"
+    binding_path = tmp_path / "binding.json"
+    state: dict[str, Any] = {}
+    base_runner = _runner(state)
+    send_count = 0
+
+    def runner(args: list[str], cwd: object, timeout: object) -> dict[str, Any]:
+        nonlocal send_count
+        if "+messages-send" in args:
+            send_count += 1
+            if send_count == 2:
+                state.setdefault("calls", []).append(list(args))
+                return {"returncode": 1, "stdout": "", "stderr": "temporary"}
+        return base_runner(args, cwd, timeout)
+
+    started = Event()
+
+    def profile_poller(_profile: str, stop: Event) -> None:
+        started.set()
+        stop.wait(3)
+
+    def snapshot() -> dict[str, Any]:
+        return {
+            "target_payload": read_goal_channel_targets(target_path),
+            "binding_payloads": {
+                "goal-alpha": read_goal_channel_binding(binding_path)
+            },
+            "goal_contexts": {
+                "goal-alpha": {
+                    "work_dir": str(tmp_path),
+                    "objective": "Alpha delivery",
+                }
+            },
+        }
+
+    runtime = LarkGoalTopicRuntimeService(
+        snapshot_provider=snapshot,
+        runtime_root=tmp_path,
+        runtime_controller=SimpleNamespace(),
+        profile_poller=profile_poller,
+    )
+    responses: list[dict[str, Any]] = []
+
+    class Handler(LarkChatRequestMixin):
+        path = "/api/chat/lark/connections"
+        server = SimpleNamespace(lark_goal_topic_runtime=runtime)
+
+        def _read_json(self) -> dict[str, Any]:
+            return {
+                "goal_id": "goal-alpha",
+                "agent_bindings": [
+                    {"agent_id": "agent-alpha", "app_ref": "mew"},
+                    {"agent_id": "agent-beta", "app_ref": "mew"},
+                ],
+                "chat_id": CHAT_ID,
+                "chat_name": "Product group",
+                "ingress_mode": "direct_session",
+                "execute": True,
+            }
+
+        def _goal_channel_context(self, _goal_id: str):
+            return registry, binding_path
+
+        def _goal_channel_target_path(self) -> Path:
+            return target_path
+
+        def _lark_runner(self):
+            return runner
+
+        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
+            responses.append({**payload, "http_status": status})
+
+        def _send_error(self, message: str, **_kwargs: Any) -> None:
+            raise AssertionError(message)
+
+    try:
+        Handler()._lark_connect()
+
+        assert responses[0]["status"] == "partially_connected"
+        assert responses[0]["http_status"] == 400
+        assert started.wait(1)
+        assert runtime.active_profiles() == ["mew"]
+        assert runtime.health_snapshot()["mew"]["status"] == "starting"
+        payload = read_goal_channel_binding(binding_path)
+        assert [
+            item["agent_id"] for item in bindings_for_goal(payload, "goal-alpha")
+        ] == ["agent-alpha"]
+    finally:
+        runtime.close()
+
+
 def test_concurrent_peer_connections_preserve_both_recipients(tmp_path: Path) -> None:
     registry = _registry(tmp_path)
     registry["goals"][0]["coordination"] = {
@@ -319,6 +508,7 @@ def test_async_inbox_requires_one_registered_agent(tmp_path: Path) -> None:
 
     assert preview["details"]["capture_scope"] == "configured_chat_all"
     assert preview["details"]["incoming_mode"] == "all"
+    assert preview["details"]["topic_name"] == "Alpha delivery · agent-alpha"
 
 
 @pytest.mark.parametrize("ingress_mode", ["live_steering", "session_queue"])
@@ -342,6 +532,7 @@ def test_session_ingress_modes_require_and_persist_exact_session(
             execute=False,
         )
 
+    state: dict[str, Any] = {}
     connected = connect_lark_goal_topic(
         registry=registry,
         goal_id="goal-alpha",
@@ -353,7 +544,7 @@ def test_session_ingress_modes_require_and_persist_exact_session(
         chat_id=CHAT_ID,
         chat_name="Product group",
         ingress_mode=ingress_mode,
-        runner=_runner({}),
+        runner=_runner(state),
         cli_bin="fake-lark",
     )
 
@@ -363,6 +554,8 @@ def test_session_ingress_modes_require_and_persist_exact_session(
     )
     assert binding is not None
     assert binding["agent_id"] == "agent-alpha"
+    assert binding["topic"]["name"] == "Alpha delivery · agent-alpha"
+    assert "Agent ID: agent-alpha" in state["sent"]["om_topic_alpha"]
     assert binding["session_id"] == "session-alpha"
     assert binding["routing"]["ingress_mode"] == ingress_mode
     assert binding["connector"]["schema_version"] == "agent_external_connector_v0"
@@ -556,6 +749,47 @@ def test_listening_connection_without_received_events_is_not_reply_ready(
     assert rows[0]["listener_status"] == "listening"
     assert rows[0]["reply_ready"] is False
     assert rows[0]["health_error_code"] == "lark_event_delivery_unverified"
+
+
+def test_starting_listener_is_not_presented_as_reply_ready(tmp_path: Path) -> None:
+    state: dict[str, Any] = {}
+    runner = _runner(state)
+    target_path = tmp_path / "goal-channel-targets.json"
+    binding_path = tmp_path / "goal-channel.json"
+    connected = connect_lark_goal_topic(
+        registry=_registry(tmp_path),
+        goal_id="goal-alpha",
+        target_path=target_path,
+        binding_path=binding_path,
+        app_ref="mew",
+        chat_id=CHAT_ID,
+        chat_name="Product group",
+        incoming_mode="mentions",
+        runner=runner,
+        cli_bin="fake-lark",
+    )
+    assert connected["ok"] is True
+
+    rows = list_lark_connections(
+        registry=_registry(tmp_path),
+        target_path=target_path,
+        binding_paths={"goal-alpha": binding_path},
+        runner=runner,
+        cli_bin="fake-lark",
+        runtime_health={
+            "mew": {
+                "status": "starting",
+                "error_code": None,
+                "event_count": 0,
+                "replied_count": 0,
+                "last_event_status": None,
+            }
+        },
+    )
+
+    assert rows[0]["listener_status"] == "starting"
+    assert rows[0]["reply_ready"] is False
+    assert rows[0]["health_error_code"] == "lark_event_listener_starting"
 
 
 def test_connect_preview_uses_verified_bot_identity_without_user_oauth(
@@ -818,6 +1052,139 @@ def test_connect_uses_bot_chat_access_when_member_listing_is_unavailable(
     assert all(call[call.index("--as") + 1] == "bot" for call in bot_chat_checks)
 
 
+def test_existing_member_readback_failure_does_not_claim_external_write(
+    tmp_path: Path,
+) -> None:
+    state: dict[str, Any] = {}
+    base_runner = _runner(state)
+
+    def runner(args: list[str], cwd: object, timeout: object) -> dict[str, Any]:
+        if "chats" in args and "get" in args and "--as" in args:
+            if args[args.index("--as") + 1] == "bot":
+                state.setdefault("calls", []).append(list(args))
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "temporary readback failure",
+                }
+        return base_runner(args, cwd, timeout)
+
+    result = connect_lark_goal_topic(
+        registry=_registry(tmp_path),
+        goal_id="goal-alpha",
+        target_path=tmp_path / "goal-channel-targets.json",
+        binding_path=tmp_path / "goal-channel.json",
+        app_ref="mew",
+        chat_id=CHAT_ID,
+        chat_name="Product group",
+        incoming_mode="mentions",
+        runner=runner,
+        cli_bin="fake-lark",
+    )
+
+    assert result["ok"] is False
+    assert result["blocker"] == "channel_membership_unverified"
+    assert result["external_write_performed"] is False
+    assert not any(
+        "chat.members" in call and "create" in call for call in state["calls"]
+    )
+
+
+def test_connect_adds_a_missing_bot_and_retry_does_not_add_it_twice(
+    tmp_path: Path,
+) -> None:
+    state: dict[str, Any] = {}
+    base_runner = _runner(state)
+    bot_added = False
+
+    def runner(args: list[str], cwd: object, timeout: object) -> dict[str, Any]:
+        nonlocal bot_added
+        if "+chat-members-list" in args:
+            state.setdefault("calls", []).append(list(args))
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    {"data": {"bots": ([{"app_id": APP_ID}] if bot_added else [])}}
+                ),
+                "stderr": "",
+            }
+        if "chat.members" in args and "create" in args:
+            state.setdefault("calls", []).append(list(args))
+            bot_added = True
+            return {
+                "returncode": 0,
+                "stdout": json.dumps({"data": {"invalid_id_list": []}}),
+                "stderr": "",
+            }
+        return base_runner(args, cwd, timeout)
+
+    kwargs = {
+        "registry": _registry(tmp_path),
+        "goal_id": "goal-alpha",
+        "target_path": tmp_path / "goal-channel-targets.json",
+        "binding_path": tmp_path / "goal-channel.json",
+        "app_ref": "mew",
+        "chat_id": CHAT_ID,
+        "chat_name": "Product group",
+        "incoming_mode": "mentions",
+        "runner": runner,
+        "cli_bin": "fake-lark",
+    }
+    first = connect_lark_goal_topic(**kwargs)
+    second = connect_lark_goal_topic(**kwargs)
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["external_write_performed"] is True
+    assert second["external_write_performed"] is False
+    add_calls = [
+        call for call in state["calls"] if "chat.members" in call and "create" in call
+    ]
+    assert len(add_calls) == 1
+    add_call = add_calls[0]
+    assert add_call[add_call.index("--member-id-type") + 1] == "app_id"
+    assert json.loads(add_call[add_call.index("--data") + 1]) == {
+        "id_list": [APP_ID]
+    }
+
+
+def test_connect_stops_before_topic_write_when_bot_add_fails(tmp_path: Path) -> None:
+    state: dict[str, Any] = {}
+    base_runner = _runner(state)
+
+    def runner(args: list[str], cwd: object, timeout: object) -> dict[str, Any]:
+        if "+chat-members-list" in args:
+            state.setdefault("calls", []).append(list(args))
+            return {
+                "returncode": 0,
+                "stdout": json.dumps({"data": {"bots": []}}),
+                "stderr": "",
+            }
+        if "chat.members" in args and "create" in args:
+            state.setdefault("calls", []).append(list(args))
+            return {"returncode": 1, "stdout": "", "stderr": "denied"}
+        return base_runner(args, cwd, timeout)
+
+    result = connect_lark_goal_topic(
+        registry=_registry(tmp_path),
+        goal_id="goal-alpha",
+        target_path=tmp_path / "goal-channel-targets.json",
+        binding_path=tmp_path / "goal-channel.json",
+        app_ref="mew",
+        chat_id=CHAT_ID,
+        chat_name="Product group",
+        incoming_mode="mentions",
+        runner=runner,
+        cli_bin="fake-lark",
+    )
+
+    assert result["ok"] is False
+    assert result["blocker"] == "provider_api_failed"
+    assert result["external_write_performed"] is False
+    assert any("chat.members" in call and "create" in call for call in state["calls"])
+    assert not any("+messages-send" in call for call in state["calls"])
+
+
 def test_existing_target_cli_bin_has_priority_for_connection(tmp_path: Path) -> None:
     state: dict[str, Any] = {}
     runner = _runner(state)
@@ -1019,7 +1386,7 @@ def test_routes_bound_topic_messages_and_replies_in_thread(tmp_path: Path) -> No
             "root_id": "om_topic_alpha",
             "message_id": "om_incoming",
             "content": "@LoopX Mew hello",
-            "mentions": [{"name": "LoopX Mew", "id": "ou_mew_bot"}],
+            "mentions": [{"name": "LoopX Mew", "id": APP_ID}],
         },
     )
     assert route == {
@@ -1149,6 +1516,25 @@ def test_provider_bot_open_id_is_persisted_and_routes_tokenized_mentions(
     assert decision["matched"] is True
     assert decision["reason"] == "matched"
 
+    same_name_wrong_identity = decide_lark_topic_event(
+        target_payload=targets,
+        binding_payloads={"goal-alpha": read_goal_channel_binding(binding_path)},
+        event={
+            "chat_id": CHAT_ID,
+            "root_id": "om_topic_alpha",
+            "message_id": "om_same_name_wrong_identity",
+            "content": "@_user_1 请处理",
+            "mentions": [
+                {
+                    "id": {"open_id": "ou_different_bot"},
+                    "name": str(target["identity"]["bot_display_name"]),
+                }
+            ],
+        },
+    )
+    assert same_name_wrong_identity["matched"] is False
+    assert same_name_wrong_identity["reason"] == "not_addressed"
+
 
 def test_topic_route_decision_reports_safe_reason_codes(tmp_path: Path) -> None:
     state: dict[str, Any] = {}
@@ -1264,7 +1650,7 @@ def test_topic_route_decision_reports_safe_reason_codes(tmp_path: Path) -> None:
             "mentions": [
                 {
                     "key": "@_user_1",
-                    "id": {"open_id": "ou_public_fixture"},
+                    "id": {"app_id": APP_ID},
                     "name": " @LoopX   Mew ",
                 }
             ],

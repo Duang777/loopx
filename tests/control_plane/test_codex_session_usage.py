@@ -1031,6 +1031,7 @@ def test_refresh_state_upgrades_legacy_model_binding_without_rebooking(
     [
         "model",
         "input_tokens",
+        "output_tokens",
         "cache_tokens",
         "duration_ms",
         "cost_usd",

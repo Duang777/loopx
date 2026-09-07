@@ -37,9 +37,11 @@ from .goal_channel_contracts import (
     bindings_for_goal,
     goal_channel_connection_id,
     GOAL_CHANNEL_CONNECTION_SET_SCHEMA_VERSION,
+    LarkTopicEventDecisionReason,
     goal_from_registry,
     goal_objective,
     now_iso,
+    normalize_lark_topic_event_rejection_reason,
     operation_packet,
     provider_idempotency_key,
     read_goal_channel_binding,
@@ -56,16 +58,17 @@ from .goal_channel_targets import (
 )
 from .goal_channel_transport import (
     APP_ID_PATTERN,
+    BotChatMembershipResult,
     CHAT_ID_PATTERN,
     MESSAGE_ID_PATTERN,
     OPEN_ID_PATTERN,
     SAFE_PROFILE_PATTERN,
     bot_group_history_permission_guidance,
-    bot_membership_verified,
     call,
-    chat_verified,
+    ensure_bot_chat_membership,
     find_first_string,
     json_payload,
+    lark_provider_mention_identities,
     lark_args,
     message_readback_verified,
 )
@@ -96,33 +99,9 @@ class ReplyMode(str, Enum):
     TOPIC_REPLY = "topic_reply"
 
 
-class LarkTopicEventDecisionReason(str, Enum):
-    """Typed, content-free outcome of Goal Topic routing."""
-
-    MATCHED = "matched"
-    INVALID_EVENT = "invalid_event"
-    BINDING_UNAVAILABLE = "binding_unavailable"
-    CHAT_MISMATCH = "chat_mismatch"
-    TOPIC_MISMATCH = "topic_mismatch"
-    ROUTE_AMBIGUOUS = "route_ambiguous"
-    SELF_MESSAGE = "self_message"
-    INVALID_ROUTING_STATE = "invalid_routing_state"
-    NOT_ADDRESSED = "not_addressed"
-
-
 CAPTURE_SCOPES = {item.value for item in CaptureScope}
 INGRESS_MODES = {item.value for item in IngressMode}
 REPLY_MODES = {item.value for item in ReplyMode}
-LARK_TOPIC_EVENT_REJECTION_REASONS = {
-    item.value
-    for item in LarkTopicEventDecisionReason
-    if item is not LarkTopicEventDecisionReason.MATCHED
-}
-
-
-def normalize_lark_topic_event_rejection_reason(value: Any) -> str | None:
-    normalized = str(value or "").strip()
-    return normalized if normalized in LARK_TOPIC_EVENT_REJECTION_REASONS else None
 
 
 def _routing_value(
@@ -481,7 +460,14 @@ def connect_lark_goal_topic(
             details={
                 "app_ref": profile,
                 "chat_name": public_safe_compact_text(chat_name, limit=60),
-                "topic_name": goal_objective(goal),
+                "topic_name": public_safe_compact_text(
+                    (
+                        f"{goal_objective(goal)} · {normalized_agent_id}"
+                        if normalized_agent_id
+                        else goal_objective(goal)
+                    ),
+                    limit=120,
+                ),
                 "incoming_mode": effective_incoming_mode,
                 "capture_scope": effective_capture_scope,
                 "ingress_mode": ingress_mode,
@@ -490,23 +476,29 @@ def connect_lark_goal_topic(
                 "connection_id": connection_id,
             },
         )
-    if inbox_config is not None:
-        config_path, preflight_config_ref, inbox_payload = inbox_config
-        reply = inbox_payload.get("reply")
-        if isinstance(reply, dict):
-            reply["bot_display_name"] = str(identity["label"])
-        _write_agent_inbox_config(
-            config_path=config_path,
-            config_ref=preflight_config_ref,
-            payload=inbox_payload,
-        )
-    if not chat_verified(
+    membership_result = ensure_bot_chat_membership(
         runner=runner,
         cli_bin=effective_cli_bin,
-        profile=profile,
-        identity="bot",
+        membership_profile=profile,
+        bot_profile=profile,
         chat_id=safe_chat_id,
-    ):
+        app_id=str(identity["app_id"]),
+    )
+    membership_added = membership_result.external_write_performed
+    if membership_result is BotChatMembershipResult.ADD_FAILED:
+        return operation_packet(
+            ok=False,
+            goal_id=goal_id,
+            operation="connect_topic",
+            execute=True,
+            status="failed",
+            blocker="provider_api_failed",
+            public_summary="the selected Lark App could not be added to the group",
+        )
+    if membership_result in {
+        BotChatMembershipResult.ALREADY_UNVERIFIED,
+        BotChatMembershipResult.ADDED_UNVERIFIED,
+    }:
         return operation_packet(
             ok=False,
             goal_id=goal_id,
@@ -514,23 +506,22 @@ def connect_lark_goal_topic(
             execute=True,
             status="blocked",
             blocker="channel_membership_unverified",
-            public_summary="the selected Lark App cannot access this group",
+            public_summary="the selected Lark App is not a verified group member",
+            external_write_performed=membership_result.external_write_performed,
         )
-    if not bot_membership_verified(
-        runner=runner,
-        cli_bin=effective_cli_bin,
-        profile=profile,
-        chat_id=safe_chat_id,
-        app_id=str(identity["app_id"]),
-    ):
-        return operation_packet(
-            ok=False,
-            goal_id=goal_id,
-            operation="connect_topic",
-            execute=True,
-            status="blocked",
-            blocker="bot_not_in_chat",
-            public_summary="invite the selected Lark App to the group and retry",
+
+    if inbox_config is not None:
+        config_path, preflight_config_ref, inbox_payload = inbox_config
+        reply = inbox_payload.get("reply")
+        if isinstance(reply, dict):
+            reply["bot_display_name"] = str(identity["label"])
+            reply["bot_app_id"] = str(identity["app_id"])
+            if identity.get("open_id"):
+                reply["bot_open_id"] = str(identity["open_id"])
+        _write_agent_inbox_config(
+            config_path=config_path,
+            config_ref=preflight_config_ref,
+            payload=inbox_payload,
         )
 
     target_name = (
@@ -558,7 +549,17 @@ def connect_lark_goal_topic(
         return added
 
     objective = goal_objective(goal)
-    topic_text = f"LoopX Goal Topic: {objective}\nGoal ID: {goal_id}"
+    topic_name = public_safe_compact_text(
+        f"{objective} · {normalized_agent_id}" if normalized_agent_id else objective,
+        limit=120,
+    )
+    topic_text = (
+        f"LoopX Agent Topic: {topic_name}\n"
+        f"Goal ID: {goal_id}\n"
+        f"Agent ID: {normalized_agent_id}"
+        if normalized_agent_id
+        else f"LoopX Goal Topic: {objective}\nGoal ID: {goal_id}"
+    )
     reusable_root = reusable_goal_topic_root(
         read_goal_channel_binding(binding_path),
         goal_id,
@@ -615,6 +616,7 @@ def connect_lark_goal_topic(
                 status="failed",
                 blocker="provider_api_failed",
                 public_summary="the Goal Topic root message could not be sent",
+                external_write_performed=membership_added,
             )
     if not message_readback_verified(
         runner=runner,
@@ -633,7 +635,7 @@ def connect_lark_goal_topic(
             status="blocked" if reusable_root else "sent_unverified",
             blocker="readback_mismatch",
             public_summary="the Goal Topic could not be verified; binding preserved",
-            external_write_performed=not bool(reusable_root),
+            external_write_performed=membership_added or not bool(reusable_root),
         )
 
     connector_binding: dict[str, Any] | None = None
@@ -694,7 +696,7 @@ def connect_lark_goal_topic(
                 status="sent_verified_registration_failed",
                 blocker="agent_inbox_registration_failed",
                 public_summary="the Agent-scoped inbox could not be registered",
-                external_write_performed=not bool(reusable_root),
+                external_write_performed=membership_added or not bool(reusable_root),
                 readback_verified=True,
             )
 
@@ -720,7 +722,7 @@ def connect_lark_goal_topic(
             "target_ref": target_name,
             "channel": {"pinned_message_id": root_message_id},
             "topic": {
-                "name": objective,
+                "name": topic_name,
                 "root_message_id": root_message_id,
                 "created_automatically": True,
             },
@@ -743,14 +745,14 @@ def connect_lark_goal_topic(
         execute=True,
         status="connected",
         public_summary="connected one Goal to a dedicated Lark topic",
-        external_write_performed=not bool(reusable_root),
+        external_write_performed=membership_added or not bool(reusable_root),
         readback_verified=True,
         idempotency_key=key,
         details={
             "app_ref": profile,
             "chat_name": public_safe_compact_text(chat_name, limit=60),
             "target_ref": target_name,
-            "topic_name": objective,
+            "topic_name": topic_name,
             "incoming_mode": effective_incoming_mode,
             "capture_scope": effective_capture_scope,
             "ingress_mode": ingress_mode,
@@ -826,10 +828,7 @@ def list_lark_connections(
                 else {}
             )
             listener_status = str(listener.get("status") or "")
-            listener_ready = runtime_health is None or listener_status in {
-                "starting",
-                "listening",
-            }
+            listener_ready = runtime_health is None or listener_status == "listening"
             last_event_status = str(listener.get("last_event_status") or "")
             last_event_reason = (
                 normalize_lark_topic_event_rejection_reason(
@@ -881,7 +880,12 @@ def list_lark_connections(
             health_error_code = health.get("error_code")
             if health_error_code is None and not listener_ready:
                 health_error_code = str(
-                    listener.get("error_code") or "lark_event_listener_inactive"
+                    listener.get("error_code")
+                    or (
+                        "lark_event_listener_starting"
+                        if listener_status == "starting"
+                        else "lark_event_listener_inactive"
+                    )
                 )
             if health_error_code is None and event_blocker is not None:
                 health_error_code = event_blocker
@@ -1043,23 +1047,15 @@ def is_event_addressed_to_bot(
     if "mentions" in event:
         mentions = event.get("mentions")
         if isinstance(mentions, list):
+            expected_ids = {value for value in (bot_app_id, bot_open_id) if value}
             for item in mentions:
                 if not isinstance(item, Mapping):
                     continue
-                raw_id = item.get("id")
-                candidate_ids: list[str] = []
-                if isinstance(raw_id, Mapping):
-                    candidate_ids.extend([str(v) for v in raw_id.values() if v])
-                elif raw_id is not None:
-                    candidate_ids.append(str(raw_id))
-                for key in ("user_id", "open_id", "union_id", "app_id", "bot_id"):
-                    val = item.get(key)
-                    if val:
-                        candidate_ids.append(str(val))
-                if bot_app_id and any(c == bot_app_id for c in candidate_ids):
+                candidate_ids = lark_provider_mention_identities(item)
+                if expected_ids and candidate_ids.intersection(expected_ids):
                     return True
-                if bot_open_id and any(c == bot_open_id for c in candidate_ids):
-                    return True
+                if expected_ids:
+                    continue
                 norm_item_name = _normalize_mention_name(str(item.get("name") or ""))
                 if norm_bot_display_name and norm_item_name == norm_bot_display_name:
                     return True
