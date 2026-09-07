@@ -385,10 +385,14 @@ checkouts stay Git owned.
 
 PyInstaller hosts can bundle the existing skill data without Python distribution
 metadata at runtime. In a frozen process, LoopX reads
-`sys._MEIPASS/share/loopx/skills`; if the freezer does not expose `_MEIPASS`, it
-uses `share/loopx/skills` beside the bundled `loopx` package. Missing or incomplete
-skill sets fail with rebuild instructions, without falling back to another
-checkout or Python installation. Regular checkout and pip discovery is unchanged.
+`share/loopx/skills` under `sys._MEIPASS` first, then the same bundle's `skills`
+directory for compatibility with existing checkout-like bundles. The first
+complete skill set wins; files from different layouts are never combined.
+If the freezer does not expose `_MEIPASS`, the root beside the bundled `loopx`
+package is used. These are existing wheel and source layouts, not a new wheel
+format. If neither contains a complete skill set, discovery fails with rebuild
+instructions, without searching another checkout or Python installation.
+Regular checkout and pip discovery is unchanged.
 
 Build from an isolated environment containing the exact LoopX version shipped
 with the host. Include the **entire** `share/loopx/skills` tree from that wheel,

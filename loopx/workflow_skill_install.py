@@ -57,8 +57,20 @@ def resolve_workflow_skill_source() -> dict[str, Any]:
     # Python installation, even when its own bundle omitted the data files.
     if getattr(sys, "frozen", False):
         bundle_root = Path(getattr(sys, "_MEIPASS", checkout_root)).resolve()
-        bundled_skills = bundle_root / "share" / "loopx" / "skills"
-        available = _valid_source_root(bundled_skills)
+        # Prefer the existing wheel data layout, but preserve the checkout-like
+        # layout that older frozen bundles could already discover.
+        bundled_skills = next(
+            (
+                candidate
+                for candidate in (
+                    bundle_root / "share" / "loopx" / "skills",
+                    bundle_root / "skills",
+                )
+                if _valid_source_root(candidate)
+            ),
+            None,
+        )
+        available = bundled_skills is not None
         return {
             "available": available,
             "kind": "frozen_bundle" if available else "missing",

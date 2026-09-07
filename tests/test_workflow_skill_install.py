@@ -231,13 +231,14 @@ def test_install_and_inspect_dsh_native_entry(tmp_path: Path) -> None:
     assert generic["entry"]["status"] == "updated"
 
 
+@pytest.mark.parametrize("layout", ["share/loopx/skills", "skills"])
 @pytest.mark.parametrize("with_meipass", [True, False])
 def test_frozen_bundle_install_lifecycle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_meipass: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_meipass: bool, layout: str,
 ) -> None:
     canonical = Path(resolve_workflow_skill_source()["skills_root"])
     bundle = tmp_path / "application bundle"
-    bundled_skills = bundle / "share" / "loopx" / "skills"
+    bundled_skills = bundle / layout
     for skill_id in PACKAGED_HOST_SKILL_IDS:
         shutil.copytree(canonical / skill_id, bundled_skills / skill_id)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
@@ -295,3 +296,22 @@ def test_unfrozen_runtime_ignores_meipass(
     monkeypatch.setattr(sys, "frozen", False, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     assert resolve_workflow_skill_source()["kind"] == "source_checkout"
+
+
+@pytest.mark.parametrize("complete_wheel_layout", [True, False])
+def test_frozen_bundle_layout_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, complete_wheel_layout: bool,
+) -> None:
+    for layout in ("share/loopx/skills", "skills"):
+        for skill_id in PACKAGED_HOST_SKILL_IDS:
+            if layout.startswith("share/") and not complete_wheel_layout and skill_id != "loopx-project":
+                continue
+            path = tmp_path / layout / skill_id / "SKILL.md"
+            path.parent.mkdir(parents=True)
+            path.write_text(f"# {layout}: {skill_id}\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    source = resolve_workflow_skill_source()
+    expected = "share/loopx/skills" if complete_wheel_layout else "skills"
+    assert source["available"] is True
+    assert source["skills_root"] == tmp_path / expected
