@@ -26,8 +26,21 @@ from loopx.control_plane.todos import provider_projection
 from loopx.control_plane.coordination.legacy_writer_fence import (
     legacy_coordination_writer_fence_path,
 )
-from loopx.todos import add_goal_todo, list_goal_todos
 from canonical_authority_fixture import initialize_canonical_authority
+from loopx.control_plane.todos.completion_validation_projection import (
+    project_completion_validation_authority,
+)
+from loopx.control_plane.todos.completion_validation_store import (
+    read_completion_validation_declaration,
+)
+from loopx.control_plane.todos.contract import format_todo_metadata_line
+from loopx.todos import (
+    add_goal_todo,
+    archive_completed_todos,
+    complete_goal_todo,
+    list_goal_todos,
+    supersede_goal_todo,
+)
 
 
 def _engage_fence(runtime_root: Path, goal_id: str = "goal-a") -> None:
@@ -207,7 +220,16 @@ def test_promoted_add_invokes_native_create_without_markdown_state(
     assert calls[0][0] == "coordination.local_authority.todo_create"
     assert calls[0][1]["todo"]["schema_version"] == "todo_domain_record_v0"
     assert calls[0][1]["todo"]["claimed_by"] == "agent-a"
-    assert calls[0][1]["todo"]["validation_command_argv"] == ["python", "-c", "pass"]
+    assert calls[0][1]["todo"]["completion_validation_required"] is True
+    assert len(calls[0][1]["todo"]["completion_validation_sha256"]) == 64
+    assert "validation_command_argv" not in calls[0][1]["todo"]
+    private_declaration = read_completion_validation_declaration(
+        runtime_root=tmp_path / "runtime",
+        goal_id="goal-a",
+        todo_id=str(result["todo_id"]),
+    )
+    assert private_declaration is not None
+    assert private_declaration["validation_command_argv"] == ["python", "-c", "pass"]
     assert calls[0][1]["registered_agents"] == ["agent-a", "agent-b"]
 
 
@@ -297,15 +319,26 @@ Continue.
 """
     state_file.write_text(source, encoding="utf-8")
     registry_path = tmp_path / "registry.json"
-    registry_path.write_text(json.dumps({
-        "schema_version": 1,
-        "common_runtime_root": str(runtime_root),
-        "goals": [{
-            "id": "goal-a", "status": "active", "repo": str(project),
-            "state_file": ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md",
-            "coordination": {"registered_agents": ["agent-a", "agent-b"]},
-        }],
-    }), encoding="utf-8")
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "common_runtime_root": str(runtime_root),
+                "goals": [
+                    {
+                        "id": "goal-a",
+                        "status": "active",
+                        "repo": str(project),
+                        "state_file": ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md",
+                        "coordination": {
+                            "registered_agents": ["agent-a", "agent-b"]
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     projection = build_todo_runtime_shadow_projection(goal_id="goal-a", todos=[])
     projection["todo_read_model"] = {
         **projection["todo_read_model"],
@@ -329,6 +362,8 @@ Continue.
         action_kind="implement",
         claimed_by="agent-a",
         agent_id="agent-a",
+        validation_command_json=json.dumps(["python3", "-c", "raise SystemExit(0)"]),
+        validation_label="recoverable provider validation",
     )
 
     assert applied["status"] == "applied"
@@ -339,6 +374,9 @@ Continue.
     )
     assert canonical is not None
     assert canonical["todos"][0]["schema_version"] == "todo_domain_record_v0"
+    assert canonical["todos"][0]["completion_validation_required"] is True
+    assert len(canonical["todos"][0]["completion_validation_sha256"]) == 64
+    assert "validation_command_argv" not in canonical["todos"][0]
     assert state_file.read_text(encoding="utf-8") == source
 
     monkeypatch.setattr(provider_projection, "_atomic_write_text", real_write)
@@ -351,6 +389,8 @@ Continue.
         action_kind="implement",
         claimed_by="agent-a",
         agent_id="agent-a",
+        validation_command_json=json.dumps(["python3", "-c", "raise SystemExit(0)"]),
+        validation_label="recoverable provider validation",
     )
     assert replay["status"] == "no_change"
     assert replay["projection_delivery"] == "delivered"
@@ -358,6 +398,18 @@ Continue.
     assert "Recover the native compatibility projection" in rendered
     assert "Human context." in rendered
     assert "Continue." in rendered
+    completed = complete_goal_todo(
+        registry_path=registry_path,
+        runtime_root_arg=str(runtime_root),
+        goal_id="goal-a",
+        todo_id=str(applied["todo_id"]),
+        role="agent",
+        claimed_by="agent-a",
+        agent_id="agent-a",
+        no_followup=True,
+    )
+    assert completed["status"] == "applied"
+    assert completed["validation_receipt"]["passed"] is True
 
 
 def test_engaged_fence_never_falls_back_when_provider_is_missing(
@@ -766,6 +818,192 @@ def test_canonical_hard_lease_claim_cli_atomically_acquires_ownership(
     after = list_goal_todos(registry_path=registry_path, goal_id="goal-a")
     assert after["todos"][0]["claimed_by"] == "agent-a"
     assert not state_file.exists()
+
+
+def test_promoted_terminal_lifecycle_commits_successors_and_archive_natively(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    project = tmp_path / "project"
+    state_file = project / ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md"
+    state_file.parent.mkdir(parents=True)
+    validation_argv = ["python3", "-c", "raise SystemExit(0)"]
+    complete_metadata = format_todo_metadata_line(
+        todo_id="todo_complete_native",
+        status="open",
+        task_class="advancement_task",
+        claimed_by="agent-a",
+        validation_command_argv=json.dumps(validation_argv),
+        validation_label="provider terminal integration",
+        validation_timeout_seconds=5,
+    )
+    supersede_metadata = format_todo_metadata_line(
+        todo_id="todo_supersede_native",
+        status="open",
+        task_class="advancement_task",
+        claimed_by="agent-b",
+    )
+    state_file.write_text(
+        f"""# Goal
+
+Human narrative remains outside canonical Todo authority.
+
+## User Todo / Owner Review Reading Queue
+
+## Agent Todo
+
+- [ ] Complete through TypeScript authority
+{complete_metadata}
+- [ ] Supersede through TypeScript authority
+{supersede_metadata}
+
+## Completed Work Archive
+
+## Next Action
+
+Continue provider-first delivery.
+""",
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "common_runtime_root": str(runtime_root),
+                "goals": [
+                    {
+                        "id": "goal-a",
+                        "status": "active",
+                        "repo": str(project),
+                        "state_file": ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md",
+                        "coordination": {
+                            "agent_model": "peer_v1",
+                            "registered_agents": ["agent-a", "agent-b"],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    todos = [
+        {
+            "schema_version": "todo_item_v0",
+            "index": 1,
+            "done": False,
+            "text": "Complete through TypeScript authority",
+            "todo_id": "todo_complete_native",
+            "role": "agent",
+            "status": "open",
+            "archive_state": "active",
+            "source_section": TODO_SECTION_HEADINGS["agent"],
+            "task_class": "advancement_task",
+            "claimed_by": "agent-a",
+            "validation_command_argv": validation_argv,
+            "validation_label": "provider terminal integration",
+            "validation_timeout_seconds": 5,
+        },
+        {
+            "schema_version": "todo_item_v0",
+            "index": 2,
+            "done": False,
+            "text": "Supersede through TypeScript authority",
+            "todo_id": "todo_supersede_native",
+            "role": "agent",
+            "status": "open",
+            "archive_state": "active",
+            "source_section": TODO_SECTION_HEADINGS["agent"],
+            "task_class": "advancement_task",
+            "claimed_by": "agent-b",
+        },
+    ]
+    projection = build_todo_runtime_shadow_projection(
+        goal_id="goal-a",
+        todos=[project_completion_validation_authority(todo) for todo in todos],
+    )
+    initialize_canonical_authority(
+        runtime_root,
+        "goal-a",
+        projection,
+        state_path=state_file,
+    )
+
+    completed = complete_goal_todo(
+        registry_path=registry_path,
+        runtime_root_arg=str(runtime_root),
+        goal_id="goal-a",
+        todo_id="todo_complete_native",
+        role="agent",
+        claimed_by="agent-a",
+        agent_id="agent-a",
+        next_agent_todo="Continue after the native terminal commit",
+        next_claimed_by="agent-b",
+        next_task_class="advancement_task",
+        next_action_kind="implement",
+        evidence="provider integration passed",
+    )
+    assert completed["status"] == "applied"
+    assert completed["completed"] is True
+    assert completed["projection_delivery"] == "delivered", completed
+    assert completed["validation_receipt"]["passed"] is True
+    assert completed["validation_receipt"]["command_label"] == (
+        "provider terminal integration"
+    )
+    successor_id = completed["generated_successor_todo_ids"][0]
+
+    superseded = supersede_goal_todo(
+        registry_path=registry_path,
+        runtime_root_arg=str(runtime_root),
+        goal_id="goal-a",
+        todo_id="todo_supersede_native",
+        role="agent",
+        agent_id="agent-b",
+        reason="replace with a smaller continuation",
+        next_agent_todo="Replacement after native supersede",
+        next_claimed_by="agent-b",
+    )
+    assert superseded["status"] == "applied"
+    assert superseded["superseded"] is True
+    assert superseded["projection_delivery"] == "delivered"
+
+    canonical = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+    )
+    assert canonical is not None
+    by_id = {todo["todo_id"]: todo for todo in canonical["todos"]}
+    assert by_id["todo_complete_native"]["status"] == "done"
+    assert by_id["todo_complete_native"]["successor_todo_ids"] == [successor_id]
+    assert by_id[successor_id]["claimed_by"] == "agent-b"
+    assert by_id["todo_supersede_native"]["status"] == "done"
+    assert by_id["todo_supersede_native"]["superseded_by"] in by_id
+
+    archived = archive_completed_todos(
+        registry_path=registry_path,
+        runtime_root_arg=str(runtime_root),
+        goal_id="goal-a",
+        role="agent",
+        max_active_done=0,
+        dry_run=False,
+    )
+    assert archived["status"] == "applied"
+    assert archived["moved_count"] == 2
+    assert archived["projection_delivery"] == "delivered"
+    canonical_after_archive = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+    )
+    assert canonical_after_archive is not None
+    archived_ids = {
+        todo["todo_id"]
+        for todo in canonical_after_archive["todos"]
+        if todo["archive_state"] == "archive"
+    }
+    assert archived_ids == {"todo_complete_native", "todo_supersede_native"}
+    rendered = state_file.read_text(encoding="utf-8")
+    assert "Human narrative remains outside canonical Todo authority." in rendered
+    assert "Continue provider-first delivery." in rendered
 
 
 def test_real_canonical_provider_preserves_complete_complex_todo_semantics(
