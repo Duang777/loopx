@@ -13,6 +13,7 @@ from loopx.control_plane.capability_hooks import dispatch_turn_start_hooks
 from loopx.control_plane.work_items.work_lane import (
     operator_inbox_material_review_due_work_lane_contract,
 )
+from loopx.extensions.lark import goal_topic_connections as goal_topic_connections_module
 from loopx.extensions.lark import turn_start_sync as turn_start_sync_module
 from loopx.extensions.lark.event_collector import load_lark_event_collector_config
 from loopx.extensions.lark.inbox_reactions import lark_inbox_reaction_receipts
@@ -92,6 +93,33 @@ def _project(
         encoding="utf-8",
     )
     return project, collector
+
+
+def _direct_addressed_inbox(tmp_path: Path) -> tuple[Path, Path, Path]:
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(
+        ["git", "init", "--quiet"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    (project / ".gitignore").write_text(".loopx/\n", encoding="utf-8")
+    config, config_ref, payload = goal_topic_connections_module._agent_inbox_config(
+        goal={"id": "goal-fixture", "repo": str(project)},
+        agent_id="agent-fixture",
+        app_ref="fixture-bot",
+        chat_id="oc_fixture",
+        bot_display_name="Fixture Bot",
+        capture_scope="addressed_only",
+    )
+    written_ref = goal_topic_connections_module._write_agent_inbox_config(
+        config_path=config,
+        config_ref=config_ref,
+        payload=payload,
+    )
+    assert written_ref == config_ref
+    return project, config, project / str(payload["inbox_dir"])
 
 
 def _agent_collector(
@@ -267,6 +295,48 @@ def test_turn_start_sync_captures_then_requires_same_turn_agent_read(
     assert lane["semantic_triage_required"] is True
     assert "replan_goal" in lane["allowed_dispositions"]
     assert "before ordinary work" in str(lane["action"])
+
+
+def test_turn_start_sync_accepts_one_click_addressed_only_inbox(
+    tmp_path: Path,
+) -> None:
+    project, config, inbox = _direct_addressed_inbox(tmp_path)
+    runner = ReactionPageRunner(
+        [
+            _page(
+                {
+                    "message_id": "om_addressed_goal_topic",
+                    "create_time": "2026-08-26T09:59:00Z",
+                    "content": "Please prepare the requested report.",
+                    "mentions": [{"name": "Fixture Bot"}],
+                    "deleted": False,
+                },
+                {
+                    "message_id": "om_unaddressed_goal_topic",
+                    "create_time": "2026-08-26T09:59:01Z",
+                    "content": "This conversation belongs to another participant.",
+                    "mentions": [],
+                    "deleted": False,
+                },
+            )
+        ]
+    )
+
+    result = sync_lark_turn_start_inbox(
+        project=project,
+        config_path=config,
+        runner=runner,
+        now=FIRST_NOW,
+    )
+
+    assert result["status"] == "observed"
+    assert result["observation_count"] == 1
+    assert result["agent_read_required"] is True
+    assert result["received_reaction_count"] == 1
+    captured = json.loads((inbox / "om_addressed_goal_topic.json").read_text())
+    assert captured["route_key"] == "default"
+    assert captured["addressed_to_bot"] is True
+    assert not (inbox / "om_unaddressed_goal_topic.json").exists()
 
 
 def test_turn_start_sync_acknowledges_ordinary_pending_message_once_by_default(
