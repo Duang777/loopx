@@ -319,6 +319,8 @@ def build_skill_install_readback(
     skills_dir: Path,
     skill_ids: Sequence[str],
     source_root: Path,
+    source_kind_override: str | None = None,
+    source_revision_override: str | None = None,
     installed_at: str | None = None,
     owner: str = SKILL_INSTALL_OWNER,
     integration_mode: str = SKILL_INSTALL_INTEGRATION_MODE,
@@ -339,9 +341,14 @@ def build_skill_install_readback(
     }
     skills_digest = _skills_digest(items)
     source = _source_readback(source_root)
-    if not source.get("revision"):
+    if source_revision_override:
+        source["revision"] = source_revision_override
+        source["revision_kind"] = "package_version"
+    elif not source.get("revision"):
         source["revision"] = skills_digest
         source["revision_kind"] = "skills_digest"
+    if source_kind_override:
+        source["kind"] = source_kind_override
     return {
         "schema_version": SKILL_INSTALL_READBACK_SCHEMA_VERSION,
         "owner": owner,
@@ -362,6 +369,8 @@ def write_skill_install_readback(
     skills_dir: Path,
     skill_ids: Sequence[str],
     source_root: Path,
+    source_kind_override: str | None = None,
+    source_revision_override: str | None = None,
     installed_at: str | None = None,
     owner: str = SKILL_INSTALL_OWNER,
     integration_mode: str = SKILL_INSTALL_INTEGRATION_MODE,
@@ -371,6 +380,8 @@ def write_skill_install_readback(
         skills_dir=skills_dir,
         skill_ids=skill_ids,
         source_root=source_root,
+        source_kind_override=source_kind_override,
+        source_revision_override=source_revision_override,
         installed_at=installed_at,
         owner=owner,
         integration_mode=integration_mode,
@@ -401,9 +412,11 @@ def inspect_skill_install_readback(
     skills_dir: Path | None,
     required_skill_ids: Sequence[str],
     source_root: Path | None = None,
+    expected_source_revision_override: str | None = None,
 ) -> dict[str, Any]:
     expected_source_revision = (
-        _source_revision_for_root(source_root) if source_root else None
+        expected_source_revision_override
+        or (_source_revision_for_root(source_root) if source_root else None)
     )
     required_ids = sorted(
         {skill_id.strip() for skill_id in required_skill_ids if skill_id.strip()}
