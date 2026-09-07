@@ -347,7 +347,7 @@ async fn perform(
         );
         if may_discard_journal {
             let discarded = bundled_runtime::discard_journal(app);
-            let discarded_ok = matches!(&discarded, Ok(_) );
+            let discarded_ok = discarded.is_ok();
             state.install_journal_discarded.store(discarded_ok, Ordering::Release);
             return Err(install_failure_state(true, discarded).into());
         }
