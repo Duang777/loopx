@@ -188,20 +188,7 @@ def _runtime_source_snapshot(root: Path | None = None) -> _RuntimeSourceSnapshot
     """Return cheap metadata that invalidates the packaged-source hash."""
 
     source_root = (root or _control_plane_root()).resolve()
-    try:
-        return _runtime_file_snapshot(
-            source_root, _scan_runtime_source_files(source_root)
-        )
-    except FileNotFoundError:
-        try:
-            return _runtime_file_snapshot(
-                source_root, _scan_runtime_source_files(source_root)
-            )
-        except FileNotFoundError as exc:
-            raise EffectRuntimeStartupError(
-                "TypeScript Effect runtime source topology did not stabilize",
-                diagnostic_code="packaged_runtime_source_unstable",
-            ) from exc
+    return _runtime_file_snapshot(source_root, _scan_runtime_source_files(source_root))
 
 
 def _runtime_source_files(root: Path | None = None) -> tuple[str, ...]:
@@ -225,10 +212,23 @@ def _runtime_fingerprint_for_snapshot(
 
 def _runtime_fingerprint() -> str:
     root = _control_plane_root()
-    return _runtime_fingerprint_for_snapshot(
-        os.fspath(root.resolve()),
-        _runtime_source_snapshot(root),
-    )
+    resolved_root = os.fspath(root.resolve())
+    try:
+        return _runtime_fingerprint_for_snapshot(
+            resolved_root,
+            _runtime_source_snapshot(root),
+        )
+    except FileNotFoundError:
+        try:
+            return _runtime_fingerprint_for_snapshot(
+                resolved_root,
+                _runtime_source_snapshot(root),
+            )
+        except FileNotFoundError as exc:
+            raise EffectRuntimeStartupError(
+                "TypeScript Effect runtime source topology did not stabilize",
+                diagnostic_code="packaged_runtime_source_unstable",
+            ) from exc
 
 
 def _runtime_dir() -> Path:
