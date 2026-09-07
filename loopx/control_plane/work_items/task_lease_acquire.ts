@@ -1,3 +1,5 @@
+import { ShadowManagementError, requireShadowPrimaryWriteAllowed } from "../coordination/shadow_management.ts";
+import { LegacyCoordinationWriteError, requireLegacyCoordinationPrimaryWriteAllowed } from "../coordination/legacy_writer_fence.ts";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,10 +10,9 @@ import {
 } from "../effect_runtime_errors.ts";
 import { atomicWriteJson, withFileMutationLock } from "../effect_runtime_io.ts";
 import {
-  checkLegacyCoordinationWriteAllowed,
   legacyCoordinationLeaseLockPath,
-  LEGACY_COORDINATION_WRITE_CHECK_REQUEST_SCHEMA,
-} from "../coordination/legacy_writer_fence.ts";
+  taskLeaseLockPath,
+} from "../coordination/legacy_writer_lock_paths.ts";
 import {
   settlementIdentity,
   type JsonObject,
@@ -146,6 +147,8 @@ interface TaskLeaseFailure {
   code: string;
   message: string;
   payload: JsonObject;
+  stage?: "validation" | "durable_writeback";
+  kind?: string;
 }
 
 interface ExecutionContext {
@@ -460,9 +463,7 @@ export function taskLeasePath(request: { runtime_root: string; goal_id: string; 
   return join(taskLeaseDirectory(request), `${request.todo_id}.json`);
 }
 
-export function taskLeaseLockPath(request: { runtime_root: string; goal_id: string }): string {
-  return join(taskLeaseDirectory(request), ".task-leases");
-}
+export { taskLeaseLockPath } from "../coordination/legacy_writer_lock_paths.ts";
 
 function executionContext(value: unknown): ExecutionContext {
   const context: ExecutionContext = { effectId: null, leasePath: null };
@@ -1223,14 +1224,24 @@ function failureKind(code: string): string {
   return "writeback_rejected";
 }
 
+/**
+ * A fenced legacy writer is a terminal permission decision taken by the
+ * promoted authority before this verb's first side effect: no settlement step
+ * ran, so no receipt exists and the rejection is a validation-stage denial.
+ */
+function fencedFailure(error: LegacyCoordinationWriteError): TaskLeaseFailure {
+  return { code: error.code, message: error.message, payload: error.payload, stage: "validation", kind: "permission_denied" };
+}
+
 function failureEnvelope(
   failure: TaskLeaseFailure,
   context: ExecutionContext,
 ): TaskLeaseAcquireEnvelope {
-  const step = VALIDATION_FAILURE_CODES.has(failure.code)
+  const step = failure.stage ?? ((VALIDATION_FAILURE_CODES.has(failure.code)
+    || failure.code.startsWith("shadow_management_"))
     ? "validation"
-    : "durable_writeback";
-  const kind = failureKind(failure.code);
+    : "durable_writeback");
+  const kind = failure.kind ?? failureKind(failure.code);
   const receipts = step === "validation" || context.effectId === null
     ? []
     : [{ step: "validation", status: "committed", effect_id: context.effectId }];
@@ -1386,7 +1397,9 @@ async function commitAcquire(
   };
   await dependencies.beforeWrite?.(lease);
   await revalidateAuthoritySources(request.authority.source_receipts);
-  const shadowCapture = request.runtime_shadow === null
+  const captureRequired = request.runtime_shadow !== null ||
+    await requireShadowPrimaryWriteAllowed(request.runtime_root, request.goal_id) !== null;
+  const shadowCapture = !captureRequired
     ? null
     : await beginLeaseOutboxEntry({
       runtime_root: request.runtime_root,
@@ -1397,6 +1410,9 @@ async function commitAcquire(
       previous_lease: existing,
       planned_lease: lease,
     });
+  if (shadowCapture?.failure && await requireShadowPrimaryWriteAllowed(request.runtime_root, request.goal_id) !== null) {
+    throw new ShadowManagementError("shadow_capture_prepare_failed", "durable shadow preparation failed; the primary lease was not changed");
+  }
   await atomicWriteJson(leasePath, lease);
   await shadowCapture?.commit();
   const response = successEnvelope(request, lease, leasePath, acquireEffectId(request), false);
@@ -1406,6 +1422,7 @@ async function commitAcquire(
       seq: shadowCapture.seq,
       source_bytes_digest: shadowCapture.source_bytes_digest,
       failure: shadowCapture.failure,
+      skipped_reason: shadowCapture.skipped_reason,
     };
   }
   return response;
@@ -1420,7 +1437,7 @@ export async function executeTaskLeaseAcquire(
   try {
     request = decodeRequest(value);
   } catch (error) {
-    if (error instanceof TaskLeaseAcquireError) {
+    if (error instanceof TaskLeaseAcquireError || error instanceof ShadowManagementError || error instanceof LegacyCoordinationWriteError) {
       return failureEnvelope(
         { code: error.code, message: error.message, payload: error.payload },
         context,
@@ -1433,25 +1450,15 @@ export async function executeTaskLeaseAcquire(
     return await withFileMutationLock(
       legacyCoordinationLeaseLockPath(request.runtime_root, request.goal_id),
       () => withFileMutationLock(taskLeaseLockPath(request), async () => {
-        const writerGuard = await checkLegacyCoordinationWriteAllowed({
-          schema_version: LEGACY_COORDINATION_WRITE_CHECK_REQUEST_SCHEMA,
-          runtime_root: request.runtime_root,
-          goal_id: request.goal_id,
-        });
-        if (writerGuard.status !== "allowed") {
-          throw new TaskLeaseAcquireError(
-            writerGuard.status === "blocked"
-              ? "legacy task-lease writer is fenced; use the canonical file authority"
-              : String(writerGuard.reason ?? "legacy writer fence check failed"),
-            String(writerGuard.reason_code ?? "legacy_writer_fence_check_failed"),
-            writerGuard,
-          );
-        }
+        await requireLegacyCoordinationPrimaryWriteAllowed(request.runtime_root, request.goal_id);
         return await commitAcquire(request, dependencies);
       }),
     );
   } catch (error) {
-    if (error instanceof TaskLeaseAcquireError) {
+    if (error instanceof LegacyCoordinationWriteError) {
+      return failureEnvelope(fencedFailure(error), context);
+    }
+    if (error instanceof TaskLeaseAcquireError || error instanceof ShadowManagementError) {
       return failureEnvelope(
         { code: error.code, message: error.message, payload: error.payload },
         context,

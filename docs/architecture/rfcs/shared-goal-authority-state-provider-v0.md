@@ -2268,9 +2268,14 @@ the unresolved gates remain prerequisites for a real promotion.
   writer fence bound to that revision; provider-first `mutate` and
   `todo_read` that never fall back to Markdown.
 - The fence integration: every Python Todo mutation and every native task-lease
-  acquire, renew, transfer, and release checks the durable fence while holding
-  its own lock; an absent fence costs no runtime call; a present, unreadable,
-  or invalid fence fails closed.
+  acquire, renew, transfer, release, verify, and committed releasing
+  fence-close checks the durable fence while holding its own lock; an absent
+  fence costs no runtime call; a present, unreadable, or invalid fence fails
+  closed. A fenced write is rejected before its first side effect as a
+  validation-stage `permission_denied` with no receipt; the shared check owns
+  only the typed reason and the fence binding facts, and each caller adapter
+  renders one provider-neutral remediation from them and carries the check
+  result under `write_check`.
 - The complete Todo read model: `loopx_todo_canonical_read_record_v0` publishes
   a versioned field manifest, and the TypeScript projection rejects a
   replacement that drops fields already present on a stored record.

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import stat
-import hashlib
 import json
 import subprocess
 import sys
@@ -20,7 +19,7 @@ from loopx.cli_commands import todo as todo_command
 from loopx.control_plane.todos import provider_projection
 from loopx.control_plane.coordination.local_authority import read_canonical_todos_if_promoted
 from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
-from loopx.control_plane.effect_runtime import effect_runtime_result
+from canonical_authority_fixture import initialize_canonical_authority
 
 
 SOURCE = """---
@@ -407,7 +406,8 @@ def test_project_markdown_cli_publishes_with_atomic_replace(
     real_replace = provider_projection.os.replace
 
     def record_replace(source, target) -> None:
-        replacements.append((source, target))
+        if Path(target) == state_path:
+            replacements.append((source, target))
         real_replace(source, target)
 
     monkeypatch.setattr(provider_projection.os, "replace", record_replace)
@@ -559,38 +559,7 @@ def test_real_promoted_provider_to_cli_projection(tmp_path: Path) -> None:
     assert state.read_bytes() == source
 
     projection = build_todo_runtime_shadow_projection(goal_id="goal-a", todos=_records())
-    digest = hashlib.sha256(json.dumps(
-        projection, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()).hexdigest()
-    common = {"runtime_root": str(runtime), "goal_id": "goal-a"}
-    for action in ("bootstrap", "commit"):
-        applied = effect_runtime_result(f"coordination.runtime_shadow.{action}", {
-            **common,
-            "schema_version": f"loopx_coordination_runtime_shadow_{action}_v0",
-            "operation_id": f"projection-{action}", "source_version": f"source-{action}",
-            "projection": projection,
-            **({"event_kind": "todo_update"} if action == "commit" else {}),
-        })
-        assert applied["status"] == "applied"
-    revision = applied["provider_revision"]
-    fence = {
-        "schema_version": "loopx_legacy_coordination_writer_fence_v0",
-        "state": "engaged", "goal_id": "goal-a", "fence_id": "projection-fence",
-        "source_version": "source-commit", "source_projection_sha256": digest,
-        "expected_shadow_provider_revision": revision,
-    }
-    engaged = effect_runtime_result("coordination.local_authority.legacy_writer_fence.engage", {
-        **common, "schema_version": "loopx_legacy_coordination_writer_fence_engage_request_v0",
-        "fence": fence,
-    })
-    assert engaged["status"] == "applied"
-    promoted = effect_runtime_result("coordination.local_authority.promote", {
-        **common, "schema_version": "loopx_local_coordination_promotion_request_v0",
-        "operation_id": "projection-promote", "expected_shadow_provider_revision": revision,
-        "expected_shadow_projection_sha256": digest, "minimum_operations": 1,
-        "required_event_kinds": ["todo_update"], "writer_fence": fence,
-    })
-    assert promoted["status"] == "applied"
+    initialize_canonical_authority(runtime, "goal-a", projection, state_path=state)
     before = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id="goal-a")
     revision = before["provider_revision"]
     code, preview = run(revision)

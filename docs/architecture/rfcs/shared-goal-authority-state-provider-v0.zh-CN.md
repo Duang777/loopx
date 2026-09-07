@@ -1799,8 +1799,11 @@ authority 语义与各 provider 的物理 retention 策略。本文档不实现�
   writer fence 的 `coordination.local_authority.promote`；永不回退到 Markdown 的
   provider-first `mutate` 与 `todo_read`。
 - fence 集成：每个 Python Todo mutation 与每个 native task-lease
-  acquire/renew/transfer/release 都在自己的锁内检查持久 fence；fence 不存在时零运行时
-  调用；fence 存在但不可读或无效时 fail closed。
+  acquire/renew/transfer/release/verify 以及已提交的释放型 fence-close 都在自己的锁内
+  检查持久 fence；fence 不存在时零运行时调用；fence 存在但不可读或无效时 fail closed。
+  被 fence 拒绝的写在第一个副作用之前以 validation 阶段的 `permission_denied`
+  返回且不产生回执；共享检查只拥有类型化原因与 fence 绑定事实，各调用方 adapter
+  据此渲染同一条 provider 中立的 remediation，并把检查结果放在 `write_check` 下携带。
 - 完整 Todo read model：`loopx_todo_canonical_read_record_v0` 发布带版本字段 manifest；
   TypeScript projection 拒绝 replacement 丢弃既有记录中已经存在的字段。
 

@@ -9,6 +9,12 @@ import {
   executeTaskLeaseAcquire,
   TASK_LEASE_ACQUIRE_REQUEST_SCHEMA_VERSION,
 } from "../../loopx/control_plane/work_items/task_lease_acquire.ts";
+import {
+  LEGACY_COORDINATION_WRITER_FENCE_ENGAGE_REQUEST_SCHEMA,
+  LEGACY_COORDINATION_WRITER_FENCE_SCHEMA,
+  LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
+} from "../../loopx/control_plane/coordination/coordination_state_contract.generated.ts";
+import { engageLegacyCoordinationWriterFence } from "../../loopx/control_plane/coordination/legacy_writer_fence.ts";
 
 const FIXED_NOW = new Date("2026-08-27T03:00:00.000Z");
 
@@ -369,6 +375,61 @@ test("post-identity failures preserve the legacy validation receipt prefix", asy
       code: "invalid_ttl",
     },
   });
+});
+
+test("an engaged legacy writer fence rejects acquire before validation without receipts", async (t) => {
+  // Baseline reported a committed validation receipt and a durable_writeback
+  // failure for this rejection although no writeback was attempted; the
+  // fence is a terminal permission decision taken by the promoted authority
+  // before the first side effect (RFC section 5 `rejected`, section 5.6,
+  // Appendix C), so it is typed like every other validation-stage denial and
+  // like its renew/transfer/release siblings.
+  const root = await workspace(t);
+  await mkdir(join(root, "runtime"), { recursive: true });
+  await writeFile(join(root, "ACTIVE_GOAL_STATE.md"), "---\ngoal_id: goal-a\n---\n\n## Agent Todo\n\n", "utf8");
+  const engaged = await engageLegacyCoordinationWriterFence({
+    schema_version: LEGACY_COORDINATION_WRITER_FENCE_ENGAGE_REQUEST_SCHEMA,
+    runtime_root: join(root, "runtime"),
+    goal_id: "goal-a",
+    state_path: join(root, "ACTIVE_GOAL_STATE.md"),
+    fence: {
+      schema_version: LEGACY_COORDINATION_WRITER_FENCE_SCHEMA,
+      state: "engaged",
+      goal_id: "goal-a",
+      fence_id: "legacy-writer-fence:goal-a:state-1",
+      source_version: "state:1",
+      source_projection_sha256: "a".repeat(64),
+      expected_shadow_provider_revision: "file:1:aaaaaaaaaaaaaaaaaaaaaaaa",
+    },
+  });
+  assert.equal(engaged.status, "applied");
+
+  const fenced = await executeTaskLeaseAcquire(await request(root), { now: () => FIXED_NOW });
+
+  assert.equal(fenced.ok, false);
+  assert.equal(fenced.schema_version, "task_lease_v0");
+  assert.equal(fenced.error_code, "legacy_coordination_writer_fenced");
+  assert.equal(
+    fenced.error,
+    "legacy coordination writer is fenced; use the promoted canonical authority (file_v0) for goal goal-a; fence legacy-writer-fence:goal-a:state-1; the primary record was not changed",
+  );
+  assert.deepEqual(fenced.write_check, {
+    schema_version: LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
+    status: "blocked",
+    reason_code: "legacy_coordination_writer_fenced",
+    authority_mode: "file_v0",
+    fence_id: "legacy-writer-fence:goal-a:state-1",
+  });
+  assert.deepEqual(fenced.settlement, {
+    effect_id: null,
+    receipts: [],
+    failure: {
+      step: "validation",
+      kind: "permission_denied",
+      code: "legacy_coordination_writer_fenced",
+    },
+  });
+  await assert.rejects(() => readFile(leasePath(root), "utf8"), { code: "ENOENT" });
 });
 
 test("invalid settlement identities fail validation without receipts", async (t) => {
