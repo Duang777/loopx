@@ -249,6 +249,33 @@ CASES.append(Case("duplicate_mirror", (
         MIRROR_COMMIT)),
 ), "tests/control_plane/test_shadow_drain_e2e.py::test_public_mutation_has_no_second_snapshot_mirror"))
 
+# Fenced sibling-caller parity: each mutant is caught by exactly one parity row.
+CASES.append(Case("native_fence_remediation_truncated", (
+    (COORDINATION + "legacy_writer_fence.ts", replacement(
+        'export const LEGACY_WRITER_FENCED_REMEDIATION =\n  "legacy coordination writer is fenced; use the promoted canonical authority ({authority_mode}) for goal {goal_id}; fence {fence_id}; the primary record was not changed";',
+        'export const LEGACY_WRITER_FENCED_REMEDIATION =\n  "legacy coordination writer is fenced";')),
+), "tests/control_plane/test_shadow_fence_caller_parity_e2e.py::test_fence_caller_parity[cli-task_lease_acquire-engaged]"))
+CASES.append(Case("python_fence_remediation_truncated", (
+    (COORDINATION + "legacy_writer_fence.py", replacement(
+        'LEGACY_WRITER_FENCED_REMEDIATION = (\n    "legacy coordination writer is fenced; use the promoted canonical authority "\n    "({authority_mode}) for goal {goal_id}; fence {fence_id}; "\n    "the primary record was not changed"\n)',
+        'LEGACY_WRITER_FENCED_REMEDIATION = "legacy coordination writer is fenced"')),
+), "tests/control_plane/test_shadow_fence_caller_parity_e2e.py::test_fence_caller_parity[cli-todo_complete-engaged]"))
+CASES.append(Case("fence_envelope_schema_leak", (
+    (COORDINATION + "legacy_writer_fence.ts", replacement(
+        "    this.payload = { write_check: writeCheck };",
+        "    this.payload = writeCheck;")),
+), "tests/control_plane/test_shadow_fence_caller_parity_e2e.py::test_fence_caller_parity[cli-task_lease_acquire-engaged]"))
+CASES.append(Case("fence_acquire_receipt_fabricated", (
+    ("loopx/control_plane/work_items/task_lease_acquire.ts", replacement(
+        '  return { code: error.code, message: error.message, payload: error.payload, stage: "validation", kind: "permission_denied" };',
+        '  return { code: error.code, message: error.message, payload: error.payload };')),
+), "tests/control_plane_ts/legacy_writer_fence_caller_parity.test.ts", pattern="^fence parity: ts-acquire-engaged$"))
+CASES.append(Case("lifecycle_fence_guard_skipped", (
+    ("loopx/control_plane/work_items/task_lease_lifecycle.ts", replacement(
+        "        await requireLegacyCoordinationPrimaryWriteAllowed(request!.runtime_root, request!.goal_id);\n",
+        "")),
+), "tests/control_plane_ts/legacy_writer_fence_caller_parity.test.ts", pattern="^fence parity: ts-release-engaged$"))
+
 
 def run(case: Case, directory: Path, log: Path) -> subprocess.CompletedProcess[str]:
     environment = {key: value for key, value in os.environ.items()
