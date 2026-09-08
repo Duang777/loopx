@@ -2,19 +2,6 @@ name: Python Tests
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/python-tests.yml"
-      - ".github/workflows/sonarcloud.yml"
-      - "sonar-project.properties"
-      - "apps/**"
-      - "loopx/**"
-      - "scripts/**"
-      - "tests/**"
-      - "examples/**"
-      - "package.json"
-      - "package-lock.json"
-      - "pyproject.toml"
-      - "tsconfig.control-plane.json"
   push:
     branches:
       - main
@@ -40,7 +27,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      core_tests: ${{ steps.classify.outputs.core_tests }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Validate merge gate semantics
+        run: python -m unittest discover -s scripts/ci -p 'test_review_gate.py'
+      - name: Classify the exact pull-request change
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            python scripts/ci/review_gate.py classify --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo 'core_tests=true' >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -89,6 +107,8 @@ jobs:
         run: python examples/control_plane/cli-output-budget-regression-smoke.py
 
   test-shard:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -134,8 +154,8 @@ jobs:
 
   pytest:
     # Keep the required check name; a skipped/failed shard must not turn it green.
-    if: always()
-    needs: [checks, test-shard]
+    if: always() && needs.changes.outputs.core_tests == 'true'
+    needs: [changes, checks, test-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -176,9 +196,16 @@ jobs:
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  stage2c-correctness-e2e:
+  stage2c-suite:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
+    name: stage2c (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [e2e, mutants, installed]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -216,23 +243,30 @@ jobs:
           # Remove the generated source copy before pytest's normal discovery.
           python -c "import shutil; shutil.rmtree('build')"
       - name: Qualify real CLI, mixed writers, process death, and recovery
+        if: matrix.suite == 'e2e'
         env:
           LOOPX_SHADOW_COMPARISON_OUTPUT: .local/stage2c-observables
-        run: python -m pytest -q -m stage2c_e2e --junitxml=stage2c-e2e.xml
+        # Keep each module's shared workspace and ordered parity rows on one worker.
+        run: python -m pytest -q -n 2 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
       - name: Reject deliberate correctness regressions
+        if: matrix.suite == 'mutants'
         run: python examples/shared-goal-authority-e2e/mutants.py --output .local/stage2c-mutants
       - name: Build independently installed distributions
+        if: matrix.suite == 'installed'
         run: python -m build --no-isolation
       - name: Qualify wheel outside the repository
+        if: matrix.suite == 'installed'
         run: python examples/shared-goal-authority-e2e/installed.py --artifact dist/*.whl --report-json installed-wheel.json
       - name: Qualify sdist outside the repository
+        if: matrix.suite == 'installed'
         run: python examples/shared-goal-authority-e2e/installed.py --artifact dist/*.tar.gz --report-json installed-sdist.json
       - name: Retain bounded acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: stage2c-correctness-evidence
+          name: stage2c-correctness-evidence-${{ matrix.suite }}
           include-hidden-files: true
+          if-no-files-found: error
           path: |
             stage2c-e2e.xml
             .local/stage2c-observables/
@@ -240,7 +274,21 @@ jobs:
             installed-sdist.json
             .local/stage2c-mutants/
 
+  stage2c-correctness-e2e:
+    # Preserve the public check name and reject failed, cancelled or skipped lanes.
+    if: always() && needs.changes.outputs.core_tests == 'true'
+    needs: [changes, stage2c-suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every Stage 2C lane
+        env:
+          STAGE2C_RESULT: ${{ needs.stage2c-suite.result }}
+        run: test "$STAGE2C_RESULT" = success
+
   windows-powershell:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -281,3 +329,19 @@ jobs:
           node --no-warnings --experimental-strip-types --test
           tests/control_plane_ts/scheduler_heartbeat_commit.test.ts
           tests/control_plane_ts/scheduler_heartbeat_commit_cli.test.ts
+
+  merge-gate:
+    # Always publish one stable outcome, including documentation-only PRs.
+    if: always()
+    needs: [changes, pytest, stage2c-correctness-e2e, windows-powershell]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Reject incomplete or unsuccessful qualification
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/ci/review_gate.py verify

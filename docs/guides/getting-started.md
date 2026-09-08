@@ -381,6 +381,91 @@ update` now projects the active installation owner: PyPI environments stay
 package-manager owned, archive snapshots stay LoopX owned, and live source
 checkouts stay Git owned.
 
+### Host-Bundled / Frozen Workflow Skills
+
+PyInstaller hosts can bundle the existing skill data without Python distribution
+metadata at runtime. In a frozen process, LoopX reads
+`share/loopx/skills` under `sys._MEIPASS` first, then the same bundle's `skills`
+directory for compatibility with existing checkout-like bundles. The first
+complete skill set wins; files from different layouts are never combined.
+If the freezer does not expose `_MEIPASS`, the root beside the bundled `loopx`
+package is used. These are existing wheel and source layouts, not a new wheel
+format. If neither contains a complete skill set, discovery fails with rebuild
+instructions, without searching another checkout or Python installation.
+Regular checkout and pip discovery is unchanged.
+
+Build from an isolated environment containing the exact LoopX version shipped
+with the host. Include the **entire** `share/loopx/skills` tree from that wheel,
+including each skill's `SKILL.md`, `agents/`, `references/`, and `scripts/` files
+where present. The wheel's data-file list is authoritative; do not copy only
+`loopx-project` or a separately maintained prompt. `--collect-data loopx` alone
+does not include wheel data installed outside the Python package.
+
+For example, create `sidecar.py`:
+
+```python
+from loopx.entrypoint import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+After installing your pinned LoopX wheel and PyInstaller in the build environment,
+run this Python build script there:
+
+```python
+import subprocess
+import sys
+from loopx.workflow_skill_install import resolve_workflow_skill_source
+
+source = resolve_workflow_skill_source()
+if not source["available"]:
+    raise SystemExit(source["reason"])
+subprocess.run([
+    sys.executable, "-m", "PyInstaller", "--onefile",
+    "--name", "loopx-sidecar", "--collect-submodules", "loopx",
+    "--collect-data", "loopx",
+    "--add-data", f"{source['skills_root']}:share/loopx/skills",
+    "sidecar.py",
+], check=True)
+```
+
+Use `--onedir` in place of `--onefile` for a directory bundle. See
+[PyInstaller runtime paths and data placement](https://pyinstaller.org/en/stable/runtime-information.html).
+This recipe covers skill installation and static slash-command generation;
+hosts must separately package and validate dependencies and non-Python resources
+for other LoopX capabilities they enable. Build and test on each target OS.
+
+Validate against a disposable host directory (on Windows use
+`dist/loopx-sidecar.exe`):
+
+```bash
+dist/loopx-sidecar --format json workflow-skills --skills-dir ./test-host/skills
+dist/loopx-sidecar --format json workflow-skills --install --skills-dir ./test-host/skills
+dist/loopx-sidecar --format json workflow-skills --skills-dir ./test-host/skills
+dist/loopx-sidecar --format json slash-commands --install --surface codex --codex-home ./test-host
+```
+
+Expect `source.kind: frozen_bundle`, successful installation, then
+`install_required: false`. The managed readback records the frozen bundle's
+LoopX package version, so a newer sidecar reports the older installed skills as
+requiring refresh. Static slash commands are generated from bundled Python code
+and do not require the workflow-skill data tree. `--skills-dir` selects the
+installation destination, not a source override. Skill installation does not
+enable schedulers, launch goals, or grant the host additional authority.
+
+Rebuild with the new pinned wheel and reinstall skills when upgrading the host;
+restart the agent host to reload them. Keep the previous sidecar for rollback and
+reinstall its matching skills. To remove managed material from the test host:
+
+```bash
+dist/loopx-sidecar workflow-skills --uninstall --skills-dir ./test-host/skills
+dist/loopx-sidecar slash-commands --uninstall --surface codex --codex-home ./test-host
+```
+
+Workflow uninstall preserves locally modified skills. Review preserved files
+before deleting the disposable directory.
+
 ## Contributor Install
 
 Install one shared local checkout when you want to develop LoopX itself

@@ -26,6 +26,11 @@ into a mirror of maintainer scratch state.
 
 ## How To Claim Work
 
+For first-review contacts, accepted subsystem owners and voluntary scope
+confirmation, use the [governance review roster](../../.github/GOVERNANCE.md#first-review-responsibilities).
+Request the closest contact before escalating to the lead maintainer. A
+preferred review contact is not an exclusive task claim or new merge authority.
+
 1. Prefer a linked GitHub issue. If there is no issue yet, open one with the
    contributor task template.
 2. Comment that you would like to work on the task. Maintainers will mark it

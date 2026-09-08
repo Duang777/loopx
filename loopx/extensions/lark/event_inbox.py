@@ -105,6 +105,13 @@ def load_lark_event_inbox_config(
         raise ValueError(
             "lark inbox capture_scope must be addressed_only or configured_chat_all"
         )
+    topic_root_message_id = str(
+        payload.get("topic_root_message_id") or ""
+    ).strip()
+    if topic_root_message_id and not MESSAGE_ID_PATTERN.fullmatch(
+        topic_root_message_id
+    ):
+        raise ValueError("lark inbox topic_root_message_id is invalid")
     reply_payload = payload.get("reply")
     if reply_payload is not None and not isinstance(reply_payload, Mapping):
         raise ValueError("lark inbox reply config must be an object")
@@ -203,6 +210,7 @@ def load_lark_event_inbox_config(
         "inbox_path": _safe_inbox_path(root, inbox_dir) if enabled else None,
         "capture_scope": capture_scope,
         "thread_complete": capture_scope == "configured_chat_all",
+        "topic_root_message_id": topic_root_message_id,
         "reply": {
             "enabled": reply_enabled,
             "sender_profile": sender_profile,
