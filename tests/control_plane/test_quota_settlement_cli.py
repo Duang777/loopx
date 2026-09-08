@@ -2087,9 +2087,13 @@ def test_begin_turn_rejects_a_non_receipt_runtime_profile(tmp_path: Path) -> Non
 
     assert guard_rc == 1, guard
     assert guard["error_code"] == "QUOTA_VALIDATION_FAILED"
+    # The rejection must also tell an agent-CLI host how to start its turn:
+    # Kiro CLI, ZCode, agy, Gemini CLI, Cursor and custom runners all land on
+    # generic_cli and mint their own identity instead.
     assert guard["reason"] == (
         "--begin-turn requires runtime-profile codex_app_heartbeat "
-        "or codex_app_ssh_goal"
+        "or codex_app_ssh_goal; every other host starts its turn by "
+        "passing its own --turn-instance-id"
     )
 
 
