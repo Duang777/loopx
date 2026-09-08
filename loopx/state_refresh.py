@@ -26,6 +26,7 @@ from .control_plane.agents.workspace_guard import (
 from .control_plane.quota.settlement import (
     SettlementIdentity,
     read_heartbeat_settlement,
+    render_first_refresh_checkpoint_hint,
     render_refresh_recovery_markdown,
     settlement_result_payload,
 )
@@ -683,6 +684,7 @@ def render_state_refresh_markdown(payload: dict[str, Any]) -> str:
                 "- vision_checkpoint_required_resolution: "
                 f"{','.join(str(item) for item in required_resolution)}"
             )
+        lines.extend(render_first_refresh_checkpoint_hint(payload))
 
     projection_gap = (
         payload.get("state_projection_gap")
