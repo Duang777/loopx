@@ -629,9 +629,9 @@ pub(crate) fn timed_output_with_timeout(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().ok()?;
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
+    let mut child = command.group_spawn().ok()?;
+    let mut stdout_pipe = child.inner().stdout.take();
+    let mut stderr_pipe = child.inner().stderr.take();
 
     let stdout_reader = thread::spawn(move || {
         let mut buf = Vec::new();
@@ -652,34 +652,48 @@ pub(crate) fn timed_output_with_timeout(
     let started = Instant::now();
     let poll_interval = Duration::from_millis(20);
 
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) => {
-                if started.elapsed() >= timeout {
+    let mut child_status: Option<std::process::ExitStatus> = None;
+
+    loop {
+        if child_status.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    child_status = Some(status);
+                }
+                Ok(None) => {}
+                Err(_) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    break None;
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    return None;
                 }
-                let remaining = timeout.saturating_sub(started.elapsed());
-                thread::sleep(poll_interval.min(remaining));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
             }
         }
-    };
 
-    let stdout = stdout_reader.join().unwrap_or_default();
-    let stderr = stderr_reader.join().unwrap_or_default();
+        if let Some(status) = child_status {
+            if stdout_reader.is_finished() && stderr_reader.is_finished() {
+                let stdout = stdout_reader.join().unwrap_or_default();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                return Some(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+        }
 
-    status.map(|status| std::process::Output {
-        status,
-        stdout,
-        stderr,
-    })
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return None;
+        }
+
+        let remaining = timeout.saturating_sub(started.elapsed());
+        thread::sleep(poll_interval.min(remaining));
+    }
 }
 
 // `python3 --version` prints `Python 3.11.9`; accept the version on either
@@ -1148,6 +1162,52 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(4),
             "command completed in reasonable time without blocking (took {elapsed:?})"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn timed_output_descendant_inheriting_pipes_terminates_near_deadline() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = temp_dir.path().join("descendant.pid");
+        let mut cmd = Command::new("sh");
+        // Direct child `sh` exits immediately after launching background descendant `sleep 30`.
+        // The background descendant inherits the stdout/stderr pipe handles without exec.
+        cmd.args([
+            "-c",
+            &format!("(sleep 30 & echo $! > \"{}\")", pid_path.display()),
+        ]);
+
+        let start = Instant::now();
+        let output = timed_output_with_timeout(cmd, Duration::from_millis(300));
+        let elapsed = start.elapsed();
+
+        assert!(output.is_none(), "timed_output must return None on timeout");
+        assert!(
+            elapsed >= Duration::from_millis(250) && elapsed < Duration::from_secs(2),
+            "timed_output must bound execution to around timeout (took {elapsed:?})"
+        );
+
+        let pid_str = fs::read_to_string(&pid_path).expect("read pidfile");
+        let pid: u32 = pid_str.trim().parse().expect("parse pid");
+
+        let mut descendant_alive = true;
+        for _ in 0..20 {
+            let check_status = Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .expect("kill -0");
+            if !check_status.success() {
+                descendant_alive = false;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(
+            !descendant_alive,
+            "descendant process {pid} inheriting pipes must be terminated, but kill -0 succeeded"
         );
     }
 }
