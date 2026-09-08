@@ -36,9 +36,21 @@ async function assertAnchorInView(page, id) {
     const section = document.getElementById(id);
     if (!section) return false;
     const top = section.getBoundingClientRect().top;
-    const heading = section.querySelector("h2")?.getBoundingClientRect();
-    return top >= -2 && top < 80 && heading && heading.top >= 0 && heading.bottom < innerHeight;
-  }, id, { timeout: 4000 });
+    const heading = section.querySelector("h1, h2, h3")?.getBoundingClientRect();
+    const atEnd = scrollY + innerHeight >= document.documentElement.scrollHeight - 2;
+    const header = document.querySelector(".bm-topbar")?.getBoundingClientRect();
+    const headerBottom = header?.bottom ?? 0;
+    const reveal = section.closest(".reveal-block");
+    return (!header || Math.abs(header.top) < 2) && top >= -2 && (top < 80 || atEnd) &&
+      (!heading || (heading.top >= Math.max(0, headerBottom) && heading.bottom < innerHeight)) &&
+      (!reveal || getComputedStyle(reveal).opacity === "1");
+  }, id, { timeout: 4000 }).catch(async (error) => {
+    const viewport = await page.locator(`[id="${id}"]`).evaluate((section) => ({
+      scrollY, top: section.getBoundingClientRect().top,
+      headingTop: section.querySelector("h1, h2, h3")?.getBoundingClientRect().top,
+    }));
+    throw new Error(`Anchor ${id} at ${page.url()}: ${JSON.stringify(viewport)}`, { cause: error });
+  });
 }
 
 let browser;
@@ -61,24 +73,81 @@ try {
         await new Promise((done) => setTimeout(done, 250));
         await route.continue();
       });
-      for (const lang of ["en", "zh"]) {
-        await entry.goto("about:blank");
-        await entry.goto(`${publicOrigin}/loopx/?lang=${lang}#explore`);
-        await assertAnchorInView(entry, "explore");
-        await entry.reload();
-        await assertAnchorInView(entry, "explore");
+      for (const path of ["", "benchmarks/swe-marathon/"]) {
+        const anchors = path
+          ? ["top", "summary", "background", "mechanism", "zstd", "official-comparison", "boundary", "sources"]
+          : ["top", "main", "product", "workflow", "showcases", "explore", "learn", "quickstart"];
+        for (const lang of ["en", "zh"]) {
+          for (const id of anchors) {
+            await entry.goto("about:blank");
+            await entry.goto(`${publicOrigin}/loopx/${path}?lang=${lang}#${id}`);
+            await assertAnchorInView(entry, id);
+            await entry.reload();
+            await assertAnchorInView(entry, id);
+          }
+          await entry.goto(`${publicOrigin}/loopx/${path}index.html?lang=${lang}#${anchors[2]}`);
+          await assertAnchorInView(entry, anchors[2]);
+        }
+        for (const fragment of ["", "missing-section", "%zz"]) {
+          await entry.goto("about:blank");
+          await entry.goto(`${publicOrigin}/loopx/${path}?lang=zh#${fragment}`);
+          await entry.locator("h1").first().waitFor();
+          assert.equal(await entry.evaluate(() => scrollY), 0, "missing fragments must preserve normal page entry");
+        }
       }
-      for (const fragment of ["learn", "%65xplore"]) {
-        await entry.goto(`${publicOrigin}/loopx/?lang=zh#${fragment}`);
-        await assertAnchorInView(entry, decodeURIComponent(fragment));
-      }
-      for (const fragment of ["", "missing-section", "%zz"]) {
-        await entry.goto("about:blank");
-        await entry.goto(`${publicOrigin}/loopx/?lang=zh#${fragment}`);
-        await entry.locator("#explore").waitFor();
-        assert.equal(await entry.evaluate(() => scrollY), 0, "missing fragments must preserve normal page entry");
-      }
+      await entry.goto(`${publicOrigin}/loopx/?lang=zh#%65xplore`);
+      await assertAnchorInView(entry, "explore");
+      // Language changes must keep the section, and history must restore both
+      // URL and rendered language. Clicks exercise real controls, not JS scroll.
+      await entry.goto(`${publicOrigin}/loopx/`);
+      const navigateHome = async (id) => {
+        if (width === 390) {
+          await entry.getByRole("button", { name: "Open navigation" }).click();
+          await entry.locator(`.mobile-nav a[href="#${id}"]`).click();
+          assert.equal(await entry.locator(".mobile-nav").count(), 0);
+        } else await entry.locator(`.desktop-nav a[href="#${id}"]`).click();
+        await assertAnchorInView(entry, id);
+      };
+      await navigateHome("product");
+      await entry.locator(".language-toggle").click();
+      await entry.waitForFunction(() => document.documentElement.lang === "zh-CN");
+      await assertAnchorInView(entry, "product");
+      await navigateHome("workflow");
+      await navigateHome("explore");
+      await navigateHome("explore"); // Clicking the current fragment still navigates.
+      // Opening the header menu can scroll to the top before a click. History
+      // restores that user position, so do not force it to the fragment again.
+      await entry.goBack();
+      assert.equal(new URL(entry.url()).hash, "#workflow");
+      await entry.goBack();
+      assert.equal(new URL(entry.url()).hash, "#product");
+      await entry.goBack();
+      await entry.waitForFunction(() => document.documentElement.lang === "en");
+      await entry.goForward();
+      await entry.waitForFunction(() => document.documentElement.lang === "zh-CN");
+      assert.equal(new URL(entry.url()).hash, "#product");
+      await entry.locator('.hero .button-secondary').click();
+      await assertAnchorInView(entry, "showcases");
+      await entry.goBack();
+      assert.equal(new URL(entry.url()).hash, "#product", "section CTA must preserve previous history entry");
+      await entry.goForward();
+      assert.equal(new URL(entry.url()).hash, "#showcases");
+      await entry.locator('.site-footer a[href="#top"]').click();
+      await assertAnchorInView(entry, "top");
+      await entry.getByRole('link', { name: 'LoopX home', exact: true }).click();
+      assert.equal(new URL(entry.url()).searchParams.get("lang"), "zh", "home link must preserve language");
+      await entry.goto(`${publicOrigin}/loopx/benchmarks/swe-marathon/#mechanism`);
+      await entry.getByRole("button", { name: "中文", exact: true }).click();
+      await assertAnchorInView(entry, "mechanism");
+      await entry.locator('.bm-footer a[href="#top"]').click();
+      await assertAnchorInView(entry, "top");
+      await entry.goBack();
+      assert.equal(new URL(entry.url()).hash, "#mechanism");
+      await entry.locator('.bm-home-link').click();
+      await entry.locator("#explore").waitFor();
+      assert.equal(new URL(entry.url()).searchParams.get("lang"), "zh");
       assert.deepEqual(entryErrors, [], "fragment entry must not raise runtime errors");
+      console.log(`Fragment/history matrix: ${width}px, ${reducedMotion}: ok`);
       await entryContext.close();
     }
   }
@@ -145,6 +214,25 @@ try {
         await page.locator("h1").first().waitFor();
       }
     }
+  }
+  if (process.env.LOOPX_PUBLIC_SITE_DIR) {
+    // Check the assembled publication, including the separately built books.
+    const checked = new Set();
+    for (const path of ["", "?lang=zh", "benchmarks/swe-marathon/", "benchmarks/deepswe/behavior-discovery/", "docs/showcases/index.html", "docs/showcases/index.en.html", "docs/guides/personal-workspace-user-guide/", "docs/book/", "docs/book/en/", "blog/", "blog/zh/"]) {
+      await page.goto(`${publicOrigin}/loopx/${path}`);
+      await page.locator("h1").first().waitFor();
+      const links = await page.locator("a[href]").evaluateAll((links) => links.map((link) => link.href));
+      for (const href of links) {
+        const url = new URL(href);
+        if (![publicOrigin, "https://huangruiteng.github.io"].includes(url.origin) || !url.pathname.startsWith("/loopx/")) continue;
+        const target = `${publicOrigin}${url.pathname}${url.search}`;
+        if (checked.has(target)) continue;
+        checked.add(target);
+        const response = await page.request.get(target);
+        assert.ok(response.ok(), `Broken publication link from ${path}: ${href}`);
+      }
+    }
+    console.log(`Published entry links checked: ${checked.size}`);
   }
   assert.deepEqual(errors, [], "browser runtime errors");
   console.log("public navigation and Frontstage migration browser smoke: ok");

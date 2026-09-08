@@ -17,6 +17,12 @@ and Ops boards are retired.
   and stationary during entrance effects. Browser tests must assert the initial
   viewport before calling any scroll or focus helpers; checking URL text or
   clicking a link after render does not validate a shared deep link.
+- Both React pages share fragment restoration after mount and language reflow.
+  Back/forward navigation restores the URL language; section actions use native
+  links so they create normal history entries. Explicit `index.html` research
+  URLs select the same page as directory URLs. Research navigation stays sticky,
+  with fragment destinations below the bar; decorative overflow must not create
+  an intermediate scroll container.
 - Do not link primary navigation to retired or deprecated surfaces.
 - Old bookmarks redirect to the current owner; public aliases discard live
   status parameters instead of passing them into the local workspace.
