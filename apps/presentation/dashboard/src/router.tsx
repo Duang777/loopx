@@ -8,9 +8,9 @@ import {
 import { z } from "zod";
 
 import { DashboardPage } from "./views/dashboard-page";
-import { DeprecatedFrontstageOpsPage } from "./views/deprecated/frontstage-ops-page";
 import { FrontstageDeveloperPage } from "./views/frontstage-developer-page";
-import { FrontstagePage } from "./views/frontstage-page";
+import { useEffect } from "react";
+import { resolveLocalStatusUrl } from "./data/local-status-query";
 import { BenchmarkStudyPage } from "./views/benchmark-study-page";
 
 const searchSchema = z.object({
@@ -34,40 +34,28 @@ const benchmarkStudySearchSchema = z.object({
   runId: z.string().optional().default(""),
 });
 
+// Bookmarks remain valid, but the retired boards no longer ship a second UI.
+function PublicCasesRedirect() {
+  const target = "https://huangruiteng.github.io/loopx/docs/showcases/index.en.html";
+  useEffect(() => { window.location.replace(target); }, []);
+  return <a href={target}>Open LoopX cases / 浏览案例</a>;
+}
+
+function WorkspaceRedirect({ goalId, statusUrl }: { goalId: string; statusUrl: string }) {
+  const resolved = statusUrl ? resolveLocalStatusUrl(statusUrl, window.location.href) : null;
+  if (resolved?.error) return <main role="alert">{resolved.error}</main>;
+  return <Navigate replace to="/" search={{ goalId, statusUrl }} />;
+}
+
 function FrontstageRoutePage() {
   const search = frontstageRoute.useSearch();
-  if (search.mode === "ops") {
-    return (
-      <Navigate
-        replace
-        search={{
-          goalId: search.goalId,
-          statusUrl: search.statusUrl,
-          todoLane: search.todoLane,
-          todoQuery: search.todoQuery,
-        }}
-        to="/deprecated/frontstage/ops"
-      />
-    );
-  }
-  return <FrontstagePage search={search} />;
+  if (search.mode === "ops") return <WorkspaceRedirect {...search} />;
+  if (search.mode === "developer") return <Navigate replace to="/developers/projections" />;
+  return <PublicCasesRedirect />;
 }
 
 function DeprecatedFrontstageOpsRoutePage() {
-  const search = deprecatedFrontstageOpsRoute.useSearch();
-  const navigate = deprecatedFrontstageOpsRoute.useNavigate();
-  return (
-    <DeprecatedFrontstageOpsPage
-      onNavigate={(next) => {
-        return navigate({ search: (current) => ({ ...current, ...next }) });
-      }}
-      onOpenShowcase={() => navigate({
-        search: { goalId: "", mode: "showcase", statusUrl: "", todoLane: "all", todoQuery: "" },
-        to: "/frontstage",
-      })}
-      search={search}
-    />
-  );
+  return <WorkspaceRedirect {...deprecatedFrontstageOpsRoute.useSearch()} />;
 }
 
 export const rootRoute = createRootRoute({
@@ -103,6 +91,12 @@ export const deprecatedFrontstageOpsRoute = createRoute({
 export const frontstageDeveloperRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/frontstage/developer",
+  component: () => <Navigate replace to="/developers/projections" />,
+});
+
+export const projectionDeveloperRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/developers/projections",
   component: FrontstageDeveloperPage,
 });
 
@@ -118,6 +112,7 @@ const routeTree = rootRoute.addChildren([
   frontstageRoute,
   deprecatedFrontstageOpsRoute,
   frontstageDeveloperRoute,
+  projectionDeveloperRoute,
   benchmarkStudyRoute,
 ]);
 
