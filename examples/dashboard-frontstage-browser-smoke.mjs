@@ -35,13 +35,18 @@ async function assertAnchorInView(page, id) {
   await page.waitForFunction((id) => {
     const section = document.getElementById(id);
     if (!section) return false;
-    const top = section.getBoundingClientRect().top;
+    const rect = section.getBoundingClientRect();
+    const top = rect.top;
     const heading = section.querySelector("h1, h2, h3")?.getBoundingClientRect();
-    const atEnd = scrollY + innerHeight >= document.documentElement.scrollHeight - 2;
+    // A short final section cannot align at the top. Font reflow can leave a
+    // few pixels below the viewport; require the whole section, not scroll-end
+    // equality, so the assertion matches what the reader actually sees.
+    const finalSection = section.closest("main")?.lastElementChild;
+    const finalSectionVisible = finalSection?.contains(section) && rect.bottom <= innerHeight;
     const header = document.querySelector(".bm-topbar")?.getBoundingClientRect();
     const headerBottom = header?.bottom ?? 0;
     const reveal = section.closest(".reveal-block");
-    return (!header || Math.abs(header.top) < 2) && top >= -2 && (top < 80 || atEnd) &&
+    return (!header || Math.abs(header.top) < 2) && top >= -2 && (top < 80 || finalSectionVisible) &&
       (!heading || (heading.top >= Math.max(0, headerBottom) && heading.bottom < innerHeight)) &&
       (!reveal || getComputedStyle(reveal).opacity === "1");
   }, id, { timeout: 4000 }).catch(async (error) => {
