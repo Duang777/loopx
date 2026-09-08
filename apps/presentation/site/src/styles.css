@@ -806,6 +806,14 @@ body[data-language="zh"] .hero h1 {
   transform: none;
 }
 
+/* A fragment destination must not move or fade while the browser aligns it. */
+.reveal-block[data-anchor-entry],
+.reveal-block:has(:target) {
+  opacity: 1;
+  transform: none;
+  transition: none;
+}
+
 .capability-section,
 .learn-section,
 .showcase-section,
