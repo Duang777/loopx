@@ -31,10 +31,11 @@ try {
   let failUpdate = false;
   let checkFailure = null;
   let statusFailure = false;
+  let environmentTelemetry = null;
   await page.exposeFunction("nativeInvoke", async (command, args) => {
     if (command === "desktop_update_status") {
       if (statusFailure) throw new Error("Command desktop_update_status not allowed by ACL");
-      return { state: nativeState, app_version: "0.5.4", rollback_available: true };
+      return { state: nativeState, app_version: "0.5.4", rollback_available: true, environment: environmentTelemetry };
     }
     calls.push({ command, args });
     if (checkFailure && args.action === "check") return { phase: "error", details: { code: checkFailure } };
@@ -196,7 +197,41 @@ try {
     assert.equal(await page.locator(selector).isEnabled(), true, `${selector} remains usable after service failure`);
   }
   await page.screenshot({ path: resolve(output, "startup-recovery.png") });
-  console.log("desktop-update-browser-smoke: passed (confirmation, failure redaction, mobile, missing assets + reload, startup motion states, startup recovery)");
+
+  // A snapshot stuck in a terminal phase must turn the main status line into
+  // its error projection (fresh Mac without Python 3.11+: installer exit 2),
+  // not the pre-fix permanent loading shape. The projection is derived by the
+  // page from desktop_update_status itself.
+  environmentTelemetry = { os_version: "26.5", arch: "aarch64", runtime_executable_found: false, python3_found: false, python3_version: null };
+  nativeState = { phase: "error", details: { code: "runtime_install_exit_2" } };
+  await page.reload();
+  assert.equal(await startupPanel.getAttribute("data-state"), "loading");
+  await page.waitForTimeout(2500);
+  assert.equal(await startupPanel.getAttribute("data-state"), "loading", "escalation waits for several terminal poll rounds");
+  await page.waitForFunction(() => document.querySelector("main").dataset.state === "error");
+  assert.equal(await startupPanel.getAttribute("aria-busy"), "false");
+  const bootHeadline = await page.locator("#status").innerText();
+  assert.ok(bootHeadline.includes("安装程序退出（2）"), bootHeadline);
+  assert.ok(bootHeadline.includes("Python 3.11+"), bootHeadline);
+  assert.ok(bootHeadline.includes("恢复与更新"), bootHeadline);
+  assert.equal(await startupDots.isVisible(), false);
+  await page.getByText("恢复与更新 / Recovery & updates").click();
+  assert.ok((await page.locator("#update-status").innerText()).includes("本机多半缺少可用的 Python 3.11+"));
+  const bootDiagnostics = JSON.parse(await page.locator("#diagnostics").inputValue());
+  assert.equal(bootDiagnostics.schema_version, "desktop_recovery_diagnostics_v2");
+  assert.equal(bootDiagnostics.error_code, "runtime_install_exit_2");
+  assert.deepEqual(bootDiagnostics.environment, environmentTelemetry);
+  await page.screenshot({ path: resolve(output, "startup-runtime-install-error.png") });
+
+  // A transient repair phase clears the escalation while it runs, and a
+  // terminal snapshot re-escalates with the matching runtime_required copy.
+  nativeState = { phase: "installing_runtime", details: {} };
+  await page.waitForFunction(() => document.querySelector("main").dataset.state === "loading");
+  assert.equal(await startupPanel.getAttribute("aria-busy"), "true");
+  nativeState = { phase: "runtime_required", details: { code: "runtime_setup_required" } };
+  await page.waitForFunction(() => document.querySelector("main").dataset.state === "error" && document.querySelector("#status").innerText.includes("请修复当前版本，成功后重启"));
+  environmentTelemetry = null;
+  console.log("desktop-update-browser-smoke: passed (confirmation, failure redaction, mobile, missing assets + reload, startup motion states, startup recovery, startup error escalation)");
 } finally {
   await browser.close();
   await new Promise((done) => server.close(done));

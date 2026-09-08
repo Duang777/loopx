@@ -58,6 +58,18 @@ const errors = {
   app_install_incomplete: "App 安装中断，且无法确认当前版本是否完整，请勿直接重启。请在恢复与更新面板还原上一版本（或重新安装）后再试。",
   backup_failed: "无法备份当前版本，更新已停止。请检查磁盘空间后重试。",
 };
+function codeText(code, phase) {
+  if (typeof code === "string" && /^runtime_install_exit_(\d+|signal)$/.test(code)) {
+    // Exit 2 from install-local.sh is its "no usable Python 3.11+" gate; the
+    // same exit can technically be a usage error, so the wording stays
+    // probabilistic and points at the repair action.
+    if (code === "runtime_install_exit_2") {
+      return "安装程序退出（2）：本机多半缺少可用的 Python 3.11+。安装 Python 后点击「修复当前版本」。";
+    }
+    return `安装程序退出（${code.slice("runtime_install_exit_".length)}）。请复制诊断信息反馈；修复没有完成。`;
+  }
+  return Object.hasOwn(errors, code) ? errors[code] : labels[phase] || "";
+}
 function render(state) {
   if (!state?.phase) return;
   if (state.phase === "available" && state.details?.channel !== channel.value) state = {phase:"idle"};
@@ -68,24 +80,37 @@ function render(state) {
   channel.disabled = working || state.phase === "restart_required";
   nextAction = state.phase === "available" ? "apply" : state.phase === "restart_required" ? "restart" : "check";
   update.textContent = nextAction === "apply" ? "更新并准备重启 / Install update" : nextAction === "restart" ? "重启完成更新 / Restart" : "检查更新 / Check for updates";
-  const code = state.details?.code;
-  updateStatus.textContent = typeof code === "string" && /^runtime_install_exit_(\d+|signal)$/.test(code)
-    ? `安装程序退出（${code.slice("runtime_install_exit_".length)}）。请复制诊断信息反馈；修复没有完成。`
-    : Object.hasOwn(errors, code) ? errors[code] : labels[state.phase] || "";
+  updateStatus.textContent = codeText(state.details?.code, state.phase);
 }
 const diagnostics = document.querySelector("#diagnostics");
 function safeCode(code) {
   return typeof code === "string" && (Object.hasOwn(errors, code) || /^runtime_install_exit_(\d+|signal)$/.test(code) || ["service_start_failed", "update_failed"].includes(code)) ? code : "unknown";
 }
+// v2 adds the non-PII environment block surfaced by desktop_update_status.
+// Fields the backend has not sent yet stay null so old payloads still render.
+function safeEnvironment(result) {
+  const environment = result.environment;
+  if (!environment || typeof environment !== "object") return null;
+  const text = (value) => typeof value === "string" && value ? value : null;
+  const flag = (value) => typeof value === "boolean" ? value : null;
+  return {
+    os_version: text(environment.os_version),
+    arch: text(environment.arch),
+    runtime_executable_found: flag(environment.runtime_executable_found),
+    python3_found: flag(environment.python3_found),
+    python3_version: text(environment.python3_version),
+  };
+}
 function renderDiagnostics(result) {
   const failure = result.last_failure ?? result.state;
   const text = JSON.stringify({
-    schema_version: "desktop_recovery_diagnostics_v1",
+    schema_version: "desktop_recovery_diagnostics_v2",
     failure_phase: ["error", "runtime_required", "service_error"].includes(failure?.phase) ? failure.phase : null,
     app_version: /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(result.app_version) ? result.app_version : "unknown",
     error_code: safeCode(failure?.details?.code),
     installed_identity_available: typeof failure?.details?.installed_identity_available === "boolean" ? failure.details.installed_identity_available : null,
     revision_matches: typeof failure?.details?.revision_matches === "boolean" ? failure.details.revision_matches : null,
+    environment: safeEnvironment(result),
   }, null, 2);
   if (diagnostics.value !== text) diagnostics.value = text;
 }
@@ -110,6 +135,15 @@ async function run(action) {
 update.onclick = () => run(nextAction);
 repair.onclick = () => run("repair");
 rollback.onclick = () => run("rollback");
+// The main status line keeps its loading shape while the supervisor retries.
+// A snapshot that stays in a terminal phase for several polls is the only
+// front-end-derived error projection: the page pulls it from
+// desktop_update_status itself, so it does not depend on the native eval()
+// calls racing this script's definition.
+const TERMINAL_PHASES = ["error", "runtime_required"];
+const ERROR_ESCALATION_ROUNDS = 5;
+let terminalRounds = 0;
+let escalated = false;
 async function refresh() {
   if (!window.__TAURI__) { renderDiagnostics({state:{phase:"error",details:{code:"desktop_status_unavailable"}}}); return; }
   try {
@@ -121,7 +155,24 @@ async function refresh() {
     rollback.hidden = !result.rollback_available;
     renderDiagnostics(result);
     render(result.state);
+    escalateFromSnapshot(result.state);
   } catch { renderDiagnostics({state:{phase:"error",details:{code:"desktop_status_unavailable"}}}); }
+}
+function escalateFromSnapshot(state) {
+  const terminal = TERMINAL_PHASES.includes(state?.phase);
+  terminalRounds = terminal ? terminalRounds + 1 : 0;
+  if (terminal && terminalRounds >= ERROR_ESCALATION_ROUNDS) escalated = true;
+  if (!escalated) return;
+  if (terminal) {
+    panel.dataset.state = "error";
+    panel.setAttribute("aria-busy", "false");
+    status.textContent = `${codeText(state?.details?.code, state?.phase)} 详见下方「恢复与更新」面板，可复制诊断信息反馈。`;
+  } else {
+    escalated = false;
+    panel.dataset.state = "loading";
+    panel.setAttribute("aria-busy", "true");
+    status.textContent = "正在重新连接本地控制面";
+  }
 }
 void refresh();
 setInterval(refresh,1000);

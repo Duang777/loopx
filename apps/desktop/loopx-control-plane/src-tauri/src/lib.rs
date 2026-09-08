@@ -21,6 +21,25 @@ fn maintenance_origin(url: &Url) -> String {
     url.origin().ascii_serialization()
 }
 
+// Supervisor failures are either stable machine codes emitted by the
+// maintenance state machine (runtime_setup_required, runtime_install_exit_2,
+// ...) or human-readable service diagnostics. Only a stable code is safe to
+// echo verbatim into the boot surface, where it names the recovery panel's
+// actionable diagnostics instead of a misleading fixed message.
+fn boot_failure_message(error: &str) -> String {
+    let is_stable_code = !error.is_empty()
+        && error.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        });
+    if is_stable_code {
+        format!(
+            "本地服务暂时无法启动，请检查安装或端口占用。（错误码 {error}，详见恢复与更新面板）"
+        )
+    } else {
+        "本地服务暂时无法启动，请检查安装或端口占用。".to_string()
+    }
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -121,7 +140,7 @@ pub fn run() {
                             }
                         }
                         Err(error) => {
-                            let message = "本地服务暂时无法启动，请检查安装或端口占用。";
+                            let message = boot_failure_message(&error);
                             eprintln!("LoopX service error: {error}");
                             if let Some(window) = handle.get_webview_window("main") {
                                 if let Ok(encoded) = serde_json::to_string(&message) {
@@ -203,5 +222,32 @@ mod tests {
         assert!(style.contains("--warning: #f5a623"));
         assert!(script.contains("desktop_update_status"));
         assert!(script.contains("window.loopxBootRetrying"));
+        // The boot surface must derive its error projection from the polled
+        // snapshot itself and name the known fresh-Mac installer failure.
+        assert!(script.contains("runtime_install_exit_2"));
+        assert!(script.contains("desktop_recovery_diagnostics_v2"));
+    }
+
+    #[test]
+    fn boot_failure_message_appends_stable_codes_only() {
+        use super::boot_failure_message;
+        assert_eq!(
+            boot_failure_message("runtime_install_exit_2"),
+            "本地服务暂时无法启动，请检查安装或端口占用。（错误码 runtime_install_exit_2，详见恢复与更新面板）"
+        );
+        assert_eq!(
+            boot_failure_message("runtime_setup_required"),
+            "本地服务暂时无法启动，请检查安装或端口占用。（错误码 runtime_setup_required，详见恢复与更新面板）"
+        );
+        // Human-readable service diagnostics and empty errors keep the fixed
+        // message; free-form text is never echoed into the boot surface.
+        assert_eq!(
+            boot_failure_message("port 8766 is occupied by a service that is not LoopX status"),
+            "本地服务暂时无法启动，请检查安装或端口占用。"
+        );
+        assert_eq!(
+            boot_failure_message(""),
+            "本地服务暂时无法启动，请检查安装或端口占用。"
+        );
     }
 }
