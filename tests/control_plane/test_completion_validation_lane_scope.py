@@ -1,6 +1,16 @@
-from __future__ import annotations
+"""Lane scoping for the completion-validation fence.
 
-import pytest
+The fence stops an agent from claiming accountable evidence while its own
+controller-validated Todo is still open. It used to skip its scope filter when
+the settlement bound a replan obligation instead of a Todo, so any open
+unclaimed validation-gated Todo fenced every lane.
+
+The public-safe text contract that shipped with this fix now lives in
+tests/control_plane/test_public_safe_text_owner_parity.py, because it is a
+cross-owner contract rather than a completion-validation rule.
+"""
+
+from __future__ import annotations
 
 from loopx.control_plane.todos.completion_validation_accountability import (
     require_accountable_completion_validation,
@@ -8,7 +18,6 @@ from loopx.control_plane.todos.completion_validation_accountability import (
 from loopx.control_plane.todos.completion_validation_projection import (
     pending_completion_validation_todo,
 )
-from loopx.feedback import validate_public_safe_text
 
 LANE_AGENT = "kiro-cli"
 OTHER_AGENT = "codex-main-control"
@@ -125,29 +134,3 @@ def test_accountable_refresh_is_not_fenced_by_unclaimed_gated_todo() -> None:
         todo_id=None,
         agent_id=LANE_AGENT,
     )
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "needs owner authorization before delivery",
-        "the owner-authorized pull request is open",
-        "Authorization remains with the human owner",
-    ],
-)
-def test_governance_authorization_prose_is_public_safe(text: str) -> None:
-    """The plain English word must not be mistaken for a credential header."""
-
-    validate_public_safe_text("agent_vision.replan_trigger_summary", text)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "Authorization: Bear" + "er abc123",
-        "authorization=Bear" + "er abc123",
-    ],
-)
-def test_authorization_header_is_still_rejected(text: str) -> None:
-    with pytest.raises(ValueError, match="private-looking value"):
-        validate_public_safe_text("agent_vision.replan_trigger_summary", text)
