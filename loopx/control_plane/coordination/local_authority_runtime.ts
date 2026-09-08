@@ -776,9 +776,11 @@ export async function terminalLifecycleLocalCoordinationTodo(
       throw new TypeError("local coordination Todo terminal request schema mismatch");
     }
     if (!Array.isArray(input.registered_agents) || !Array.isArray(input.lifecycle_grants) ||
-        !Array.isArray(input.successors) || !Array.isArray(input.linked_successor_todo_ids)) {
+        !Array.isArray(input.successor_intents) ||
+        !Array.isArray(input.linked_successor_todo_ids)) {
       throw new TypeError(
-        "registered_agents, lifecycle_grants, successors, and linked_successor_todo_ids must be arrays",
+        "registered_agents, lifecycle_grants, successor_intents, and " +
+          "linked_successor_todo_ids must be arrays",
       );
     }
     const root = runtimeRoot(input.runtime_root);
@@ -793,8 +795,8 @@ export async function terminalLifecycleLocalCoordinationTodo(
       requireJsonObject(grant, `lifecycle_grants[${index}]`));
     const linkedSuccessorTodoIds = input.linked_successor_todo_ids.map((todoId) =>
       requireAuthorityStoreId(todoId, "linked successor Todo id"));
-    const successors = input.successors.map((todo, index) =>
-      requireJsonObject(todo, `successors[${index}]`));
+    const successorIntents = input.successor_intents.map((intent, index) =>
+      requireJsonObject(intent, `successor_intents[${index}]`));
     return await withCanonicalWriter(root, goalId, input.dry_run === true, async () => {
       const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
         new FileAuthorityStore(authorityDirectory(root), goalId);
@@ -835,7 +837,7 @@ export async function terminalLifecycleLocalCoordinationTodo(
               "requested_completion_identity_source",
             ) as "turn_settlement" | "unscoped_completion" | "lifecycle_reentry",
         linked_successor_todo_ids: linkedSuccessorTodoIds,
-        successors,
+        successor_intents: successorIntents,
         note: optionalProseValue(input.note, "note"),
         evidence: optionalProseValue(input.evidence, "evidence"),
         reason: optionalProseValue(input.reason, "reason"),

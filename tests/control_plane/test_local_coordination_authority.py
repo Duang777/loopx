@@ -5,6 +5,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 from canonical_authority_fixture import initialize_canonical_authority
@@ -26,16 +27,22 @@ from loopx.control_plane.coordination.local_authority import (
 from loopx.control_plane.coordination.runtime_shadow import (
     build_todo_runtime_shadow_projection,
 )
-from loopx.control_plane.todos import provider_projection, provider_terminal_lifecycle
+from loopx.control_plane.todos import (
+    provider_create,
+    provider_projection,
+    provider_terminal_lifecycle,
+)
 from loopx.control_plane.todos.active_state_editing import (
     TODO_SECTION_HEADINGS,
     section_bounds,
     todo_blocks,
 )
 from loopx.control_plane.todos.completion_validation_projection import (
+    completion_validation_declaration_sha256,
     project_completion_validation_authority,
 )
 from loopx.control_plane.todos.completion_validation_store import (
+    completion_validation_declaration_path,
     read_completion_validation_declaration,
 )
 from loopx.control_plane.todos.contract import format_todo_metadata_line
@@ -247,9 +254,13 @@ def test_promoted_add_invokes_native_create_without_markdown_state(
 
     def _create(method: str, params: dict[str, object]) -> dict[str, object]:
         calls.append((method, params))
+        todo = params["todo"]
+        assert isinstance(todo, dict)
         return {
             "status": "applied",
             "changed": True,
+            "todo_id": todo["todo_id"],
+            "todo": todo,
             "source_authority": "file_v0",
             "decision_read_from_provider": True,
             "legacy_fallback_used": False,
@@ -347,6 +358,247 @@ def test_promoted_add_delegates_semantic_duplicate_to_typescript(
     assert result["already_exists"] is True
     assert result["todo_id"] == "todo_existing"
     assert calls[0][0] == "coordination.local_authority.todo_create"
+
+
+def _promoted_create_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    runtime_root = tmp_path / "runtime"
+    project = tmp_path / "project"
+    state_file = project / ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_text(
+        "# Goal\n\n## User Todo / Owner Review Reading Queue\n\n"
+        "## Agent Todo\n\n## Completed Work Archive\n",
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "common_runtime_root": str(runtime_root),
+                "goals": [
+                    {
+                        "id": "goal-a",
+                        "repo": str(project),
+                        "state_file": ".codex/goals/goal-a/ACTIVE_GOAL_STATE.md",
+                        "coordination": {"registered_agents": ["agent-a"]},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    projection = build_todo_runtime_shadow_projection(
+        goal_id="goal-a", todos=[], handoff_mode="soft_claim"
+    )
+    projection["todo_read_model"] = {
+        **projection["todo_read_model"],
+        "schema_version": TODO_DOMAIN_READ_RECORD_SCHEMA_VERSION,
+        "contract_fields": list(TODO_DOMAIN_RECORD_FIELDS),
+    }
+    initialize_canonical_authority(
+        runtime_root, "goal-a", projection, state_path=state_file
+    )
+    return registry_path, runtime_root, state_file
+
+
+def test_rejected_validated_create_publishes_no_private_sidecar(
+    tmp_path: Path,
+) -> None:
+    registry_path, runtime_root, _state_file = _promoted_create_fixture(tmp_path)
+    first = add_goal_todo(
+        registry_path=registry_path,
+        goal_id="goal-a",
+        role="agent",
+        text="Keep one accepted validation declaration",
+        claimed_by="agent-a",
+        agent_id="agent-a",
+        validation_command_json=json.dumps(["python3", "-c", "raise SystemExit(0)"]),
+        validation_label="accepted declaration",
+    )
+    first_id = str(first["todo_id"])
+    accepted = read_completion_validation_declaration(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+        todo_id=first_id,
+    )
+    assert accepted is not None
+
+    with pytest.raises(LocalCoordinationAuthorityUnavailable) as exc_info:
+        add_goal_todo(
+            registry_path=registry_path,
+            goal_id="goal-a",
+            role="agent",
+            text="Keep one accepted validation declaration",
+            claimed_by="agent-a",
+            agent_id="agent-a",
+            validation_command_json=json.dumps(
+                ["python3", "-c", "raise SystemExit(7)"]
+            ),
+            validation_label="rejected declaration",
+        )
+    assert exc_info.value.code == "todo_semantic_duplicate_conflict"
+    declaration_dir = completion_validation_declaration_path(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+        todo_id=first_id,
+    ).parent
+    assert [path.name for path in declaration_dir.glob("*.json")] == [
+        f"{first_id}.json"
+    ]
+    assert (
+        read_completion_validation_declaration(
+            runtime_root=runtime_root,
+            goal_id="goal-a",
+            todo_id=first_id,
+        )
+        == accepted
+    )
+
+
+def test_concurrent_validated_create_publishes_only_the_canonical_winner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    registry_path, runtime_root, _state_file = _promoted_create_fixture(tmp_path)
+    real_read = provider_create.read_canonical_todos_if_promoted
+    barrier = Barrier(2)
+
+    def synchronized_read(**kwargs: object) -> dict[str, object] | None:
+        result = real_read(**kwargs)  # type: ignore[arg-type]
+        barrier.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(
+        provider_create,
+        "read_canonical_todos_if_promoted",
+        synchronized_read,
+    )
+
+    def create(label: str, exit_code: int) -> tuple[str, object]:
+        try:
+            return (
+                "accepted",
+                add_goal_todo(
+                    registry_path=registry_path,
+                    goal_id="goal-a",
+                    role="agent",
+                    text="Resolve concurrent validation ownership",
+                    claimed_by="agent-a",
+                    agent_id="agent-a",
+                    validation_command_json=json.dumps(
+                        ["python3", "-c", f"raise SystemExit({exit_code})"]
+                    ),
+                    validation_label=label,
+                ),
+            )
+        except LocalCoordinationAuthorityUnavailable as exc:
+            return ("rejected", exc.code)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda values: create(*values),
+                [("candidate-a", 0), ("candidate-b", 7)],
+            )
+        )
+    assert [kind for kind, _value in results].count("accepted") == 1
+    assert [kind for kind, _value in results].count("rejected") == 1
+    assert next(value for kind, value in results if kind == "rejected") == (
+        "todo_semantic_duplicate_conflict"
+    )
+
+    canonical = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root, goal_id="goal-a"
+    )
+    assert canonical is not None and len(canonical["todos"]) == 1
+    canonical_todo = canonical["todos"][0]
+    canonical_todo_id = str(canonical_todo["todo_id"])
+    stored = read_completion_validation_declaration(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+        todo_id=canonical_todo_id,
+    )
+    assert stored is not None
+    assert completion_validation_declaration_sha256(stored) == (
+        canonical_todo["completion_validation_sha256"]
+    )
+    declaration_dir = completion_validation_declaration_path(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+        todo_id=canonical_todo_id,
+    ).parent
+    assert [path.name for path in declaration_dir.glob("*.json")] == [
+        f"{canonical_todo_id}.json"
+    ]
+
+
+def test_validated_create_recovers_sidecar_after_commit_before_publish_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    registry_path, runtime_root, _state_file = _promoted_create_fixture(tmp_path)
+    real_persist = provider_create.persist_completion_validation_declaration
+    persist_calls = 0
+
+    def crash_once(**kwargs: object) -> str:
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 1:
+            raise OSError("injected validation sidecar publication crash")
+        return real_persist(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        provider_create,
+        "persist_completion_validation_declaration",
+        crash_once,
+    )
+    create_kwargs = {
+        "registry_path": registry_path,
+        "goal_id": "goal-a",
+        "role": "agent",
+        "text": "Recover the private declaration publication",
+        "claimed_by": "agent-a",
+        "agent_id": "agent-a",
+        "validation_command_json": json.dumps(
+            ["python3", "-c", "raise SystemExit(0)"]
+        ),
+        "validation_label": "recover publication",
+    }
+    with pytest.raises(OSError, match="publication crash"):
+        add_goal_todo(**create_kwargs)
+
+    canonical = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+    )
+    assert canonical is not None and len(canonical["todos"]) == 1
+    todo_id = str(canonical["todos"][0]["todo_id"])
+    assert read_completion_validation_declaration(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+        todo_id=todo_id,
+    ) is None
+
+    recovered = add_goal_todo(**create_kwargs)
+    assert recovered["status"] == "no_change"
+    assert recovered["todo_id"] == todo_id
+    assert recovered["added"] is False
+    assert recovered["already_exists"] is True
+    stored = read_completion_validation_declaration(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+        todo_id=todo_id,
+    )
+    assert stored is not None
+    assert completion_validation_declaration_sha256(stored) == (
+        canonical["todos"][0]["completion_validation_sha256"]
+    )
+    canonical_after = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root,
+        goal_id="goal-a",
+    )
+    assert canonical_after is not None and len(canonical_after["todos"]) == 1
 
 
 def test_promoted_native_create_recovers_markdown_after_delivery_crash(
@@ -464,7 +716,8 @@ Continue.
         agent_id="agent-a",
         no_followup=True,
     )
-    assert completed["status"] == "applied"
+    assert completed["status"] == "done"
+    assert completed["provider_status"] == "applied"
     assert completed["validation_receipt"]["passed"] is True
 
 
@@ -1026,7 +1279,8 @@ Continue provider-first delivery.
         next_action_kind="implement",
         evidence="provider integration passed",
     )
-    assert completed["status"] == "applied"
+    assert completed["status"] == "done"
+    assert completed["provider_status"] == "applied"
     assert completed["completed"] is True
     assert completed["projection_delivery"] == "delivered", completed
     assert completed["validation_receipt"]["passed"] is True
@@ -1053,7 +1307,8 @@ Continue provider-first delivery.
         next_agent_todo="Replacement after native supersede",
         next_claimed_by="agent-b",
     )
-    assert superseded["status"] == "applied"
+    assert superseded["status"] == "done"
+    assert superseded["provider_status"] == "applied"
     assert superseded["superseded"] is True
     assert superseded["projection_delivery"] == "delivered"
     assert runtime_calls == [
@@ -1255,6 +1510,92 @@ def test_public_terminal_optional_prose_matches_before_and_after_promotion(
     assert canonical == expected
 
 
+def test_illegal_terminal_actor_is_a_domain_valueerror_before_and_after_promotion(
+    tmp_path: Path,
+) -> None:
+    def rejected(root: Path, *, promoted: bool) -> ValueError:
+        runtime_root = root / "runtime"
+        project = root / "project"
+        state_file = project / "ACTIVE_GOAL_STATE.md"
+        project.mkdir(parents=True)
+        metadata = format_todo_metadata_line(
+            todo_id="todo_terminal_actor",
+            status="open",
+            task_class="advancement_task",
+            claimed_by="agent-a",
+        )
+        state_file.write_text(
+            "# Goal\n\n## User Todo / Owner Review Reading Queue\n\n"
+            "## Agent Todo\n\n- [ ] Reject an illegal terminal actor\n"
+            f"{metadata}\n\n## Completed Work Archive\n",
+            encoding="utf-8",
+        )
+        registry_path = root / "registry.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "common_runtime_root": str(runtime_root),
+                    "goals": [
+                        {
+                            "id": "goal-a",
+                            "repo": str(project),
+                            "state_file": state_file.name,
+                            "coordination": {
+                                "agent_model": "peer_v1",
+                                "registered_agents": ["agent-a"],
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        if promoted:
+            initialize_canonical_authority(
+                runtime_root,
+                "goal-a",
+                build_todo_runtime_shadow_projection(
+                    goal_id="goal-a",
+                    handoff_mode="soft_claim",
+                    todos=[
+                        {
+                            "schema_version": "todo_item_v0",
+                            "index": 1,
+                            "done": False,
+                            "text": "Reject an illegal terminal actor",
+                            "todo_id": "todo_terminal_actor",
+                            "role": "agent",
+                            "status": "open",
+                            "archive_state": "active",
+                            "source_section": TODO_SECTION_HEADINGS["agent"],
+                            "task_class": "advancement_task",
+                            "claimed_by": "agent-a",
+                        }
+                    ],
+                ),
+                state_path=state_file,
+            )
+        with pytest.raises(ValueError) as exc_info:
+            complete_goal_todo(
+                registry_path=registry_path,
+                runtime_root_arg=str(runtime_root),
+                goal_id="goal-a",
+                todo_id="todo_terminal_actor",
+                role="agent",
+                claimed_by="agent-a",
+                agent_id="agent-b",
+                no_followup=True,
+            )
+        return exc_info.value
+
+    legacy = rejected(tmp_path / "legacy", promoted=False)
+    canonical = rejected(tmp_path / "canonical", promoted=True)
+    assert not isinstance(legacy, LocalCoordinationAuthorityUnavailable)
+    assert isinstance(canonical, LocalCoordinationAuthorityRejection)
+    assert canonical.code == "actor_not_registered"
+
+
 @pytest.mark.parametrize(
     "reason_code",
     [
@@ -1321,6 +1662,7 @@ def test_promoted_terminal_rejection_code_survives_public_python_facade(
             "schema_version": "loopx_coordination_todo_terminal_lifecycle_result_v0",
             "status": "failed",
             "changed": False,
+            "failure_kind": "decision_rejection",
             "reason_code": reason_code,
             "reason": f"terminal request rejected: {reason_code}",
             "source_authority": "file_v0",
@@ -1329,7 +1671,7 @@ def test_promoted_terminal_rejection_code_survives_public_python_facade(
         },
     )
 
-    with pytest.raises(LocalCoordinationAuthorityUnavailable) as exc_info:
+    with pytest.raises(LocalCoordinationAuthorityRejection) as exc_info:
         complete_goal_todo(
             registry_path=registry_path,
             goal_id="goal-a",
@@ -1448,7 +1790,9 @@ def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
         original_settle,
     )
     replay = complete_goal_todo(**request)
-    assert replay["status"] == "replayed"
+    assert replay["status"] == "done"
+    assert replay["provider_status"] == "replayed"
+    assert replay["idempotent_replay"] is True
     assert runtime_calls == [
         "coordination.local_authority.todo_list",
         "coordination.local_authority.todo_terminal",
@@ -1467,6 +1811,23 @@ def test_promoted_terminal_retry_reuses_receipt_after_projection_crash(
     ]
     assert len(successors) == 1
     assert successors[0]["text"] == "Continue after the recovered projection."
+
+    prose_replay = complete_goal_todo(
+        **request,
+        note="Retry with a clearer explanation.",
+        evidence="Public retry evidence may be enriched.",
+    )
+    assert prose_replay["provider_status"] == "replayed"
+    assert prose_replay["idempotent_replay"] is True
+
+    with pytest.raises(LocalCoordinationAuthorityRejection) as exc_info:
+        complete_goal_todo(
+            **{
+                **request,
+                "next_agent_todo": "Start a genuinely different continuation.",
+            }
+        )
+    assert exc_info.value.code == "coordination_operation_identity_mismatch"
 
 
 def test_real_canonical_provider_preserves_complete_complex_todo_semantics(

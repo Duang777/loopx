@@ -1921,10 +1921,13 @@ caller 伪造 Markdown 地址。
 
 Promotion 后的 `complete`、`supersede` 与按 role 执行的 `archive`，现在在 file、
 NoKV、PostgreSQL 上使用同一笔 TypeScript 原生事务。authority owner 决定
-actor/claim/lease admission，校验生成的 successor，reduce completion policy，以 CAS
-提交 Todo/lease/head/outbox write set，并持久化 replay receipt。Python 只保留 registry
-fact、caller-approved validation effect 与兼容投影 drain 的 adapter 职责，不再针对
-不同 provider 选择另一种 terminal outcome。
+actor/claim/lease admission，从 typed caller intent 推导 successor 的 priority、capability
+与 Agent binding、exclusion、continuation 和 predecessor relation，reduce completion
+policy，以 CAS 提交 Todo/lease/head/outbox write set，并持久化 replay receipt。Python
+只保留 registry fact、caller-approved validation effect、intent/result transport 与兼容投影
+drain 的 adapter 职责，不再针对不同 provider 选择另一种 terminal 或 successor outcome。
+Legacy Markdown 与 event writer 在物化 record 前复用同一个纯 TypeScript successor
+decision。
 
 Validation declaration 只以 required marker 与 SHA-256 digest 跨越 canonical 边界。
 raw argv 留在权限为 0600 的 host-local sidecar，恢复时必须先证明 digest 匹配才可执行。

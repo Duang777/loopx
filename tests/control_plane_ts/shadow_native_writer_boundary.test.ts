@@ -27,7 +27,7 @@ for (const [name, invoke, schema, requestFields] of [
   ["edit", editLocalCoordinationTodo, "loopx_todo_compatibility_edit_request_v0", {}],
   ["terminal", terminalLifecycleLocalCoordinationTodo,
     LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA, {
-      registered_agents: [], lifecycle_grants: [], successors: [],
+      registered_agents: [], lifecycle_grants: [], successor_intents: [],
       linked_successor_todo_ids: [], lease_expected_version: null,
     }],
   ["archive", archiveLocalCoordinationTodos,
@@ -50,7 +50,7 @@ for (const [name, invoke, schema, requestFields] of [
 for (const [name, invoke, schema, requestFields] of [
   ["terminal", terminalLifecycleLocalCoordinationTodo,
     LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA, {
-      registered_agents: [], lifecycle_grants: [], successors: [],
+      registered_agents: [], lifecycle_grants: [], successor_intents: [],
       linked_successor_todo_ids: [], lease_expected_version: null,
     }],
   ["archive", archiveLocalCoordinationTodos,

@@ -350,16 +350,10 @@ export function registerAuthorityStoreConformance(
       next_projection: todoTerminalProjection(goalId),
     });
     assert.equal(initialized.status, "applied");
-    const successor = {
-      schema_version: TODO_DOMAIN_ITEM_SCHEMA,
-      todo_id: "todo-successor",
+    const successorIntent = {
       role: "agent",
-      status: "open",
-      done: false,
       text: "Continue with the next provider-neutral transaction",
-      archive_state: "active",
       task_class: "advancement_task",
-      claimed_by: "agent-b",
     };
     const request = {
       goal_id: goalId,
@@ -379,14 +373,27 @@ export function registerAuthorityStoreConformance(
       requested_completion_turn_key: null,
       requested_completion_identity_source: null,
       linked_successor_todo_ids: [],
-      successors: [successor],
+      successor_intents: [successorIntent],
       note: "completed atomically",
       evidence: "focused provider conformance",
       reason: null,
       clear_claim: false,
       validation_declaration: TERMINAL_VALIDATION_DECLARATION,
       validation_receipt: null,
-      completion_policy_request: null,
+      completion_policy_request: {
+        schema_version: "loopx_todo_completion_policy_request_v0",
+        goal_id: goalId,
+        agent_model: "peer_v1",
+        claimed_by: "agent-a",
+        registered_agents: ["agent-a", "agent-b"],
+        next_claimed_by: "agent-b",
+        next_agent_todo: successorIntent.text,
+        next_continuation_policy: null,
+        next_excluded_agents: [],
+        self_merged: false,
+        evidence: null,
+        linked_successors: [],
+      },
       dry_run: false,
       now: new Date("2026-09-07T06:00:00Z"),
     };
@@ -418,42 +425,10 @@ export function registerAuthorityStoreConformance(
       ...commitRequest,
       operation_id: "complete-dangling-successor",
       linked_successor_todo_ids: ["todo-missing"],
-      successors: [],
+      successor_intents: [],
     });
     assert.equal(dangling.status, "failed");
     assert.equal(dangling.reason_code, "todo_successor_not_found");
-    const misboundUser = await executeCoordinationTodoTerminalLifecycle(store, {
-      ...commitRequest,
-      operation_id: "complete-misbound-user-successor",
-      successors: [{
-        schema_version: TODO_DOMAIN_ITEM_SCHEMA,
-        todo_id: "todo-user-successor",
-        role: "user",
-        status: "open",
-        done: false,
-        text: "Confirm the provider-neutral transaction",
-        archive_state: "active",
-        task_class: "user_gate",
-        bound_agent: "agent-b",
-        blocks_agent: "agent-b",
-      }],
-      completion_policy_request: {
-        schema_version: "loopx_todo_completion_policy_request_v0",
-        goal_id: goalId,
-        agent_model: "peer_v1",
-        claimed_by: "agent-a",
-        registered_agents: ["agent-a", "agent-b"],
-        next_claimed_by: null,
-        next_agent_todo: null,
-        next_continuation_policy: null,
-        next_excluded_agents: [],
-        self_merged: false,
-        evidence: null,
-        linked_successors: [],
-      },
-    });
-    assert.equal(misboundUser.status, "failed");
-    assert.equal(misboundUser.reason_code, "completion_user_successor_binding_mismatch");
     const [first, second] = await Promise.all([
       executeCoordinationTodoTerminalLifecycle(store, commitRequest),
       executeCoordinationTodoTerminalLifecycle(contender, commitRequest),
@@ -475,22 +450,38 @@ export function registerAuthorityStoreConformance(
     const replayed = await executeCoordinationTodoTerminalLifecycle(store, commitRequest);
     assert.equal(replayed.status, "replayed", JSON.stringify(replayed));
     assert.equal(replayed.changed, false);
-    assert.equal((await executeCoordinationTodoTerminalLifecycle(store, {
+    const proseReplay = await executeCoordinationTodoTerminalLifecycle(store, {
       ...commitRequest,
-      note: "different terminal intent",
-    })).reason_code, "coordination_operation_identity_mismatch");
+      note: "same operation, revised prose",
+      evidence: "revised evidence does not create a new operation",
+    });
+    assert.equal(proseReplay.status, "replayed", JSON.stringify(proseReplay));
+    const changedIntent = await executeCoordinationTodoTerminalLifecycle(store, {
+      ...commitRequest,
+      successor_intents: [{...successorIntent, text: "A genuinely different successor"}],
+      completion_policy_request: {
+        ...commitRequest.completion_policy_request,
+        next_agent_todo: "A genuinely different successor",
+      },
+    });
+    assert.equal(changedIntent.status, "failed", JSON.stringify(changedIntent));
+    assert.equal(changedIntent.failure_kind, "decision_rejection");
+    assert.equal(changedIntent.reason_code, "coordination_operation_identity_mismatch");
 
     const afterCompletion = await store.loadAuthority();
     assert.equal(afterCompletion.status, "loaded");
     if (afterCompletion.status !== "loaded") return;
     const completed = (afterCompletion.head.todos as Record<string, unknown>[])
       .find((todo) => todo.todo_id === "todo-terminal");
+    const committedResult = first.status === "conflict" ? second : first;
+    const generatedIds = committedResult.generated_successor_todo_ids as string[] | undefined;
+    const generatedId = generatedIds?.[0];
     const created = (afterCompletion.head.todos as Record<string, unknown>[])
-      .find((todo) => todo.todo_id === "todo-successor");
+      .find((todo) => todo.todo_id === generatedId);
     assert.equal(completed?.status, "done");
     assert.equal(completed?.note, "completed atomically");
     assert.equal(completed?.evidence, "focused provider conformance");
-    assert.deepEqual(completed?.successor_todo_ids, ["todo-successor"]);
+    assert.deepEqual(completed?.successor_todo_ids, [generatedId]);
     assert.equal(created?.claimed_by, "agent-b");
     assert.equal(created?.created_by, "agent-a");
     const releasedLease = (afterCompletion.head.leases as Record<string, unknown>[])
@@ -565,7 +556,7 @@ export function registerAuthorityStoreConformance(
       requested_completion_turn_key: null,
       requested_completion_identity_source: null,
       linked_successor_todo_ids: [],
-      successors: [],
+      successor_intents: [],
       note: "superseded",
       evidence: null,
       reason: "the replacement owns the next action",
@@ -671,7 +662,7 @@ export function registerAuthorityStoreConformance(
       requested_completion_turn_key: null,
       requested_completion_identity_source: null,
       linked_successor_todo_ids: [],
-      successors: [],
+      successor_intents: [],
       note: null,
       evidence: "synthetic production-scale conformance",
       reason: null,

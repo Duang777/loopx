@@ -2423,11 +2423,14 @@ provenance; it does not require native callers to manufacture Markdown addresses
 
 Promoted `complete`, `supersede`, and role-scoped `archive` now use one native
 TypeScript transaction across file, NoKV, and PostgreSQL. The authority owner
-decides actor/claim/lease admission, validates generated successors, reduces
-completion policy, commits the Todo/lease/head/outbox write set with CAS, and
-persists replay receipts. Python remains an adapter for registry facts, the
-caller-approved validation effect, and compatibility projection drain; it does
-not select a different terminal outcome for a provider.
+decides actor/claim/lease admission; derives successor priority, capability and
+Agent bindings, exclusions, continuation, and predecessor relations from typed
+caller intent; reduces completion policy; commits the Todo/lease/head/outbox
+write set with CAS; and persists replay receipts. Python remains an adapter for
+registry facts, the caller-approved validation effect, intent/result transport,
+and compatibility projection drain; it does not select a different terminal or
+successor outcome for a provider. The legacy Markdown and event writers reuse
+the same pure TypeScript successor decision before materializing their records.
 
 Validation declarations cross the canonical boundary as a required marker and
 SHA-256 digest only. Raw argv stays in a 0600 host-local sidecar and recovery

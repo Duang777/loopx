@@ -1,6 +1,6 @@
 """Provider-first complete, supersede, and archive adapters.
 
-Python projects registry facts, constructs caller proposals, executes a typed
+Python projects registry facts, serializes caller intent, executes a typed
 validation effect, and drains the committed Markdown projection outbox.  The
 TypeScript transaction is the sole owner of lifecycle admission and writes.
 """
@@ -8,7 +8,7 @@ TypeScript transaction is the sole owner of lifecycle admission and writes.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from functools import wraps
 from inspect import signature
 from pathlib import Path
@@ -18,6 +18,7 @@ from uuid import uuid4
 from ...agent_registry import load_goal_from_registry, registered_agent_ids_for_goal
 from ...state_refresh import now_local
 from ..coordination.local_authority import (
+    LocalCoordinationAuthorityRejection,
     LocalCoordinationAuthorityUnavailable,
     read_canonical_todos_if_promoted,
 )
@@ -32,16 +33,11 @@ from .completion_validation import (
     resolve_private_completion_validation_declaration,
     run_declared_completion_validation_effect,
 )
-from .contract import (
-    build_todo_id,
-    normalize_todo_metadata_for_write,
-    normalize_todo_task_class,
-    resolve_next_user_task_class,
-)
+from .contract import resolve_next_user_task_class
 from .mutation_authority import normalize_todo_lifecycle_authority
 from .path_resolution import resolve_todo_state_path
 from .provider_projection import settle_canonical_todo_projection
-from .text import inherit_todo_priority
+from .successor_derivation import build_successor_intents
 
 _TERMINAL_REQUEST_SCHEMA = "loopx_local_coordination_todo_terminal_lifecycle_request_v0"
 _ARCHIVE_REQUEST_SCHEMA = "loopx_local_coordination_todo_archive_request_v0"
@@ -196,121 +192,6 @@ def _todo_by_id(
     )
 
 
-def _successor_record(
-    *,
-    role: str,
-    text: str,
-    actor_agent_id: str | None,
-    metadata: Mapping[str, Any],
-    predecessor_todo_id: str,
-    offset: int,
-) -> dict[str, Any]:
-    section = "Agent Todo" if role == "agent" else "User Todo"
-    normalized = normalize_todo_metadata_for_write(dict(metadata))
-    return {
-        "schema_version": "todo_domain_record_v0",
-        "todo_id": build_todo_id(
-            role=role,
-            source_section=section,
-            # Provider retries rebuild the proposal from the new canonical
-            # head. Bind identity to the predecessor rather than the mutable
-            # collection length so a committed successor replays byte-for-byte.
-            index=f"{predecessor_todo_id}:{offset}",
-            text=text,
-        ),
-        "role": role,
-        "status": "open",
-        "done": False,
-        "text": text,
-        "archive_state": "active",
-        "task_class": normalize_todo_task_class(
-            normalized.get("task_class"),
-            text=text,
-            action_kind=normalized.get("action_kind"),
-        ),
-        **normalized,
-        **({"created_by": actor_agent_id} if actor_agent_id else {}),
-    }
-
-
-def _build_successors(
-    *,
-    todos: Sequence[Mapping[str, Any]],
-    target: Mapping[str, Any],
-    command: str,
-    next_agent_todo: str | None,
-    next_user_todo: str | None,
-    next_user_task_class: str | None,
-    next_claimed_by: str | None,
-    next_task_class: str | None,
-    next_action_kind: str | None,
-    next_task_repository: str | None,
-    next_required_capabilities: list[str] | None,
-    next_continuation_policy: str | None,
-    next_excluded_agents: list[str] | None,
-    actor_agent_id: str | None,
-    completing_claimed_by: str | None,
-) -> list[dict[str, Any]]:
-    successors: list[dict[str, Any]] = []
-    target_id = str(target.get("todo_id") or "")
-    target_text = str(target.get("text") or "")
-    if next_agent_todo:
-        successors.append(
-            _successor_record(
-                role="agent",
-                text=inherit_todo_priority(next_agent_todo, target_text),
-                actor_agent_id=actor_agent_id,
-                predecessor_todo_id=target_id,
-                offset=1,
-                metadata={
-                    "task_class": next_task_class or "advancement_task",
-                    "action_kind": next_action_kind,
-                    "capability_binding_ref": target.get("capability_binding_ref"),
-                    "task_repository": next_task_repository,
-                    "required_capabilities": next_required_capabilities,
-                    "continuation_policy": next_continuation_policy,
-                    "claimed_by": next_claimed_by,
-                    "excluded_agents": next_excluded_agents or [],
-                    "unblocks_todo_id": (
-                        target_id
-                        if command == "complete"
-                        else target.get("unblocks_todo_id")
-                    ),
-                },
-            )
-        )
-    if next_user_todo:
-        effective_task_class = resolve_next_user_task_class(
-            next_user_todo, next_user_task_class
-        )
-        inherited_binding = target.get("bound_agent") or target.get("blocks_agent")
-        bound_agent = (
-            completing_claimed_by
-            if command == "complete"
-            else inherited_binding or target.get("claimed_by") or next_claimed_by
-        )
-        successors.append(
-            _successor_record(
-                role="user",
-                text=inherit_todo_priority(next_user_todo, target_text),
-                actor_agent_id=actor_agent_id,
-                predecessor_todo_id=target_id,
-                offset=1,
-                metadata={
-                    "task_class": effective_task_class,
-                    "action_kind": (
-                        "gate" if effective_task_class == "user_gate" else None
-                    ),
-                    "bound_agent": bound_agent,
-                    "blocks_agent": (
-                        bound_agent if effective_task_class == "user_gate" else None
-                    ),
-                },
-            )
-        )
-    return successors
-
-
 def _terminal_failure_payload(
     result: Mapping[str, Any], *, goal_id: str, todo_id: str, dry_run: bool
 ) -> dict[str, Any] | None:
@@ -343,6 +224,25 @@ def _projection_payload(value: Any) -> dict[str, Any]:
             payload={"source_authority": "file_v0"},
         )
     return dict(value)
+
+
+def _terminal_operation_id(
+    *,
+    command: str,
+    goal_id: str,
+    todo_id: str,
+    completion_turn_key: str | None,
+) -> str:
+    """Name one logical terminal operation independently of retry prose."""
+
+    operation_identity = completion_turn_key or "unscoped"
+    digest = hashlib.sha256(
+        (
+            "loopx-provider-terminal-operation-v0\0"
+            f"{command}\0{goal_id}\0{todo_id}\0{operation_identity}"
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"todo-terminal:{digest[:32]}"
 
 
 def terminal_canonical_todo_if_promoted(
@@ -404,14 +304,11 @@ def terminal_canonical_todo_if_promoted(
     if canonical is None:
         return None
     todos = [dict(todo) for todo in canonical["todos"]]
-    target = _todo_by_id(todos, todo_id)
-    if target is None:
-        raise ValueError(f"todo_id {todo_id!r} was not found in canonical authority")
+    # The canonical transaction owns missing/role/archive lifecycle decisions.
+    # Keep only the optional local validation facts needed by the host adapter.
+    target = _todo_by_id(todos, todo_id) or {}
     registered, grants = _goal_facts(registry_path, goal_id)
-    successors = _build_successors(
-        todos=todos,
-        target=target,
-        command=command,
+    successor_intents = build_successor_intents(
         next_agent_todo=next_agent_todo,
         next_user_todo=next_user_todo,
         next_user_task_class=next_user_task_class,
@@ -422,8 +319,6 @@ def terminal_canonical_todo_if_promoted(
         next_required_capabilities=next_required_capabilities,
         next_continuation_policy=next_continuation_policy,
         next_excluded_agents=next_excluded_agents,
-        actor_agent_id=actor_agent_id,
-        completing_claimed_by=claimed_by,
     )
     linked = [
         linked_successor_from_todo(todo)
@@ -447,14 +342,6 @@ def terminal_canonical_todo_if_promoted(
         if command == "complete"
         else None
     )
-    operation_identity = completion_turn_key or "unscoped"
-    operation_digest = hashlib.sha256(
-        (
-            "loopx-provider-terminal-operation-v0\0"
-            f"{command}\0{goal_id}\0{todo_id}\0{operation_identity}"
-        ).encode()
-    ).hexdigest()
-    operation_id = f"todo-terminal:{operation_digest[:32]}"
     validation_declaration = None
     if command == "complete" and target.get("completion_validation_required") is True:
         if state_file is None:
@@ -483,7 +370,7 @@ def terminal_canonical_todo_if_promoted(
         "lifecycle_grants": grants,
         "authority_reason": authority_reason,
         "decision_outcome": decision_outcome,
-        "operation_id": operation_id,
+        "operation_id": None,
         "lease_idempotency_key": task_lease_idempotency_key,
         "lease_expected_version": task_lease_expected_version,
         "allow_user_gate_auto_acquire": command == "complete",
@@ -491,7 +378,7 @@ def terminal_canonical_todo_if_promoted(
         "requested_completion_turn_key": completion_turn_key,
         "requested_completion_identity_source": completion_identity_source,
         "linked_successor_todo_ids": successor_todo_ids,
-        "successors": successors,
+        "successor_intents": successor_intents,
         "note": note,
         "evidence": evidence,
         "reason": reason,
@@ -502,6 +389,12 @@ def terminal_canonical_todo_if_promoted(
         "dry_run": dry_run,
         "observed_at": now_local(),
     }
+    request["operation_id"] = _terminal_operation_id(
+        command=command,
+        goal_id=goal_id,
+        todo_id=todo_id,
+        completion_turn_key=completion_turn_key,
+    )
     result = effect_runtime_result(
         "coordination.local_authority.todo_terminal", request
     )
@@ -530,6 +423,15 @@ def terminal_canonical_todo_if_promoted(
         return validation_failure
     payload = dict(result)
     if (
+        payload.get("status") == "failed"
+        and payload.get("failure_kind") == "decision_rejection"
+    ):
+        raise LocalCoordinationAuthorityRejection(
+            str(payload.get("reason") or "canonical Todo terminal request was rejected"),
+            code=str(payload.get("reason_code") or "todo_terminal_rejected"),
+            payload=payload,
+        )
+    if (
         payload.get("status") not in _ACCEPTED
         or payload.get("source_authority") != "file_v0"
         or payload.get("decision_read_from_provider") is not True
@@ -542,19 +444,30 @@ def terminal_canonical_todo_if_promoted(
             ),
             payload=payload,
         )
+    provider_status = str(payload.get("status") or "")
+    terminal_decision = payload.get("terminal_decision")
+    idempotent_replay = provider_status in {"replayed", "no_change"} or (
+        isinstance(terminal_decision, Mapping)
+        and terminal_decision.get("idempotent") is True
+    )
     response = {
+        **payload,
         "ok": True,
         "dry_run": dry_run,
         "completed": command == "complete",
         "superseded": command == "supersede",
         "goal_id": goal_id,
-        "role": target.get("role"),
+        "role": target.get("role") or role,
         "todo_id": todo_id,
-        "status": "done",
-        "next_todos": successors,
-        "mutation_authority": payload.get("terminal_decision"),
-        "task_lease_fence": payload.get("terminal_decision"),
-        **payload,
+        "status": "planned" if dry_run else "done",
+        "provider_status": provider_status,
+        "idempotent_replay": idempotent_replay,
+        "state_file": str(state_file) if state_file is not None else None,
+        "project": str(project) if project is not None else None,
+        "updated_at": payload.get("completed_at") if payload.get("changed") else None,
+        "next_todos": payload.get("generated_successors") or [],
+        "mutation_authority": terminal_decision,
+        "task_lease_fence": terminal_decision,
     }
     return _projection_payload(
         settle_canonical_todo_projection(

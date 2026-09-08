@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from ...agent_registry import registered_agent_ids_from_registry
@@ -21,9 +21,13 @@ from .contract import (
 )
 from .completion_validation_projection import (
     completion_validation_declaration,
+    completion_validation_declaration_sha256,
     project_completion_validation_authority,
 )
-from .completion_validation_store import persist_completion_validation_declaration
+from .completion_validation_store import (
+    persist_completion_validation_declaration,
+    read_completion_validation_declaration,
+)
 from .provider_projection import settle_canonical_todo_projection
 
 
@@ -74,13 +78,6 @@ def create_canonical_todo_if_promoted(
         **provider_metadata,
         **({"claimed_by": claimed_by} if claimed_by else {}),
     }
-    if validation_declaration is not None and not dry_run:
-        persist_completion_validation_declaration(
-            runtime_root=runtime_root,
-            goal_id=goal_id,
-            todo_id=todo_id,
-            declaration=validation_declaration,
-        )
     result = effect_runtime_result(
         "coordination.local_authority.todo_create",
         {
@@ -109,15 +106,60 @@ def create_canonical_todo_if_promoted(
             code=str(payload.get("reason_code") or payload.get("conflict_kind")
                      or "todo_create_failed"), payload=payload,
         )
-    return settle_canonical_todo_projection({
+    canonical_todo_id = str(result.get("todo_id") or "")
+    canonical_todo = result.get("todo")
+    if validation_declaration is not None and not dry_run:
+        expected_digest = completion_validation_declaration_sha256(
+            validation_declaration
+        )
+        if (
+            not canonical_todo_id
+            or not isinstance(canonical_todo, dict)
+            or canonical_todo.get("todo_id") != canonical_todo_id
+            or canonical_todo.get("completion_validation_required") is not True
+            or canonical_todo.get("completion_validation_sha256") != expected_digest
+        ):
+            raise LocalCoordinationAuthorityUnavailable(
+                "accepted canonical Todo does not match its private validation declaration",
+                code="todo_create_validation_publication_mismatch",
+                payload={
+                    "source_authority": "file_v0",
+                    "goal_id": goal_id,
+                    "todo_id": canonical_todo_id or None,
+                    "provider_status": result.get("status"),
+                },
+            )
+        persist_completion_validation_declaration(
+            runtime_root=runtime_root,
+            goal_id=goal_id,
+            todo_id=canonical_todo_id,
+            declaration=validation_declaration,
+        )
+        if read_completion_validation_declaration(
+            runtime_root=runtime_root,
+            goal_id=goal_id,
+            todo_id=canonical_todo_id,
+        ) != validation_declaration:
+            raise LocalCoordinationAuthorityUnavailable(
+                "accepted Todo validation declaration failed private-store readback",
+                code="todo_create_validation_publication_readback_mismatch",
+                payload={
+                    "source_authority": "file_v0",
+                    "goal_id": goal_id,
+                    "todo_id": canonical_todo_id,
+                    "provider_status": result.get("status"),
+                },
+            )
+    settled = settle_canonical_todo_projection({
         "ok": True,
         "goal_id": goal_id,
         "role": role,
-        "todo_id": todo_id,
+        "todo_id": canonical_todo_id or todo_id,
         "todo": text,
         "dry_run": dry_run,
-        "added": result.get("status") not in {"replayed", "no_change"},
-        "already_exists": result.get("status") in {"replayed", "no_change"},
+        "added": result.get("changed") is True,
+        "already_exists": result.get("changed") is not True,
         **result,
     }, registry_path=registry_path, runtime_root=runtime_root, goal_id=goal_id,
         project=project, state_file=state_file)
+    return cast(dict[str, Any], settled)
