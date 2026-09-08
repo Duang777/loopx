@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from loopx.cli import main
 from loopx.cli_commands.turn_todo_writeback import (
     write_turn_repair_update,
     write_turn_validated_completion,
@@ -237,6 +238,60 @@ def test_quota_monitor_poll_provider_writeback_blocked_under_override_fence(
         )
 
     assert OVERRIDE_POLL_HASH not in state.read_text(encoding="utf-8")
+
+
+def test_quota_monitor_poll_cli_preserves_fence_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry, state, _runtime_registry, runtime_override = (
+        _write_split_root_goal(tmp_path)
+    )
+    _engage_fence_at(runtime_override)
+    _fence_check_blocks(monkeypatch)
+    before = state.read_bytes()
+
+    exit_code = main(
+        [
+            "--registry",
+            str(registry),
+            "--runtime-root",
+            str(runtime_override),
+            "--format",
+            "json",
+            "quota",
+            "monitor-poll",
+            "--goal-id",
+            GOAL_ID,
+            "--agent-id",
+            AGENT_ID,
+            "--todo-id",
+            MONITOR_ID,
+            "--target-key",
+            "splitroot-review",
+            "--result-hash",
+            OVERRIDE_POLL_HASH,
+            "--next-due-at",
+            "2026-09-04T02:00:00+00:00",
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error_code"] == "legacy_coordination_writer_fenced"
+    assert payload["reason"] == (
+        "legacy coordination writer is fenced; use the promoted canonical "
+        f"authority (file_v0) for goal {GOAL_ID}; fence unknown; "
+        "the primary record was not changed"
+    )
+    assert payload["write_check"] == {
+        "status": "blocked",
+        "reason_code": "legacy_coordination_writer_fenced",
+        "authority_mode": "file_v0",
+    }
+    assert state.read_bytes() == before
 
 
 def test_turn_repair_update_blocked_when_override_root_is_fenced(
