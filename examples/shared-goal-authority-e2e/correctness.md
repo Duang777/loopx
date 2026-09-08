@@ -144,20 +144,34 @@ settlement identity when the request carries `owner` and `idempotency_key`
 and `null` otherwise.
 
 Previews: `archive-completed` without `--execute` and `capture-followups
---dry-run` skip every fence check and write nothing. A terminal Todo preview
-(`todo complete --dry-run`, `todo supersede --dry-run`) still enters the
-native verify path, which now checks the fence before its first receipt, so
-under a fence the preview reports the typed rejection with `dry_run: true`
-and leaves nothing behind; without a fence it behaves as before. A fenced
+--dry-run` write nothing. After promotion, public terminal/archive commands
+route to canonical authority instead of treating the promotion fence as an
+error. A hard-lease terminal preview therefore rejects with
+`handoff_mode_requires_lease` when its target has no lease, succeeds for a
+matching lease, and may preview the declared user-gate auto-acquire path; all
+three leave the primary record and receipts unchanged. Legacy-only writers
+such as `todo update` and `capture-followups --execute` remain fenced. A fenced
 committed releasing `fence_close` releases the caller's claimed mutation lock
 in `finally` while the lease stays `active` and its `held` receipt is
 untouched; the caller's fence token is spent, a retry reports
 `fence_token_invalid`, and recovery is lease expiry or a canonical release.
 
+A promoted `archive-completed --execute` that selects no records is also a
+provider no-op: it returns `no_change` without advancing the canonical cursor,
+revision, or receipt history. Archive operation identity is bound to the
+canonical source revision, so concurrent attempts over one snapshot share the
+same logical operation. Projection recovery may create a missing machine-owned
+User, Agent, or non-empty archive region next to an existing Todo region; it
+still proves byte-for-byte preservation of all narrative outside those regions
+and remains idempotent on replay. Empty successor intent is an identity at the
+typed derivation boundary: it does not impose successor-only Agent registry or
+completion-policy admission on an otherwise unchanged legacy terminal call.
+
 The complete observable behaviour is pinned row by row in
 `tests/fixtures/control_plane/legacy_writer_fence_caller_parity_v0.json`
-(21 TypeScript entry rows, 25 real-process CLI rows; whole-object envelopes,
-exit status, exclusion-free effect snapshots, declared after-state) and
+(21 TypeScript entry rows, 26 real-process CLI rows; whole-object legacy
+envelopes, stable-field subsets for provider-first rows, exact exit status,
+exclusion-free effect snapshots, and declared after-state) and
 enforced by `tests/control_plane_ts/legacy_writer_fence_caller_parity.test.ts`
 and `tests/control_plane/test_shadow_fence_caller_parity_e2e.py`; the
 `baseline` entries of that fixture document earlier revisions and are never
@@ -176,6 +190,7 @@ reviewed head):
 | Python Todo rejections | no `error_code` | flat check keys, `schema_version` injected | `error_code` plus `write_check` | same |
 | terminal or holder verify under a fence | fence bypassed on the held and holder branches; auto-acquire branch not consulted | auto-acquire branch guarded; held branch previews reported `ok: true` and wrote receipts | every verify branch guarded before its first receipt | a preview must not succeed for a write the fence forbids |
 | committed releasing fence-close | fence bypassed | guarded | guarded; lock released in `finally`, retry `fence_token_invalid` | declared and pinned |
+| public terminal/archive after promotion | legacy fence rejection | legacy fence rejection | canonical provider result; lease admission, preview, CAS, receipt and projection semantics come from the promoted authority | the fence blocks legacy writes; it is not a rejection of the canonical replacement path |
 | generic CLI branch of `task-lease` and `turn` | typed payload spread after envelope keys | same | payload first, envelope keys win | `LocalCoordinationAuthorityUnavailable` carries a `schema_version` |
 
 Known gap, unchanged on both revisions: `loopx quota monitor-poll --execute`
@@ -246,7 +261,7 @@ separately without skip or relaxation flags:
 ```bash
 python -m pip install -e '.[test]' 'build==1.6.0'
 npm ci --ignore-scripts
-python -m pytest -q -n 2 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
+python -m pytest -q -n 4 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
 python examples/shared-goal-authority-e2e/mutants.py --output .local/stage2c-mutants
 python -m build
 python examples/shared-goal-authority-e2e/installed.py --artifact dist/*.whl --report-json .local/installed-wheel.json
@@ -270,7 +285,7 @@ the complete installation sequence and retains normal source discovery.
 E2E, deliberate mutants, and independently installed wheel/sdist qualification
 run in separate jobs; the stable `stage2c-correctness-e2e` check requires all three
 to succeed. No path-based skipping or reduced case selection is used. E2E uses
-two file-grouped workers so a module's shared workspaces and ordered parity rows
+four file-grouped workers so a module's shared workspaces and ordered parity rows
 stay together. Each lane has a distinct evidence artifact. Mutants remain serial
 inside their isolated source copy: parallel edits to that copy would invalidate
 the control/mutant comparison. Single-row fence probes initialize only the

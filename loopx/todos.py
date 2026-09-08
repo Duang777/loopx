@@ -12,7 +12,6 @@ from .rollout_event_log import load_rollout_events, rollout_event_log_path
 from .state_refresh import now_local, resolve_goal_state
 from .status import MAX_ACTIVE_DONE_TODOS_BEFORE_ARCHIVE
 from .control_plane.todos.contract import (
-    TodoContinuationPolicy,
     TODO_STATUS_DEFERRED,
     TODO_STATUS_DONE,
     TODO_STATUS_OPEN,
@@ -45,7 +44,6 @@ from .control_plane.todos.contract import (
     parse_todo_metadata_line,
     require_todo_excluded_agents,
     resolve_next_user_task_class,
-    resolve_todo_continuation_policy,
     require_supported_todo_resume_when,
     todo_marker_for_status,
 )
@@ -62,7 +60,6 @@ from .control_plane.todos.active_state_editing import (
 from .control_plane.todos.addition import matching_todo_block, require_replan_successor_rebinding, require_replan_successor_scope
 from .control_plane.todos.completed_archive import archive_completed_todo_lines
 from .control_plane.todos.completion_policy import (
-    bind_completion_policy_to_transaction,
     completion_policy_from_transaction,
 )
 from .control_plane.todos.completion_transaction import (
@@ -99,11 +96,13 @@ from .control_plane.todos import monitor_metadata as todo_monitor_metadata
 from .control_plane.todos.external_wait_writeback import plan_todo_external_wait_update
 from .control_plane.todos.mutation_authority import authorize_todo_lifecycle_mutation, todo_update_authority_action
 from .control_plane.todos.succession_warning import build_open_parent_successor_advisory
-from .control_plane.todos.todo_index import MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL
-from .control_plane.todos.text import (
-    inherit_todo_priority,
-    normalize_new_todo,
+from .control_plane.todos.successor_derivation import (
+    build_successor_intents,
+    derive_successor_proposals,
+    successor_add_kwargs,
 )
+from .control_plane.todos.todo_index import MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL
+from .control_plane.todos.text import normalize_new_todo
 from .control_plane.todos.unblock_resume import (
     apply_completed_user_todo_lifecycle,
     completion_decision_target,
@@ -127,6 +126,8 @@ from .control_plane.coordination.local_authority import (
 )
 from .control_plane.todos.provider_compatibility_edit import edit_canonical_todo_if_promoted
 from .control_plane.todos.provider_create import create_canonical_todo_if_promoted
+from .control_plane.todos.path_resolution import resolve_todo_state_path
+from .control_plane.todos.provider_terminal_lifecycle import provider_first_terminal_lifecycle
 from .control_plane.todos.handoff_mode import (
     enter_added_todo_ownership_handoff_gate,
     enter_todo_ownership_handoff_gate,
@@ -164,27 +165,6 @@ def require_registered_todo_excluded_agents(
         )
         for agent_id in require_todo_excluded_agents(excluded_agents, field=field)
     )
-
-
-def resolve_todo_state_path(
-    *,
-    registry_path: Path,
-    goal_id: str,
-    project: Path | None = None,
-    state_file: Path | None = None,
-) -> tuple[Path | None, Path]:
-    registry = load_registry(registry_path)
-    goal, resolved_project, resolved_state_file = resolve_goal_state(
-        registry=registry,
-        goal_id=goal_id,
-        project_override=project,
-        state_file_override=state_file,
-    )
-    if goal is None:
-        raise ValueError(f"goal {goal_id!r} is not present in the registry")
-    if not resolved_state_file.exists():
-        raise ValueError(f"active state file does not exist: {resolved_state_file}")
-    return resolved_project, resolved_state_file
 
 
 def list_goal_todos(
@@ -1582,6 +1562,7 @@ def update_goal_todo(
     )
 
 
+@provider_first_terminal_lifecycle("complete")
 def complete_goal_todo(
     *,
     registry_path: Path,
@@ -1768,9 +1749,6 @@ def complete_goal_todo(
                 runtime_root=shadow_runtime_root,
             )
         )
-        completion_transaction = bind_completion_policy_to_transaction(
-            completion_transaction, locked_completion_policy_source
-        )
         completion_fence = completion_transaction["fence"]
         completion_state = completion_transaction.get("completion_state")
         completion_policy = completion_policy_from_transaction(completion_transaction)
@@ -1872,67 +1850,38 @@ def complete_goal_todo(
                 apply_update=apply_todo_update_to_lines,
             )
         )
-        next_unblocks_todo_id = (
-            normalize_todo_id(str(update_result.get("todo_id") or todo_id))
-            if next_agent_todo
-            else None
+        successor_intents = build_successor_intents(
+            next_agent_todo=next_agent_todo,
+            next_user_todo=next_user_todo,
+            next_user_task_class=effective_next_user_task_class,
+            next_claimed_by=next_claimed_by,
+            next_task_class=next_task_class,
+            next_action_kind=next_action_kind,
+            next_task_repository=next_task_repository,
+            next_required_capabilities=next_required_capabilities,
+            next_continuation_policy=next_continuation_policy,
+            next_excluded_agents=next_excluded_agents,
         )
-        next_user_bound_agent = None
-        if next_user_todo and len(registered_agents) > 1:
-            next_user_bound_agent = effective_claimed_by
-            if not next_user_bound_agent:
-                raise ValueError(
-                    "multi-agent --next-user-todo requires a completing --claimed-by "
-                    "agent so the user todo can be bound"
-                )
-        next_results: list[dict[str, Any]] = []
-        if next_agent_todo:
-            next_results.append(
-                add_todo_to_lines(
-                    lines,
-                    role="agent",
-                    text=inherit_todo_priority(
-                        next_agent_todo,
-                        str(update_result.get("todo") or ""),
-                    ),
-                    task_class=next_task_class or "advancement_task",
-                    action_kind=next_action_kind,
-                    capability_binding_ref=completion_todo.get(
-                        "capability_binding_ref"
-                    ),
-                    task_repository=next_task_repository,
-                    required_capabilities=next_required_capabilities,
-                    continuation_policy=next_continuation_policy,
-                    claimed_by=effective_next_claimed_by,
-                    excluded_agents=effective_next_excluded_agents,
-                    unblocks_todo_id=next_unblocks_todo_id,
-                    updated_at=updated_at,
-                )
+        successor_proposals = derive_successor_proposals(
+            command="complete",
+            predecessor=completion_todo,
+            registered_agents=registered_agents,
+            actor_agent_id=mutation_authority.get("actor_agent_id"),
+            completion_policy={
+                "effective_claimed_by": effective_claimed_by,
+                "effective_next_claimed_by": effective_next_claimed_by,
+                "effective_next_excluded_agents": effective_next_excluded_agents,
+            },
+            successor_intents=successor_intents,
+        )
+        next_results = [
+            add_todo_to_lines(
+                lines,
+                **successor_add_kwargs(proposal),
+                updated_at=updated_at,
             )
-        if next_user_todo:
-            next_results.append(
-                add_todo_to_lines(
-                    lines,
-                    role="user",
-                    text=inherit_todo_priority(
-                        next_user_todo,
-                        str(update_result.get("todo") or ""),
-                    ),
-                    task_class=effective_next_user_task_class,
-                    action_kind=(
-                        "gate"
-                        if effective_next_user_task_class == TODO_TASK_CLASS_USER_GATE
-                        else None
-                    ),
-                    bound_agent=next_user_bound_agent,
-                    blocks_agent=(
-                        next_user_bound_agent
-                        if effective_next_user_task_class == TODO_TASK_CLASS_USER_GATE
-                        else None
-                    ),
-                    updated_at=updated_at,
-                )
-            )
+            for proposal in successor_proposals
+        ]
         generated_successor_todo_ids = [
             todo_id
             for todo_id in normalize_todo_id_list([item.get("todo_id") for item in next_results])
@@ -1996,6 +1945,7 @@ def complete_goal_todo(
         goal_id=goal_id, write_class="todo_complete", capture=shadow_capture,
     )
 
+@provider_first_terminal_lifecycle("supersede")
 def supersede_goal_todo(
     *,
     registry_path: Path,
@@ -2069,17 +2019,6 @@ def supersede_goal_todo(
             idempotency_key=task_lease_idempotency_key, expected_version=task_lease_expected_version,
             runtime_root=shadow_runtime_root,
         )
-        effective_next_claimed_by = (
-            require_registered_agent_id(registry_path=registry_path, goal_id=goal_id, agent_id=next_claimed_by, field="next_claimed_by")
-            if next_claimed_by else None
-        )
-        effective_next_excluded_agents = require_registered_todo_excluded_agents(
-            registry_path=registry_path, goal_id=goal_id, excluded_agents=next_excluded_agents, field="next_excluded_agents",
-        )
-        if effective_next_claimed_by and not next_agent_todo:
-            raise ValueError("--next-claimed-by requires --next-agent-todo")
-        if effective_next_excluded_agents and not next_agent_todo:
-            raise ValueError("--next-excluded-agent requires --next-agent-todo")
         update_result = apply_todo_update_to_lines(
             lines,
             todo_id=todo_id,
@@ -2089,87 +2028,35 @@ def supersede_goal_todo(
             note="superseded",
             updated_at=updated_at,
         )
-        current_claimed_by = normalize_todo_claimed_by(update_result.get("claimed_by"))
-        next_policy = resolve_todo_continuation_policy(
-            next_continuation_policy,
-            action_kind=next_action_kind,
-        )
-        if (
-            next_agent_todo
-            and not effective_next_claimed_by
-            and next_policy == TodoContinuationPolicy.SAME_AGENT_NON_DELIVERY
-        ):
-            effective_next_claimed_by = current_claimed_by
-        if effective_next_claimed_by in effective_next_excluded_agents:
-            raise ValueError(
-                f"next_claimed_by={effective_next_claimed_by!r} cannot also appear in "
-                "next_excluded_agents"
-            )
-        next_unblocks_todo_id = normalize_todo_id(update_result.get("unblocks_todo_id"))
         registered_agents = registered_agent_ids_from_registry(registry_path, goal_id)
-        next_user_bound_agent = (
-            normalize_todo_bound_agent(update_result.get("bound_agent"))
-            or normalize_todo_blocks_agent(update_result.get("blocks_agent"))
+        successor_intents = build_successor_intents(
+            next_agent_todo=next_agent_todo,
+            next_user_todo=next_user_todo,
+            next_user_task_class=effective_next_user_task_class,
+            next_claimed_by=next_claimed_by,
+            next_task_class=next_task_class,
+            next_action_kind=next_action_kind,
+            next_task_repository=next_task_repository,
+            next_required_capabilities=next_required_capabilities,
+            next_continuation_policy=next_continuation_policy,
+            next_excluded_agents=next_excluded_agents,
         )
-        if next_user_todo and len(registered_agents) > 1 and not next_user_bound_agent:
-            next_user_bound_agent = (
-                normalize_todo_claimed_by(update_result.get("claimed_by"))
-                or effective_next_claimed_by
+        successor_proposals = derive_successor_proposals(
+            command="supersede",
+            predecessor=authority_todo,
+            registered_agents=registered_agents,
+            actor_agent_id=mutation_authority.get("actor_agent_id"),
+            completion_policy=None,
+            successor_intents=successor_intents,
+        )
+        next_results = [
+            add_todo_to_lines(
+                lines,
+                **successor_add_kwargs(proposal),
+                updated_at=updated_at,
             )
-            if not next_user_bound_agent:
-                raise ValueError(
-                    "multi-agent supersede --next-user-todo requires inherited "
-                    "blocks_agent, current claimed_by, or next_claimed_by "
-                    "so the user todo can be bound"
-                )
-        next_results: list[dict[str, Any]] = []
-        if next_agent_todo:
-            next_results.append(
-                add_todo_to_lines(
-                    lines,
-                    role="agent",
-                    text=inherit_todo_priority(
-                        next_agent_todo,
-                        str(update_result.get("todo") or ""),
-                    ),
-                    task_class=next_task_class or "advancement_task",
-                    action_kind=next_action_kind,
-                    capability_binding_ref=current_block.get(
-                        "capability_binding_ref"
-                    ),
-                    task_repository=next_task_repository,
-                    required_capabilities=next_required_capabilities,
-                    continuation_policy=next_continuation_policy,
-                    claimed_by=effective_next_claimed_by,
-                    excluded_agents=effective_next_excluded_agents,
-                    unblocks_todo_id=next_unblocks_todo_id,
-                    updated_at=updated_at,
-                )
-            )
-        if next_user_todo:
-            next_results.append(
-                add_todo_to_lines(
-                    lines,
-                    role="user",
-                    text=inherit_todo_priority(
-                        next_user_todo,
-                        str(update_result.get("todo") or ""),
-                    ),
-                    task_class=effective_next_user_task_class,
-                    action_kind=(
-                        "gate"
-                        if effective_next_user_task_class == TODO_TASK_CLASS_USER_GATE
-                        else None
-                    ),
-                    bound_agent=next_user_bound_agent,
-                    blocks_agent=(
-                        next_user_bound_agent
-                        if effective_next_user_task_class == TODO_TASK_CLASS_USER_GATE
-                        else None
-                    ),
-                    updated_at=updated_at,
-                )
-            )
+            for proposal in successor_proposals
+        ]
         generated_successor_todo_ids = [
             todo_id
             for todo_id in normalize_todo_id_list([item.get("todo_id") for item in next_results])
@@ -2219,6 +2106,7 @@ def supersede_goal_todo(
     )
 
 
+@provider_first_terminal_lifecycle("archive")
 def archive_completed_todos(
     *,
     registry_path: Path,

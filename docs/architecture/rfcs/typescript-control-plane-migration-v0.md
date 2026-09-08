@@ -3,7 +3,7 @@
 - Status: Accepted, transaction-payoff phase in progress
 - Proposed by: LoopX maintainers
 - Date: 2026-08-15
-- Last revised: 2026-09-05
+- Last revised: 2026-09-07
 - Scope: an incremental, replacement-first migration of the LoopX control-plane
   core from Python to TypeScript without maintaining two semantic
   implementations
@@ -64,7 +64,7 @@ mode without writing or promoting anything; omit it to retain default behavior.
 It grants neither a lease nor current ownership on historical replay. Combined
 claim/lease acquisition remains follow-up work.
 
-The next replacement slice makes promoted `todo add` a native create
+Promoted `todo add` is a native create
 transaction on that same authority owner. Python validates the established CLI
 arguments and adapts them once into the versioned domain record; TypeScript
 owns duplicate identity, replay, actor/owner eligibility, CAS, receipt, and
@@ -73,6 +73,52 @@ after deleting the Markdown state file, so promotion cannot silently regain a
 Markdown write path. Completion-validation argv remains typed data rather than
 a shell-encoded compatibility field. Default, unpromoted goals retain their
 existing Markdown transaction until their explicit promotion boundary.
+
+The terminal-lifecycle stage package extends that boundary to promoted
+`complete`, `supersede`, and role-scoped `archive`. TypeScript owns admission,
+claim/lease fencing, successor validation, completion-policy reduction, CAS,
+receipts, projection intent, and archive selection. Python projects registry
+facts, executes an explicitly declared validation effect between typed
+reductions, and drains compatibility projections; it no longer recreates the
+terminal state machine for promoted goals. The canonical Todo stores only a
+validation-required marker and declaration digest. Raw argv remains in a
+0600 host-local sidecar and must match that digest on recovery before the
+effect may run. Imported v0 Todos retain legacy `index` archive ordering;
+provider-native records use durable completion/update time and Todo identity.
+Historical lease files absent from the current Todo graph remain audit history
+and are not projected back into the canonical live head.
+
+Every non-preview terminal or archive entrypoint acquires the same per-goal
+shadow-maintenance mutex used by bootstrap and rollback, then rechecks the
+durable management state before opening the canonical provider. A lifecycle
+write therefore cannot overlap a bootstrap/rollback transition or bypass its
+write hold. After the durable promotion fence is present, a missing canonical
+head is reported as a typed canonical-authority outage with an explicit
+restore-before-retry recovery action. It is not relabeled as a legacy-writer
+fence, and it never authorizes a Markdown fallback.
+
+This stage is qualified with a three-arm rehearsal from one read-only,
+production-complex snapshot: an immutable legacy baseline clone, an isolated
+file provider, and an isolated real PostgreSQL provider. The provider heads
+must match exactly and the legacy arm must match semantically after normalizing
+the declared compatibility projection. For archive, that projection excludes
+provider-retained archived records and their historical leases from the legacy
+hot view, and ignores absolute imported indexes only after proving identical
+per-role relative order. It never normalizes domain fields, archive selection,
+active leases, or non-target records; the source snapshot remains unchanged.
+The versioned rehearsal command lives in
+`examples/control_plane/authority-three-arm-rehearsal.py`. A deterministic
+public-safe scale fixture exercises
+the same status mix, current/retired leases, standing decisions, validation,
+successor, replay, concurrency, archive pressure, and hard-lease fences in every provider suite.
+That fixture is durable regression coverage, not a substitute for the current
+read-only three-arm rehearsal.
+
+From this checkpoint onward, every pull request that claims progress against
+this RFC follows the
+[production-scale fixture stewardship contract](../../development/testing-and-quality.md#production-scale-fixture-stewardship--生产规模-fixture-维护契约).
+It declares fixture impact, exercises every affected provider arm, and keeps
+the read-only three-arm rehearsal as a separate promotion gate.
 
 The old v0 consumer manifest remains readable and retains all existing fields.
 Default Markdown capture still emits v0; this PR neither rewrites stored heads
@@ -445,8 +491,11 @@ shipped Stage 2B cutovers are in place:
   reduction. A real caller-approved validation command remains an explicit
   Python provider between two reductions. Todo and policy-source snapshots are
   compared after the mutation lock so a receipt for one declaration or agent
-  registry cannot authorize changed facts. Materialized and event-projected
-  writes consume the same typed result.
+  registry cannot authorize changed facts. Policy admission failures are
+  returned as typed data by that same reduction and consumed only after Python
+  actor/lease admission, preserving legacy error priority without a leaf
+  runtime call inside the writer critical section. Materialized and
+  event-projected writes consume the same typed result.
 - Scheduler heartbeat/state: TypeScript owns receipt freshness, ACK and
   host-failure validation, identity-aware progression, failure-cache
   retention/counting, replay and CAS fencing, preview reduction, the locked
@@ -584,6 +633,20 @@ not start a second independent operation while that handler may still be live.
 | Recovery contract | Operation receipts fence retry identity and expected generation. Fence receipts distinguish acquired, held, and closed states; replay revalidates current authority and the current or retired lease generation before returning an idempotent result. |
 | Locking debt | PID liveness, token claims, stale reclaim, and replacement-resistant file identity make the shared lock safe across Python and Node. This bounded protocol is deleted after the handoff-mode transition and every remaining Python lease-lock holder move in-process. |
 | Out of scope | This cutover shares the ordinary lifecycle decision but does not implement #3669's shared-provider execution, CAS, or authority receipts, and does not promise exactly-once execution for a second request issued while the original Node handler is still running after a client timeout. |
+
+#### Todo terminal lifecycle migration economics
+
+| Field | Receipt |
+| --- | --- |
+| Canonical owner | Before: Python owned terminal admission, successor derivation, and archive retention, while completion reduction and lease operations crossed narrower TS boundaries. After: `todo_terminal_decision.ts`, `todo_successor_derivation.ts`, `todo_terminal_lifecycle.ts`, and `todo_archive_selection.ts` are the typed owners of terminal admission, successor defaults/inheritance/bindings, lease release, completion reduction, CAS, receipt replay, and archive selection. The terminal transaction imports the successor and archive owners directly; legacy Markdown/event writers call their strict wire handlers and only materialize the returned proposal. |
+| Legacy semantic code deleted | 284 Python product LOC are removed from semantic ownership: 74 lines for terminal decision plus archive eligibility/order/standing-receipt selection, and 210 lines of duplicated successor priority, capability/binding, exclusion, continuation, and predecessor-link derivation across Markdown complete/supersede and event completion. The remaining Python complete/supersede bodies are unpromoted compatibility writers, not a second terminal decision owner. Other deleted lines are adapter reshaping and moves and are not counted as payoff. |
+| Bridge code added | 937 gross product LOC are classified as bounded transport/compatibility: the 538-line `provider_terminal_lifecycle.py`, 135-line successor intent/result adapter, 173-line local TS request decoder/router delta, 33-line legacy archive result adapter, 10 handler-registration lines, 6 projection-settlement lines, and 42 lines that route Turn durable readback to canonical authority after promotion. The 29-line `resolve_todo_state_path` extraction is a move, not payoff. Host-local validation declaration storage/execution is a retained external effect and is not mislabeled as bridge deletion. |
+| Successor ownership | The public caller owns requested successor text and options. Python serializes that intent and adapts the typed proposal to the legacy writer. TypeScript alone derives inherited priority, default task class, capability binding, user binding, exclusions, same-agent continuity, and `unblocks_todo_id`; the promoted lifecycle derives and validates these facts inside the same provider transaction before atomically committing the target, successors, lease, and receipt. The legacy and event paths invoke the same pure TS decision through one effect-runtime call. |
+| Cross-runtime calls | Measured at the public facade: promoted complete without validation, supersede, and archive use three request/responses (`todo_list`, terminal/archive transaction, projection readback). A validated complete uses four (`todo_list`, terminal preflight, terminal finalization, projection readback) plus one declared host-local validation effect. After an injected post-commit projection crash, the first attempt uses two calls and the receipt replay uses three. The promoted happy path did not exist before this cutover; a legacy terminal call uses the existing TS admission decision and adds one coarse successor-derivation call only when it has generated successor intent. |
+| Product-code net change | Final merge-base classification is +4,051/−364 product LOC, net +3,687; tests/fixtures/examples are +3,594/−156, net +3,438; generated contracts are +3/−0 and docs are excluded. The increase delivers a complete provider-neutral transaction, one successor semantic owner, real File/PostgreSQL conformance, public facade parity, and durable mutation gates; it is not counted as deletion payoff. |
+| Migration scaffolding | The production-scale fixture, three-arm rehearsal, provider conformance, public legacy/promoted parity matrix, and mutation cases remain because they express durable migration contracts. The compatibility facade and its call-count assertions exit with the facade; provider-neutral transaction and archive-order mutation coverage remain. |
+| Facade exit | Delete `provider_terminal_lifecycle.py`, the successor wire adapter, their Python call-count tests, and `resolve_todo_state_path` after the top-level Todo CLI runs in-process TypeScript, registry/lifecycle facts arrive through the native caller, validation is executed by a native host adapter, and compatibility consumers drain the canonical journal directly. Delete the legacy successor-derivation and archive-selection crossings when the default Markdown/event writers migrate. |
+| Correctness evidence | Independent archive-order/standing-receipt semantics kill an oldest-selection mutant; optional `note`/`evidence`/`reason` cover `None`, empty, ordinary, Python-Unicode-whitespace-only, and whitespace compaction before/after promotion. Public-entry tests prove canonical commit followed by Turn-journal crash/retry settles once, logical retry tolerates prose changes but rejects different successor intent, rejected/concurrent/crash-recovered validated create publishes only the accepted digest sidecar, and legacy/promoted illegal actors retain a domain-rejection class. Independent successor tests pin priority, binding, exclusion, continuation, and predecessor-link inheritance. Stage 2C proves provider-first fence routing, live-lease import, orphan-history filtering, management-lock exclusion, replay, and zero-write previews. File and real PostgreSQL providers execute the same terminal conformance, while the independent legacy arm remains mandatory compatibility evidence. |
 
 The monitor-poll cutover removes the Python admission-policy and monitor-target
 modules and the Python event/replay/artifact writer. Its bounded facade exits

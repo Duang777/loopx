@@ -12,6 +12,19 @@ and Ops boards are retired.
 - English and Chinese navigation use the corresponding localized pages where
   available; the DeepSWE article is identified as Chinese in English copy.
 - Contributor tools remain discoverable at `/developers/projections/`.
+- Direct fragment URLs must land on the rendered section after the React shell
+  mounts, including cold loads and reloads. Fragment targets must remain visible
+  and stationary during entrance effects. Browser tests must assert the initial
+  viewport before calling any scroll or focus helpers; checking URL text or
+  clicking a link after render does not validate a shared deep link.
+- Both React pages share fragment restoration after mount and language reflow.
+  Back/forward navigation restores the URL language; section actions use native
+  links so they create normal history entries. Explicit `index.html` research
+  URLs select the same page as directory URLs. Research navigation stays sticky,
+  with fragment destinations below the bar; decorative overflow must not create
+  an intermediate scroll container.
+- Late font reflow may correct the initial destination once; user input or a
+  subsequent navigation cancels that correction so reading is never interrupted.
 - Do not link primary navigation to retired or deprecated surfaces.
 - Old bookmarks redirect to the current owner; public aliases discard live
   status parameters instead of passing them into the local workspace.

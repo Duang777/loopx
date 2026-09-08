@@ -937,6 +937,7 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             "runtime_identity": release_runtime_identity(),
             "status_url": self.server.status_path,
             "health_url": "/healthz",
+            "readiness_url": "/?readiness=1",
             "review_material_url": DEFAULT_REVIEW_MATERIAL_PATH,
             "presentation_surfaces_url": (
                 DEFAULT_EXTENSION_PRESENTATION_SURFACES_PATH
@@ -953,6 +954,25 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             if self.server.control_plane_write_enabled
             else None,
             "control_plane_write_enabled": self.server.control_plane_write_enabled,
+        }
+
+    def _status_readiness(self) -> dict[str, str]:
+        # Read only the existing configuration boundary, not Goal projections,
+        # provider health, or repository scans. An absent registry is a valid
+        # empty installation under load_registry's existing contract.
+        reason = "registry_readable"
+        try:
+            registry = load_registry(self.server.registry_path)
+            if not isinstance(registry, dict):
+                reason = "registry_invalid"
+        except (ValueError, UnicodeError):
+            reason = "registry_invalid"
+        except OSError:
+            reason = "registry_unavailable"
+        return {
+            "schema_version": "loopx_status_readiness_v0",
+            "state": "ready" if reason == "registry_readable" else "failed",
+            "reason": reason,
         }
 
     def do_GET(self) -> None:
@@ -984,10 +1004,27 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             self._handle_ssh_hosts()
             return
         if path in {"", "/"}:
+            readiness = query.get("readiness")
+            if readiness is not None and readiness != ["1"]:
+                self._send_json(
+                    {"ok": False, "error": "readiness must be specified once as 1"},
+                    status=400,
+                )
+                return
+            if readiness is not None and (
+                not is_loopback_host(str(self.server.server_address[0]))
+                or not is_loopback_origin(self.headers.get("Origin"))
+            ):
+                self._send_json(
+                    {"ok": False, "error": "readiness requires loopback access"},
+                    status=403,
+                )
+                return
             self._send_json(
                 {
                     "ok": True,
                     **self._local_dashboard_api_payload(),
+                    **({"readiness": self._status_readiness()} if readiness is not None else {}),
                 }
             )
             return

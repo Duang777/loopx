@@ -52,16 +52,27 @@ import {
   COORDINATION_TODO_UPDATE_RESULT_SCHEMA,
   executeCoordinationTodoUpdate,
 } from "./todo_update.ts";
+import {
+  COORDINATION_TODO_ARCHIVE_RESULT_SCHEMA,
+  COORDINATION_TODO_TERMINAL_LIFECYCLE_RESULT_SCHEMA,
+  executeCoordinationTodoArchiveCompleted,
+  executeCoordinationTodoTerminalLifecycle,
+} from "./todo_terminal_lifecycle.ts";
 import { editCoordinationTodo, TODO_COMPATIBILITY_EDIT_RESULT_SCHEMA } from "./todo_compatibility_edit.ts";
 import {
   normalizeIdempotencyKey,
   normalizeTtl,
 } from "../work_items/task_lease_acquire.ts";
+import { compactPythonWhitespace } from "./todo_agents.ts";
 
 export const LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA =
   "loopx_local_coordination_todo_claim_request_v0";
 export const LOCAL_COORDINATION_TODO_CREATE_REQUEST_SCHEMA =
   "loopx_local_coordination_todo_create_request_v0";
+export const LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA =
+  "loopx_local_coordination_todo_terminal_lifecycle_request_v0";
+export const LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA =
+  "loopx_local_coordination_todo_archive_request_v0";
 export {
   LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
   LOCAL_COORDINATION_MUTATION_RESULT_SCHEMA,
@@ -103,6 +114,14 @@ function claimAgentValue(value: unknown, label: string): string {
   return value;
 }
 
+function optionalProseValue(value: unknown, label: string): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string or null`);
+  }
+  return compactPythonWhitespace(value) || null;
+}
+
 function claimObservedAt(value: unknown): Date {
   if (typeof value !== "string" || value.trim() !== value) {
     throw new Error("observed_at must be a trimmed ISO-8601 timestamp");
@@ -127,6 +146,19 @@ function requiredPositiveSafeInteger(value: unknown, label: string): number {
     throw new Error(`${label} must be a positive safe integer no greater than 10000`);
   }
   return Number(value);
+}
+
+function requiredNonNegativeSafeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new TypeError(`${label} must be a non-negative safe integer`);
+  }
+  return value as number;
+}
+
+function optionalNonNegativeSafeInteger(value: unknown, label: string): number | null {
+  return value === null || value === undefined
+    ? null
+    : requiredNonNegativeSafeInteger(value, label);
 }
 
 function requiredUniqueStrings(value: unknown, label: string): string[] {
@@ -727,6 +759,147 @@ export async function updateLocalCoordinationTodo(
     return {schema_version: COORDINATION_TODO_UPDATE_RESULT_SCHEMA, status: "failed",
       changed: false, reason_code: error instanceof ShadowManagementError ? error.reason_code : "invalid_local_coordination_todo_update_request",
       reason: error instanceof Error ? error.message : "invalid Todo update request",
+      ...providerEvidence};
+  }
+}
+
+/** Local file-provider adapter for the provider-neutral terminal transaction. */
+export async function terminalLifecycleLocalCoordinationTodo(
+  value: unknown,
+  dependencies: LocalAuthorityRuntimeDependencies = {},
+): Promise<JsonObject> {
+  const providerEvidence = {source_authority: "file_v0",
+    decision_read_from_provider: true, legacy_fallback_used: false};
+  try {
+    const input = requireJsonObject(value, "local coordination Todo terminal request");
+    if (input.schema_version !== LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA) {
+      throw new TypeError("local coordination Todo terminal request schema mismatch");
+    }
+    if (!Array.isArray(input.registered_agents) || !Array.isArray(input.lifecycle_grants) ||
+        !Array.isArray(input.successor_intents) ||
+        !Array.isArray(input.linked_successor_todo_ids)) {
+      throw new TypeError(
+        "registered_agents, lifecycle_grants, successor_intents, and " +
+          "linked_successor_todo_ids must be arrays",
+      );
+    }
+    const root = runtimeRoot(input.runtime_root);
+    const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
+    const leaseExpectedVersion = optionalNonNegativeSafeInteger(
+      input.lease_expected_version,
+      "lease_expected_version",
+    );
+    const registeredAgents = input.registered_agents.map((agent) =>
+      claimAgentValue(agent, "registered agent"));
+    const lifecycleGrants = input.lifecycle_grants.map((grant, index) =>
+      requireJsonObject(grant, `lifecycle_grants[${index}]`));
+    const linkedSuccessorTodoIds = input.linked_successor_todo_ids.map((todoId) =>
+      requireAuthorityStoreId(todoId, "linked successor Todo id"));
+    const successorIntents = input.successor_intents.map((intent, index) =>
+      requireJsonObject(intent, `successor_intents[${index}]`));
+    return await withCanonicalWriter(root, goalId, input.dry_run === true, async () => {
+      const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
+        new FileAuthorityStore(authorityDirectory(root), goalId);
+      return {...await executeCoordinationTodoTerminalLifecycle(store, {
+        goal_id: goalId,
+        todo_id: requireAuthorityStoreId(input.todo_id, "todo id"),
+        expected_role: input.role === null || input.role === undefined
+          ? null : requireAuthorityStoreId(input.role, "role") as "agent" | "user",
+        command: requireAuthorityStoreId(input.command, "command") as "complete" | "supersede",
+        actor_agent_id: input.actor_agent_id === null || input.actor_agent_id === undefined
+          ? null : claimAgentValue(input.actor_agent_id, "actor_agent_id"),
+        registered_agents: registeredAgents,
+        lifecycle_grants: lifecycleGrants,
+        authority_reason: input.authority_reason === null || input.authority_reason === undefined
+          ? null : claimAgentValue(input.authority_reason, "authority_reason"),
+        decision_outcome: input.decision_outcome === null || input.decision_outcome === undefined
+          ? null : requireAuthorityStoreId(input.decision_outcome, "decision_outcome") as
+            "approve" | "reject" | "cancel",
+        operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
+        lease_idempotency_key:
+          input.lease_idempotency_key === null || input.lease_idempotency_key === undefined
+            ? null : requireAuthorityStoreId(input.lease_idempotency_key, "lease idempotency key"),
+        lease_expected_version: leaseExpectedVersion,
+        allow_user_gate_auto_acquire: input.allow_user_gate_auto_acquire as boolean,
+        requested_no_followup: input.requested_no_followup as boolean,
+        requested_completion_turn_key:
+          input.requested_completion_turn_key === null ||
+            input.requested_completion_turn_key === undefined
+            ? null : claimAgentValue(
+              input.requested_completion_turn_key,
+              "requested_completion_turn_key",
+            ),
+        requested_completion_identity_source:
+          input.requested_completion_identity_source === null ||
+            input.requested_completion_identity_source === undefined
+            ? null : requireAuthorityStoreId(
+              input.requested_completion_identity_source,
+              "requested_completion_identity_source",
+            ) as "turn_settlement" | "unscoped_completion" | "lifecycle_reentry",
+        linked_successor_todo_ids: linkedSuccessorTodoIds,
+        successor_intents: successorIntents,
+        note: optionalProseValue(input.note, "note"),
+        evidence: optionalProseValue(input.evidence, "evidence"),
+        reason: optionalProseValue(input.reason, "reason"),
+        clear_claim: input.clear_claim as boolean,
+        validation_declaration:
+          input.validation_declaration === null || input.validation_declaration === undefined
+            ? null : requireJsonObject(input.validation_declaration, "validation_declaration"),
+        validation_receipt: input.validation_receipt === null || input.validation_receipt === undefined
+          ? null : requireJsonObject(input.validation_receipt, "validation_receipt"),
+        completion_policy_request:
+          input.completion_policy_request === null || input.completion_policy_request === undefined
+            ? null : requireJsonObject(input.completion_policy_request, "completion_policy_request"),
+        dry_run: input.dry_run as boolean,
+        now: claimObservedAt(input.observed_at),
+      }), ...providerEvidence};
+    });
+  } catch (error) {
+    return {schema_version: COORDINATION_TODO_TERMINAL_LIFECYCLE_RESULT_SCHEMA,
+      status: "failed", changed: false,
+      reason_code: error instanceof ShadowManagementError ? error.reason_code :
+        "invalid_local_coordination_todo_terminal_lifecycle_request",
+      reason: error instanceof Error ? error.message : "invalid local Todo terminal request",
+      ...providerEvidence};
+  }
+}
+
+/** Local file-provider adapter for provider-owned completed-Todo compaction. */
+export async function archiveLocalCoordinationTodos(
+  value: unknown,
+  dependencies: LocalAuthorityRuntimeDependencies = {},
+): Promise<JsonObject> {
+  const providerEvidence = {source_authority: "file_v0",
+    decision_read_from_provider: true, legacy_fallback_used: false};
+  try {
+    const input = requireJsonObject(value, "local coordination Todo archive request");
+    if (input.schema_version !== LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA) {
+      throw new TypeError("local coordination Todo archive request schema mismatch");
+    }
+    const root = runtimeRoot(input.runtime_root);
+    const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
+    const maxActiveDone = requiredNonNegativeSafeInteger(
+      input.max_active_done,
+      "max_active_done",
+    );
+    return await withCanonicalWriter(root, goalId, input.dry_run === true, async () => {
+      const store = dependencies.createStore?.(authorityDirectory(root), goalId) ??
+        new FileAuthorityStore(authorityDirectory(root), goalId);
+      return {...await executeCoordinationTodoArchiveCompleted(store, {
+        goal_id: goalId,
+        role: requireAuthorityStoreId(input.role, "role") as "agent" | "user",
+        max_active_done: maxActiveDone,
+        operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
+        dry_run: input.dry_run as boolean,
+        now: claimObservedAt(input.observed_at),
+      }), ...providerEvidence};
+    });
+  } catch (error) {
+    return {schema_version: COORDINATION_TODO_ARCHIVE_RESULT_SCHEMA,
+      status: "failed", changed: false,
+      reason_code: error instanceof ShadowManagementError ? error.reason_code :
+        "invalid_local_coordination_todo_archive_request",
+      reason: error instanceof Error ? error.message : "invalid local Todo archive request",
       ...providerEvidence};
   }
 }

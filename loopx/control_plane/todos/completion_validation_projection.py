@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from .contract import (
@@ -11,17 +13,79 @@ from .contract import (
 )
 
 
+_DECLARATION_FIELDS = (
+    "validation_command",
+    "validation_command_argv",
+    "validation_label",
+    "validation_timeout_seconds",
+)
+
+
+def completion_validation_declaration(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize private execution detail for local effect resolution and hashing."""
+
+    command_value = item.get("validation_command")
+    command = command_value.strip() if isinstance(command_value, str) else command_value
+    if command == "":
+        command = None
+    argv: Any = item.get("validation_command_argv")
+    if isinstance(argv, str):
+        compact = argv.strip()
+        if not compact:
+            argv = None
+        else:
+            try:
+                argv = json.loads(compact)
+            except ValueError:
+                argv = compact
+    elif isinstance(argv, tuple):
+        argv = list(argv)
+    label = item.get("validation_label")
+    if label == "":
+        label = None
+    timeout: Any = item.get("validation_timeout_seconds")
+    if isinstance(timeout, str) and timeout.strip().isdigit():
+        timeout = int(timeout.strip())
+    elif timeout == "":
+        timeout = None
+    declaration = {
+        "validation_command": command,
+        "validation_command_argv": argv,
+        "validation_label": label,
+        "validation_timeout_seconds": timeout,
+    }
+    return (
+        declaration
+        if any(item.get(field) not in (None, "") for field in _DECLARATION_FIELDS)
+        else None
+    )
+
+
+def completion_validation_declaration_sha256(
+    declaration: dict[str, Any],
+) -> str:
+    payload = json.dumps(
+        declaration,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def project_completion_validation_authority(item: dict[str, Any]) -> dict[str, Any]:
     """Replace private validation execution details with one authority marker."""
 
     projected = dict(item)
-    command = str(projected.pop("validation_command", "") or "").strip()
-    argv = projected.pop("validation_command_argv", None)
-    projected.pop("validation_label", None)
-    projected.pop("validation_timeout_seconds", None)
-    argv_declared = argv is not None and str(argv).strip() != ""
-    if command or argv_declared:
+    declaration = completion_validation_declaration(projected)
+    for field in _DECLARATION_FIELDS:
+        projected.pop(field, None)
+    if declaration is not None:
         projected["completion_validation_required"] = True
+        projected["completion_validation_sha256"] = (
+            completion_validation_declaration_sha256(declaration)
+        )
     return projected
 
 

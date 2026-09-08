@@ -38,7 +38,7 @@ impl ServiceKind {
 
     fn probe_path(self) -> &'static str {
         match self {
-            Self::Status => "/",
+            Self::Status => "/?readiness=1",
             Self::Chat => "/api/chat/capabilities",
         }
     }
@@ -81,6 +81,7 @@ impl ServiceKind {
 #[derive(Debug, Eq, PartialEq)]
 enum Probe {
     Matching,
+    NotReady,
     Unavailable,
     Unresponsive,
     Foreign,
@@ -138,6 +139,7 @@ impl ServiceSet {
         loop {
             match probe(kind, expected_runtime_identity.as_ref()) {
                 Probe::Matching => return Ok(()),
+                Probe::NotReady => return Err(status_readiness_error(kind)),
                 Probe::Foreign => {
                     return Err(ServiceError(format!(
                         "port {} is occupied by a service that is not LoopX {}",
@@ -185,6 +187,7 @@ impl ServiceSet {
             while Instant::now() < deadline {
                 match probe(kind, expected_runtime_identity.as_ref()) {
                     Probe::Matching => return Ok(()),
+                    Probe::NotReady => return Err(status_readiness_error(kind)),
                     Probe::Foreign => {
                         return Err(ServiceError(format!(
                             "LoopX {} startup reached an unexpected service on port {}",
@@ -227,6 +230,7 @@ impl ServiceSet {
         while Instant::now() < deadline {
             match probe(kind, expected_runtime_identity.as_ref()) {
                 Probe::Matching => return Ok(()),
+                Probe::NotReady => return Err(status_readiness_error(kind)),
                 Probe::Foreign => {
                     return Err(ServiceError(format!(
                         "LoopX {} startup reached an unexpected service on port {}",
@@ -595,6 +599,136 @@ fn runtime_search_path(
     env::join_paths(paths).unwrap_or_else(|_| inherited.unwrap_or_default())
 }
 
+/// Resolve `python3` inside the same bounded tool search the installer and
+/// owned services use, and ask it for its version. Returns
+/// (found, version): `found` is filesystem-level resolution only, so a
+/// Command Line Tools stub that never finishes still reports found with no
+/// version — exactly the state `install-local.sh` rejects. The version probe
+/// is bounded so the status polling path cannot hang on it.
+pub(crate) fn python3_environment() -> (bool, Option<String>) {
+    let search_path = runtime_search_path(env::var_os("HOME"), env::var_os("PATH"));
+    let resolved = resolve_executable_path("python3", Some(search_path.as_os_str()));
+    let found = resolved.is_some();
+    let version = resolved.and_then(|python| {
+        let mut probe = Command::new(python);
+        probe.arg("--version");
+        timed_output(probe)
+            .filter(|output| output.status.success())
+            .and_then(|output| parse_python_version(&output))
+    });
+    (found, version)
+}
+
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+pub(crate) fn timed_output(command: Command) -> Option<std::process::Output> {
+    timed_output_with_timeout(command, VERSION_PROBE_TIMEOUT)
+}
+
+pub(crate) fn timed_output_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.group_spawn().ok()?;
+    let mut stdout_pipe = child.inner().stdout.take();
+    let mut stderr_pipe = child.inner().stderr.take();
+
+    let stdout_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut stream) = stdout_pipe {
+            let _ = stream.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let stderr_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut stream) = stderr_pipe {
+            let _ = stream.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let started = Instant::now();
+    let poll_interval = Duration::from_millis(20);
+
+    let mut child_status: Option<std::process::ExitStatus> = None;
+
+    loop {
+        if child_status.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    child_status = Some(status);
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
+                    return None;
+                }
+            }
+        }
+
+        if let Some(status) = child_status {
+            if stdout_reader.is_finished() && stderr_reader.is_finished() {
+                let stdout = stdout_reader.join().unwrap_or_default();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                return Some(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+        }
+
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return None;
+        }
+
+        let remaining = timeout.saturating_sub(started.elapsed());
+        thread::sleep(poll_interval.min(remaining));
+    }
+}
+
+// `python3 --version` prints `Python 3.11.9`; accept the version on either
+// stream (some wrappers print to stderr) and keep only a strict
+// major.minor.patch prefix so odd output never enters diagnostics.
+fn parse_python_version(output: &std::process::Output) -> Option<String> {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_python_banner(&text)
+}
+
+fn parse_python_banner(text: &str) -> Option<String> {
+    let version = text.trim().strip_prefix("Python ")?;
+    let mut digits_or_dots = String::new();
+    for character in version.chars() {
+        if character.is_ascii_digit() || character == '.' {
+            digits_or_dots.push(character);
+        } else {
+            break;
+        }
+    }
+    let parts: Vec<&str> = digits_or_dots.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some(digits_or_dots)
+}
+
 fn resolve_executable_path(executable: &str, search_path: Option<&OsStr>) -> Option<PathBuf> {
     let requested = PathBuf::from(executable);
     if requested.components().count() > 1 {
@@ -648,6 +782,14 @@ fn runtime_identity_for_executable_with_path(
     let manifest = fs::read_to_string(Path::new(release_root).join("release.json")).ok()?;
     let payload = serde_json::from_str::<serde_json::Value>(&manifest).ok()?;
     runtime_identity_from_manifest(&payload)
+}
+
+fn status_readiness_error(kind: ServiceKind) -> ServiceError {
+    ServiceError(format!(
+        "LoopX {} is responding on port {} but its registry is invalid or unreadable; repair the registry configuration and retry",
+        kind.label(),
+        kind.port()
+    ))
 }
 
 fn probe(kind: ServiceKind, expected_runtime_identity: Option<&serde_json::Value>) -> Probe {
@@ -719,6 +861,32 @@ fn classify_response(
         if let Some(expected) = expected_runtime_identity {
             if payload.get("runtime_identity") != Some(expected) {
                 return Probe::Stale;
+            }
+        }
+        if kind == ServiceKind::Status {
+            if let Some(readiness) = payload.get("readiness") {
+                if readiness
+                    .get("schema_version")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("loopx_status_readiness_v0")
+                {
+                    return Probe::Foreign;
+                }
+                return match (
+                    readiness.get("state").and_then(serde_json::Value::as_str),
+                    readiness.get("reason").and_then(serde_json::Value::as_str),
+                ) {
+                    (Some("ready"), Some("registry_readable")) => Probe::Matching,
+                    (Some("failed"), Some("registry_invalid" | "registry_unavailable")) => {
+                        Probe::NotReady
+                    }
+                    _ => Probe::Foreign,
+                };
+            }
+            // Legacy status servers ignore the query and retain the existing
+            // release-fingerprint check. An advertised contract cannot vanish.
+            if payload.get("readiness_url").is_some() {
+                return Probe::Foreign;
             }
         }
         return Probe::Matching;
@@ -852,6 +1020,34 @@ mod tests {
     }
 
     #[test]
+    fn python_version_parsing_accepts_strict_triplets_only() {
+        assert_eq!(
+            parse_python_banner("Python 3.13.5\n"),
+            Some("3.13.5".to_string())
+        );
+        // Some wrappers and old interpreters print the banner to stderr; the
+        // Output-level wrapper reads both streams through this parser.
+        assert_eq!(
+            parse_python_banner("Python 3.9.6\n"),
+            Some("3.9.6".to_string())
+        );
+        // A trailing pre-release tag is truncated to its release triplet.
+        assert_eq!(
+            parse_python_banner("Python 3.11.0b4\n"),
+            Some("3.11.0".to_string())
+        );
+        // Stub chatter, missing prefixes and partial triplets never enter
+        // diagnostics as a version.
+        assert_eq!(
+            parse_python_banner("xcode-select: note: install requested"),
+            None
+        );
+        assert_eq!(parse_python_banner("Python 3"), None);
+        assert_eq!(parse_python_banner("Python 3.11"), None);
+        assert_eq!(parse_python_banner(""), None);
+    }
+
+    #[test]
     fn manifest_runtime_identity_is_public_and_exact() {
         let manifest = serde_json::json!({
             "release_id": "20260821T164921Z",
@@ -902,6 +1098,154 @@ mod tests {
                 "release_id": "path-release",
                 "source_revision": "path-revision",
             }))
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn timed_output_terminates_and_reaps_child_process_on_timeout() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = temp_dir.path().join("helper.pid");
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            &format!("echo $$ > \"{}\" && exec sleep 30", pid_path.display()),
+        ]);
+
+        let start = Instant::now();
+        let output = timed_output_with_timeout(cmd, Duration::from_millis(500));
+        let elapsed = start.elapsed();
+
+        assert!(output.is_none(), "timed_output must return None on timeout");
+        assert!(
+            elapsed >= Duration::from_millis(450) && elapsed < Duration::from_secs(5),
+            "timed_output must bound execution to around timeout (took {elapsed:?})"
+        );
+
+        let pid_str = fs::read_to_string(&pid_path).expect("read pidfile");
+        let pid: u32 = pid_str.trim().parse().expect("parse pid");
+
+        let check_status = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .expect("kill -0");
+        assert!(
+            !check_status.success(),
+            "child process {pid} must be terminated and reaped, but kill -0 succeeded"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn timed_output_consecutive_refreshes_do_not_accumulate_workers() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut pids = Vec::new();
+
+        for i in 0..3 {
+            let pid_path = temp_dir.path().join(format!("helper_{i}.pid"));
+            let mut cmd = Command::new("sh");
+            cmd.args([
+                "-c",
+                &format!("echo $$ > \"{}\" && exec sleep 30", pid_path.display()),
+            ]);
+
+            let start = Instant::now();
+            let output = timed_output_with_timeout(cmd, Duration::from_millis(300));
+            let elapsed = start.elapsed();
+
+            assert!(
+                output.is_none(),
+                "probe iteration {i} must return None on timeout"
+            );
+            assert!(
+                elapsed >= Duration::from_millis(250) && elapsed < Duration::from_secs(3),
+                "probe iteration {i} must finish near timeout (took {elapsed:?})"
+            );
+
+            let pid_str = fs::read_to_string(&pid_path).expect("read pidfile");
+            let pid: u32 = pid_str.trim().parse().expect("parse pid");
+            pids.push(pid);
+        }
+
+        for pid in pids {
+            let check_status = Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .expect("kill -0");
+            assert!(
+                !check_status.success(),
+                "accumulated worker candidate {pid} was not terminated/reaped"
+            );
+        }
+    }
+
+    #[test]
+    fn timed_output_large_output_does_not_deadlock() {
+        let mut cmd = Command::new("python3");
+        cmd.args(["-c", "import sys; sys.stdout.write('X' * 262144)"]);
+
+        let start = Instant::now();
+        let output = timed_output_with_timeout(cmd, Duration::from_secs(5));
+        let elapsed = start.elapsed();
+
+        assert!(
+            output.is_some(),
+            "timed_output must not deadlock on large output buffer"
+        );
+        let out = output.unwrap();
+        assert!(out.status.success(), "command must succeed");
+        assert_eq!(out.stdout.len(), 262144);
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "command completed in reasonable time without blocking (took {elapsed:?})"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn timed_output_descendant_inheriting_pipes_terminates_near_deadline() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = temp_dir.path().join("descendant.pid");
+        let mut cmd = Command::new("sh");
+        // Direct child `sh` exits immediately after launching background descendant `sleep 30`.
+        // The background descendant inherits the stdout/stderr pipe handles without exec.
+        cmd.args([
+            "-c",
+            &format!("(sleep 30 & echo $! > \"{}\")", pid_path.display()),
+        ]);
+
+        let start = Instant::now();
+        let output = timed_output_with_timeout(cmd, Duration::from_millis(300));
+        let elapsed = start.elapsed();
+
+        assert!(output.is_none(), "timed_output must return None on timeout");
+        assert!(
+            elapsed >= Duration::from_millis(250) && elapsed < Duration::from_secs(2),
+            "timed_output must bound execution to around timeout (took {elapsed:?})"
+        );
+
+        let pid_str = fs::read_to_string(&pid_path).expect("read pidfile");
+        let pid: u32 = pid_str.trim().parse().expect("parse pid");
+
+        let mut descendant_alive = true;
+        for _ in 0..20 {
+            let check_status = Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .expect("kill -0");
+            if !check_status.success() {
+                descendant_alive = false;
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(
+            !descendant_alive,
+            "descendant process {pid} inheriting pipes must be terminated, but kill -0 succeeded"
         );
     }
 }

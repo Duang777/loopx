@@ -106,12 +106,48 @@ Older backup directories are retained for manual recovery and can consume disk.
 
 The embedded Recovery & updates section includes selectable, copyable diagnostics
 with the App version, last failure category, installer exit code when available,
-and runtime identity availability/match results. The last failure survives a
-subsequent update check within the same App process. Copying never includes raw
-installer output, environment variables, local paths, or Goal content. Installation
-failures, missing/corrupt bundles, and runtime mismatch show distinct recovery
-instructions. A terminal `loopx doctor` checks the terminal-selected runtime;
-it does not prove that Desktop selected the same installation or matching revision.
+runtime identity availability/match results, and (v2) coarse environment facts:
+OS version, architecture, whether the runtime executable resolved, and whether a
+`python3` in the installer's bounded search path reported a version. The last
+failure survives a subsequent update check within the same App process. Copying
+never includes raw installer output, environment variables, local paths, or Goal
+content. Installation failures, missing/corrupt bundles, and runtime mismatch
+show distinct recovery instructions. A terminal `loopx doctor` checks the
+terminal-selected runtime; it does not prove that Desktop selected the same
+installation or matching revision.
+
+When the update snapshot stays in a terminal phase, the boot screen itself stops
+presenting an endless loading state: after several poll rounds the main status
+line switches to the error projection of the current snapshot code and points at
+the Recovery & updates panel. It returns to the loading shape as soon as the
+snapshot leaves the terminal phase (for example while an explicit repair runs).
+
+## Known Issues
+
+### Fresh Mac without a usable Python stays on the boot screen
+
+On a new macOS machine with no developer environment, the App's automatic
+runtime installation can fail with `runtime_install_exit_2`: the installer
+requires a usable Python 3.11+ (`python3` reachable through the bounded search
+path that covers standard Homebrew locations), and a bare macOS does not ship
+one. The automatic install budget (three attempts) exhausts itself, and before
+this fix the failure was only visible inside the collapsed Recovery & updates
+panel, so the window read as a permanent loading state.
+
+Self-service:
+
+1. Check the boot screen error code or Recovery & updates → Diagnostics
+   (`error_code: runtime_install_exit_2`, `environment.python3_found` /
+   `python3_version` confirm the missing interpreter).
+2. Install Python 3.11+ — for example `brew install python@3.12` or via
+   official python.org installer (note that macOS Command Line Tools provides
+   Python 3.9, which does not satisfy the Python 3.11+ requirement).
+3. Press **Repair this version** (or reopen the App); the live supervisor
+   reconnects the same window without a second App restart.
+
+`loopx doctor` run on another machine (for example the Linux host that also
+serves your terminal runtime) checks that host's installation. It cannot
+diagnose this Mac App's local bootstrap; only the App's own diagnostics do.
 
 The updater accepts only fixed official HTTPS channels, not browser-provided
 commands, paths or download URLs. Its signing private key is confined to the

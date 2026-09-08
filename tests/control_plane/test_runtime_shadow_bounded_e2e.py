@@ -7,15 +7,21 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
-import subprocess
-import sys
 
-from loopx.control_plane.coordination.runtime_shadow import build_runtime_shadow_source_snapshot
-from loopx.control_plane.coordination.coordination_state_contract_generated import TASK_LEASE_ACQUIRE_REQUEST_SCHEMA
-from loopx.control_plane.work_items.task_lease_acquire_adapter import task_lease_acquire_authority_facts
+from loopx.control_plane.coordination.coordination_state_contract_generated import (
+    TASK_LEASE_ACQUIRE_REQUEST_SCHEMA,
+)
+from loopx.control_plane.coordination.runtime_shadow import (
+    build_runtime_shadow_source_snapshot,
+)
+from loopx.control_plane.work_items.task_lease_acquire_adapter import (
+    task_lease_acquire_authority_facts,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -39,7 +45,8 @@ def workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
 def cli(registry: Path, runtime: Path, *arguments: str, success: bool = True) -> dict:
     completed = subprocess.run([sys.executable, "-m", "loopx.cli", "--registry", str(registry),
         "--runtime-root", str(runtime), "--format", "json", *arguments], cwd=REPO,
-        env={**os.environ, "PYTHONPATH": str(REPO)}, capture_output=True, text=True, timeout=45)
+        env={**os.environ, "PYTHONPATH": str(REPO)}, capture_output=True, text=True,
+        timeout=45, check=False)
     assert completed.stdout.strip(), completed.stderr
     payload = json.loads(completed.stdout)
     if success:
@@ -62,7 +69,7 @@ def native(tmp_path: Path, module: str, function: str, request: dict) -> dict:
         "import {readFile} from 'node:fs/promises';"
         f"process.stdout.write(JSON.stringify(await {function}(JSON.parse(await readFile(process.argv[1],'utf8')))));" )
     process = subprocess.run(["node", "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e", script, str(path)],
-        cwd=tmp_path, capture_output=True, text=True, timeout=45)
+        cwd=tmp_path, capture_output=True, text=True, timeout=45, check=False)
     assert process.returncode == 0, process.stderr
     return json.loads(process.stdout)
 
@@ -86,7 +93,9 @@ def acquire_native(tmp_path: Path, registry: Path, runtime: Path, todo_id: str) 
     })
 
 
-def test_source_snapshot_preserves_ordinal_mixed_case_lease_inventory(tmp_path: Path) -> None:
+def test_source_snapshot_preserves_inventory_without_projecting_orphan_leases(
+    tmp_path: Path,
+) -> None:
     registry, runtime, state = workspace(tmp_path)
     directory = runtime / "goals" / "goal-a" / "task-leases"
     directory.mkdir(parents=True)
@@ -103,12 +112,12 @@ def test_source_snapshot_preserves_ordinal_mixed_case_lease_inventory(tmp_path: 
         goal=goal, runtime_root=runtime, state_path=state, registry_path=registry)
     expected = ["todo_Bravo", "todo_Zulu", "todo_alpha"]
     assert [entry["name"] for entry in snapshot["lease_inventory"]] == [f"{name}.json" for name in expected]
-    assert [lease["todo_id"] for lease in projection["leases"]] == expected
+    assert projection["leases"] == []
     boot = cli(registry, runtime, "coordination-shadow", "bootstrap", "--goal-id", "goal-a", "--execute")
     assert boot["bootstrap"]["status"] == "applied", boot
     inspected = cli(registry, runtime, "coordination-shadow", "inspect", "--goal-id", "goal-a")
     assert inspected["inspection"]["status"] == "matched", inspected
-    assert history(tmp_path, runtime)[0]["projection"]["leases"] == projection["leases"]
+    assert history(tmp_path, runtime)[0]["projection"]["leases"] == []
 
 
 def test_public_cli_and_independent_native_writer_qualify_one_complete_lineage(tmp_path: Path) -> None:
@@ -280,7 +289,10 @@ def test_native_lease_writer_cannot_reuse_a_sequence_when_its_cursor_is_missing(
 
 def test_public_committed_primary_cannot_be_relabelled_abandoned_by_native_request(tmp_path: Path) -> None:
     from shadow_e2e_fixture import workspace as crash_workspace
-    from loopx.control_plane.coordination import local_authority_shadow_adapter as adapter
+
+    from loopx.control_plane.coordination import (
+        local_authority_shadow_adapter as adapter,
+    )
     from loopx.control_plane.coordination import local_authority_shadow_outbox as outbox
 
     w = crash_workspace(tmp_path)

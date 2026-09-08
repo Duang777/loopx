@@ -33,12 +33,13 @@ html {
 body {
   min-width: 320px;
   margin: 0;
-  overflow-x: hidden;
+  overflow-x: clip;
   background: var(--canvas);
 }
 
 #root {
-  overflow: hidden;
+  /* Clip decorative overflow without trapping the research page sticky bar. */
+  overflow: clip;
 }
 
 button,
@@ -804,6 +805,14 @@ body[data-language="zh"] .hero h1 {
 .reveal-block.is-visible {
   opacity: 1;
   transform: none;
+}
+
+/* A fragment destination must not move or fade while the browser aligns it. */
+.reveal-block[data-anchor-entry],
+.reveal-block:has(:target) {
+  opacity: 1;
+  transform: none;
+  transition: none;
 }
 
 .capability-section,

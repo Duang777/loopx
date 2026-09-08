@@ -3,7 +3,7 @@
 - Status: Draft, under maintainer review
 - Initially proposed by: NoKV Lab
 - Widened by: LoopX maintainers
-- Date: 2026-08-05; revised 2026-09-05
+- Date: 2026-08-05; revised 2026-09-07
 - Scope: one provider-neutral LoopX authority contract with built-in file,
   optional NoKV, and optional PostgreSQL provider profiles, complementing
   [`host-integration-surface-v0`](../../reference/protocols/host-integration-surface-v0.md)
@@ -2344,12 +2344,12 @@ write that cannot preserve the contract.
   promotion, add sustained mixed-writer parity runs, event-only Todo coverage,
   and the selected provider profile's recovery/capacity evidence.
 - Completion of the compatibility projection outbox and conformance rows for
-  file, NoKV, and PostgreSQL. The first provider-first slice now reuses the
-  committed authority journal as the durable intent for native Todo create,
-  claim, and narrow update, then renders native active/archive records into
-  machine-owned Markdown regions with idempotent replay. Remaining native Todo
-  mutations, lease-file projection, backlog/status readback, and provider-
-  neutral authority binding still need the same contract. Providers do not
+  file, NoKV, and PostgreSQL. Provider-first create, claim, narrow update,
+  complete, supersede, and role-scoped archive reuse the committed authority
+  journal as durable intent and render native active/archive records into
+  machine-owned Markdown regions with idempotent replay. Lease-file projection,
+  backlog/status readback, the provider-neutral authority binding, and the
+  remaining command inventory still need the same contract. Providers do not
   promote together; each profile must pass it before it is eligible.
 - Retention, fast path, and measured capacity for the selected first-promotion
   profile; the reference executor's removal and status flips (question 13).
@@ -2419,14 +2419,56 @@ parity at the same revision before changing a binding or manifest. Questions 8
 and 10's completeness rule applies to domain facts and retained compatibility
 provenance; it does not require native callers to manufacture Markdown addresses.
 
+### Provider-first terminal lifecycle checkpoint (2026-09-07)
+
+Promoted `complete`, `supersede`, and role-scoped `archive` now use one native
+TypeScript transaction across file, NoKV, and PostgreSQL. The authority owner
+decides actor/claim/lease admission; derives successor priority, capability and
+Agent bindings, exclusions, continuation, and predecessor relations from typed
+caller intent; reduces completion policy; commits the Todo/lease/head/outbox
+write set with CAS; and persists replay receipts. Python remains an adapter for
+registry facts, the caller-approved validation effect, intent/result transport,
+and compatibility projection drain; it does not select a different terminal or
+successor outcome for a provider. The legacy Markdown and event writers reuse
+the same pure TypeScript successor decision before materializing their records.
+
+Validation declarations cross the canonical boundary as a required marker and
+SHA-256 digest only. Raw argv stays in a 0600 host-local sidecar and recovery
+must prove the digest before executing it. This keeps provider heads portable
+and public-safe without turning recovery into a silent validation bypass.
+Imported v0 `index` remains the archive-order compatibility fact; native records
+fall back to durable completion/update time and Todo identity. Legacy lease
+files whose Todo no longer exists in the current canonical collection remain
+historical audit material and are excluded from live projection.
+
+Qualification uses one read-only, production-complex snapshot for three arms:
+an immutable legacy baseline clone, an isolated file store, and an isolated
+real PostgreSQL tenant. The provider heads compare exactly; the legacy result
+compares through the declared compatibility projection. Archive comparison
+removes provider-retained archived records and their historical leases from the
+legacy hot view, and ignores absolute imported indexes only after separately
+proving identical per-role relative order. Domain fields, archive selection,
+active leases, and non-target records are never normalized; the source snapshot
+must remain unchanged. The executable rehearsal is
+`examples/control_plane/authority-three-arm-rehearsal.py`. A checked-in,
+deterministic, public-safe scale fixture exercises the same distribution and
+pressure, including hard-lease fences, across every provider conformance suite. It cannot replace the
+read-only three-arm rehearsal because all providers share the new semantic
+owner and can therefore agree on the same regression.
+
+Every pull request that claims progress against this RFC follows the
+[production-scale fixture stewardship contract](../../development/testing-and-quality.md#production-scale-fixture-stewardship--生产规模-fixture-维护契约).
+It declares fixture impact, exercises every affected provider arm, and keeps
+the read-only three-arm rehearsal as a separate promotion gate.
+
 ### Next delivery and parallel provider work
 
-The immediate kernel sequence is: (1) a real provider-first Todo lifecycle caller
-with the replaced Python decisions removed; (2) explicit v0 import plus sustained
-consumer/capture/recovery qualification; (3) reviewed promotion with fenced
-export and cleanup. Each slice must prove an end-to-end transaction, not merely
-another schema identifier consolidation. Native contract acceptance alone is
-not permission to bypass any promotion hold.
+The immediate kernel sequence is: (1) finish the remaining provider-first Todo
+command inventory behind the same runtime boundary; (2) explicit v0 import plus
+sustained consumer/capture/recovery qualification; (3) reviewed promotion with
+fenced export and cleanup. Each slice must prove an end-to-end transaction, not
+merely another schema identifier consolidation. Native contract acceptance
+alone is not permission to bypass any promotion hold.
 
 The first replacement-first `claim` slice routes both the default Markdown
 writer and the promoted provider transaction through one TypeScript decision.

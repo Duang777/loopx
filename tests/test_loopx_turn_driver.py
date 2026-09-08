@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 
 import loopx.cli_commands.turn as turn_command
+from tests.control_plane.canonical_authority_fixture import (
+    initialize_canonical_authority,
+)
 from loopx.cli import main as cli_main
+from loopx.control_plane.coordination.runtime_shadow import (
+    build_todo_runtime_shadow_projection,
+)
 from loopx.control_plane.quota.turn_envelope import build_turn_envelope
 from loopx.control_plane.turn_driver import (
     LOOPX_TURN_SESSION_BINDING_SCHEMA_VERSION,
@@ -1161,6 +1167,43 @@ def _write_live_fixture(
     return project, runtime, registry
 
 
+def _promote_turn_fixture(project: Path, runtime: Path) -> None:
+    state = (
+        project
+        / ".codex"
+        / "goals"
+        / "loopx-turn-fixture"
+        / "ACTIVE_GOAL_STATE.md"
+    )
+    projection = build_todo_runtime_shadow_projection(
+        goal_id="loopx-turn-fixture",
+        handoff_mode="soft_claim",
+        todos=[
+            {
+                "schema_version": "todo_item_v0",
+                "index": 1,
+                "done": False,
+                "text": "[P0] Advance one public fixture.",
+                "todo_id": "todo_fixture0001",
+                "role": "agent",
+                "status": "open",
+                "archive_state": "active",
+                "source_section": "Agent Todo",
+                "task_class": "advancement_task",
+                "action_kind": "fixture",
+                "claimed_by": "codex-fixture",
+                "priority": "P0",
+            }
+        ],
+    )
+    initialize_canonical_authority(
+        runtime,
+        "loopx-turn-fixture",
+        projection,
+        state_path=state,
+    )
+
+
 def test_quota_cli_projects_outer_controller_without_codex_app_action(
     tmp_path: Path,
 ) -> None:
@@ -1810,6 +1853,90 @@ raise SystemExit(0 if artifact.read_text(encoding="utf-8") == "completed" else 7
     assert replayed_exit_code == 0, replayed
     assert replayed["replayed"] is True
     assert not any(replayed["effects"].values())
+
+
+def test_promoted_turn_completion_replays_after_commit_before_journal_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, runtime, registry = _write_live_fixture(tmp_path)
+    _promote_turn_fixture(project, runtime)
+    host_project = tmp_path / "isolated-host-workspace"
+    host_project.mkdir()
+    host_script, validation_script = _completion_host_and_validation_scripts()
+    argv = _turn_run_once_completion_argv(
+        host_project,
+        runtime,
+        registry,
+        host_script,
+        validation_script,
+    )
+    real_completion = turn_command.write_turn_validated_completion
+    committed_results: list[dict[str, object]] = []
+
+    def crash_after_canonical_completion(**kwargs: object) -> dict[str, object]:
+        result = real_completion(**kwargs)
+        committed_results.append(result)
+        if len(committed_results) == 1:
+            raise OSError("injected crash after canonical Todo commit")
+        return result
+
+    monkeypatch.setattr(
+        turn_command,
+        "write_turn_validated_completion",
+        crash_after_canonical_completion,
+    )
+    first_output = io.StringIO()
+    with contextlib.redirect_stdout(first_output):
+        first_exit_code = cli_main(argv)
+    first = json.loads(first_output.getvalue())
+
+    assert first_exit_code == 1, first
+    assert first["error"] == "injected crash after canonical Todo commit"
+    assert committed_results[0]["status"] == "done"
+    assert committed_results[0]["provider_status"] == "applied"
+    assert committed_results[0]["idempotent_replay"] is False
+    interrupted = _turn_journal(runtime)
+    assert interrupted["effect_attempts"]["durable_writeback"]["status"] == "prepared"
+    turn_key = str(interrupted["turn_key"])
+
+    resumed_output = io.StringIO()
+    with contextlib.redirect_stdout(resumed_output):
+        resumed_exit_code = cli_main(
+            [
+                *argv[:-1],
+                "--resume-turn-key",
+                turn_key,
+                "--execute",
+            ]
+        )
+    resumed = json.loads(resumed_output.getvalue())
+
+    assert resumed_exit_code == 0, json.dumps(resumed, indent=2)
+    assert resumed["status"] == "committed"
+    assert resumed["effects"]["host_invoked"] is False
+    assert committed_results[1]["status"] == "done"
+    assert committed_results[1]["provider_status"] == "replayed"
+    assert committed_results[1]["idempotent_replay"] is True
+    assert _turn_journal(runtime)["writeback"]["completion"] == {
+        "todo_id": "todo_fixture0001",
+        "continuation": "active_goal",
+    }
+    event_path = (
+        runtime
+        / "goals"
+        / "loopx-turn-fixture"
+        / "rollout-event-log.jsonl"
+    )
+    events = [
+        json.loads(line)
+        for line in event_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert sum(
+        event.get("event_kind") == "todo_complete"
+        and event.get("run_id") == turn_key
+        for event in events
+    ) == 1
 
 
 def _completion_host_and_validation_scripts() -> tuple[str, str]:

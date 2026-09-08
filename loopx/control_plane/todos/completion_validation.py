@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from json import loads as json_loads
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, cast
 
 from ...history import load_registry
 from ...materials import find_registry_goal, goal_repo
@@ -12,17 +13,27 @@ from ..runtime.validation_command import (
     run_caller_validation,
 )
 from .active_state_editing import find_todo_block
-from .contract import TODO_STATUS_DONE, normalize_todo_status
-from .event_writeback import event_projection_source_authority, event_projection_todo_context
-from .completion_transaction import (
-    reduce_todo_completion_transaction,
-    todo_completion_source_snapshot,
-)
 from .completion_policy import (
     build_completion_policy_request,
     linked_successors_from_state,
 )
-
+from .completion_transaction import (
+    reduce_todo_completion_transaction,
+    todo_completion_source_snapshot,
+)
+from .completion_validation_projection import (
+    completion_validation_declaration,
+    completion_validation_declaration_sha256,
+)
+from .completion_validation_store import (
+    persist_completion_validation_declaration,
+    read_completion_validation_declaration,
+)
+from .contract import TODO_STATUS_DONE, normalize_todo_status
+from .event_writeback import (
+    event_projection_source_authority,
+    event_projection_todo_context,
+)
 
 # Kept safely under the 30s outer CLI/MCP subprocess budget so a timed-out
 # validation still produces a typed receipt before the outer call is killed.
@@ -58,7 +69,7 @@ def _resolve_goal_repo_workspace(registry_path: Path, goal_id: str) -> Path | No
     repo = goal_repo(goal)
     if repo is None or not repo.is_dir():
         return None
-    return repo
+    return cast(Path, repo)
 
 
 def _materialized_todo_item(
@@ -125,17 +136,23 @@ def _run_declared_completion_validation(
         }
     try:
         if validation_argv is not None:
-            return run_caller_validation(
+            return cast(
+                dict[str, Any],
+                run_caller_validation(
+                    workspace,
+                    validation_argv=validation_argv,
+                    validation_label=label,
+                    timeout_seconds=timeout_seconds,
+                ),
+            )
+        return cast(
+            dict[str, Any],
+            run_caller_validation(
                 workspace,
-                validation_argv=validation_argv,
+                validation_command=str(validation_command),
                 validation_label=label,
                 timeout_seconds=timeout_seconds,
-            )
-        return run_caller_validation(
-            workspace,
-            validation_command=str(validation_command),
-            validation_label=label,
-            timeout_seconds=timeout_seconds,
+            ),
         )
     except subprocess.TimeoutExpired:
         return {
@@ -178,6 +195,128 @@ def _run_declared_completion_validation(
             "stderr_captured": False,
             "local_path_captured": False,
         }
+
+
+def run_declared_completion_validation_effect(
+    *,
+    effect: Mapping[str, Any],
+    registry_path: Path,
+    goal_id: str,
+) -> dict[str, Any]:
+    """Execute exactly one TypeScript-authorized validation effect.
+
+    This is an effect adapter only: the TS completion transaction owns whether
+    validation is required and validates the returned privacy-safe receipt on
+    re-entry. No Todo or authority state is read or changed here.
+    """
+
+    if effect.get("kind") != "caller_validation":
+        raise ValueError("unsupported Todo completion validation effect")
+    raw_argv = effect.get("validation_argv")
+    if raw_argv is not None and not (
+        isinstance(raw_argv, list)
+        and raw_argv
+        and all(isinstance(item, str) and item for item in raw_argv)
+    ):
+        raise ValueError("validation_effect.validation_argv must be a string array")
+    receipt = _run_declared_completion_validation(
+        validation_command=(
+            str(effect["validation_command"])
+            if effect.get("validation_command") is not None
+            else None
+        ),
+        validation_argv=list(raw_argv) if isinstance(raw_argv, list) else None,
+        validation_label=(
+            str(effect["validation_label"])
+            if effect.get("validation_label") is not None
+            else None
+        ),
+        validation_timeout_seconds=(
+            int(effect["validation_timeout_seconds"])
+            if effect.get("validation_timeout_seconds") is not None
+            else None
+        ),
+        registry_path=registry_path,
+        goal_id=goal_id,
+    )
+    if receipt is None:
+        raise RuntimeError("authorized validation effect produced no receipt")
+    return receipt
+
+
+def resolve_private_completion_validation_declaration(
+    *,
+    canonical_todo: Mapping[str, Any],
+    state_file: Path,
+    runtime_root: Path,
+    registry_path: Path,
+    goal_id: str,
+    todo_id: str,
+    role: str | None,
+    persist_if_resolved: bool,
+) -> dict[str, Any] | None:
+    """Resolve private effect detail and bind it to the canonical public digest."""
+
+    required = canonical_todo.get("completion_validation_required") is True
+    expected = canonical_todo.get("completion_validation_sha256")
+    if not required:
+        if expected is not None:
+            raise ValueError(
+                "canonical Todo has a completion validation digest without authority"
+            )
+        return None
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise ValueError(
+            "canonical Todo requires completion validation but omits its digest"
+        )
+    # A missing sidecar is an availability case: the digest-bound Markdown or
+    # event projection may rehydrate it below. A present sidecar that fails its
+    # identity or digest checks is corruption/tamper evidence and deliberately
+    # raises instead of falling back, so a second source cannot mask the fault.
+    declaration = read_completion_validation_declaration(
+        runtime_root=runtime_root,
+        goal_id=goal_id,
+        todo_id=todo_id,
+    )
+    if declaration is None:
+        source = _materialized_todo_item(
+            state_file=state_file,
+            todo_id=todo_id,
+            role=role,
+        )
+        if source is None:
+            event_context = event_projection_todo_context(
+                registry_path=registry_path,
+                goal_id=goal_id,
+                state_path=state_file,
+                todo_id=todo_id,
+                role=role,
+            )
+            if event_context is not None:
+                source = dict(
+                    event_context.get("raw_item") or event_context.get("item") or {}
+                )
+        declaration = (
+            completion_validation_declaration(source)
+            if isinstance(source, dict)
+            else None
+        )
+    if declaration is None:
+        raise ValueError(
+            "private completion validation declaration is unavailable for canonical Todo"
+        )
+    if completion_validation_declaration_sha256(declaration) != expected:
+        raise ValueError(
+            "private completion validation declaration does not match canonical Todo digest"
+        )
+    if persist_if_resolved:
+        persist_completion_validation_declaration(
+            runtime_root=runtime_root,
+            goal_id=goal_id,
+            todo_id=todo_id,
+            declaration=declaration,
+        )
+    return declaration
 
 
 def run_completion_validation_gate_with_source(
@@ -256,10 +395,10 @@ def run_completion_validation_gate_with_source(
         todo_id=todo_id,
         requested_has_successor=requested_has_successor,
         validation_receipt=None,
-        # Preserve the legacy error priority: policy admission is evaluated
-        # only after actor authority and the task-lease fence are established
-        # under the write lock. The source is still captured here for CAS.
-        completion_policy_request=None,
+        # The coarse reducer returns policy success or typed failure as data.
+        # The public writer consumes that projection only after actor and lease
+        # admission, preserving legacy error priority without a second IPC.
+        completion_policy_request=completion_policy_source,
     )
     completion_validation = None
     if transaction["decision"] == "execute_validation":
@@ -302,7 +441,7 @@ def run_completion_validation_gate_with_source(
             todo_id=todo_id,
             requested_has_successor=requested_has_successor,
             validation_receipt=completion_validation,
-            completion_policy_request=None,
+            completion_policy_request=completion_policy_source,
         )
     if transaction["decision"] != "reject":
         return {
@@ -344,23 +483,28 @@ def completion_policy_source_from_state(
 ) -> dict[str, Any]:
     """Project lock-comparable facts for the TS completion policy."""
 
-    return build_completion_policy_request(
-        registry_path=registry_path,
-        goal_id=goal_id,
-        claimed_by=facts.get("claimed_by"),
-        next_claimed_by=facts.get("next_claimed_by"),
-        next_agent_todo=facts.get("next_agent_todo"),
-        next_action_kind=facts.get("next_action_kind"),
-        next_continuation_policy=facts.get("next_continuation_policy"),
-        next_excluded_agents=facts.get("next_excluded_agents") or [],
-        self_merged=bool(facts.get("self_merged")),
-        evidence=facts.get("evidence"),
-        linked_successors=linked_successors_from_state(
-            lines=lines,
-            successor_todo_ids=successor_todo_ids,
-            event_fields=event_fields,
+    return cast(
+        dict[str, Any],
+        build_completion_policy_request(
+            registry_path=registry_path,
+            goal_id=goal_id,
+            claimed_by=facts.get("claimed_by"),
+            next_claimed_by=facts.get("next_claimed_by"),
+            next_agent_todo=facts.get("next_agent_todo"),
+            next_action_kind=facts.get("next_action_kind"),
+            next_continuation_policy=facts.get("next_continuation_policy"),
+            next_excluded_agents=facts.get("next_excluded_agents") or [],
+            self_merged=bool(facts.get("self_merged")),
+            evidence=facts.get("evidence"),
+            linked_successors=linked_successors_from_state(
+                lines=lines,
+                successor_todo_ids=successor_todo_ids,
+                event_fields=event_fields,
+            ),
         ),
     )
+
+
 def prepare_user_todo_update_completion(
     *,
     status: str | None,

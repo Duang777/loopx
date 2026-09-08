@@ -5,6 +5,7 @@ from datetime import datetime
 import re
 from typing import Any, Callable, Optional
 
+from ..goals.goal_vision_wait_projection import attach_active_vision_waits
 from .contract import (
     TODO_RESUME_KIND_TODO_DONE,
     TODO_STATUS_DONE,
@@ -1064,6 +1065,7 @@ def compact_todo_group(
     available_capabilities: Any = None,
     item_limit: int | None = MAX_STATUS_TODOS_PER_ROLE,
     include_task_orchestration_authority: bool = False,
+    vision_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     if not items and not include_empty_source:
         return None
@@ -1204,6 +1206,10 @@ def compact_todo_group(
         ][:MAX_DEFERRED_TODO_VISIBILITY_ITEMS],
         "items": lanes.budgeted_items if item_limit is None else lanes.budgeted_items[:item_limit],
     }
+    attach_active_vision_waits(
+        summary, vision_runs, role=role, items=items,
+        lineage_items=resume_source_items,
+    )
     if watch_only_monitor_items:
         summary["watch_only_monitor_count"] = len(watch_only_monitor_items)
         summary["watch_only_monitor_due_count"] = len(watch_only_monitor_due_items)

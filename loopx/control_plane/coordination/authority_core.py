@@ -513,53 +513,158 @@ def _terminal_fence_decision(
     )
 
 
-def _terminal_decision(
+def _decision_scope_payload(scope: DecisionScope | None) -> dict[str, str] | None:
+    if scope is None:
+        return None
+    return {
+        "kind": scope[0],
+        "granularity": scope[1],
+        "scope_key": scope[2],
+    }
+
+
+def _todo_fact_payload(todo: TodoSnapshot) -> dict[str, Any]:
+    return {
+        "todo_id": todo.todo_id,
+        "status": todo.status,
+        "role": todo.role,
+        "task_class": todo.task_class,
+        "claimed_by": todo.claimed_by,
+        "excluded_agents": sorted(todo.excluded_agents),
+        "bound_agent": todo.bound_agent,
+        "blocks_agent": todo.blocks_agent,
+        "decision_scope": _decision_scope_payload(todo.decision_scope),
+        "required_decision_scopes": [
+            _decision_scope_payload(scope)
+            for scope in sorted(todo.required_decision_scopes)
+        ],
+        "unblocks_todo_id": todo.unblocks_todo_id,
+    }
+
+
+def _lease_fact_payload(lease: LeaseSnapshot | None) -> dict[str, Any] | None:
+    if lease is None:
+        return None
+    return {
+        "present": lease.present,
+        "active": lease.active,
+        "status": lease.status,
+        "owner": lease.owner,
+        "idempotency_key": lease.idempotency_key,
+        "version": lease.version,
+        "lease_epoch": lease.lease_epoch,
+        "write_scopes": list(lease.write_scopes),
+        "acquire_ttl_seconds": lease.acquire_ttl_seconds,
+    }
+
+
+def _lease_fact_from_payload(value: Any) -> LeaseSnapshot | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RuntimeError("TypeScript terminal decision next_lease shape mismatch")
+    return LeaseSnapshot(
+        present=bool(value.get("present")),
+        active=bool(value.get("active")),
+        status=str(value["status"]) if value.get("status") is not None else None,
+        owner=str(value["owner"]) if value.get("owner") is not None else None,
+        idempotency_key=(
+            str(value["idempotency_key"])
+            if value.get("idempotency_key") is not None
+            else None
+        ),
+        version=int(value.get("version") or 0),
+        lease_epoch=int(value.get("lease_epoch") or 0),
+        write_scopes=tuple(str(item) for item in value.get("write_scopes") or []),
+        acquire_ttl_seconds=(
+            int(value["acquire_ttl_seconds"])
+            if value.get("acquire_ttl_seconds") is not None
+            else None
+        ),
+    )
+
+
+def _typescript_terminal_decision(
     snapshot: CoordinationSnapshot,
     command: TodoMutationCommand,
-    *,
-    authority_mode: str,
-    ownership_gate: OwnershipGate,
 ) -> TransitionPlan:
+    """Adapt the TypeScript-owned complete/supersede decision into the legacy plan."""
+
     todo = snapshot.todo
     assert todo is not None
-    if todo.status == "done":
-        return _result(
-            DecisionOutcome.NO_CHANGE,
-            "terminal_replay",
-            next_snapshot=snapshot,
-            authority_mode=authority_mode,
-            ownership_gate=ownership_gate,
-            idempotent=True,
-        )
-    fence = _terminal_fence_decision(
-        snapshot,
-        actor_agent_id=command.actor_agent_id,
-        lease_idempotency_key=command.lease_idempotency_key,
-        lease_expected_version=command.lease_expected_version,
-        delegated_authority=(
-            authority_mode == "delegated_orchestration_override"
-        ),
-        allow_user_gate_auto_acquire=(
-            command.allow_user_gate_auto_acquire
-        ),
-        require_active_when_fence_supplied=True,
+    payload = effect_runtime_result(
+        "todo.terminal.decide",
+        {
+            "schema_version": "loopx_coordination_todo_terminal_decision_request_v0",
+            "command": command.action.value,
+            "handoff_mode": snapshot.handoff_mode.value,
+            "registered_agents": list(snapshot.registered_agents),
+            "lifecycle_grants": [
+                {
+                    "agent_id": grant.agent_id,
+                    "actions": sorted(grant.actions),
+                    "requires_reason": grant.requires_reason,
+                }
+                for grant in snapshot.lifecycle_grants
+            ],
+            "todo": _todo_fact_payload(todo),
+            "decision_target": (
+                _todo_fact_payload(snapshot.decision_target)
+                if snapshot.decision_target is not None
+                else None
+            ),
+            "lease": _lease_fact_payload(snapshot.lease),
+            "actor_agent_id": command.actor_agent_id,
+            "authority_action": command.authority_action or command.action.value,
+            "authority_reason": command.authority_reason,
+            "decision_outcome": command.decision_outcome,
+            "lease_idempotency_key": command.lease_idempotency_key,
+            "lease_expected_version": command.lease_expected_version,
+            "allow_user_gate_auto_acquire": command.allow_user_gate_auto_acquire,
+        },
     )
-    if fence.outcome is not DecisionOutcome.APPLY:
-        return replace(
-            fence,
-            authority_mode=authority_mode,
-            ownership_gate=ownership_gate,
+    if not isinstance(payload, dict) or payload.get("schema_version") != (
+        "loopx_coordination_todo_terminal_decision_result_v0"
+    ):
+        raise RuntimeError("TypeScript terminal decision result shape mismatch")
+    try:
+        outcome = DecisionOutcome(str(payload["outcome"]))
+        ownership_gate = OwnershipGate(str(payload["ownership_gate"]))
+        lease_fence = LeaseFence(str(payload["lease_fence"]))
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError(
+            "TypeScript terminal decision result shape mismatch"
+        ) from exc
+    next_snapshot = None
+    if outcome is DecisionOutcome.APPLY:
+        if payload.get("next_todo_status") != "done":
+            raise RuntimeError(
+                "TypeScript terminal decision omitted terminal Todo state"
+            )
+        next_lease_payload = payload.get("next_lease")
+        next_snapshot = replace(
+            snapshot,
+            todo=replace(todo, status="done"),
+            lease=(
+                snapshot.lease
+                if next_lease_payload is None
+                else _lease_fact_from_payload(next_lease_payload)
+            ),
         )
-    next_snapshot = fence.next_snapshot or snapshot
-    return replace(
-        fence,
-        code="terminal_transition",
-        next_snapshot=replace(
-            next_snapshot,
-            todo=_todo_after_command(todo, command),
+    elif outcome is DecisionOutcome.NO_CHANGE:
+        next_snapshot = snapshot
+    return TransitionPlan(
+        outcome=outcome,
+        code=str(payload.get("code") or "terminal_decision_invalid"),
+        next_snapshot=next_snapshot,
+        authority_mode=(
+            str(payload["authority_mode"])
+            if payload.get("authority_mode") is not None
+            else None
         ),
-        authority_mode=authority_mode,
         ownership_gate=ownership_gate,
+        lease_fence=lease_fence,
+        idempotent=bool(payload.get("idempotent")),
     )
 
 
@@ -588,6 +693,8 @@ def _decide_todo(
     snapshot: CoordinationSnapshot,
     command: TodoMutationCommand,
 ) -> TransitionPlan:
+    if command.action in {TodoAction.COMPLETE, TodoAction.SUPERSEDE}:
+        return _typescript_terminal_decision(snapshot, command)
     authority_mode, rejection = _authority_for_todo(snapshot, command)
     if rejection is not None:
         return _result(DecisionOutcome.REJECTED, rejection)
@@ -613,13 +720,6 @@ def _decide_todo(
                 authority_mode=authority_mode,
                 ownership_gate=ownership_gate,
             )
-    if command.action in {TodoAction.COMPLETE, TodoAction.SUPERSEDE}:
-        return _terminal_decision(
-            snapshot,
-            command,
-            authority_mode=authority_mode,
-            ownership_gate=ownership_gate,
-        )
     return _result(
         DecisionOutcome.APPLY,
         "todo_transition",

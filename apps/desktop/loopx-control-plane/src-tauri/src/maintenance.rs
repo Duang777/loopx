@@ -20,6 +20,7 @@ pub struct Maintenance {
     last_failure: Mutex<Value>,
     runtime_retry: Mutex<RuntimeRetry>,
     install_journal_discarded: AtomicBool,
+    environment_cache: Mutex<Option<(Instant, Value)>>,
 }
 
 #[derive(Default)]
@@ -170,11 +171,68 @@ fn check_error(error: tauri_plugin_updater::Error) -> &'static str {
         _ => "update_check_failed",
     }
 }
+// Environment telemetry for the recovery diagnostics: coarse, non-PII facts
+// that separate "fresh Mac without a usable Python" from OS-specific defects.
+// No paths, environment variables or process output beyond the probed version.
+const ENVIRONMENT_TTL: Duration = Duration::from_secs(30);
+
+fn compose_environment(
+    os_version: Option<String>,
+    arch: &str,
+    runtime_executable_found: bool,
+    python3: (bool, Option<String>),
+) -> Value {
+    json!({
+        "os_version": os_version,
+        "arch": arch,
+        "runtime_executable_found": runtime_executable_found,
+        "python3_found": python3.0,
+        "python3_version": python3.1,
+    })
+}
+
+fn environment_is_fresh(cached: &Option<(Instant, Value)>, now: Instant) -> bool {
+    cached
+        .as_ref()
+        .is_some_and(|(probed_at, _)| now.duration_since(*probed_at) < ENVIRONMENT_TTL)
+}
+
+fn detect_environment() -> Value {
+    let os_version = (cfg!(target_os = "macos"))
+        .then(|| {
+            let mut probe = std::process::Command::new("sw_vers");
+            probe.arg("-productVersion");
+            crate::services::timed_output(probe)
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|version| !version.is_empty())
+        })
+        .flatten();
+    let runtime_executable_found =
+        std::path::Path::new(&crate::services::loopx_executable()).is_file();
+    compose_environment(
+        os_version,
+        std::env::consts::ARCH,
+        runtime_executable_found,
+        crate::services::python3_environment(),
+    )
+}
+
 #[tauri::command]
 pub fn desktop_update_status(app: AppHandle, state: State<'_, Maintenance>) -> Value {
     let snapshot = state.snapshot.lock().unwrap().clone();
     let last_failure = state.last_failure.lock().unwrap().clone();
-    json!({"state": snapshot, "last_failure": last_failure, "app_version": app.package_info().version.to_string(), "runtime": bundled_runtime::identity(&app).ok(), "rollback_available": crate::update_backup::available(&app)})
+    // Probing spawns bounded sub-processes; the boot page polls every second,
+    // so serve the cached block and refresh at most every ENVIRONMENT_TTL.
+    let environment = {
+        let now = Instant::now();
+        let mut cache = state.environment_cache.lock().unwrap();
+        if !environment_is_fresh(&cache, now) {
+            *cache = Some((now, detect_environment()));
+        }
+        cache.as_ref().expect("refreshed above").1.clone()
+    };
+    json!({"state": snapshot, "last_failure": last_failure, "app_version": app.package_info().version.to_string(), "runtime": bundled_runtime::identity(&app).ok(), "rollback_available": crate::update_backup::available(&app), "environment": environment})
 }
 #[tauri::command]
 pub async fn desktop_update(
@@ -696,6 +754,57 @@ mod tests {
         let state = Maintenance::default();
         state.publish("downloading", json!({"received":12,"total":24}));
         assert_eq!(state.snapshot.lock().unwrap()["details"]["received"], 12);
+    }
+
+    #[test]
+    fn environment_telemetry_is_coarse_and_non_identifying() {
+        let environment = compose_environment(
+            Some("26.5".to_string()),
+            "aarch64",
+            false,
+            (true, Some("3.9.6".to_string())),
+        );
+        assert_eq!(environment["os_version"], "26.5");
+        assert_eq!(environment["arch"], "aarch64");
+        assert_eq!(environment["runtime_executable_found"], false);
+        assert_eq!(environment["python3_found"], true);
+        assert_eq!(environment["python3_version"], "3.9.6");
+        // The fresh-Mac signature: no Homebrew/CLT python3 answers a version
+        // probe, and the runtime executable has never been installed.
+        let fresh = compose_environment(None, "aarch64", false, (false, None));
+        assert_eq!(fresh["os_version"], Value::Null);
+        assert_eq!(fresh["python3_found"], false);
+        assert_eq!(fresh["python3_version"], Value::Null);
+        // The block carries exactly the five diagnostic keys — no paths,
+        // environment variables or free-form output can join it.
+        let keys: Vec<&str> = environment
+            .as_object()
+            .expect("environment object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "arch",
+                "os_version",
+                "python3_found",
+                "python3_version",
+                "runtime_executable_found"
+            ]
+        );
+    }
+
+    #[test]
+    fn environment_cache_serves_within_ttl_and_refreshes_after_it() {
+        let now = Instant::now();
+        let cached = Some((now, json!({"os_version":"26.5"})));
+        assert!(environment_is_fresh(&cached, now + Duration::from_secs(29)));
+        assert!(!environment_is_fresh(
+            &cached,
+            now + Duration::from_secs(30)
+        ));
+        assert!(!environment_is_fresh(&None, now));
     }
 
     #[test]

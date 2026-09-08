@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { usePublicPageNavigation } from "./usePublicPageNavigation";
 
 type Language = "en" | "zh";
 
@@ -754,9 +755,7 @@ function SetupDialog({
 }
 
 export function App() {
-  const [language, setLanguage] = useState<Language>(() => {
-    return new URLSearchParams(window.location.search).get("lang") === "zh" ? "zh" : "en";
-  });
+  const [language, setLanguage] = usePublicPageNavigation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [copiedOption, setCopiedOption] = useState<"agent" | "shell" | null>(null);
@@ -768,12 +767,7 @@ export function App() {
 
   useEffect(() => {
     document.body.dataset.language = language;
-    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
     document.title = language === "zh" ? "LoopX — 让长程目标持续推进" : "LoopX — Keep the loop moving";
-    const url = new URL(window.location.href);
-    if (language === "zh") url.searchParams.set("lang", "zh");
-    else url.searchParams.delete("lang");
-    window.history.replaceState({}, "", url);
   }, [language]);
 
   async function copySetup(option: "agent" | "shell") {
@@ -799,13 +793,6 @@ export function App() {
   function showTerminalReplay() {
     setActiveTerminal("issue");
     setTerminalReplayToken((value) => value + 1);
-    const url = new URL(window.location.href);
-    url.hash = "showcases";
-    window.history.replaceState({}, "", url);
-    document.getElementById("showcases")?.scrollIntoView({
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-      block: "start",
-    });
   }
 
   return (
@@ -814,7 +801,7 @@ export function App() {
         Skip to content
       </a>
       <header className="site-header" id="top">
-        <a className="brand" href={basePath} aria-label="LoopX home">
+        <a className="brand" href={`${basePath}${language === "zh" ? "?lang=zh" : ""}`} aria-label="LoopX home">
           <ProductMark />
           <span>LoopX</span>
         </a>
@@ -898,10 +885,10 @@ export function App() {
                 <span>{copy.copy}</span>
                 <ArrowRight className="button-trailing-icon" size={15} />
               </button>
-              <button className="button button-secondary" type="button" onClick={showTerminalReplay}>
+              <a className="button button-secondary" href="#showcases" onClick={showTerminalReplay}>
                 <Play size={15} fill="currentColor" />
                 {copy.demo}
-              </button>
+              </a>
             </div>
             <div className="supported-hosts">
               <span>WORKS WITH</span>

@@ -1,7 +1,7 @@
 {
   "schema_version": "loopx_legacy_writer_fence_caller_parity_v0",
   "source_baseline": "0fb497af8",
-  "description": "Complete observable behaviour of every fenced legacy writer entry point: whole-object envelopes, exit status, and exclusion-free effect snapshots. `baseline` entries are documentation of earlier revisions and are never executed.",
+  "description": "Observable behaviour of every fenced coordination entry point: legacy-only writers remain fenced, while promoted terminal and archive rows deliberately route through canonical authority. Stable provider-first fields use subset matching; exit status and exclusion-free effect snapshots remain exact. `baseline` entries document earlier revisions and are never executed.",
   "placeholders": [
     "{runtime_root}",
     "{todo_a}",
@@ -1277,18 +1277,16 @@
         "dry_run": false,
         "added": false,
         "already_exists": false,
+        "changed": false,
         "goal_id": "observable",
         "role": null,
         "todo": "",
-        "error": "legacy coordination writer is fenced; use the promoted canonical authority (file_v0) for goal observable; fence caller-fixture; the primary record was not changed",
-        "error_code": "legacy_coordination_writer_fenced",
-        "write_check": {
-          "schema_version": "loopx_legacy_coordination_write_check_result_v0",
-          "status": "blocked",
-          "reason_code": "legacy_coordination_writer_fenced",
-          "authority_mode": "file_v0",
-          "fence_id": "caller-fixture"
-        }
+        "status": "failed",
+        "reason_code": "handoff_mode_requires_lease",
+        "error_code": "handoff_mode_requires_lease",
+        "source_authority": "file_v0",
+        "decision_read_from_provider": true,
+        "legacy_fallback_used": false
       },
       "effect": {
         "added": [],
@@ -1296,6 +1294,7 @@
         "changed": []
       },
       "outbox_added": [],
+      "match": "subset",
       "baseline": {
         "note": "recorded through the real CLI against each revision",
         "0fb497af8": {
@@ -1357,18 +1356,16 @@
         "dry_run": false,
         "added": false,
         "already_exists": false,
+        "changed": false,
         "goal_id": "observable",
         "role": null,
         "todo": "Parity successor",
-        "error": "legacy coordination writer is fenced; use the promoted canonical authority (file_v0) for goal observable; fence caller-fixture; the primary record was not changed",
-        "error_code": "legacy_coordination_writer_fenced",
-        "write_check": {
-          "schema_version": "loopx_legacy_coordination_write_check_result_v0",
-          "status": "blocked",
-          "reason_code": "legacy_coordination_writer_fenced",
-          "authority_mode": "file_v0",
-          "fence_id": "caller-fixture"
-        }
+        "status": "failed",
+        "reason_code": "handoff_mode_requires_lease",
+        "error_code": "handoff_mode_requires_lease",
+        "source_authority": "file_v0",
+        "decision_read_from_provider": true,
+        "legacy_fallback_used": false
       },
       "effect": {
         "added": [],
@@ -1376,6 +1373,7 @@
         "changed": []
       },
       "outbox_added": [],
+      "match": "subset",
       "baseline": {
         "note": "recorded through the real CLI against each revision",
         "0fb497af8": {
@@ -1396,31 +1394,30 @@
       "workspace": "w1",
       "caller": "todo_archive_completed_execute",
       "fence_state": "engaged",
-      "exit": 1,
+      "exit": 0,
       "expect": {
-        "ok": false,
+        "ok": true,
         "dry_run": false,
-        "added": false,
-        "already_exists": false,
+        "changed": false,
         "goal_id": "observable",
-        "role": null,
-        "todo": "",
-        "error": "legacy coordination writer is fenced; use the promoted canonical authority (file_v0) for goal observable; fence caller-fixture; the primary record was not changed",
-        "error_code": "legacy_coordination_writer_fenced",
-        "write_check": {
-          "schema_version": "loopx_legacy_coordination_write_check_result_v0",
-          "status": "blocked",
-          "reason_code": "legacy_coordination_writer_fenced",
-          "authority_mode": "file_v0",
-          "fence_id": "caller-fixture"
-        }
+        "role": "agent",
+        "status": "no_change",
+        "moved_count": 0,
+        "source_authority": "file_v0",
+        "decision_read_from_provider": true,
+        "legacy_fallback_used": false,
+        "projection_delivery": "delivered"
       },
       "effect": {
         "added": [],
         "removed": [],
-        "changed": []
+        "changed": [
+          "STATE.md",
+          "runtime/goals/observable/rollout-event-log.jsonl"
+        ]
       },
       "outbox_added": [],
+      "match": "subset",
       "baseline": {
         "note": "recorded through the real CLI against each revision",
         "0fb497af8": {
@@ -1531,7 +1528,12 @@
       "expect": {
         "ok": true,
         "dry_run": true,
-        "changed": false
+        "changed": false,
+        "status": "no_change",
+        "source_authority": "file_v0",
+        "decision_read_from_provider": true,
+        "legacy_fallback_used": false,
+        "projection_delivery": "not_required"
       },
       "effect": {
         "added": [],
@@ -1585,26 +1587,20 @@
       "workspace": "w1",
       "caller": "todo_complete_dry_run_gate",
       "fence_state": "engaged",
-      "exit": 1,
+      "exit": 0,
       "expect": {
-        "ok": false,
+        "ok": true,
         "dry_run": true,
-        "added": false,
-        "already_exists": false,
+        "changed": true,
+        "completed": true,
+        "superseded": false,
         "goal_id": "observable",
-        "role": null,
-        "todo": "",
-        "error": "legacy coordination writer is fenced; use the promoted canonical authority (file_v0) for goal observable; fence caller-fixture; the primary record was not changed",
-        "error_code": "legacy_coordination_writer_fenced",
-        "lease_path": "{runtime_root}/goals/observable/task-leases/{todo_gate}.json",
-        "write_check": {
-          "schema_version": "loopx_legacy_coordination_write_check_result_v0",
-          "status": "blocked",
-          "reason_code": "legacy_coordination_writer_fenced",
-          "authority_mode": "file_v0",
-          "fence_id": "caller-fixture"
-        },
-        "handoff_mode": "hard_lease"
+        "role": "user",
+        "status": "planned",
+        "source_authority": "file_v0",
+        "decision_read_from_provider": true,
+        "legacy_fallback_used": false,
+        "projection_delivery": "not_required"
       },
       "effect": {
         "added": [],
@@ -1612,6 +1608,7 @@
         "changed": []
       },
       "outbox_added": [],
+      "match": "subset",
       "baseline": {
         "note": "ee1b17217 returned the untyped 'native task-lease lifecycle schema mismatch' and left an acquired intent receipt; the verify path now checks the fence before its first receipt"
       }
@@ -1628,20 +1625,16 @@
         "dry_run": true,
         "added": false,
         "already_exists": false,
+        "changed": false,
         "goal_id": "observable",
         "role": null,
         "todo": "Parity successor",
-        "error": "legacy coordination writer is fenced; use the promoted canonical authority (file_v0) for goal observable; fence caller-fixture; the primary record was not changed",
-        "error_code": "legacy_coordination_writer_fenced",
-        "lease_path": "{runtime_root}/goals/observable/task-leases/{todo_a}.json",
-        "write_check": {
-          "schema_version": "loopx_legacy_coordination_write_check_result_v0",
-          "status": "blocked",
-          "reason_code": "legacy_coordination_writer_fenced",
-          "authority_mode": "file_v0",
-          "fence_id": "caller-fixture"
-        },
-        "handoff_mode": "hard_lease"
+        "status": "failed",
+        "reason_code": "handoff_mode_requires_lease",
+        "error_code": "handoff_mode_requires_lease",
+        "source_authority": "file_v0",
+        "decision_read_from_provider": true,
+        "legacy_fallback_used": false
       },
       "effect": {
         "added": [],
@@ -1649,6 +1642,7 @@
         "changed": []
       },
       "outbox_added": [],
+      "match": "subset",
       "baseline": {
         "note": "ee1b17217 reported handoff_mode_requires_lease and left an acquired intent receipt for this preview"
       }
@@ -1659,26 +1653,20 @@
       "workspace": "w1",
       "caller": "todo_complete_dry_run_leased",
       "fence_state": "engaged",
-      "exit": 1,
+      "exit": 0,
       "expect": {
-        "ok": false,
+        "ok": true,
         "dry_run": true,
-        "added": false,
-        "already_exists": false,
+        "changed": true,
+        "completed": true,
+        "superseded": false,
         "goal_id": "observable",
-        "role": null,
-        "todo": "",
-        "error": "legacy coordination writer is fenced; use the promoted canonical authority (file_v0) for goal observable; fence caller-fixture; the primary record was not changed",
-        "error_code": "legacy_coordination_writer_fenced",
-        "lease_path": "{runtime_root}/goals/observable/task-leases/{todo_b}.json",
-        "write_check": {
-          "schema_version": "loopx_legacy_coordination_write_check_result_v0",
-          "status": "blocked",
-          "reason_code": "legacy_coordination_writer_fenced",
-          "authority_mode": "file_v0",
-          "fence_id": "caller-fixture"
-        },
-        "handoff_mode": "hard_lease"
+        "role": "agent",
+        "status": "planned",
+        "source_authority": "file_v0",
+        "decision_read_from_provider": true,
+        "legacy_fallback_used": false,
+        "projection_delivery": "not_required"
       },
       "effect": {
         "added": [],
@@ -1686,6 +1674,7 @@
         "changed": []
       },
       "outbox_added": [],
+      "match": "subset",
       "baseline": {
         "note": "ee1b17217 previewed ok=true for a write the fence forbids and persisted a closed lifecycle-fence receipt"
       }

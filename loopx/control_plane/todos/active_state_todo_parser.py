@@ -141,6 +141,7 @@ def parse_active_state_todos(
         available_capabilities=available_capabilities,
         item_limit=item_limit,
         include_task_orchestration_authority=include_task_orchestration_authority,
+        vision_runs=(goal or {}).get("latest_runs"),
     )
     archived_advancement_done_count = count_advancement_todos(
         [item for item in archive_items if item.get("done") is True]
