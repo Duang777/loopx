@@ -94,6 +94,11 @@ def test_turn_plan_projects_ready_route_without_side_effects() -> None:
     assert payload["session"] == {
         "schema_version": LOOPX_TURN_SESSION_BINDING_SCHEMA_VERSION,
         "action": "start_new",
+        "context_policy": {
+            "schema_version": "loopx_iteration_context_policy_v0",
+            "mode": "resume_if_available",
+            "scope": "iteration",
+        },
     }
     assert payload["transaction"]["status"] == "planned"
     assert payload["transaction"]["phases"] == [
@@ -935,6 +940,45 @@ def test_turn_plan_instance_id_distinguishes_new_turns_from_retries() -> None:
     assert first["transaction"]["turn_key"] != second["transaction"]["turn_key"]
 
 
+def test_turn_plan_fresh_iteration_ignores_compatible_session_binding() -> None:
+    payload = build_loopx_turn_plan(
+        _envelope(),
+        host="codex-cli",
+        execution_mode="interactive-visible",
+        session_binding={
+            "schema_version": LOOPX_TURN_SESSION_BINDING_SCHEMA_VERSION,
+            "goal_id": "fixture-goal",
+            "agent_id": "codex-fixture",
+            "todo_id": "todo_fixture0001",
+        },
+        iteration_context_policy="fresh",
+        turn_instance_id="cycle-2:iteration-1",
+    )
+
+    assert payload["ok"] is True
+    assert payload["session"] == {
+        "schema_version": LOOPX_TURN_SESSION_BINDING_SCHEMA_VERSION,
+        "action": "start_new",
+        "binding_status": "existing_binding_ignored",
+        "context_policy": {
+            "schema_version": "loopx_iteration_context_policy_v0",
+            "mode": "fresh",
+            "scope": "iteration",
+        },
+    }
+    assert payload["transaction"]["turn_instance_id"] == "cycle-2:iteration-1"
+
+
+def test_turn_plan_rejects_unknown_iteration_context_policy() -> None:
+    with pytest.raises(ValueError, match="iteration context policy"):
+        build_loopx_turn_plan(
+            _envelope(),
+            host="codex-cli",
+            execution_mode="interactive-visible",
+            iteration_context_policy="automatic",
+        )
+
+
 @pytest.mark.parametrize(
     "instance_id",
     ["", "contains space", "private/path", "x" * 129],
@@ -1434,6 +1478,45 @@ def test_turn_cli_consumes_live_state_without_writes(
     assert payload["turn_envelope"]["action_signature"]["matches"] is True
     assert payload["effects"]["state_written"] is False
     assert before == after
+
+
+def test_turn_cli_projects_explicit_fresh_iteration_context(
+    tmp_path: Path,
+) -> None:
+    project, runtime, registry = _write_live_fixture(tmp_path)
+    output = io.StringIO()
+
+    with contextlib.redirect_stdout(output):
+        exit_code = cli_main(
+            [
+                "--registry",
+                str(registry),
+                "--runtime-root",
+                str(runtime),
+                "--format",
+                "json",
+                "turn",
+                "plan",
+                "--goal-id",
+                "loopx-turn-fixture",
+                "--agent-id",
+                "codex-fixture",
+                "--scan-root",
+                str(project),
+                "--iteration-context",
+                "fresh",
+                "--include-transaction-detail",
+            ]
+        )
+
+    payload = json.loads(output.getvalue())
+    assert exit_code == 0, payload
+    assert payload["session"]["action"] == "start_new"
+    assert payload["session"]["context_policy"] == {
+        "schema_version": "loopx_iteration_context_policy_v0",
+        "mode": "fresh",
+        "scope": "iteration",
+    }
 
 
 def test_turn_cli_binds_advisory_primary_without_hiding_portfolio(
