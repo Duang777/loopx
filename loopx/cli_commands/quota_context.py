@@ -175,7 +175,8 @@ def validate_quota_command_context_request(
         if profile not in GUIDED_START_TURN_RUNTIME_PROFILES:
             raise QuotaCommandValidationError(
                 "--begin-turn requires runtime-profile codex_app_heartbeat "
-                "or codex_app_ssh_goal"
+                "or codex_app_ssh_goal; every other host starts its turn by "
+                "passing its own --turn-instance-id"
             )
     if (
         (heartbeat_turn_id or begin_turn)
