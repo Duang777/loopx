@@ -10,24 +10,19 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .control_plane.runtime.time import now_local_iso
+from .public_safe_text import (
+    PRIVATE_TEXT_PATTERNS as SHARED_PRIVATE_TEXT_PATTERNS,
+    find_private_text_match,
+)
 
 
 AUTHORITY_SOURCE_REGISTRATION_VERSION = "authority_source_registration_v0"
 DOC_REGISTRY_AUTHORITY_IMPORT_VERSION = "doc_registry_authority_import_v0"
 AUTHORITY_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 AUTHORITY_SOURCE_BOUNDARIES = {"public", "local_private", "private_redacted"}
-PRIVATE_TEXT_PATTERNS = (
-    re.compile(r"/" + r"Users/"),
-    re.compile(r"/" + r"ext_data/"),
-    re.compile("la" + "rk" + "office", re.I),
-    re.compile("docs" + r"\." + "internal", re.I),
-    re.compile(r"\bt-20\d{12}-[a-z0-9]+\b"),
-    re.compile(r"\b" + "Bear" + r"er\b", re.I),
-    re.compile(r"\b" + "Author" + r"ization\b", re.I),
-    re.compile(r"\b" + "tok" + r"en\s*=", re.I),
-    re.compile(r"\b" + "pass" + r"word\b", re.I),
-    re.compile(r"\b" + "sec" + r"ret\b", re.I),
-)
+# Owned by loopx.public_safe_text so every real validator owner shares one
+# contract; re-exported here because callers already import this name.
+PRIVATE_TEXT_PATTERNS = SHARED_PRIVATE_TEXT_PATTERNS
 
 AUTHORITY_REGISTRY_SUMMARY_FIELDS = (
     "declared",
@@ -115,11 +110,8 @@ def public_safe_optional(label: str, value: str | None) -> str | None:
 
 
 def validate_public_safe_text(label: str, value: str | None) -> None:
-    if not value:
-        return
-    for pattern in PRIVATE_TEXT_PATTERNS:
-        if pattern.search(value):
-            raise ValueError(f"{label} contains a private-looking value; keep raw evidence in private payloads")
+    if find_private_text_match(value) is not None:
+        raise ValueError(f"{label} contains a private-looking value; keep raw evidence in private payloads")
 
 
 def find_goal_index(registry: dict[str, Any], goal_id: str) -> int:
