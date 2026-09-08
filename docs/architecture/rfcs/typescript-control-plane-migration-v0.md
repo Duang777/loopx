@@ -218,6 +218,20 @@ this slice reduces semantic owners, not crossing count. Native transactions stay
 in-process. Fold the remaining crossings into that complete transaction rather
 than extending these adapters field by field.
 
+The waiting/resume planning slice now uses `todos/resume_planning.ts` for the
+complete deferred, resume-blocked, monitor-repair and blocked-successor selection.
+Quota composes capacity evaluation with these lanes in one request per source summary, reusing the
+existing TS resume evaluator in-process; vision-wait, agent-scope, frontier and
+replan consumers use the same projection. The old `deferred_resume.py` rule owner
+is removed, not retained behind a second implementation. The Python adapter keeps
+the existing reader codecs (including legacy task-class inference and priority
+rank normalization), not claim/exclusion selection or wait routing. This retires
+one read-policy family, not the whole quota reducer or the monitor/lease writers.
+Equal public sort keys retain source order; full counts precede display limits;
+`monitor_changed` is not the legacy `todo_done:<monitor>` repair path. This
+read-only result grants neither execution authority nor a lifecycle receipt.
+The adapter exits when its callers consume typed Todo records in-process.
+
 1. **Close the actual command and consumer inventory.** Build on the merged
    create/claim/update and #4053 terminal/successor/archive transactions; do not
    recreate them. Inventory remaining field-edit, monitor, lease, and event

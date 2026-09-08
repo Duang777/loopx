@@ -1982,6 +1982,11 @@ backend、实时双向同步或按命令拆开的权威；晋升后不支持的�
    这不是完整 native 字段编辑：在 update 的字段、ownership、validation 和 monitor/resume
    effect 一起闭合前，保留严格 text/note 事务边界。准入结果和 lease-fence 结果都不是
    commit receipt；兑现删除收益时，provider CAS/replay 与既有 writer 持锁生命周期不变。
+   等待/恢复 lane 选择现由 quota、vision-wait、agent-scope、replan 共用一个 TS 读取
+   策略 owner，删除旧 Python selector 模块。适配层在 promotion 后消费同一 canonical
+   summary，之前消费 legacy summary；真实 CLI 覆盖容量变化和 promoted display
+   缺失且不写回的场景。这不代表所有 quota source 路径已闭合，不授予 monitor 写回
+   权限，也不改变 provider 默认与 promotion hold。
 2. **永久投影闭合。** 复用 `provider_projection.py`、Todo-section renderer 和既有
    journal/outbox。保留非托管的人工叙述，从已知 canonical revision 渲染托管 section，
    提供幂等修复与 freshness/readback 证据。投影 pending 独立于业务 commit/replay。
