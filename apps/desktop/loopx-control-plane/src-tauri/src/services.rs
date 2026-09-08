@@ -38,7 +38,7 @@ impl ServiceKind {
 
     fn probe_path(self) -> &'static str {
         match self {
-            Self::Status => "/",
+            Self::Status => "/?readiness=1",
             Self::Chat => "/api/chat/capabilities",
         }
     }
@@ -81,6 +81,7 @@ impl ServiceKind {
 #[derive(Debug, Eq, PartialEq)]
 enum Probe {
     Matching,
+    NotReady,
     Unavailable,
     Unresponsive,
     Foreign,
@@ -138,6 +139,7 @@ impl ServiceSet {
         loop {
             match probe(kind, expected_runtime_identity.as_ref()) {
                 Probe::Matching => return Ok(()),
+                Probe::NotReady => return Err(status_readiness_error(kind)),
                 Probe::Foreign => {
                     return Err(ServiceError(format!(
                         "port {} is occupied by a service that is not LoopX {}",
@@ -185,6 +187,7 @@ impl ServiceSet {
             while Instant::now() < deadline {
                 match probe(kind, expected_runtime_identity.as_ref()) {
                     Probe::Matching => return Ok(()),
+                    Probe::NotReady => return Err(status_readiness_error(kind)),
                     Probe::Foreign => {
                         return Err(ServiceError(format!(
                             "LoopX {} startup reached an unexpected service on port {}",
@@ -227,6 +230,7 @@ impl ServiceSet {
         while Instant::now() < deadline {
             match probe(kind, expected_runtime_identity.as_ref()) {
                 Probe::Matching => return Ok(()),
+                Probe::NotReady => return Err(status_readiness_error(kind)),
                 Probe::Foreign => {
                     return Err(ServiceError(format!(
                         "LoopX {} startup reached an unexpected service on port {}",
@@ -650,6 +654,14 @@ fn runtime_identity_for_executable_with_path(
     runtime_identity_from_manifest(&payload)
 }
 
+fn status_readiness_error(kind: ServiceKind) -> ServiceError {
+    ServiceError(format!(
+        "LoopX {} is responding on port {} but its registry is invalid or unreadable; repair the registry configuration and retry",
+        kind.label(),
+        kind.port()
+    ))
+}
+
 fn probe(kind: ServiceKind, expected_runtime_identity: Option<&serde_json::Value>) -> Probe {
     probe_on_port(kind, kind.port(), expected_runtime_identity)
 }
@@ -719,6 +731,32 @@ fn classify_response(
         if let Some(expected) = expected_runtime_identity {
             if payload.get("runtime_identity") != Some(expected) {
                 return Probe::Stale;
+            }
+        }
+        if kind == ServiceKind::Status {
+            if let Some(readiness) = payload.get("readiness") {
+                if readiness
+                    .get("schema_version")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("loopx_status_readiness_v0")
+                {
+                    return Probe::Foreign;
+                }
+                return match (
+                    readiness.get("state").and_then(serde_json::Value::as_str),
+                    readiness.get("reason").and_then(serde_json::Value::as_str),
+                ) {
+                    (Some("ready"), Some("registry_readable")) => Probe::Matching,
+                    (Some("failed"), Some("registry_invalid" | "registry_unavailable")) => {
+                        Probe::NotReady
+                    }
+                    _ => Probe::Foreign,
+                };
+            }
+            // Legacy status servers ignore the query and retain the existing
+            // release-fingerprint check. An advertised contract cannot vanish.
+            if payload.get("readiness_url").is_some() {
+                return Probe::Foreign;
             }
         }
         return Probe::Matching;
