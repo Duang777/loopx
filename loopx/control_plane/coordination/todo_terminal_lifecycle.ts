@@ -1211,25 +1211,27 @@ export async function executeCoordinationTodoArchiveCompleted(
       cursor: head.cursor,
     };
   }
+  if (moved.length === 0) {
+    return {
+      ...result,
+      schema_version: COORDINATION_TODO_ARCHIVE_RESULT_SCHEMA,
+      status: "no_change",
+      dry_run: false,
+      provider_revision: head.provider_revision,
+      cursor: head.cursor,
+    };
+  }
   const mutations: CoordinationProjectionMutation[] = moved.map((todo) => ({
     kind: "todo_upsert",
     todo: {...todo, archive_state: "archive", updated_at: updatedAt},
   }));
-  const commit: AuthorityStoreCommit = mutations.length > 0
-    ? prepareCoordinationProjectionCommit({
-      goal_id: input.goal_id,
-      operation_id: input.operation_id,
-      expected_provider_revision: head.provider_revision,
-      projection: head.head,
-      mutations,
-    })
-    : {
-      operation_id: input.operation_id,
-      expected_provider_revision: head.provider_revision,
-      next_projection: head.head,
-      events: [],
-      receipts: [],
-    };
+  const commit: AuthorityStoreCommit = prepareCoordinationProjectionCommit({
+    goal_id: input.goal_id,
+    operation_id: input.operation_id,
+    expected_provider_revision: head.provider_revision,
+    projection: head.head,
+    mutations,
+  });
   commit.receipts = [{
     schema_version: COORDINATION_TODO_ARCHIVE_RECEIPT_SCHEMA,
     operation_id: input.operation_id,

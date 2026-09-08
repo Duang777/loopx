@@ -119,6 +119,24 @@ test("supersede inherits same-agent continuity, binding, and existing unblock re
   });
 });
 
+test("empty intent is identity and skips successor-only authority validation", () => {
+  const result = evaluateCoordinationTodoSuccessorDerivation({
+    schema_version: TODO_SUCCESSOR_DERIVATION_REQUEST_SCHEMA,
+    command: "complete",
+    predecessor,
+    registered_agents: [],
+    actor_agent_id: "legacy-unregistered-agent",
+    completion_policy: {},
+    successor_intents: [],
+  });
+
+  assert.deepEqual(result, {
+    schema_version: TODO_SUCCESSOR_DERIVATION_RESULT_SCHEMA,
+    status: "derived",
+    successors: [],
+  });
+});
+
 test("derivation fails closed for contradictory or malformed caller intent", () => {
   const result = evaluateCoordinationTodoSuccessorDerivation({
     schema_version: TODO_SUCCESSOR_DERIVATION_REQUEST_SCHEMA,

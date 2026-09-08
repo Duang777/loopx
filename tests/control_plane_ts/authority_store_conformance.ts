@@ -525,6 +525,26 @@ export function registerAuthorityStoreConformance(
     const standing = (afterUserArchive.head.todos as Record<string, unknown>[])
       .find((todo) => todo.todo_id === "todo-user-decision");
     assert.equal(standing?.archive_state, "active");
+
+    const beforeNoChange = await store.loadAuthority();
+    assert.equal(beforeNoChange.status, "loaded");
+    if (beforeNoChange.status !== "loaded") return;
+    const noChangeOperation = "archive-terminal-no-change";
+    const noChange = await executeCoordinationTodoArchiveCompleted(store, {
+      ...archiveRequest,
+      operation_id: noChangeOperation,
+    });
+    assert.equal(noChange.status, "no_change", JSON.stringify(noChange));
+    assert.equal(noChange.changed, false);
+    assert.equal(noChange.moved_count, 0);
+    assert.equal(noChange.provider_revision, beforeNoChange.provider_revision);
+    assert.equal(noChange.cursor, beforeNoChange.cursor);
+    assert.equal((await store.readReceipt(noChangeOperation)).status, "missing");
+    const afterNoChange = await store.loadAuthority();
+    assert.equal(afterNoChange.status, "loaded");
+    if (afterNoChange.status !== "loaded") return;
+    assert.equal(afterNoChange.provider_revision, beforeNoChange.provider_revision);
+    assert.equal(afterNoChange.cursor, beforeNoChange.cursor);
   });
 
   test(`${providerName} conformance: supersede preserves the legacy terminal continuation`, async (t) => {

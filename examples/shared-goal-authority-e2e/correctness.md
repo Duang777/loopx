@@ -156,6 +156,17 @@ in `finally` while the lease stays `active` and its `held` receipt is
 untouched; the caller's fence token is spent, a retry reports
 `fence_token_invalid`, and recovery is lease expiry or a canonical release.
 
+A promoted `archive-completed --execute` that selects no records is also a
+provider no-op: it returns `no_change` without advancing the canonical cursor,
+revision, or receipt history. Archive operation identity is bound to the
+canonical source revision, so concurrent attempts over one snapshot share the
+same logical operation. Projection recovery may create a missing machine-owned
+User, Agent, or non-empty archive region next to an existing Todo region; it
+still proves byte-for-byte preservation of all narrative outside those regions
+and remains idempotent on replay. Empty successor intent is an identity at the
+typed derivation boundary: it does not impose successor-only Agent registry or
+completion-policy admission on an otherwise unchanged legacy terminal call.
+
 The complete observable behaviour is pinned row by row in
 `tests/fixtures/control_plane/legacy_writer_fence_caller_parity_v0.json`
 (21 TypeScript entry rows, 26 real-process CLI rows; whole-object legacy

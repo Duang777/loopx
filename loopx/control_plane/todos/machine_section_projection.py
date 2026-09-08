@@ -234,11 +234,31 @@ def _replace_existing_sections(
     *,
     rendered_sections: Mapping[str, str],
 ) -> str:
+    spans = sorted(_section_spans(markdown).values(), key=lambda value: value.start)
+    if not spans:
+        raise TodoSectionProjectionError(
+            "active Markdown omits required Todo sections: no projection anchor"
+        )
+    replacements = {span.role: rendered_sections[span.role] for span in spans}
+    source_roles = set(replacements)
+    first_role = spans[0].role
+    last_role = spans[-1].role
+    prefix: list[str] = []
+    if "user" not in source_roles:
+        prefix.append(rendered_sections["user"])
+    if "agent" not in source_roles:
+        if "user" in source_roles:
+            replacements["user"] += rendered_sections["agent"]
+        else:
+            prefix.append(rendered_sections["agent"])
+    if "archive" in rendered_sections and "archive" not in source_roles:
+        replacements[last_role] += rendered_sections["archive"]
+    if prefix:
+        replacements[first_role] = "".join(prefix) + replacements[first_role]
+
     result = markdown
-    for span in sorted(
-        _section_spans(markdown).values(), key=lambda value: value.start, reverse=True
-    ):
-        result = result[: span.start] + rendered_sections[span.role] + result[span.end :]
+    for span in reversed(spans):
+        result = result[: span.start] + replacements[span.role] + result[span.end :]
     return result
 
 
@@ -415,11 +435,6 @@ def render_canonical_todo_sections(
             )
         private_validation[todo_id] = source[1]
     source_spans = _section_spans(markdown)
-    missing_roles = sorted(set(TODO_SECTION_HEADINGS).difference(source_spans))
-    if missing_roles:
-        raise TodoSectionProjectionError(
-            "active Markdown omits required Todo sections: " + ", ".join(missing_roles)
-        )
     by_role = {
         role: sorted(
             [
@@ -436,10 +451,6 @@ def render_canonical_todo_sections(
         [record for record in canonical if record.get("archive_state") == "archive"],
         key=_record_sort_key,
     )
-    if archived and "archive" not in source_spans:
-        raise TodoSectionProjectionError(
-            "active Markdown omits required Completed Work Archive section"
-        )
     newline = "\r\n" if "\r\n" in markdown else "\n"
     rendered_sections: dict[str, str] = {}
     section_digests: dict[str, str] = {}
@@ -451,7 +462,7 @@ def render_canonical_todo_sections(
             newline=newline,
             private_validation=private_validation,
         )
-    if "archive" in source_spans:
+    if archived or "archive" in source_spans:
         rendered_sections["archive"], section_digests["archive"] = _render_section(
             role="archive",
             records=archived,
@@ -464,8 +475,8 @@ def render_canonical_todo_sections(
         markdown,
         rendered_sections=rendered_sections,
     )
-    before_narrative = _narrative_segments(markdown)
-    after_narrative = _narrative_segments(rendered)
+    before_narrative = "".join(_narrative_segments(markdown))
+    after_narrative = "".join(_narrative_segments(rendered))
     if before_narrative != after_narrative:
         raise TodoSectionProjectionError("render changed Markdown outside Todo sections")
 
@@ -494,7 +505,7 @@ def render_canonical_todo_sections(
         changed=rendered != markdown,
         source_sha256=_sha256_text(markdown),
         rendered_sha256=_sha256_text(rendered),
-        narrative_sha256=_sha256_text(_canonical_json(after_narrative)),
+        narrative_sha256=_sha256_text(after_narrative),
         provider_revision=provider_revision,
         todo_count=len(canonical),
         section_record_sha256=section_digests,

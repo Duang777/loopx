@@ -242,6 +242,12 @@ export function deriveCoordinationTodoSuccessorProposals(
     throw new AuthorityStoreProtocolError("Todo successor derivation schema mismatch");
   }
   const command = requireLiteral(rawInput.command, TERMINAL_COMMANDS, "command");
+  if (!Array.isArray(rawInput.successor_intents)) {
+    throw new AuthorityStoreProtocolError("successor_intents must be an array");
+  }
+  if (rawInput.successor_intents.length === 0) {
+    return [];
+  }
   const predecessor = canonicalAuthorityObject(rawInput.predecessor, "predecessor");
   const predecessorId = requireAuthorityStoreId(predecessor.todo_id, "predecessor.todo_id");
   const predecessorText = optionalString(predecessor.text, "predecessor.text") ?? "";
@@ -251,9 +257,6 @@ export function deriveCoordinationTodoSuccessorProposals(
     "actor_agent_id",
     registeredAgents,
   );
-  if (!Array.isArray(rawInput.successor_intents)) {
-    throw new AuthorityStoreProtocolError("successor_intents must be an array");
-  }
   const intents = rawInput.successor_intents.map((intent, index) =>
     normalizeIntent(intent, index, registeredAgents));
   for (const role of TODO_ROLES) {

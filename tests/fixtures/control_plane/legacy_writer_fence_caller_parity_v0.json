@@ -1401,7 +1401,7 @@
         "changed": false,
         "goal_id": "observable",
         "role": "agent",
-        "status": "applied",
+        "status": "no_change",
         "moved_count": 0,
         "source_authority": "file_v0",
         "decision_read_from_provider": true,

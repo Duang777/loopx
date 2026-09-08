@@ -613,11 +613,7 @@ def test_promoted_native_create_recovers_markdown_after_delivery_crash(
 
 Human context.
 
-## User Todo / Owner Review Reading Queue
-
 ## Agent Todo
-
-## Completed Work Archive
 
 ## Next Action
 
@@ -704,6 +700,7 @@ Continue.
     assert replay["projection_delivery"] == "delivered"
     rendered = state_file.read_text(encoding="utf-8")
     assert "Recover the native compatibility projection" in rendered
+    assert "## User Todo / Owner Review Reading Queue" in rendered
     assert "Human context." in rendered
     assert "Continue." in rendered
     completed = complete_goal_todo(
@@ -1241,11 +1238,14 @@ Continue provider-first delivery.
         state_path=state_file,
     )
     runtime_calls: list[str] = []
+    archive_operation_ids: list[str] = []
     original_effect_runtime_result = provider_terminal_lifecycle.effect_runtime_result
     original_authority_runtime_result = local_authority_module.effect_runtime_result
 
     def count_runtime_call(method: str, params: dict[str, object]) -> object:
         runtime_calls.append(method)
+        if method == "coordination.local_authority.todo_archive":
+            archive_operation_ids.append(str(params["operation_id"]))
         return original_effect_runtime_result(method, params)
 
     def count_authority_runtime_call(
@@ -1357,6 +1357,34 @@ Continue provider-first delivery.
         if todo["archive_state"] == "archive"
     }
     assert archived_ids == {"todo_complete_native", "todo_supersede_native"}
+    archive_revision = canonical_after_archive["provider_revision"]
+    for _ in range(2):
+        runtime_calls.clear()
+        no_change = archive_completed_todos(
+            registry_path=registry_path,
+            runtime_root_arg=str(runtime_root),
+            goal_id="goal-a",
+            role="agent",
+            max_active_done=0,
+            dry_run=False,
+        )
+        assert no_change["status"] == "no_change"
+        assert no_change["changed"] is False
+        assert no_change["moved_count"] == 0
+        assert no_change["provider_revision"] == archive_revision
+        assert runtime_calls == [
+            "coordination.local_authority.todo_list",
+            "coordination.local_authority.todo_archive",
+            "coordination.local_authority.todo_list",
+        ]
+        unchanged = read_canonical_todos_if_promoted(
+            runtime_root=runtime_root,
+            goal_id="goal-a",
+        )
+        assert unchanged is not None
+        assert unchanged["provider_revision"] == archive_revision
+    assert archive_operation_ids[-2] == archive_operation_ids[-1]
+    assert archive_operation_ids[0] != archive_operation_ids[-1]
     rendered = state_file.read_text(encoding="utf-8")
     assert "Human narrative remains outside canonical Todo authority." in rendered
     assert "Continue provider-first delivery." in rendered

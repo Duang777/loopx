@@ -13,7 +13,6 @@ from functools import wraps
 from inspect import signature
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from ...agent_registry import load_goal_from_registry, registered_agent_ids_for_goal
 from ...state_refresh import now_local
@@ -243,6 +242,21 @@ def _terminal_operation_id(
         ).encode("utf-8")
     ).hexdigest()
     return f"todo-terminal:{digest[:32]}"
+
+
+def _archive_operation_id(
+    *,
+    goal_id: str,
+    role: str,
+    max_active_done: int,
+    provider_revision: str,
+) -> str:
+    """Bind one archive attempt to the canonical snapshot it selected from."""
+
+    digest = hashlib.sha256(
+        f"{goal_id}\0{role}\0{max_active_done}\0{provider_revision}".encode("utf-8")
+    ).hexdigest()
+    return f"todo-archive:{digest[:32]}"
 
 
 def terminal_canonical_todo_if_promoted(
@@ -492,11 +506,18 @@ def archive_canonical_todos_if_promoted(
     project: Path | None = None,
     state_file: Path | None = None,
 ) -> dict[str, Any] | None:
-    if (
-        read_canonical_todos_if_promoted(runtime_root=runtime_root, goal_id=goal_id)
-        is None
-    ):
+    authority_read = read_canonical_todos_if_promoted(
+        runtime_root=runtime_root, goal_id=goal_id
+    )
+    if authority_read is None:
         return None
+    provider_revision = authority_read.get("provider_revision")
+    if not isinstance(provider_revision, str) or not provider_revision:
+        raise LocalCoordinationAuthorityUnavailable(
+            "canonical Todo authority omitted provider revision",
+            code="local_authority_todo_archive_revision_missing",
+            payload=dict(authority_read),
+        )
     result = effect_runtime_result(
         "coordination.local_authority.todo_archive",
         {
@@ -505,7 +526,12 @@ def archive_canonical_todos_if_promoted(
             "goal_id": goal_id,
             "role": role,
             "max_active_done": max_active_done,
-            "operation_id": f"todo-archive:{goal_id}:{role}:{uuid4().hex}",
+            "operation_id": _archive_operation_id(
+                goal_id=goal_id,
+                role=role,
+                max_active_done=max_active_done,
+                provider_revision=provider_revision,
+            ),
             "dry_run": dry_run,
             "observed_at": now_local(),
         },
