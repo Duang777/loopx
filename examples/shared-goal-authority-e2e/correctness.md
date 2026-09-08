@@ -250,7 +250,7 @@ separately without skip or relaxation flags:
 ```bash
 python -m pip install -e '.[test]' 'build==1.6.0'
 npm ci --ignore-scripts
-python -m pytest -q -n 2 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
+python -m pytest -q -n 4 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
 python examples/shared-goal-authority-e2e/mutants.py --output .local/stage2c-mutants
 python -m build
 python examples/shared-goal-authority-e2e/installed.py --artifact dist/*.whl --report-json .local/installed-wheel.json
@@ -274,7 +274,7 @@ the complete installation sequence and retains normal source discovery.
 E2E, deliberate mutants, and independently installed wheel/sdist qualification
 run in separate jobs; the stable `stage2c-correctness-e2e` check requires all three
 to succeed. No path-based skipping or reduced case selection is used. E2E uses
-two file-grouped workers so a module's shared workspaces and ordered parity rows
+four file-grouped workers so a module's shared workspaces and ordered parity rows
 stay together. Each lane has a distinct evidence artifact. Mutants remain serial
 inside their isolated source copy: parallel edits to that copy would invalidate
 the control/mutant comparison. Single-row fence probes initialize only the
