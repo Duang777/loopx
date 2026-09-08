@@ -561,6 +561,10 @@ def summarize_user_todos_for_quota(
         "backlog_items": lanes.display_open_items[:TODO_BACKLOG_ITEM_LIMIT],
         "executable_backlog_items": lanes.executable_items[:TODO_BACKLOG_ITEM_LIMIT],
     }
+    if isinstance(value.get("advancement_frontier_revision_index"), dict):
+        summary["advancement_frontier_revision_index"] = value[
+            "advancement_frontier_revision_index"
+        ]
     if value.get("watch_only_monitor_count"):
         summary["watch_only_monitor_count"] = value["watch_only_monitor_count"]
         summary["watch_only_monitor_due_count"] = value.get(
@@ -825,7 +829,10 @@ def _compact_agent_lane_status_todo_summary(
                 }
             continue
         if isinstance(value, dict):
-            if key == "monitor_writeback":
+            if key in {
+                "monitor_writeback",
+                "advancement_frontier_revision_index",
+            }:
                 compact[key] = _compact_quota_payload_nested_warning(value)
             continue
         compact[key] = value
