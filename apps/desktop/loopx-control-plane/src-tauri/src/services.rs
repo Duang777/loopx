@@ -617,19 +617,69 @@ pub(crate) fn python3_environment() -> (bool, Option<String>) {
 
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub(crate) fn timed_output(mut command: Command) -> Option<std::process::Output> {
+pub(crate) fn timed_output(command: Command) -> Option<std::process::Output> {
+    timed_output_with_timeout(command, VERSION_PROBE_TIMEOUT)
+}
+
+pub(crate) fn timed_output_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(command.output());
+    let mut child = command.spawn().ok()?;
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+
+    let stdout_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut stream) = stdout_pipe {
+            let _ = stream.read_to_end(&mut buf);
+        }
+        buf
     });
-    receiver
-        .recv_timeout(VERSION_PROBE_TIMEOUT)
-        .ok()
-        .and_then(|result| result.ok())
+
+    let stderr_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut stream) = stderr_pipe {
+            let _ = stream.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let started = Instant::now();
+    let poll_interval = Duration::from_millis(20);
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                let remaining = timeout.saturating_sub(started.elapsed());
+                thread::sleep(poll_interval.min(remaining));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+
+    status.map(|status| std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 // `python3 --version` prints `Python 3.11.9`; accept the version on either
@@ -996,6 +1046,108 @@ mod tests {
                 "release_id": "path-release",
                 "source_revision": "path-revision",
             }))
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn timed_output_terminates_and_reaps_child_process_on_timeout() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = temp_dir.path().join("helper.pid");
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            &format!("echo $$ > \"{}\" && exec sleep 30", pid_path.display()),
+        ]);
+
+        let start = Instant::now();
+        let output = timed_output_with_timeout(cmd, Duration::from_millis(500));
+        let elapsed = start.elapsed();
+
+        assert!(output.is_none(), "timed_output must return None on timeout");
+        assert!(
+            elapsed >= Duration::from_millis(450) && elapsed < Duration::from_secs(5),
+            "timed_output must bound execution to around timeout (took {elapsed:?})"
+        );
+
+        let pid_str = fs::read_to_string(&pid_path).expect("read pidfile");
+        let pid: u32 = pid_str.trim().parse().expect("parse pid");
+
+        let check_status = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .expect("kill -0");
+        assert!(
+            !check_status.success(),
+            "child process {pid} must be terminated and reaped, but kill -0 succeeded"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn timed_output_consecutive_refreshes_do_not_accumulate_workers() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut pids = Vec::new();
+
+        for i in 0..3 {
+            let pid_path = temp_dir.path().join(format!("helper_{i}.pid"));
+            let mut cmd = Command::new("sh");
+            cmd.args([
+                "-c",
+                &format!("echo $$ > \"{}\" && exec sleep 30", pid_path.display()),
+            ]);
+
+            let start = Instant::now();
+            let output = timed_output_with_timeout(cmd, Duration::from_millis(300));
+            let elapsed = start.elapsed();
+
+            assert!(
+                output.is_none(),
+                "probe iteration {i} must return None on timeout"
+            );
+            assert!(
+                elapsed >= Duration::from_millis(250) && elapsed < Duration::from_secs(3),
+                "probe iteration {i} must finish near timeout (took {elapsed:?})"
+            );
+
+            let pid_str = fs::read_to_string(&pid_path).expect("read pidfile");
+            let pid: u32 = pid_str.trim().parse().expect("parse pid");
+            pids.push(pid);
+        }
+
+        for pid in pids {
+            let check_status = Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .expect("kill -0");
+            assert!(
+                !check_status.success(),
+                "accumulated worker candidate {pid} was not terminated/reaped"
+            );
+        }
+    }
+
+    #[test]
+    fn timed_output_large_output_does_not_deadlock() {
+        let mut cmd = Command::new("python3");
+        cmd.args(["-c", "import sys; sys.stdout.write('X' * 262144)"]);
+
+        let start = Instant::now();
+        let output = timed_output_with_timeout(cmd, Duration::from_secs(5));
+        let elapsed = start.elapsed();
+
+        assert!(
+            output.is_some(),
+            "timed_output must not deadlock on large output buffer"
+        );
+        let out = output.unwrap();
+        assert!(out.status.success(), "command must succeed");
+        assert_eq!(out.stdout.len(), 262144);
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "command completed in reasonable time without blocking (took {elapsed:?})"
         );
     }
 }

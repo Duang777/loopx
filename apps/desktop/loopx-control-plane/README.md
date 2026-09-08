@@ -139,8 +139,9 @@ Self-service:
 1. Check the boot screen error code or Recovery & updates → Diagnostics
    (`error_code: runtime_install_exit_2`, `environment.python3_found` /
    `python3_version` confirm the missing interpreter).
-2. Install Python 3.11+ — for example `brew install python@3.12` — or install
-   the Xcode Command Line Tools.
+2. Install Python 3.11+ — for example `brew install python@3.12` or via
+   official python.org installer (note that macOS Command Line Tools provides
+   Python 3.9, which does not satisfy the Python 3.11+ requirement).
 3. Press **Repair this version** (or reopen the App); the live supervisor
    reconnects the same window without a second App restart.
 
