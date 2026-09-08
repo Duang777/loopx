@@ -26,6 +26,7 @@ from .control_plane.agents.workspace_guard import (
 from .control_plane.quota.settlement import (
     SettlementIdentity,
     read_heartbeat_settlement,
+    render_first_refresh_checkpoint_hint,
     render_refresh_recovery_markdown,
     settlement_result_payload,
 )
@@ -681,47 +682,7 @@ def render_state_refresh_markdown(payload: dict[str, Any]) -> str:
                 "- vision_checkpoint_required_resolution: "
                 f"{','.join(str(item) for item in required_resolution)}"
             )
-        recovery = payload.get("refresh_recovery")
-        identity = payload.get("settlement_identity")
-        if (
-            payload.get("ok") is True
-            and payload.get("appended") is True
-            and payload.get("dry_run") is False
-            and isinstance(recovery, dict)
-            and recovery.get("decision") == "append"
-            and recovery.get("reason") == "first_writeback"
-            and isinstance(identity, dict)
-            and identity
-            and vision_checkpoint.get("required") is True
-            and vision_checkpoint.get("satisfied") is False
-            and vision_checkpoint.get("decision") == "missing_required"
-        ):
-            lines.append(
-                "The writeback succeeded, but the required vision checkpoint is still "
-                "unsatisfied. Submit a checkpoint-only refresh with the same Goal, Agent, "
-                "Todo/obligation, Turn, and delivery fields. Remove previously executed "
-                "state-mutation options, even when their values are unchanged: "
-                "--next-action, --autonomous-replan-recorded, --repair-delta-kind, "
-                "--usage-json, and --usage-codex-session. Add only one valid vision decision."
-            )
-            if vision_checkpoint.get("missing_baseline") is True:
-                lines.append(
-                    "No persisted vision baseline is available. Supply a valid "
-                    "--agent-vision-json packet or inline --vision-* patch; "
-                    "an unchanged reason cannot satisfy this checkpoint."
-                )
-            else:
-                lines.append(
-                    "Supply a valid --agent-vision-json packet or inline --vision-* patch. "
-                    "Use --vision-unchanged-reason only if a persisted vision exists "
-                    "and its scope and acceptance still apply."
-                )
-            lines.append(
-                "Do not repeat implementation, manufacture a successor, or begin another "
-                "Turn solely to repair this checkpoint. Keep the ordinary one-spend "
-                "settlement order. Recovery remains subject to existing validation and "
-                "does not certify acceptance or bypass replan, identity, or terminal gates."
-            )
+        lines.extend(render_first_refresh_checkpoint_hint(payload))
 
     projection_gap = (
         payload.get("state_projection_gap")
