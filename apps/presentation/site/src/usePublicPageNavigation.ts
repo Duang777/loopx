@@ -29,10 +29,27 @@ export function usePublicPageNavigation() {
       return; // Malformed fragments leave normal page entry intact.
     }
     const target = document.getElementById(id);
+    if (!target) return;
     // :target can remain unresolved after parsing the empty shell. Reveal the
     // destination before scrolling, including when translated content reflows.
-    target?.closest(".reveal-block")?.setAttribute("data-anchor-entry", "");
-    target?.scrollIntoView({ behavior: "instant" });
+    target.closest(".reveal-block")?.setAttribute("data-anchor-entry", "");
+    const align = () => target.scrollIntoView({ behavior: "instant" });
+    align();
+
+    // Web fonts can change all preceding section heights after the first layout.
+    // Correct that one late reflow, but never pull a reader back after input or
+    // another navigation. Cleanup also cancels stale locale/unmount callbacks.
+    let cancelled = false;
+    const cancel = () => { cancelled = true; };
+    const interrupts = ["wheel", "touchstart", "pointerdown", "keydown", "hashchange", "popstate"] as const;
+    for (const event of interrupts) window.addEventListener(event, cancel, { passive: true });
+    void document.fonts.ready.then(() => {
+      if (!cancelled && window.location.hash === url.hash) align();
+    });
+    return () => {
+      cancel();
+      for (const event of interrupts) window.removeEventListener(event, cancel);
+    };
   }, [language]);
 
   return [language, setLanguage] as const;

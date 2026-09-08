@@ -66,6 +66,43 @@ try {
     await new Promise((done) => setTimeout(done, 200));
   }
   browser = await chromium.launch({ headless: true });
+  // Serve the real bundled font behind a controlled delay. Check both late
+  // reflow correction and its cancellation when a reader scrolls away.
+  const font = await readFile(resolve(dashboard, "node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2"));
+  for (const width of [1440, 390]) {
+    for (const [path, id] of [["", "learn"], ["benchmarks/swe-marathon/", "mechanism"]]) {
+      for (const userScrolls of [false, true]) {
+        const fontContext = await browser.newContext({ reducedMotion: "reduce", viewport: { width, height: 900 } });
+        const fontPage = await fontContext.newPage();
+        let releaseFont;
+        const fontGate = new Promise((resolve) => { releaseFont = resolve; });
+        await fontPage.route("https://fonts.googleapis.com/**", (route) => route.fulfill({
+          contentType: "text/css",
+          body: '@font-face { font-family: Geist; src: url(https://fonts.gstatic.com/navigation-test.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }',
+        }));
+        await fontPage.route("https://fonts.gstatic.com/navigation-test.woff2", async (route) => {
+          await fontGate;
+          await route.fulfill({ contentType: "font/woff2", body: font });
+        });
+        await fontPage.goto(`${publicOrigin}/loopx/${path}#${id}`, { waitUntil: "domcontentloaded" });
+        await fontPage.waitForFunction(() => document.fonts.status === "loading");
+        await assertAnchorInView(fontPage, id);
+        if (userScrolls) {
+          await fontPage.mouse.wheel(0, -20000);
+          await fontPage.waitForFunction(() => scrollY === 0);
+        }
+        releaseFont();
+        await fontPage.evaluate(async () => {
+          await document.fonts.ready;
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        });
+        if (userScrolls) assert.equal(await fontPage.evaluate(() => scrollY), 0, "late fonts must not undo reader scrolling");
+        else await assertAnchorInView(fontPage, id);
+        await fontContext.close();
+      }
+    }
+  }
+  console.log("Delayed font reflow and reader-scroll cancellation: ok");
   // A shared fragment URL must land on its section without any test-driven
   // scroll or focus. Use cold pages and delayed JS to cover pre-React parsing.
   for (const reducedMotion of ["no-preference", "reduce"]) {

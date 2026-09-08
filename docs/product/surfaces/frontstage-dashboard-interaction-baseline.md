@@ -23,6 +23,8 @@ and Ops boards are retired.
   URLs select the same page as directory URLs. Research navigation stays sticky,
   with fragment destinations below the bar; decorative overflow must not create
   an intermediate scroll container.
+- Late font reflow may correct the initial destination once; user input or a
+  subsequent navigation cancels that correction so reading is never interrupted.
 - Do not link primary navigation to retired or deprecated surfaces.
 - Old bookmarks redirect to the current owner; public aliases discard live
   status parameters instead of passing them into the local workspace.
