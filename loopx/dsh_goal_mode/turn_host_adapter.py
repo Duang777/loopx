@@ -531,19 +531,23 @@ class DshHostConfig:
 def _derive_session_id(request: Mapping[str, Any], turn_key: str) -> str:
     # Keep the opaque dsh session keyed by the same (goal, agent, todo) lineage
     # LoopX already uses for the Turn transaction. The exact value is a local
-    # adapter concern and must not enter public LoopX state.
+    # adapter concern and must not enter public LoopX state. Encode every
+    # component position before hashing: delimiter-joined ids can collide when
+    # an id itself contains the delimiter.
     envelope = _mapping(request.get("turn_envelope"))
     action = _mapping(envelope.get("action"))
     selected_todo = _mapping(action.get("selected_todo"))
-    return "-".join(
-        str(value)
-        for value in (
-            envelope.get("goal_id"),
-            envelope.get("agent_id"),
-            selected_todo.get("todo_id"),
-        )
-        if value
-    ) or f"dsh-{turn_key.removeprefix('sha256:')[:24]}"
+    lineage = [
+        envelope.get("goal_id"),
+        envelope.get("agent_id"),
+        selected_todo.get("todo_id"),
+    ]
+    # Keep the legacy truthiness boundary: empty or non-string false-like
+    # values are not lineage identities, while their positions stay encoded.
+    lineage = [value if value else None for value in lineage]
+    if any(lineage):
+        return "dsh-lineage-v1-" + _canonical_hash(lineage).removeprefix("sha256:")
+    return f"dsh-{turn_key.removeprefix('sha256:')[:24]}"
 
 
 def _execute_turn_host_request(
