@@ -776,6 +776,21 @@ export function App() {
     window.history.replaceState({}, "", url);
   }, [language]);
 
+  useEffect(() => {
+    // The static shell has no section IDs. Replay initial fragment navigation
+    // once React has committed them; ordinary links/history stay browser-owned.
+    let id: string;
+    try {
+      id = decodeURIComponent(window.location.hash.slice(1));
+    } catch {
+      return; // Malformed fragments should leave the normal page entry intact.
+    }
+    const target = document.getElementById(id);
+    // :target may also be unresolved when the browser parsed an empty shell.
+    target?.closest(".reveal-block")?.setAttribute("data-anchor-entry", "");
+    target?.scrollIntoView({ behavior: "instant" });
+  }, []);
+
   async function copySetup(option: "agent" | "shell") {
     const text = option === "agent" ? setupPrompts[language] : shellSetupCommand;
     try {

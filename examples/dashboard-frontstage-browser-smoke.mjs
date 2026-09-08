@@ -31,6 +31,16 @@ const staticServer = createServer(async (req, res) => {
 });
 await new Promise((done) => staticServer.listen(0, "127.0.0.1", done));
 const publicOrigin = `http://127.0.0.1:${staticServer.address().port}`;
+async function assertAnchorInView(page, id) {
+  await page.waitForFunction((id) => {
+    const section = document.getElementById(id);
+    if (!section) return false;
+    const top = section.getBoundingClientRect().top;
+    const heading = section.querySelector("h2")?.getBoundingClientRect();
+    return top >= -2 && top < 80 && heading && heading.top >= 0 && heading.bottom < innerHeight;
+  }, id, { timeout: 4000 });
+}
+
 let browser;
 try {
   for (let i = 0; ; i++) {
@@ -39,6 +49,39 @@ try {
     await new Promise((done) => setTimeout(done, 200));
   }
   browser = await chromium.launch({ headless: true });
+  // A shared fragment URL must land on its section without any test-driven
+  // scroll or focus. Use cold pages and delayed JS to cover pre-React parsing.
+  for (const reducedMotion of ["no-preference", "reduce"]) {
+    for (const width of [1440, 390]) {
+      const entryContext = await browser.newContext({ reducedMotion, viewport: { width, height: 900 } });
+      const entry = await entryContext.newPage();
+      const entryErrors = [];
+      entry.on("pageerror", (error) => entryErrors.push(error.message));
+      await entry.route("**/site-assets/*.js", async (route) => {
+        await new Promise((done) => setTimeout(done, 250));
+        await route.continue();
+      });
+      for (const lang of ["en", "zh"]) {
+        await entry.goto("about:blank");
+        await entry.goto(`${publicOrigin}/loopx/?lang=${lang}#explore`);
+        await assertAnchorInView(entry, "explore");
+        await entry.reload();
+        await assertAnchorInView(entry, "explore");
+      }
+      for (const fragment of ["learn", "%65xplore"]) {
+        await entry.goto(`${publicOrigin}/loopx/?lang=zh#${fragment}`);
+        await assertAnchorInView(entry, decodeURIComponent(fragment));
+      }
+      for (const fragment of ["", "missing-section", "%zz"]) {
+        await entry.goto("about:blank");
+        await entry.goto(`${publicOrigin}/loopx/?lang=zh#${fragment}`);
+        await entry.locator("#explore").waitFor();
+        assert.equal(await entry.evaluate(() => scrollY), 0, "missing fragments must preserve normal page entry");
+      }
+      assert.deepEqual(entryErrors, [], "fragment entry must not raise runtime errors");
+      await entryContext.close();
+    }
+  }
   const context = await browser.newContext({ reducedMotion: "reduce" });
   const page = await context.newPage();
   await page.route((url) => url.pathname === "/status.example.json", async (route) => route.fulfill({ contentType: "application/json", body: await readFile(resolve(root, "examples/status.example.json"), "utf8") }));
@@ -91,7 +134,7 @@ try {
         await page.screenshot({ path: resolve(output, `home-${lang}-desktop.png`) });
         await page.locator('.desktop-nav a[href="#explore"]').click();
       }
-      await page.locator("#explore").scrollIntoViewIfNeeded();
+      await assertAnchorInView(page, "explore");
       await page.locator("#explore .resource-card").first().focus();
       assert.ok(await page.locator("#explore .resource-card").first().evaluate((a) => a === document.activeElement));
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "horizontal overflow");
