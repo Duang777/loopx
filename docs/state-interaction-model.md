@@ -764,9 +764,16 @@ vision decision was supplied. Inspect `vision_checkpoint.satisfied`.
 
 If the checkpoint is `missing_required`, submit a checkpoint-only refresh with
 the **same** Goal, Agent, Todo/obligation, Turn, and delivery fields. Preserve
-its runtime target, scope, and isolation options such as `--no-global-sync`
-and `--suppress-external-sinks`. Remove previously executed state-mutation
-options, even when their values are unchanged: `--next-action`,
+the original working directory and explicit target (`--registry`, `--runtime-root`,
+`--project`, `--state-file`), scope (`--progress-scope`, `--agent-lane`), and
+isolation (`--no-global-sync`, `--suppress-external-sinks`) options, with their
+original values and presence. Both first-writeback and replay Markdown list
+the preserve/remove/add rules; do not add isolation flags absent from the
+original command or silently change the delivery target. These instructions
+preserve the original boundary when followed; they do not persist an authority
+ceiling that rejects callers who manually remove flags.
+
+Remove previously executed state-mutation options, even when their values are unchanged: `--next-action`,
 `--autonomous-replan-recorded`, `--repair-delta-kind`, `--usage-json`, and
 `--usage-codex-session`. Remove any dependent options that would become invalid
 without them. Repeating mutations is rejected as
