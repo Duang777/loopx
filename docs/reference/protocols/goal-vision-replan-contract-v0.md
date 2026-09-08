@@ -404,10 +404,11 @@ goal.
 
 ### Exact blocked-successor wait
 
-An open agent vision does not need another replan when the lane already has an
-exact current-agent or unclaimed advancement successor whose supported
-`resume_when` condition is projected as `resume_ready=false`. When there is no
-other selectable advancement, quota/status expose
+An open agent vision can wait when every causal Todo binding of its ordinary
+acceptance gap has a related current-agent or unclaimed advancement successor
+whose supported `resume_when` condition is projected as `resume_ready=false`,
+or an exact current-agent blocker with a reason. One route's wait cannot cover
+another uncovered binding. When there is no other selectable advancement, quota/status expose
 `goal_vision_wait_state_v0` with the waiting todo id, `resume_when`, compact
 `resume_condition`, and `automatic_resume=true`. The ordinary
 `vision_acceptance_gap` is deferred while that read model is active, so the
@@ -419,6 +420,38 @@ automatically and the active vision remains available for acceptance auditing.
 It cannot suppress `vision_checkpoint_missing`, `vision_successor_required`, a
 resume condition that lacks exact projected evidence, or the dedicated repair
 for an advancement todo incorrectly gated by a standing continuous monitor.
+
+The normal `refresh-state --vision-todo-delta <action>:<todo_id>` and Turn vision
+write paths supply the causal bindings. Todo create/update/complete/supersede
+and resume evaluation supply their current facts. A planned `create/reopen`
+entry is a binding to inspect, not proof that its Todo exists. An agent changes
+the active bindings through the existing vision writeback contract when the
+plan changes; finishing a Todo alone does not prove its acceptance is closed.
+Explicit successor lineage can connect a completed or archived predecessor to
+a real waiting successor. Sharing a prerequisite does not make two sibling
+Todos interchangeable, and a terminal vision keeps its existing lifecycle rules.
+
+Wait witnesses are derived from canonical Todo rows and evaluated conditions
+before display compaction. `agent_todos.vision_wait_states` carries only those
+positive, agent-scoped results, bound to `causal_todo_ids`; each source read
+rebuilds them for the latest vision. It is not a stored or separately authored
+state. Quota and semantic writeback use the same coverage reducer. Display
+limits remain unchanged: extra unrelated Todos and reordering cannot change
+the wait decision. If a legacy/incomplete source cannot prove coverage, the
+existing acceptance gap stays open; missing display rows do not prove that
+canonical work is absent or that all alternatives are exhausted.
+
+This tightens the previous any-related-wait behavior. With bindings to A and B,
+A waiting and B unmaterialized requires replan when execution gates permit it;
+a runnable B continues, and related valid waits for both preserve defer. The
+rule uses existing acceptance/lineage facts regardless of the optional advisory
+`fallback_declarations`. It neither discovers alternatives nor invents AND/OR
+relationships, and it grants no additional authority. Ownership, exclusions,
+capabilities, user gates, and quota remain independent execution constraints.
+
+等待资格现在逐项检查已有 acceptance 的 Todo 关联，并在展示裁剪前从完整来源计算。
+A 的等待不能遮住尚未落实的 B；有可执行工作则继续，相关工作都具有合法等待证据才暂缓。
+无需另外维护 fallback 声明；无关 Todo 的数量和顺序不应改变决策。
 
 ## Replan Triggers
 

@@ -569,6 +569,11 @@ def summarize_user_todos_for_quota(
         summary["convergence_open_count"] = value.get("convergence_open_count")
     if recent_completed_advancement_items:
         summary["recent_completed_advancement_items"] = recent_completed_advancement_items
+    if isinstance(value.get("vision_wait_states"), list):
+        summary["vision_wait_states"] = [
+            proof for proof in value["vision_wait_states"]
+            if isinstance(proof, dict) and proof.get("agent_id") == agent_id
+        ]
     if blocker_items:
         summary["blocker_open_count"] = len(blocker_items)
     if current_agent_blocker_items:
@@ -1114,7 +1119,7 @@ def select_quota_todo_source_items(
     return project_asset_items if project_asset_items is not None else canonical_items or []
 
 
-def _planning_inventory_source_items(value: Any) -> list[dict[str, Any]] | None:
+def _planning_inventory_source_items(value: Any, *, include_terminal: bool = False) -> list[dict[str, Any]] | None:
     """Return canonical Todo rows before presentation-lane expansion.
 
     Planning consumers share domain-state rows instead of rebuilding a larger,
@@ -1123,17 +1128,19 @@ def _planning_inventory_source_items(value: Any) -> list[dict[str, Any]] | None:
 
     if not isinstance(value, dict):
         return None
-    return todo_planning_source_items(value)
+    return todo_planning_source_items(value, include_terminal=include_terminal)
 
 
 def select_planning_inventory_source_items(
     canonical_value: Any,
     project_asset_value: Any,
+    *,
+    include_terminal: bool = False,
 ) -> list[dict[str, Any]]:
     """Select the canonical non-terminal rows shared by planning read models."""
 
-    canonical_items = _planning_inventory_source_items(canonical_value)
-    project_asset_items = _planning_inventory_source_items(project_asset_value)
+    canonical_items = _planning_inventory_source_items(canonical_value, include_terminal=include_terminal)
+    project_asset_items = _planning_inventory_source_items(project_asset_value, include_terminal=include_terminal)
     if is_canonical_attention_todo_summary(canonical_value):
         return canonical_items if canonical_items is not None else project_asset_items or []
     return project_asset_items if project_asset_items is not None else canonical_items or []
