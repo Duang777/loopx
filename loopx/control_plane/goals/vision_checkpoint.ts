@@ -76,6 +76,13 @@ const GOAL_VISION_STATE_ALIASES: Readonly<Record<string, string>> = {
   closed_no_followup: "no_followup",
   no_follow_up: "no_followup",
 };
+// Mirrors loopx/public_safe_text.py. Both runtimes are pinned to the shared
+// corpus in tests/fixtures/public_safe_text_corpus.json: ordinary governance
+// prose such as "needs owner authorization" must pass, while the header,
+// assignment, and quoted-JSON key credential shapes must be rejected.
+const AUTHORIZATION_CREDENTIAL_SHAPE = /\bAuthorization["']?\s*[:=]/i;
+const BASIC_CREDENTIAL_VALUE =
+  /[Bb]asic\s+(?=[A-Za-z0-9+/=]*[a-z])(?=[A-Za-z0-9+/=]*[A-Z])[A-Za-z0-9+/=]{16,}/;
 const PRIVATE_TEXT_PATTERNS = [
   /\/Users\//,
   /\/ext_data\//,
@@ -83,7 +90,8 @@ const PRIVATE_TEXT_PATTERNS = [
   /docs\.internal/i,
   /\bt-20\d{12}-[a-z0-9]+\b/,
   /\bBearer\b/i,
-  /\bAuthorization\b/i,
+  AUTHORIZATION_CREDENTIAL_SHAPE,
+  BASIC_CREDENTIAL_VALUE,
   /\btoken\s*=/i,
   /\bpassword\b/i,
   /\bsecret\b/i,

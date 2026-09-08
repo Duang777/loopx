@@ -14,6 +14,10 @@ from typing import Any
 
 from .history import _chronology_key, load_index, load_registry
 from .paths import resolve_runtime_root
+from .public_safe_text import (
+    PRIVATE_TEXT_PATTERNS as SHARED_PRIVATE_TEXT_PATTERNS,
+    find_private_text_match,
+)
 from .registry import registry_goals, resolve_state_file
 
 
@@ -42,18 +46,9 @@ LESSON_KINDS = {
     "safety_boundary",
     "operating_rule",
 }
-PRIVATE_TEXT_PATTERNS = (
-    re.compile(r"/" + r"Users/"),
-    re.compile(r"/" + r"ext_data/"),
-    re.compile("la" + "rk" + "office", re.I),
-    re.compile("docs" + r"\." + "internal", re.I),
-    re.compile(r"\bt-20\d{12}-[a-z0-9]+\b"),
-    re.compile(r"\b" + "Bear" + r"er\b", re.I),
-    re.compile(r"\b" + "Author" + r"ization\b", re.I),
-    re.compile(r"\b" + "tok" + r"en\s*=", re.I),
-    re.compile(r"\b" + "pass" + r"word\b", re.I),
-    re.compile(r"\b" + "sec" + r"ret\b", re.I),
-)
+# Owned by loopx.public_safe_text so every real validator owner shares one
+# contract; re-exported here because callers already import this name.
+PRIVATE_TEXT_PATTERNS = SHARED_PRIVATE_TEXT_PATTERNS
 LOCAL_CONTROL_TEXT_PATTERNS = (
     re.compile(r"\b" + "Bear" + r"er\s+[A-Za-z0-9._~+/=-]+\b", re.I),
     re.compile(r"\b" + "Author" + r"ization\s*:", re.I),
@@ -126,14 +121,11 @@ def now_local() -> str:
 
 
 def validate_public_safe_text(label: str, value: str | None) -> None:
-    if not value:
-        return
-    for pattern in PRIVATE_TEXT_PATTERNS:
-        if pattern.search(value):
-            raise ValueError(
-                f"{label} contains a private-looking value; "
-                + public_safe_text_guidance(label)
-            )
+    if find_private_text_match(value) is not None:
+        raise ValueError(
+            f"{label} contains a private-looking value; "
+            + public_safe_text_guidance(label)
+        )
 
 
 def validate_local_control_text(label: str, value: str | None) -> None:

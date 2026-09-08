@@ -31,12 +31,23 @@ def pending_completion_validation_todo(
     todo_id: str | None = None,
     agent_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Return a projected open Todo whose controller validation is required."""
+    """Return a projected open Todo whose controller validation is required.
+
+    Two scopes, because the caller either names the Todo or only names a lane:
+
+    - Exact scope (``todo_id`` given): the settlement binds that Todo, so its
+      claim state is irrelevant and an unclaimed Todo still fences.
+    - Lane scope (only ``agent_id`` given): the fence exists so an agent cannot
+      claim accountable evidence while *its own* controller-validated Todo is
+      open. An unclaimed Todo owns no lane, so it is nobody's own work and must
+      not fence a different lane's writeback.
+    """
 
     if not isinstance(todo_summary, dict):
         return None
     expected_todo_id = normalize_todo_id(todo_id)
     expected_agent_id = normalize_todo_claimed_by(agent_id)
+    lane_scoped = not expected_todo_id and bool(expected_agent_id)
     items = todo_summary.get("items")
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
@@ -45,7 +56,10 @@ def pending_completion_validation_todo(
         if expected_todo_id and item_todo_id != expected_todo_id:
             continue
         item_agent_id = normalize_todo_claimed_by(item.get("claimed_by"))
-        if (
+        if lane_scoped:
+            if item_agent_id != expected_agent_id:
+                continue
+        elif (
             expected_agent_id
             and item_agent_id
             and item_agent_id != expected_agent_id
