@@ -9,6 +9,7 @@ const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("LoopX homepage root is missing");
 
 const pathSegments = window.location.pathname.split("/").filter(Boolean);
+if (pathSegments.at(-1) === "index.html") pathSegments.pop();
 const isSweMarathonBrief = pathSegments.slice(-2).join("/") === "benchmarks/swe-marathon";
 
 createRoot(rootElement).render(
