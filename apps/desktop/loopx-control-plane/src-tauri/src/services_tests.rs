@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn status_readiness_is_explicit_and_fails_closed() {
+    assert_eq!(ServiceKind::Status.probe_path(), "/?readiness=1");
+    for (readiness, expected) in [
+        (
+            serde_json::json!({"schema_version":"loopx_status_readiness_v0","state":"ready","reason":"registry_readable"}),
+            Probe::Matching,
+        ),
+        (
+            serde_json::json!({"schema_version":"loopx_status_readiness_v0","state":"failed","reason":"registry_invalid"}),
+            Probe::NotReady,
+        ),
+        (
+            serde_json::json!({"schema_version":"loopx_status_readiness_v0","state":"failed","reason":"registry_unavailable"}),
+            Probe::NotReady,
+        ),
+        (
+            serde_json::json!({"schema_version":"loopx_status_readiness_v0","state":"ready","reason":"registry_invalid"}),
+            Probe::Foreign,
+        ),
+        (
+            serde_json::json!({"schema_version":"future","state":"ready","reason":"registry_readable"}),
+            Probe::Foreign,
+        ),
+        (serde_json::Value::Null, Probe::Foreign),
+    ] {
+        let body = serde_json::json!({"source":"serve-status","readiness":readiness});
+        let response = format!("HTTP/1.1 200 OK\r\n\r\n{body}");
+        assert_eq!(
+            classify_response(ServiceKind::Status, &response, None),
+            expected
+        );
+    }
+    assert_eq!(classify_response(
+        ServiceKind::Status,
+        "HTTP/1.1 200 OK\r\n\r\n{\"source\":\"serve-status\",\"readiness_url\":\"/?readiness=1\"}",
+        None,
+    ), Probe::Foreign);
+}
+
+#[test]
 #[cfg(target_os = "macos")]
 fn finder_runtime_path_includes_tools_without_loading_shell_profiles() {
     let path = runtime_search_path(
