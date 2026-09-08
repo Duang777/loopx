@@ -87,7 +87,15 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm run typecheck:control-plane
-          npm run test:control-plane
+          npm run test:control-plane:coverage
+
+      - name: Upload TypeScript control-plane coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: typescript-control-plane-coverage
+          path: coverage/control-plane/lcov.info
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Lint test suite
         run: >-
