@@ -1,0 +1,151 @@
+"""Public wait-lane invariants, independent of the projection implementation."""
+
+from copy import deepcopy
+import json
+from pathlib import Path
+
+import pytest
+
+from canonical_authority_fixture import initialize_canonical_authority
+from loopx.control_plane.testing.canary_harness import write_fixture_registry, run_json_cli_result
+from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
+from loopx.control_plane.todos.active_state_todo_parser import parse_active_state_todos
+
+from loopx.control_plane.todos.resume_planning import project_todo_resume_planning
+from loopx.control_plane.todos.quota_summary import select_quota_todo_summary
+
+
+def waiting(todo_id: str, **fields: object) -> dict:
+    return {
+        "todo_id": todo_id, "index": 1, "text": "[P1] Wait for dependency",
+        "role": "agent", "task_class": "advancement_task", "status": "open",
+        "resume_when": "todo_done:todo_dependency", "resume_ready": False,
+        "resume_condition": {"satisfied": False, "kind": "todo_done",
+                             "target_status": "open", "target_task_class": "advancement_task"},
+        **fields,
+    }
+
+
+def ids(items: list[dict]) -> list[str]:
+    return [item["todo_id"] for item in items]
+
+
+def test_claim_priority_and_exclusion_are_independent_of_display_priority() -> None:
+    items = [waiting("todo_unclaimed", priority="P0"),
+             waiting("todo_current", claimed_by="agent-a", priority="P4"),
+             waiting("todo_other", claimed_by="agent-b"),
+             waiting("todo_excluded", claimed_by="agent-a", excluded_agents=["agent-a"])]
+    source = {"items": items}
+    before = deepcopy(source)
+    assert ids(project_todo_resume_planning(source, agent_id="agent-a")["blocked_successor_items"]) == [
+        "todo_current", "todo_unclaimed",
+    ]
+    assert project_todo_resume_planning(source)["blocked_successor_items"] == []
+    assert source == before
+
+
+def test_monitor_generation_wait_is_not_the_monitor_completion_repair_lane() -> None:
+    condition = {"satisfied": False, "target_status": "open",
+                 "target_task_class": "continuous_monitor", "target_todo_id": "todo_monitor"}
+    source = {"items": [
+        waiting("todo_repair", resume_condition={**condition, "kind": "todo_done"}),
+        waiting("todo_wait", resume_when="monitor_changed:todo_monitor",
+                resume_condition={**condition, "kind": "monitor_changed"}),
+    ]}
+    result = project_todo_resume_planning(source, agent_id="agent-a", item_limit=1)
+    lanes = result["resume_blocked_lanes"]
+    assert lanes["resume_blocked_count"] == 2
+    assert lanes["monitor_blocked_resume_count"] == 1
+    assert ids(lanes["unclaimed_monitor_blocked_resume_candidates"]) == ["todo_repair"]
+    assert result["blocked_successor_items"] == []
+
+
+def test_ready_deferred_lanes_keep_full_counts_before_truncation() -> None:
+    items = [waiting(f"todo_ready_{i}", status="deferred", resume_ready=True,
+                     claimed_by="agent-a") for i in range(4)]
+    items.append(waiting("todo_excluded", status="deferred", resume_ready=True,
+                         excluded_agents=["agent-a"]))
+    source = {"deferred_items": items, "deferred_resume_candidates": items}
+    lanes = project_todo_resume_planning(source, agent_id="agent-a", item_limit=1)["deferred_lanes"]
+    assert lanes["deferred_count"] == 5
+    assert lanes["current_agent_deferred_resume_count"] == 4
+    assert len(lanes["current_agent_deferred_resume_candidates"]) == 1
+    assert lanes["executor_excluded_self_deferred_resume_count"] == 1
+    assert lanes["unclaimed_deferred_resume_count"] == 0
+
+
+def test_ignored_rows_do_not_turn_an_explicit_lane_into_fallback_input() -> None:
+    source = {"items": [waiting("todo_fallback", status="deferred")],
+              "deferred_items": [None], "resume_blocked_items": [None]}
+    result = project_todo_resume_planning(source, agent_id="agent-a")
+    assert result["deferred_items"] == []
+    assert result["resume_blocked_lanes"] == {}
+
+
+def test_quota_composes_capacity_and_visibility_in_one_request_per_source(monkeypatch) -> None:
+    from loopx.control_plane.todos import resume_planning
+
+    original = resume_planning.effect_runtime_result
+    calls = []
+
+    def record(method, params):
+        calls.append(method)
+        return original(method, params)
+
+    monkeypatch.setattr(resume_planning, "effect_runtime_result", record)
+    summary = select_quota_todo_summary(
+        {"schema_version": "todo_summary_v0", "items": [waiting("todo_capacity", status="deferred",
+          resume_when="capacity_available:compiler")], "total_count": 1, "deferred_count": 1},
+        None, agent_identity={"agent_id": "agent-a"}, available_capabilities=["compiler"],
+    )
+    assert summary["unclaimed_deferred_resume_count"] == 1
+    assert calls == ["todo.resume_planning.project"]
+
+
+def test_unavailable_typed_owner_does_not_fall_back_to_python_selection(monkeypatch) -> None:
+    from loopx.control_plane.todos import resume_planning
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("isolated runtime unavailable")
+
+    monkeypatch.setattr(resume_planning, "effect_runtime_result", unavailable)
+    with pytest.raises(RuntimeError, match="isolated runtime unavailable"):
+        project_todo_resume_planning({"items": [waiting("todo_wait")]})
+
+
+@pytest.mark.parametrize("promoted", [False, True])
+def test_public_quota_capacity_wait_uses_provider_after_cutover_without_display_write(
+    tmp_path: Path, promoted: bool,
+) -> None:
+    runtime, registry, state = tmp_path / "runtime", tmp_path / "registry.json", tmp_path / "state.md"
+    state.write_text(
+        "---\nstatus: active\n---\n# Goal\n## Objective\nBuild a checked change.\n\n"
+        "## Agent Todo\n- [ ] [P1] Continue when compiler capacity returns.\n"
+        "  <!-- loopx:todo todo_id=todo_capacity role=agent task_class=advancement_task "
+        "status=deferred claimed_by=agent-a resume_when=capacity_available:compiler -->\n",
+        encoding="utf-8",
+    )
+    write_fixture_registry(
+        project=tmp_path, runtime_root=runtime, registry_path=registry,
+        goal_id="goal-a", domain="resume-planning", adapter_kind="generic_project_goal_v0",
+        state_file=str(state), registered_agents=["agent-a", "agent-b"], quota_allowed_slots=None,
+    )
+    if promoted:
+        goal = json.loads(registry.read_text())["goals"][0]
+        fields = parse_active_state_todos(state.read_text(), goal=goal, item_limit=None)
+        projection = build_todo_runtime_shadow_projection(
+            goal_id="goal-a", todos=fields["agent_todos"]["items"], handoff_mode="soft_claim",
+        )
+        initialize_canonical_authority(runtime, "goal-a", projection, state_path=state)
+        state.unlink()
+    before = state.read_bytes() if state.exists() else None
+    for capabilities, count in [((), 0), (("--available-capability", "compiler"), 1)]:
+        code, packet = run_json_cli_result(
+            "quota", "should-run", "--goal-id", "goal-a", "--agent-id", "agent-a",
+            "--scan-path", str(tmp_path), *capabilities, registry_path=registry, runtime_root=runtime,
+        )
+        assert code == 0, packet
+        assert packet["agent_todo_summary"]["current_agent_deferred_resume_count"] == count
+        if count:
+            assert packet["effective_action"] == "successor_replan_required"
+        assert (state.read_bytes() if state.exists() else None) == before

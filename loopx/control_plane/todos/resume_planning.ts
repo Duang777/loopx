@@ -1,0 +1,214 @@
+import type { JsonObject } from "../effect_program.ts";
+import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
+import {
+  jsonObject, requireJsonObject, requireBoolean, requireInteger,
+  requireStringArray, optionalNonEmptyString,
+} from "../runtime_decode.ts";
+import { evaluateTodoResumeConditions, TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION } from "./resume_condition.ts";
+
+export const RESUME_PLANNING_REQUEST = "todo_resume_planning_request_v0";
+export const RESUME_PLANNING_RESULT = "todo_resume_planning_v0";
+const DEFERRED_POLICY = "quota may wake the current peer only for ready deferred todos " +
+  "claimed by that agent or unclaimed; other-agent deferred todos remain " +
+  "diagnostic visibility and executor-excluded todos remain visible but non-selectable";
+const MONITOR_POLICY = "open advancement todos gated by todo_done:<continuous_monitor> must " +
+  "project as successor replan/state repair instead of quiet monitor wait";
+const SOURCE_KEYS = ["items", "backlog_items", "first_open_items", "deferred_items",
+  "deferred_resume_candidates", "resume_blocked_items", "monitor_open_items",
+  "current_agent_claimed_monitor_items", "claimed_monitor_open_items"] as const;
+type SourceKey = typeof SOURCE_KEYS[number];
+type ClaimLane = "current_agent" | "unclaimed" | "other_agent" | "executor_excluded_self";
+
+/** Codec facts are separate from policy. Payload fields remain lossless while
+ * comparisons use the existing reader's normalized values and stable order. */
+interface Item {
+  payload: JsonObject;
+  id: string | null;
+  status: string | null;
+  claim: string | null;
+  excluded: readonly string[];
+  resume: string | null;
+  done: boolean;
+  ready: boolean | null;
+  readyTruthy: boolean;
+  priority: number;
+  index: number;
+  targetId: string | null;
+  targetStatus: string | null;
+  targetClass: string;
+}
+
+function item(value: unknown): Item {
+  const raw = requireJsonObject(value, "resume planning item");
+  const payload = requireJsonObject(raw.payload, "payload");
+  if (typeof payload.text !== "string" || typeof payload.task_class !== "string") {
+    throw new EffectRuntimeRequestError("resume planning payload requires text and task_class");
+  }
+  const optional = (key: string) => optionalNonEmptyString(raw[key], key);
+  return {
+    payload, id: optional("id"), status: optional("status"), claim: optional("claim"),
+    excluded: requireStringArray(raw.excluded, "excluded"), resume: optional("resume"),
+    done: requireBoolean(raw.done, "done"),
+    ready: raw.ready === null ? null : requireBoolean(raw.ready, "ready"),
+    readyTruthy: requireBoolean(raw.ready_truthy, "ready_truthy"),
+    priority: requireInteger(raw.priority, "priority"), index: requireInteger(raw.index, "index"),
+    targetId: optional("target_id"), targetStatus: optional("target_status"),
+    targetClass: optional("target_class") ?? "advancement_task",
+  };
+}
+
+function ordered(items: readonly Item[]): Item[] {
+  // Stable sort retains persisted/source-lane order for equal public keys.
+  return [...items].sort((a, b) => a.priority - b.priority || a.index - b.index);
+}
+
+function unique(items: readonly Item[]): Item[] {
+  const seen = new Set<string>();
+  return items.filter((entry) => {
+    const key = JSON.stringify([entry.id ?? "", entry.payload.text, entry.payload.index]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function deferred(source: readonly Item[]): Item[] {
+  return ordered(source.filter((entry) => entry.payload.text && entry.status === "deferred")
+    .map((entry) => ({ ...entry, payload: {
+      ...entry.payload,
+      ...(entry.resume ? { resume_when: entry.resume } : {}),
+      ...(entry.payload.resume_ready === undefined ? {} : { resume_ready: entry.readyTruthy }),
+    } })));
+}
+
+function blocked(source: readonly Item[]): Item[] {
+  return ordered(unique(source.filter((entry) => entry.payload.text && !entry.done &&
+    entry.resume !== null && entry.ready === false)));
+}
+
+function monitorBlocked(source: readonly Item[], monitorIds: ReadonlySet<string>): Item[] {
+  return ordered(unique(source.filter((entry) => {
+    const condition = jsonObject(entry.payload.resume_condition) ?? {};
+    return entry.payload.task_class === "advancement_task" && condition.kind !== "monitor_changed" &&
+      entry.targetStatus === "open" &&
+      (entry.targetClass === "continuous_monitor" || monitorIds.has(entry.targetId ?? ""));
+  }).map((entry) => ({ ...entry, payload: {
+    ...entry.payload, ...(entry.targetId ? { blocking_monitor_todo_id: entry.targetId } : {}),
+  } }))));
+}
+
+function claimLane(entry: Item, agent: string): ClaimLane {
+  if (entry.excluded.includes(agent)) return "executor_excluded_self";
+  if (!entry.claim) return "unclaimed";
+  return entry.claim === agent ? "current_agent" : "other_agent";
+}
+
+function payloads(items: readonly Item[], limit?: number): JsonObject[] {
+  return (limit === undefined ? items : items.slice(0, limit)).map((entry) => entry.payload);
+}
+
+function claimLanes(items: readonly Item[], agent: string, limit: number,
+  family: "deferred_resume" | "monitor_blocked_resume"): JsonObject {
+  const result: JsonObject = {};
+  for (const lane of ["current_agent", "unclaimed", "other_agent", "executor_excluded_self"] as const) {
+    const selected = items.filter((entry) => claimLane(entry, agent) === lane);
+    result[`${lane}_${family}_candidates`] = payloads(selected, limit);
+    result[`${lane}_${family}_count`] = selected.length;
+  }
+  result[`${family}_selection_policy`] = family === "deferred_resume" ? DEFERRED_POLICY : MONITOR_POLICY;
+  return result;
+}
+
+function successorWaits(resumeBlocked: readonly Item[], deferredItems: readonly Item[], agent: string | null): Item[] {
+  if (!agent) return [];
+  return ordered(unique([...resumeBlocked, ...deferredItems.filter((entry) => entry.payload.resume_ready === false)])
+    .filter((entry) => {
+      const lane = claimLane(entry, agent);
+      return entry.payload.task_class === "advancement_task" &&
+        (lane === "current_agent" || lane === "unclaimed") && entry.resume !== null &&
+        jsonObject(entry.payload.resume_condition)?.satisfied === false &&
+        entry.targetClass !== "continuous_monitor";
+    }).map((entry) => ({ ...entry, payload: {
+      ...entry.payload, resume_when: entry.resume, resume_ready: false,
+    } }))).sort((a, b) => Number(b.claim === agent) - Number(a.claim === agent));
+}
+
+function resolveCapacity(items: readonly Item[], source: readonly Item[], capabilities: string[]): Item[] {
+  const result = evaluateTodoResumeConditions({
+    schema_version: TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION,
+    items: payloads(items).filter((entry) => entry.todo_id),
+    source_items: payloads([...source, ...items]).filter((entry) => entry.todo_id),
+    available_capabilities: capabilities, kinds: ["capacity_available"], rollout_events: [],
+  });
+  const conditions = new Map<string, JsonObject>();
+  for (const row of result.conditions as JsonObject[]) {
+    conditions.set(String(row.todo_id), requireJsonObject(row.condition, "resume condition"));
+  }
+  return items.map((entry) => {
+    const condition = conditions.get(entry.id ?? "");
+    if (!condition) return entry;
+    const ready = condition.satisfied === true;
+    return { ...entry, ready, readyTruthy: ready, payload: {
+      ...entry.payload, resume_condition: condition, resume_ready: ready,
+    } };
+  });
+}
+
+/** One read-only decision for quota lanes, replan candidates and exact waits.
+ * No mutation, claim, lease grant, monitor poll, or recovery effect is emitted. */
+export function projectTodoResumePlanning(value: unknown): JsonObject {
+  const request = requireJsonObject(value, "resume planning request");
+  if (request.schema_version !== RESUME_PLANNING_REQUEST) {
+    throw new EffectRuntimeRequestError("resume planning schema mismatch");
+  }
+  const rawSources = requireJsonObject(request.sources, "sources");
+  const sources = {} as Record<SourceKey, Item[]>;
+  for (const key of SOURCE_KEYS) {
+    if (!Array.isArray(rawSources[key])) throw new EffectRuntimeRequestError(`${key} must be an array`);
+    sources[key] = rawSources[key].map(item);
+  }
+  const agent = optionalNonEmptyString(request.agent_id, "agent_id");
+  const limit = requireInteger(request.item_limit, "item_limit");
+  const hasCount = requireBoolean(request.has_deferred_count, "has_deferred_count");
+  const hasVisibleCount = requireBoolean(request.has_visible_deferred_count, "has_visible_deferred_count");
+  let deferredItems = deferred(sources.deferred_items.length ? sources.deferred_items : sources.items);
+  let candidates = deferred(sources.deferred_resume_candidates).filter((entry) => entry.payload.resume_ready === true);
+  let capacityFields: JsonObject | null = null;
+  if (request.available_capabilities !== null) {
+    deferredItems = resolveCapacity(deferredItems, sources.items,
+      requireStringArray(request.available_capabilities, "available_capabilities"));
+    candidates = deferredItems.filter((entry) => entry.payload.resume_ready === true);
+    capacityFields = { deferred_items: payloads(deferredItems), deferred_resume_candidates: payloads(candidates) };
+    // Existing summary readers treat an empty explicit deferred lane as absent,
+    // including after capacity resolution; retain that compatibility fallback.
+    if (!deferredItems.length) deferredItems = deferred(sources.items);
+  }
+  const resumeBlocked = blocked(sources.resume_blocked_items.length ? sources.resume_blocked_items
+    : [...sources.items, ...sources.backlog_items, ...sources.first_open_items]);
+  const monitors = new Set(["monitor_open_items", "current_agent_claimed_monitor_items",
+    "claimed_monitor_open_items", "items", "backlog_items", "first_open_items"]
+    .flatMap((key) => sources[key as SourceKey])
+    .filter((entry) => entry.id && entry.payload.task_class === "continuous_monitor")
+    .map((entry) => entry.id!));
+  const monitorItems = monitorBlocked(resumeBlocked, monitors);
+  const deferredLanes: JsonObject = deferredItems.length || candidates.length || hasVisibleCount ? {
+    deferred_count: hasCount ? request.deferred_count : deferredItems.length,
+    deferred_visibility_limit: limit, deferred_items: payloads(deferredItems, limit),
+    deferred_resume_candidates: payloads(candidates, limit),
+    ...(agent ? claimLanes(candidates, agent, limit, "deferred_resume") : {}),
+  } : {};
+  const blockedLanes: JsonObject = resumeBlocked.length ? {
+    resume_blocked_count: resumeBlocked.length, resume_blocked_items: payloads(resumeBlocked, limit),
+    ...(monitorItems.length ? {
+      monitor_blocked_resume_count: monitorItems.length,
+      monitor_blocked_resume_candidates: payloads(monitorItems, limit),
+      ...(agent ? claimLanes(monitorItems, agent, limit, "monitor_blocked_resume") : {}),
+    } : {}),
+  } : {};
+  return {
+    schema_version: RESUME_PLANNING_RESULT, deferred_lanes: deferredLanes,
+    resume_blocked_lanes: blockedLanes, capacity_fields: capacityFields,
+    deferred_items: payloads(deferredItems), monitor_blocked_items: payloads(monitorItems),
+    blocked_successor_items: payloads(successorWaits(resumeBlocked, deferredItems, agent)),
+  };
+}

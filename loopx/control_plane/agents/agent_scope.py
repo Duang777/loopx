@@ -30,7 +30,7 @@ from ..todos.contract import (
     normalize_todo_task_class,
 )
 from ..todos.handoff_gate import HandoffGateState
-from ..todos.deferred_resume import todo_summary_blocked_successor_items
+from ..todos.resume_planning import project_todo_resume_planning
 from ..todos.projection import (
     todo_item_claimed_by_agent_or_unclaimed,
     todo_item_excludes_agent,
@@ -1261,10 +1261,10 @@ def _deferred_resume_frontier(
 def _blocked_successor_wait_frontier(
     context: _AgentScopeNoCandidateContext,
 ) -> dict[str, Any] | None:
-    candidates = todo_summary_blocked_successor_items(
+    candidates = project_todo_resume_planning(
         context.summary,
         agent_id=context.agent_id,
-    )
+    )["blocked_successor_items"]
     if not candidates:
         return None
     first = candidates[0]
