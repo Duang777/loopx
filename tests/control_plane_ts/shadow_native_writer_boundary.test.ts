@@ -5,30 +5,82 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { atomicWriteJson } from "../../loopx/control_plane/effect_runtime_io.ts";
-import { shadowManagementStatePath } from "../../loopx/control_plane/coordination/shadow_management.ts";
 import {
+  shadowMaintenanceLockPath,
+  shadowManagementStatePath,
+} from "../../loopx/control_plane/coordination/shadow_management.ts";
+import {
+  archiveLocalCoordinationTodos,
   createLocalCoordinationTodo, claimLocalCoordinationTodo,
   mutateLocalCoordinationAuthority, editLocalCoordinationTodo,
+  terminalLifecycleLocalCoordinationTodo,
+  LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_CREATE_REQUEST_SCHEMA, LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+  LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
   LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
 } from "../../loopx/control_plane/coordination/local_authority_runtime.ts";
 
-for (const [name, invoke, schema] of [
-  ["create", createLocalCoordinationTodo, LOCAL_COORDINATION_TODO_CREATE_REQUEST_SCHEMA],
-  ["claim", claimLocalCoordinationTodo, LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA],
-  ["mutate", mutateLocalCoordinationAuthority, LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA],
-  ["edit", editLocalCoordinationTodo, "loopx_todo_compatibility_edit_request_v0"],
+for (const [name, invoke, schema, requestFields] of [
+  ["create", createLocalCoordinationTodo, LOCAL_COORDINATION_TODO_CREATE_REQUEST_SCHEMA, {}],
+  ["claim", claimLocalCoordinationTodo, LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA, {}],
+  ["mutate", mutateLocalCoordinationAuthority, LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA, {}],
+  ["edit", editLocalCoordinationTodo, "loopx_todo_compatibility_edit_request_v0", {}],
+  ["terminal", terminalLifecycleLocalCoordinationTodo,
+    LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA, {
+      registered_agents: [], lifecycle_grants: [], successor_intents: [],
+      linked_successor_todo_ids: [], lease_expected_version: null,
+    }],
+  ["archive", archiveLocalCoordinationTodos,
+    LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA, {max_active_done: 0}],
 ] as const) {
   test(`promoted ${name} checks maintenance before opening a provider`, async (t) => {
     const root = await mkdtemp(join(tmpdir(), "loopx-native-maintenance-"));
     t.after(() => rm(root, {recursive: true, force: true}));
     await atomicWriteJson(shadowManagementStatePath(root, "goal-a"), {});
     let opened = 0;
-    const result = await invoke({schema_version: schema, runtime_root: root, goal_id: "goal-a", dry_run: false}, {
+    const result = await invoke({schema_version: schema, runtime_root: root, goal_id: "goal-a",
+      dry_run: false, ...requestFields}, {
       createStore: () => { opened++; throw new Error("provider touched"); },
     });
     assert.equal(result.reason_code, "shadow_management_state_invalid");
     assert.equal(opened, 0);
+  });
+}
+
+for (const [name, invoke, schema, requestFields] of [
+  ["terminal", terminalLifecycleLocalCoordinationTodo,
+    LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA, {
+      registered_agents: [], lifecycle_grants: [], successor_intents: [],
+      linked_successor_todo_ids: [], lease_expected_version: null,
+    }],
+  ["archive", archiveLocalCoordinationTodos,
+    LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA, {max_active_done: 0}],
+] as const) {
+  test(`promoted ${name} waits behind the bootstrap and rollback maintenance lock`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "loopx-native-maintenance-race-"));
+    t.after(() => rm(root, {recursive: true, force: true}));
+    let opened = 0;
+    let completed = false;
+    let pending: Promise<Record<string, unknown>> | undefined;
+    await withFileMutationLock(shadowMaintenanceLockPath(root, "goal-a"), async () => {
+      pending = invoke({schema_version: schema, runtime_root: root, goal_id: "goal-a",
+        dry_run: false, ...requestFields}, {
+        createStore: () => {
+          opened += 1;
+          throw new Error("provider opened only after maintenance");
+        },
+      }).then((result) => {
+        completed = true;
+        return result;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(completed, false);
+      assert.equal(opened, 0, "provider access must not overlap bootstrap or rollback");
+    });
+    const result = await pending!;
+    assert.equal(opened, 1);
+    assert.equal(result.status, "failed");
+    assert.match(String(result.reason), /provider opened only after maintenance/);
   });
 }
 

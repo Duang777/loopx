@@ -116,6 +116,7 @@ def build_todo_runtime_shadow_projection(
     )
 
     compact = todo_partition_projection(handoff_mode=handoff_mode, todos=todos if isinstance(todos, list) else [])["todos"]
+    current_todo_ids = {str(item["todo_id"]) for item in compact}
     compact_leases: list[dict[str, object]] = []
     if isinstance(leases, list):
         for item in leases:
@@ -123,6 +124,12 @@ def build_todo_runtime_shadow_projection(
                 continue
             todo_id = item.get("todo_id")
             if not isinstance(todo_id, str) or not todo_id:
+                continue
+            # The legacy lease directory is an append-retained history while a
+            # canonical coordination head models only the current Todo graph.
+            # Retired lease files stay on disk for audit, but projecting them
+            # without their retired Todo would create an invalid orphan edge.
+            if todo_id not in current_todo_ids:
                 continue
             compact_leases.append(canonical_value(dict(item)))
     compact_leases.sort(key=lambda item: str(item["todo_id"]))

@@ -81,7 +81,18 @@ def _fixture(tmp_path: Path, *, bootstrap: bool = True) -> tuple[Path, Path, Pat
             operation_id="bootstrap:outbox-test", source_version="source:initial",
             projection=projection, source_snapshot=snapshot,
         )
-        assert result["status"] == "applied", result
+        # The managed Effect runtime may lose the first response after the
+        # durable bootstrap commit and retry the same operation. Windows CI is
+        # slow enough to exercise that path, so the public success contract is
+        # applied/recovered/replayed rather than applied-only.
+        assert result["status"] in {"applied", "recovered", "replayed"}, result
+        assert result["operation_id"] == "bootstrap:outbox-test", result
+        assert result["cursor"] == "1", result
+        assert result["provider_revision"] == result["bootstrap_provider_revision"], result
+        binding = require_shadow_primary_write_allowed(runtime_root, GOAL_ID)
+        assert binding is not None, result
+        assert binding["bootstrap_operation_id"] == result["operation_id"], result
+        assert binding["bootstrap_provider_revision"] == result["provider_revision"], result
     return registry, state, runtime_root
 
 

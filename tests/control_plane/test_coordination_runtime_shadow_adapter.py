@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -462,18 +463,109 @@ def test_todo_projection_is_complete_stable_and_declares_read_model_contract() -
             },
             {"status": "open"},
         ],
+        leases=[
+            {
+                "todo_id": "todo_b",
+                "owner": "agent-a",
+                "version": 2,
+                "lease_epoch": 1,
+                "status": "released",
+            },
+            {
+                "todo_id": "todo_retired",
+                "owner": "agent-a",
+                "version": 9,
+                "lease_epoch": 4,
+                "status": "released",
+            },
+        ],
     )
 
     assert [item["todo_id"] for item in projection["todos"]] == [
         "todo_a",
         "todo_b",
     ]
-    assert projection["todos"][1]["note"] == "operator note retained by local canonical authority"
-    assert projection["todos"][1]["evidence"] == "durable evidence retained for Todo list semantics"
-    assert projection["leases"] == []
+    assert (
+        projection["todos"][1]["note"]
+        == "operator note retained by local canonical authority"
+    )
+    assert (
+        projection["todos"][1]["evidence"]
+        == "durable evidence retained for Todo list semantics"
+    )
+    assert projection["leases"] == [
+        {
+            "todo_id": "todo_b",
+            "owner": "agent-a",
+            "version": 2,
+            "lease_epoch": 1,
+            "status": "released",
+        }
+    ]
     assert projection["todo_read_model"]["todo_count"] == 2
     assert "text" in projection["todo_read_model"]["contract_fields"]
     assert "resume_when" in projection["todo_read_model"]["contract_fields"]
+
+
+def test_production_scale_projection_filters_retired_lease_history() -> None:
+    envelope = json.loads(
+        (
+            Path(__file__).parents[1]
+            / "fixtures"
+            / "control_plane"
+            / "coordination_production_scale_v0.json"
+        ).read_text(encoding="utf-8")
+    )
+    todos: list[dict[str, object]] = []
+    for role, counts in (
+        ("agent", envelope["agent_status_counts"]),
+        ("user", envelope["user_status_counts"]),
+    ):
+        index = 0
+        for status, count in counts.items():
+            for _ in range(count):
+                todos.append(
+                    _canonical_todo(
+                        todo_id=f"todo_fixture_{role}_{index:03d}",
+                        role=role,
+                        status=status,
+                        index=index + 1,
+                    )
+                )
+                index += 1
+    current_lease_count = int(envelope["current_lease_count"])
+    current_ids = [str(todo["todo_id"]) for todo in todos[:current_lease_count]]
+    leases = [
+        {
+            "todo_id": todo_id,
+            "owner": "agent-a",
+            "version": index + 1,
+            "lease_epoch": index + 1,
+            "status": "released",
+        }
+        for index, todo_id in enumerate(current_ids)
+    ]
+    leases.extend(
+        {
+            "todo_id": f"todo_fixture_retired_{index:03d}",
+            "owner": "agent-a",
+            "version": index + 1,
+            "lease_epoch": index + 1,
+            "status": "released",
+        }
+        for index in range(int(envelope["retired_lease_count"]))
+    )
+
+    projection = build_todo_runtime_shadow_projection(
+        goal_id="goal-production-scale",
+        todos=todos,
+        leases=leases,
+    )
+
+    assert len(projection["todos"]) == len(todos) == 464
+    assert len(leases) == 224
+    assert len(projection["leases"]) == current_lease_count == 64
+    assert {lease["todo_id"] for lease in projection["leases"]} == set(current_ids)
 
 
 def test_todo_projection_rejects_incomplete_consumer_semantics() -> None:
@@ -502,12 +594,6 @@ def test_todo_projection_rejects_unversioned_machine_owned_fields() -> None:
                 }
             ],
         )
-
-
-
-
-
-
 
 
 

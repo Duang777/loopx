@@ -48,6 +48,18 @@
 - Target base branch:
 - Direction tracker or promotion unit:
 
+## Shared-authority RFC fixture impact
+
+<!--
+Complete this section only when the PR claims progress against the TypeScript
+control-plane migration or shared Goal Authority RFC. Otherwise write N/A.
+-->
+
+- Production-scale fixture schema:
+- Semantic dimensions changed, or reviewed no-impact rationale:
+- Provider conformance arms run:
+- Read-only legacy/file/PostgreSQL three-arm rehearsal (required for promotion, runtime-routing, or compatibility-projection changes):
+
 ## Boundary Checklist
 
 - [ ] I did not commit `.loopx/`, `.codex/goals/`, live `ACTIVE_GOAL_STATE.md`, credentials, private benchmark traces, verifier output, raw agent sessions, internal document links, or local machine paths.

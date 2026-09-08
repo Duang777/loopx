@@ -172,6 +172,58 @@ failures or limits. If no safe real environment is available, hold delivery.
 `LOOPX_TEST_POSTGRES_URL`，运行 `npm run test:postgresql-authority-store`；跳过不算
 通过。记录精确 commit、后端版本、验证行为与失败或局限；没有安全的真实环境则暂停交付。
 
+When one semantic owner fronts multiple authority providers, use a three-arm
+refactor comparison: the immutable legacy baseline, the file provider, and a
+real PostgreSQL provider. All three arms must start from the same
+production-complex snapshot and execute the same public operations. Compare
+the two provider heads exactly, then compare the baseline semantically after
+the declared compatibility projection. The allowed archive normalization is
+narrow: omit provider-retained `archive_state=archive` records from the legacy
+hot view, omit their historical leases from that hot view, and ignore absolute
+imported `index` values only after separately proving identical per-role
+relative order. Provider provenance may also differ. No domain field, archive
+selection, relative order, active lease, or non-target record may be normalized.
+File/PostgreSQL agreement alone is not compatibility evidence because both
+providers execute the same new rule. Verify that every non-target record and
+the source snapshot are unchanged.
+
+The source snapshot's `lease_inventory` is byte-level audit evidence for every
+legacy lease file observed under the source locks. It is intentionally broader
+than canonical `projection.leases`, which contains only live edges whose Todo is
+present in the current canonical graph. Historical orphan lease files remain in
+the source inventory and never enter the canonical head.
+
+当同一个 semantic owner 服务多个 authority provider 时，重构对照必须包含三臂：
+不可变 legacy baseline、file provider、真实 PostgreSQL provider。三臂从同一份生产
+复杂度快照出发，执行相同 public operation；两个 provider head 要精确相等，baseline
+按显式 compatibility projection 比较。归档场景只允许三项窄归一化：legacy hot view
+不包含 provider 保留的 `archive_state=archive` 记录、不包含这些记录的历史 lease；并且
+只有先单独证明每个 role 的相对顺序完全一致，才可忽略导入 `index` 的绝对值。provider
+provenance 也可不同。domain 字段、归档选择、相对顺序、active lease 和非目标记录均
+不得归一化。File/PostgreSQL 一致不能单独证明兼容，因为它们执行的是同一套新规则。
+还要验证所有非目标记录与源快照保持不变。
+
+源快照中的 `lease_inventory` 是在 source lock 下观察到的全部 legacy lease 文件的
+字节级审计证据；它有意比 canonical `projection.leases` 更宽。后者只包含当前 canonical
+Todo 图中仍有对应 Todo 的 live edge。历史 orphan lease 文件继续留在 source inventory，
+但绝不进入 canonical head。
+
+The archive rehearsal is executable and emits only bounded counts and digest
+prefixes. It never prints raw projections, Todo identifiers, source paths, or
+the PostgreSQL URL. The URL must name a disposable isolated server:
+
+```bash
+LOOPX_TEST_POSTGRES_URL="$DISPOSABLE_POSTGRES_URL" \
+python examples/control_plane/authority-three-arm-rehearsal.py \
+  --registry "$REGISTRY_PATH" \
+  --goal-id "$GOAL_ID" \
+  --execute-isolated-postgresql
+```
+
+归档三臂演练可直接执行，且只输出有界计数和 digest 前缀；不输出 raw projection、
+Todo 标识、源路径或 PostgreSQL URL。URL 必须指向一次性隔离服务。命令中的显式
+`--execute-isolated-postgresql` 只是安全确认，不会授权连接共享或生产数据库。
+
 Keep tests separate from active state: use a disposable database/tenant and
 runtime directory, with synthetic fixtures or an owner-authorized read-only
 snapshot. Never run the integration suite against a shared or production
@@ -187,6 +239,64 @@ not overwritten or restored by the test. Stop the temporary server afterward.
 不为测试晋升正在运行的 goal、切换 provider，或修改其 registry、writer fence、Todo、
 lease。私有快照和原始输出不得进入 Git 或公开 review；快照演练前后比较源指纹。
 发现并发源变更只报告，不擅自覆盖或恢复。测试后停止临时数据库。
+
+Keep a deterministic, public-safe production-scale fixture beside the focused
+cases. Its envelope should cover realistic role/status distributions,
+multi-agent claims, user gates and standing decisions, current and retired
+leases, successor links, validation markers, archival pressure, and enough
+history to exercise ordering and capacity-sensitive paths. Generate content
+from public-safe seeds rather than copying production text or identifiers, and
+run the same fixture through every provider conformance suite. This fixture is
+a durable regression layer; it complements, but never substitutes for, the
+read-only three-arm rehearsal against current production-complex state.
+
+在聚焦用例之外，长期保留确定性、public-safe 的生产规模 fixture。其 envelope 应覆盖
+真实的 role/status 分布、多 Agent claim、User gate 与 standing decision、当前与已退役
+lease、successor link、validation marker、归档压力，以及足以触发顺序和容量敏感路径的
+历史规模。内容必须由公开安全的 seed 生成，不复制生产文本或标识；同一 fixture 要进入
+所有 provider conformance suite。它是持久回归层，只补充、不替代针对当前生产复杂状态
+的只读三臂演练。
+
+### Production-scale fixture stewardship / 生产规模 fixture 维护契约
+
+Treat `tests/fixtures/control_plane/coordination_production_scale_v0.json`
+and its generator as a shared acceptance input for both the TypeScript
+control-plane migration and shared-goal-authority RFCs. A pull request that
+changes provider-neutral fields, coordination semantics, or capacity and
+retention assumptions must carry a fixture impact declaration: extend the
+fixture and an independently derived assertion through every affected provider
+arm, or state why the existing dimensions fully cover the change. Storage-only
+provider work may use the unchanged fixture, but still runs the affected arm.
+Runtime routing, promotion, or compatibility work also runs the read-only
+three-arm rehearsal; the fixture never upgrades synthetic agreement into live
+promotion evidence.
+
+Fixture improvements are welcome when they encode an accepted RFC invariant or
+a reproduced public regression that the current envelope misses. Keep each
+addition deterministic, bounded, and public-safe; derive expected behavior
+from the invariant rather than the generator output. Add at least one negative
+or mutation-style assertion that would fail if the new dimension were ignored,
+reuse the same envelope and generator across providers, and do not weaken or
+remove an existing dimension without a reviewed compatibility reason. Never
+copy production text, identifiers, paths, logs, credentials, or private
+snapshots into the fixture. Report the fixture schema, semantic dimension,
+provider arms, and intentional deltas in the PR validation evidence.
+
+将 `tests/fixtures/control_plane/coordination_production_scale_v0.json` 及其
+generator 视为 TypeScript control-plane migration 与 shared-goal-authority 两份 RFC
+共用的验收输入。修改 provider-neutral field、coordination 语义，或容量／保留假设的 PR，
+必须附带 fixture 影响声明：扩展 fixture 与独立推导的断言，并让它通过所有受影响的
+provider arm；或者说明现有维度为何已经完整覆盖该改动。仅修改 provider 物理存储时可以
+复用未变化的 fixture，但仍要运行受影响的 arm。涉及 runtime routing、promotion 或
+compatibility 的工作还要执行只读三臂演练；fixture 绝不能把合成数据一致性升级为真实
+promotion 证据。
+
+欢迎开发者把已接受的 RFC invariant 或已复现、但当前 envelope 尚未覆盖的公共回归沉淀
+进 fixture。每次增强都要保持确定性、有界且 public-safe；expected behavior 必须从
+invariant 独立推导，不能从 generator 当前输出反推。至少增加一个在忽略新维度时会失败的
+negative 或 mutation-style 断言，并让各 provider 复用同一 envelope 和 generator；没有
+经 review 的兼容理由，不得削弱或删除已有维度。禁止复制生产文本、标识、路径、日志、
+凭据或私有快照。PR 验证证据需报告 fixture schema、语义维度、provider arms 与有意差异。
 
 Install the test dependencies once:
 

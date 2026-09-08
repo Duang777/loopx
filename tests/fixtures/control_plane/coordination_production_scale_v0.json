@@ -1,0 +1,19 @@
+{
+  "schema_version": "loopx_coordination_production_scale_fixture_v0",
+  "agent_status_counts": {
+    "done": 160,
+    "open": 48,
+    "blocked": 32,
+    "deferred": 16
+  },
+  "user_status_counts": {
+    "done": 192,
+    "open": 8,
+    "deferred": 8
+  },
+  "current_lease_count": 64,
+  "retired_lease_count": 160,
+  "standing_user_decision_count": 4,
+  "completion_target_index": 160,
+  "supersede_target_index": 161
+}

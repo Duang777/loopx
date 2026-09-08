@@ -121,14 +121,27 @@ def test_projection_replaces_only_machine_sections_and_is_idempotent(newline: st
     assert replay.rendered_sha256 == projected.rendered_sha256
 
 
-def test_projection_rejects_missing_role_section() -> None:
+def test_projection_creates_missing_machine_owned_role_section() -> None:
     source = "# Goal\n\nHuman introduction.\n\n## Agent Todo\n\n- [ ] old\n\n## Next Action\n\n- Continue.\n"
-    with pytest.raises(TodoSectionProjectionError, match="required Todo sections: user"):
-        render_canonical_todo_sections(
-            source,
-            [_records()[0]],
-            provider_revision="rev-9",
-        )
+    projected = render_canonical_todo_sections(
+        source,
+        [_records()[0]],
+        provider_revision="rev-9",
+    )
+    assert projected.changed is True
+    assert "## User Todo / Owner Review Reading Queue" in projected.markdown
+    assert "Human introduction." in projected.markdown
+    assert "## Next Action\n\n- Continue." in projected.markdown
+    assert {item["role"] for item in inspect_todo_section_projection(
+        projected.markdown
+    )["sections"]} == {"user", "agent"}
+    replay = render_canonical_todo_sections(
+        projected.markdown,
+        [_records()[0]],
+        provider_revision="rev-9",
+    )
+    assert replay.changed is False
+    assert replay.markdown == projected.markdown
 
 
 def test_projection_assigns_display_only_provenance_to_native_records() -> None:
@@ -212,7 +225,7 @@ def test_projection_renders_native_archive_with_role_and_replays() -> None:
     assert replay.changed is False
 
 
-def test_projection_requires_archive_region_for_archived_records() -> None:
+def test_projection_creates_archive_region_for_archived_records() -> None:
     archived = {
         "schema_version": "todo_domain_record_v0",
         "todo_id": "todo_archived",
@@ -222,12 +235,22 @@ def test_projection_requires_archive_region_for_archived_records() -> None:
         "text": "Completed provider-owned work.",
         "archive_state": "archive",
     }
-    with pytest.raises(TodoSectionProjectionError, match="Completed Work Archive"):
-        render_canonical_todo_sections(
-            SOURCE,
-            [archived],
-            provider_revision="rev-archive",
-        )
+    projected = render_canonical_todo_sections(
+        SOURCE,
+        [archived],
+        provider_revision="rev-archive",
+    )
+    assert "## Completed Work Archive" in projected.markdown
+    assert "Completed provider-owned work." in projected.markdown
+    assert {item["role"] for item in inspect_todo_section_projection(
+        projected.markdown
+    )["sections"]} == {"user", "agent", "archive"}
+    replay = render_canonical_todo_sections(
+        projected.markdown,
+        [archived],
+        provider_revision="rev-archive",
+    )
+    assert replay.changed is False
 
 
 def test_projection_rejects_duplicate_sections_and_unsafe_revision() -> None:

@@ -30,7 +30,6 @@ from .active_state_todo_parser import parse_active_state_todos
 from .contract import (
     TODO_CONTINUATION_POLICY_VALUES,
     TODO_STATUS_DONE,
-    TODO_TASK_CLASS_USER_GATE,
     build_todo_id,
     merge_todo_id_lists,
     normalize_required_capabilities,
@@ -44,9 +43,12 @@ from .contract import (
     normalize_todo_task_repository,
 )
 from .completion_transaction import reduce_todo_completion_transaction
+from .successor_derivation import (
+    build_successor_intents,
+    derive_successor_proposals,
+)
 from .text import (
     TODO_PRIORITY_PREFIX_PATTERN,
-    inherit_todo_priority,
     normalize_new_todo,
     todo_priority_prefix,
 )
@@ -563,67 +565,54 @@ def complete_event_projected_goal_todo(
                 "updated_at": item.get("updated_at"),
                 "source": "event_log",
             }
-        next_unblocks_todo_id = todo_id if next_agent_todo else None
-        next_user_bound_agent = effective_claimed_by
-        if next_user_todo and len(registered_agents) > 1:
-            if not next_user_bound_agent:
-                raise ValueError(
-                    "multi-agent --next-user-todo requires a completing --claimed-by "
-                    "agent so the user todo can be bound"
-                )
-
-        next_results: list[dict[str, Any]] = []
-        if next_agent_todo:
-            next_results.append(
-                _append_event_projected_successor(
-                    store=store,
-                    goal_id=goal_id,
-                    role="agent",
-                    text=inherit_todo_priority(next_agent_todo, str(item.get("text") or "")),
-                    updated_at=updated_at,
-                    fields=context["fields"],
-                    task_class=next_task_class or "advancement_task",
-                    action_kind=next_action_kind,
-                    capability_binding_ref=item.get("capability_binding_ref"),
-                    task_repository=next_task_repository,
-                    required_capabilities=next_required_capabilities,
-                    continuation_policy=next_continuation_policy,
-                    claimed_by=next_claimed_by,
-                    excluded_agents=next_excluded_agents,
-                    unblocks_todo_id=next_unblocks_todo_id,
-                    dry_run=dry_run,
-                    actor_agent_id=actor_agent_id,
-                )
+        successor_intents = build_successor_intents(
+            next_agent_todo=next_agent_todo,
+            next_user_todo=next_user_todo,
+            next_user_task_class=next_user_task_class,
+            next_claimed_by=next_claimed_by,
+            next_task_class=next_task_class,
+            next_action_kind=next_action_kind,
+            next_task_repository=next_task_repository,
+            next_required_capabilities=next_required_capabilities,
+            next_continuation_policy=next_continuation_policy,
+            next_excluded_agents=next_excluded_agents,
+        )
+        successor_proposals = derive_successor_proposals(
+            command="complete",
+            predecessor=item,
+            registered_agents=registered_agents,
+            actor_agent_id=actor_agent_id,
+            completion_policy={
+                "effective_claimed_by": effective_claimed_by,
+                "effective_next_claimed_by": next_claimed_by,
+                "effective_next_excluded_agents": next_excluded_agents,
+            },
+            successor_intents=successor_intents,
+        )
+        next_results = [
+            _append_event_projected_successor(
+                store=store,
+                goal_id=goal_id,
+                role=str(proposal["role"]),
+                text=str(proposal["text"]),
+                updated_at=updated_at,
+                fields=context["fields"],
+                task_class=proposal.get("task_class"),
+                action_kind=proposal.get("action_kind"),
+                capability_binding_ref=proposal.get("capability_binding_ref"),
+                task_repository=proposal.get("task_repository"),
+                required_capabilities=proposal.get("required_capabilities"),
+                continuation_policy=proposal.get("continuation_policy"),
+                claimed_by=proposal.get("claimed_by"),
+                bound_agent=proposal.get("bound_agent"),
+                blocks_agent=proposal.get("blocks_agent"),
+                excluded_agents=proposal.get("excluded_agents"),
+                unblocks_todo_id=proposal.get("unblocks_todo_id"),
+                dry_run=dry_run,
+                actor_agent_id=actor_agent_id,
             )
-        if next_user_todo:
-            next_results.append(
-                _append_event_projected_successor(
-                    store=store,
-                    goal_id=goal_id,
-                    role="user",
-                    text=inherit_todo_priority(next_user_todo, str(item.get("text") or "")),
-                    updated_at=updated_at,
-                    fields=context["fields"],
-                    task_class=next_user_task_class,
-                    action_kind=(
-                        "gate" if next_user_task_class == TODO_TASK_CLASS_USER_GATE else None
-                    ),
-                    capability_binding_ref=None,
-                    task_repository=None,
-                    required_capabilities=None,
-                    continuation_policy=None,
-                    claimed_by=None,
-                    bound_agent=next_user_bound_agent,
-                    blocks_agent=(
-                        next_user_bound_agent
-                        if next_user_task_class == TODO_TASK_CLASS_USER_GATE
-                        else None
-                    ),
-                    unblocks_todo_id=None,
-                    dry_run=dry_run,
-                    actor_agent_id=actor_agent_id,
-                )
-            )
+            for proposal in successor_proposals
+        ]
 
         normalized_successor_todo_ids = merge_todo_id_lists(
             successor_todo_ids,

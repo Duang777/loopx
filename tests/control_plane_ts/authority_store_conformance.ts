@@ -6,19 +6,31 @@ import type {
   AuthorityStore,
   AuthorityStoreCommit,
 } from "../../loopx/control_plane/coordination/authority_store.ts";
-import { canonicalAuthorityBytes } from "../../loopx/control_plane/coordination/authority_store_codec.ts";
+import {
+  canonicalAuthorityBytes,
+  canonicalAuthoritySha256,
+} from "../../loopx/control_plane/coordination/authority_store_codec.ts";
 import {
   TODO_CANONICAL_READ_RECORD_FIELDS,
   TODO_CANONICAL_READ_RECORD_SCHEMA,
   TODO_DOMAIN_ITEM_SCHEMA,
   TODO_DOMAIN_READ_RECORD_SCHEMA,
   TODO_DOMAIN_RECORD_CONTRACT,
+  TODO_ITEM_SCHEMA,
 } from "../../loopx/control_plane/coordination/coordination_state_contract.ts";
 import { prepareCoordinationProjectionCommit } from "../../loopx/control_plane/coordination/coordination_projection.ts";
 import { executeCoordinationTodoClaim } from "../../loopx/control_plane/coordination/todo_claim.ts";
 import { executeCoordinationTodoCreate } from "../../loopx/control_plane/coordination/todo_create.ts";
 import { executeCoordinationTodoUpdate } from "../../loopx/control_plane/coordination/todo_update.ts";
+import {
+  executeCoordinationTodoArchiveCompleted,
+  executeCoordinationTodoTerminalLifecycle,
+} from "../../loopx/control_plane/coordination/todo_terminal_lifecycle.ts";
 import { editCoordinationTodo, TODO_COMPATIBILITY_EDIT_SCHEMA } from "../../loopx/control_plane/coordination/todo_compatibility_edit.ts";
+import {
+  PRODUCTION_SCALE_VALIDATION_DECLARATION,
+  productionScaleCoordinationFixture,
+} from "./production_scale_coordination_fixture.ts";
 
 export interface AuthorityStoreConformanceFixture {
   store: AuthorityStore;
@@ -27,6 +39,13 @@ export interface AuthorityStoreConformanceFixture {
 export type AuthorityStoreConformanceFactory = (
   context: test.TestContext,
 ) => Promise<AuthorityStoreConformanceFixture>;
+
+const TERMINAL_VALIDATION_DECLARATION = {
+  validation_command: null,
+  validation_command_argv: ["python3", "-c", "raise SystemExit(0)"],
+  validation_label: "provider conformance validation",
+  validation_timeout_seconds: 5,
+};
 
 function todoClaimProjection(goalId: string, native: boolean): Record<string, unknown> {
   const todos = [{
@@ -58,6 +77,102 @@ function todoClaimProjection(goalId: string, native: boolean): Record<string, un
       todo_count: todos.length,
       records_sha256: recordsSha256,
       contract_fields: native ? [...TODO_DOMAIN_RECORD_CONTRACT.fields] : [...TODO_CANONICAL_READ_RECORD_FIELDS],
+    },
+  };
+}
+
+function todoTerminalProjection(goalId: string): Record<string, unknown> {
+  const todos = [
+    {
+      schema_version: TODO_DOMAIN_ITEM_SCHEMA,
+      todo_id: "todo-terminal",
+      role: "agent",
+      status: "open",
+      done: false,
+      text: "Finish the provider-neutral transaction family",
+      archive_state: "active",
+      task_class: "advancement_task",
+      claimed_by: "agent-a",
+      note: "preserve target metadata",
+      completion_validation_required: true,
+      completion_validation_sha256: canonicalAuthoritySha256(
+        TERMINAL_VALIDATION_DECLARATION,
+      ),
+    },
+    {
+      schema_version: TODO_DOMAIN_ITEM_SCHEMA,
+      todo_id: "todo-done-a",
+      role: "agent",
+      status: "done",
+      done: true,
+      text: "Older completed work",
+      archive_state: "active",
+      completed_at: "2026-09-01T00:00:00Z",
+    },
+    {
+      schema_version: TODO_DOMAIN_ITEM_SCHEMA,
+      todo_id: "todo-done-b",
+      role: "agent",
+      status: "done",
+      done: true,
+      text: "Newer completed work",
+      archive_state: "active",
+      completed_at: "2026-09-02T00:00:00Z",
+    },
+    {
+      schema_version: TODO_DOMAIN_ITEM_SCHEMA,
+      todo_id: "todo-user-decision",
+      role: "user",
+      status: "done",
+      done: true,
+      text: "Retain the standing provider decision",
+      archive_state: "active",
+      task_class: "user_gate",
+      decision_scope: {kind: "direction", granularity: "goal", scope_key: goalId},
+      decision_outcome: "approve",
+      global_gate: true,
+      goal_bound: true,
+      completed_at: "2026-08-30T00:00:00Z",
+    },
+    {
+      schema_version: TODO_DOMAIN_ITEM_SCHEMA,
+      todo_id: "todo-user-ordinary",
+      role: "user",
+      status: "done",
+      done: true,
+      text: "Archive the ordinary completed user action",
+      archive_state: "active",
+      task_class: "user_action",
+      goal_bound: true,
+      completed_at: "2026-08-31T00:00:00Z",
+    },
+  ].sort((left, right) => left.todo_id.localeCompare(right.todo_id));
+  return {
+    goal_id: goalId,
+    handoff_mode: "hard_lease",
+    todos,
+    leases: [{
+      schema_version: "task_lease_v0",
+      goal_id: goalId,
+      todo_id: "todo-terminal",
+      owner: "agent-a",
+      idempotency_key: "terminal-lease",
+      write_scopes: ["loopx/control_plane/**"],
+      acquire_ttl_seconds: 600,
+      version: 1,
+      lease_epoch: 1,
+      acquired_at: "2026-09-07T05:50:00Z",
+      updated_at: "2026-09-07T05:50:00Z",
+      expires_at: "2026-09-07T06:10:00Z",
+      status: "active",
+    }],
+    todo_read_model: {
+      schema_version: TODO_DOMAIN_READ_RECORD_SCHEMA,
+      todo_count: todos.length,
+      records_sha256: createHash("sha256")
+        .update(canonicalAuthorityBytes(todos))
+        .digest("hex"),
+      contract_fields: [...TODO_DOMAIN_RECORD_CONTRACT.fields],
     },
   };
 }
@@ -222,6 +337,450 @@ export function registerAuthorityStoreConformance(
     (invalidObject.next_projection as Record<string, unknown>).coordination = new Date();
     assert.equal((await store.commitAuthority(invalidObject)).status, "failed");
     assert.deepEqual(await store.loadAuthority(), { status: "missing" });
+  });
+
+  test(`${providerName} conformance: terminal lifecycle and archive share atomic authority`, async (t) => {
+    const {store, contender} = await factory(t);
+    const goalId = "goal-terminal";
+    const initialized = await store.commitAuthority({
+      expected_provider_revision: null,
+      operation_id: "initialize-terminal",
+      events: [],
+      receipts: [],
+      next_projection: todoTerminalProjection(goalId),
+    });
+    assert.equal(initialized.status, "applied");
+    const successorIntent = {
+      role: "agent",
+      text: "Continue with the next provider-neutral transaction",
+      task_class: "advancement_task",
+    };
+    const request = {
+      goal_id: goalId,
+      todo_id: "todo-terminal",
+      expected_role: "agent" as const,
+      command: "complete" as const,
+      actor_agent_id: "agent-a",
+      registered_agents: ["agent-a", "agent-b"],
+      lifecycle_grants: [],
+      authority_reason: null,
+      decision_outcome: null,
+      operation_id: "complete-terminal",
+      lease_idempotency_key: "terminal-lease",
+      lease_expected_version: 1,
+      allow_user_gate_auto_acquire: false,
+      requested_no_followup: false,
+      requested_completion_turn_key: null,
+      requested_completion_identity_source: null,
+      linked_successor_todo_ids: [],
+      successor_intents: [successorIntent],
+      note: "completed atomically",
+      evidence: "focused provider conformance",
+      reason: null,
+      clear_claim: false,
+      validation_declaration: TERMINAL_VALIDATION_DECLARATION,
+      validation_receipt: null,
+      completion_policy_request: {
+        schema_version: "loopx_todo_completion_policy_request_v0",
+        goal_id: goalId,
+        agent_model: "peer_v1",
+        claimed_by: "agent-a",
+        registered_agents: ["agent-a", "agent-b"],
+        next_claimed_by: "agent-b",
+        next_agent_todo: successorIntent.text,
+        next_continuation_policy: null,
+        next_excluded_agents: [],
+        self_merged: false,
+        evidence: null,
+        linked_successors: [],
+      },
+      dry_run: false,
+      now: new Date("2026-09-07T06:00:00Z"),
+    };
+    const preview = await executeCoordinationTodoTerminalLifecycle(
+      store, {...request, dry_run: true},
+    );
+    assert.equal(preview.status, "planned", JSON.stringify(preview));
+    const validation = await executeCoordinationTodoTerminalLifecycle(store, request);
+    assert.equal(validation.status, "execute_validation", JSON.stringify(validation));
+    assert.equal(
+      (validation.validation_effect as Record<string, unknown>)?.kind,
+      "caller_validation",
+    );
+    const commitRequest = {
+      ...request,
+      validation_receipt: {
+        schema_version: "issue_fix_validation_command_v0",
+        command_label: "provider conformance validation",
+        exit_code: 0,
+        passed: true,
+        status: "passed",
+        summary: "provider conformance validation passed",
+        stdout_captured: false as const,
+        stderr_captured: false as const,
+        local_path_captured: false as const,
+      },
+    };
+    const dangling = await executeCoordinationTodoTerminalLifecycle(store, {
+      ...commitRequest,
+      operation_id: "complete-dangling-successor",
+      linked_successor_todo_ids: ["todo-missing"],
+      successor_intents: [],
+    });
+    assert.equal(dangling.status, "failed");
+    assert.equal(dangling.reason_code, "todo_successor_not_found");
+    const [first, second] = await Promise.all([
+      executeCoordinationTodoTerminalLifecycle(store, commitRequest),
+      executeCoordinationTodoTerminalLifecycle(contender, commitRequest),
+    ]);
+    assert.ok(
+      [first.status, second.status].includes("applied"),
+      JSON.stringify([first, second]),
+    );
+    assert.ok(
+      [first.status, second.status].every((status) =>
+        typeof status === "string" &&
+        ["applied", "recovered", "replayed", "conflict"].includes(status)),
+      JSON.stringify([first, second]),
+    );
+    const committedRevisions = [first, second]
+      .filter((item) => item.status !== "conflict")
+      .map((item) => item.provider_revision);
+    assert.equal(new Set(committedRevisions).size, 1, JSON.stringify([first, second]));
+    const replayed = await executeCoordinationTodoTerminalLifecycle(store, commitRequest);
+    assert.equal(replayed.status, "replayed", JSON.stringify(replayed));
+    assert.equal(replayed.changed, false);
+    const proseReplay = await executeCoordinationTodoTerminalLifecycle(store, {
+      ...commitRequest,
+      note: "same operation, revised prose",
+      evidence: "revised evidence does not create a new operation",
+    });
+    assert.equal(proseReplay.status, "replayed", JSON.stringify(proseReplay));
+    const changedIntent = await executeCoordinationTodoTerminalLifecycle(store, {
+      ...commitRequest,
+      successor_intents: [{...successorIntent, text: "A genuinely different successor"}],
+      completion_policy_request: {
+        ...commitRequest.completion_policy_request,
+        next_agent_todo: "A genuinely different successor",
+      },
+    });
+    assert.equal(changedIntent.status, "failed", JSON.stringify(changedIntent));
+    assert.equal(changedIntent.failure_kind, "decision_rejection");
+    assert.equal(changedIntent.reason_code, "coordination_operation_identity_mismatch");
+
+    const afterCompletion = await store.loadAuthority();
+    assert.equal(afterCompletion.status, "loaded");
+    if (afterCompletion.status !== "loaded") return;
+    const completed = (afterCompletion.head.todos as Record<string, unknown>[])
+      .find((todo) => todo.todo_id === "todo-terminal");
+    const committedResult = first.status === "conflict" ? second : first;
+    const generatedIds = committedResult.generated_successor_todo_ids as string[] | undefined;
+    const generatedId = generatedIds?.[0];
+    const created = (afterCompletion.head.todos as Record<string, unknown>[])
+      .find((todo) => todo.todo_id === generatedId);
+    assert.equal(completed?.status, "done");
+    assert.equal(completed?.note, "completed atomically");
+    assert.equal(completed?.evidence, "focused provider conformance");
+    assert.deepEqual(completed?.successor_todo_ids, [generatedId]);
+    assert.equal(created?.claimed_by, "agent-b");
+    assert.equal(created?.created_by, "agent-a");
+    const releasedLease = (afterCompletion.head.leases as Record<string, unknown>[])
+      .find((lease) => lease.todo_id === "todo-terminal");
+    assert.equal(releasedLease?.status, "released");
+
+    const archiveRequest = {
+      goal_id: goalId,
+      role: "agent" as const,
+      max_active_done: 1,
+      operation_id: "archive-terminal",
+      dry_run: false,
+      now: new Date("2026-09-07T06:01:00Z"),
+    };
+    const archived = await executeCoordinationTodoArchiveCompleted(store, archiveRequest);
+    assert.equal(archived.status, "applied", JSON.stringify(archived));
+    assert.equal(archived.moved_count, 2);
+    assert.deepEqual(archived.moved_todo_ids, ["todo-done-a", "todo-done-b"]);
+    assert.equal((await executeCoordinationTodoArchiveCompleted(store, archiveRequest)).status,
+      "replayed");
+    const afterArchive = await store.loadAuthority();
+    assert.equal(afterArchive.status, "loaded");
+    if (afterArchive.status !== "loaded") return;
+    const archivedIds = (afterArchive.head.todos as Record<string, unknown>[])
+      .filter((todo) => todo.archive_state === "archive")
+      .map((todo) => todo.todo_id);
+    assert.deepEqual(archivedIds, ["todo-done-a", "todo-done-b"]);
+
+    const userArchive = await executeCoordinationTodoArchiveCompleted(store, {
+      ...archiveRequest,
+      role: "user",
+      max_active_done: 0,
+      operation_id: "archive-user-terminal",
+    });
+    assert.equal(userArchive.status, "applied", JSON.stringify(userArchive));
+    assert.deepEqual(userArchive.moved_todo_ids, ["todo-user-ordinary"]);
+    assert.equal(userArchive.retained_standing_decision_count, 1);
+    const afterUserArchive = await store.loadAuthority();
+    assert.equal(afterUserArchive.status, "loaded");
+    if (afterUserArchive.status !== "loaded") return;
+    const standing = (afterUserArchive.head.todos as Record<string, unknown>[])
+      .find((todo) => todo.todo_id === "todo-user-decision");
+    assert.equal(standing?.archive_state, "active");
+
+    const beforeNoChange = await store.loadAuthority();
+    assert.equal(beforeNoChange.status, "loaded");
+    if (beforeNoChange.status !== "loaded") return;
+    const noChangeOperation = "archive-terminal-no-change";
+    const noChange = await executeCoordinationTodoArchiveCompleted(store, {
+      ...archiveRequest,
+      operation_id: noChangeOperation,
+    });
+    assert.equal(noChange.status, "no_change", JSON.stringify(noChange));
+    assert.equal(noChange.changed, false);
+    assert.equal(noChange.moved_count, 0);
+    assert.equal(noChange.provider_revision, beforeNoChange.provider_revision);
+    assert.equal(noChange.cursor, beforeNoChange.cursor);
+    assert.equal((await store.readReceipt(noChangeOperation)).status, "missing");
+    const afterNoChange = await store.loadAuthority();
+    assert.equal(afterNoChange.status, "loaded");
+    if (afterNoChange.status !== "loaded") return;
+    assert.equal(afterNoChange.provider_revision, beforeNoChange.provider_revision);
+    assert.equal(afterNoChange.cursor, beforeNoChange.cursor);
+  });
+
+  test(`${providerName} conformance: supersede preserves the legacy terminal continuation`, async (t) => {
+    const {store} = await factory(t);
+    const goalId = "goal-supersede";
+    const initialized = await store.commitAuthority({
+      expected_provider_revision: null,
+      operation_id: "initialize-supersede",
+      events: [],
+      receipts: [],
+      next_projection: todoClaimProjection(goalId, true),
+    });
+    assert.equal(initialized.status, "applied");
+    const superseded = await executeCoordinationTodoTerminalLifecycle(store, {
+      goal_id: goalId,
+      todo_id: "todo-claim",
+      expected_role: "agent",
+      command: "supersede",
+      actor_agent_id: "agent-a",
+      registered_agents: ["agent-a", "agent-b"],
+      lifecycle_grants: [],
+      authority_reason: null,
+      decision_outcome: null,
+      lease_idempotency_key: null,
+      lease_expected_version: null,
+      operation_id: "supersede-terminal",
+      allow_user_gate_auto_acquire: false,
+      requested_no_followup: false,
+      requested_completion_turn_key: null,
+      requested_completion_identity_source: null,
+      linked_successor_todo_ids: [],
+      successor_intents: [],
+      note: "superseded",
+      evidence: null,
+      reason: "the replacement owns the next action",
+      clear_claim: false,
+      validation_declaration: null,
+      validation_receipt: null,
+      completion_policy_request: null,
+      dry_run: false,
+      now: new Date("2026-09-07T06:02:00Z"),
+    });
+    assert.equal(superseded.status, "applied", JSON.stringify(superseded));
+    const loaded = await store.loadAuthority();
+    assert.equal(loaded.status, "loaded");
+    if (loaded.status !== "loaded") return;
+    const target = (loaded.head.todos as Record<string, unknown>[])
+      .find((todo) => todo.todo_id === "todo-claim");
+    assert.equal(target?.status, "done");
+    assert.equal(target?.completion_continuation, "active_goal");
+  });
+
+  test(`${providerName} conformance: archive preserves legacy source order`, async (t) => {
+    const {store} = await factory(t);
+    const goalId = "goal-archive-order";
+    const todos = [
+      {
+        schema_version: TODO_ITEM_SCHEMA,
+        todo_id: "todo-a-newer",
+        role: "agent",
+        status: "done",
+        done: true,
+        text: "Newer completed compatibility Todo",
+        archive_state: "active",
+        source_section: "Agent Todo",
+        index: 2,
+      },
+      {
+        schema_version: TODO_ITEM_SCHEMA,
+        todo_id: "todo-z-older",
+        role: "agent",
+        status: "done",
+        done: true,
+        text: "Older completed compatibility Todo",
+        archive_state: "active",
+        source_section: "Agent Todo",
+        index: 1,
+      },
+    ].sort((left, right) => left.todo_id.localeCompare(right.todo_id));
+    const initialized = await store.commitAuthority({
+      expected_provider_revision: null,
+      operation_id: "initialize-archive-order",
+      events: [],
+      receipts: [],
+      next_projection: {
+        goal_id: goalId,
+        todos,
+        leases: [],
+        todo_read_model: {
+          schema_version: TODO_CANONICAL_READ_RECORD_SCHEMA,
+          todo_count: todos.length,
+          records_sha256: createHash("sha256")
+            .update(canonicalAuthorityBytes(todos))
+            .digest("hex"),
+          contract_fields: [...TODO_CANONICAL_READ_RECORD_FIELDS],
+        },
+      },
+    });
+    assert.equal(initialized.status, "applied");
+    const archived = await executeCoordinationTodoArchiveCompleted(store, {
+      goal_id: goalId,
+      role: "agent",
+      max_active_done: 1,
+      operation_id: "archive-by-source-order",
+      dry_run: false,
+      now: new Date("2026-09-07T06:03:00Z"),
+    });
+    assert.equal(archived.status, "applied", JSON.stringify(archived));
+    assert.deepEqual(archived.moved_todo_ids, ["todo-z-older"]);
+  });
+
+  test(`${providerName} conformance: production-scale terminal lifecycle stays bounded`, async (t) => {
+    const {store} = await factory(t);
+    const goalId = "goal-production-scale";
+    const fixture = productionScaleCoordinationFixture(goalId);
+    assert.equal(fixture.projection.handoff_mode, "hard_lease");
+    const initialized = await store.commitAuthority({
+      expected_provider_revision: null,
+      operation_id: "initialize-production-scale",
+      events: [],
+      receipts: [],
+      next_projection: fixture.projection,
+    });
+    assert.equal(initialized.status, "applied");
+    const common = {
+      goal_id: goalId,
+      expected_role: "agent" as const,
+      registered_agents: fixture.registered_agents,
+      lifecycle_grants: [],
+      authority_reason: null,
+      decision_outcome: null,
+      lease_idempotency_key: null,
+      lease_expected_version: null,
+      allow_user_gate_auto_acquire: false,
+      requested_completion_turn_key: null,
+      requested_completion_identity_source: null,
+      linked_successor_todo_ids: [],
+      successor_intents: [],
+      note: null,
+      evidence: "synthetic production-scale conformance",
+      reason: null,
+      clear_claim: false,
+      completion_policy_request: null,
+      dry_run: false,
+    };
+    const completed = await executeCoordinationTodoTerminalLifecycle(store, {
+      ...common,
+      todo_id: fixture.completion_todo_id,
+      command: "complete",
+      actor_agent_id: "agent-a",
+      lease_idempotency_key: fixture.completion_lease_idempotency_key,
+      lease_expected_version: fixture.completion_lease_expected_version,
+      operation_id: "complete-production-scale",
+      requested_no_followup: true,
+      validation_declaration: PRODUCTION_SCALE_VALIDATION_DECLARATION,
+      validation_receipt: {
+        schema_version: "issue_fix_validation_command_v0",
+        command_label: "production-scale fixture validation",
+        exit_code: 0,
+        passed: true,
+        status: "passed",
+        summary: "synthetic production-scale validation passed",
+        stdout_captured: false,
+        stderr_captured: false,
+        local_path_captured: false,
+      },
+      now: new Date("2026-09-07T07:00:00Z"),
+    });
+    assert.equal(completed.status, "applied", JSON.stringify(completed));
+    const completedDecision = completed.terminal_decision as {
+      lease_fence?: unknown;
+      next_lease?: {status?: unknown};
+    };
+    assert.equal(completedDecision.lease_fence, "required");
+    assert.equal(completedDecision.next_lease?.status, "released");
+    const superseded = await executeCoordinationTodoTerminalLifecycle(store, {
+      ...common,
+      todo_id: fixture.supersede_todo_id,
+      command: "supersede",
+      actor_agent_id: "agent-b",
+      lease_idempotency_key: fixture.supersede_lease_idempotency_key,
+      lease_expected_version: fixture.supersede_lease_expected_version,
+      operation_id: "supersede-production-scale",
+      requested_no_followup: false,
+      validation_declaration: null,
+      validation_receipt: null,
+      reason: "synthetic replacement owns the next action",
+      now: new Date("2026-09-07T07:01:00Z"),
+    });
+    assert.equal(superseded.status, "applied", JSON.stringify(superseded));
+    const supersededDecision = superseded.terminal_decision as {
+      lease_fence?: unknown;
+      next_lease?: {status?: unknown};
+    };
+    assert.equal(supersededDecision.lease_fence, "required");
+    assert.equal(supersededDecision.next_lease?.status, "released");
+    const agentArchive = await executeCoordinationTodoArchiveCompleted(store, {
+      goal_id: goalId,
+      role: "agent",
+      max_active_done: 5,
+      operation_id: "archive-production-scale-agent",
+      dry_run: false,
+      now: new Date("2026-09-07T07:02:00Z"),
+    });
+    assert.equal(agentArchive.status, "applied", JSON.stringify(agentArchive));
+    assert.equal(
+      agentArchive.moved_count,
+      fixture.expected_agent_archive_count_after_terminals,
+    );
+    const userArchive = await executeCoordinationTodoArchiveCompleted(store, {
+      goal_id: goalId,
+      role: "user",
+      max_active_done: 5,
+      operation_id: "archive-production-scale-user",
+      dry_run: false,
+      now: new Date("2026-09-07T07:03:00Z"),
+    });
+    assert.equal(userArchive.status, "applied", JSON.stringify(userArchive));
+    assert.equal(userArchive.moved_count, fixture.expected_user_archive_count);
+    assert.equal(
+      userArchive.retained_standing_decision_count,
+      fixture.expected_standing_user_decision_count,
+    );
+    const loaded = await store.loadAuthority();
+    assert.equal(loaded.status, "loaded");
+    if (loaded.status !== "loaded") return;
+    const todos = loaded.head.todos as Record<string, unknown>[];
+    const leases = loaded.head.leases as Record<string, unknown>[];
+    assert.equal(todos.length, fixture.expected_initial_todo_count);
+    assert.equal(leases.length, fixture.expected_current_lease_count);
+    assert.equal(
+      todos.filter((todo) => todo.archive_state === "active").length,
+      fixture.expected_initial_todo_count -
+        fixture.expected_agent_archive_count_after_terminals -
+        fixture.expected_user_archive_count,
+    );
   });
 
   for (const native of [false, true]) {

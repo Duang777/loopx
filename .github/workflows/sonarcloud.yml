@@ -42,6 +42,13 @@ jobs:
         with:
           name: python-coverage-xml
 
+      - name: Download this run's TypeScript coverage
+        if: steps.sonar-token.outputs.available == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          name: typescript-control-plane-coverage
+          path: coverage/control-plane
+
       - name: SonarCloud scan
         if: steps.sonar-token.outputs.available == 'true'
         # Analysis-only: findings are reported to the PR/dashboard but never

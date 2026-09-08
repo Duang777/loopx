@@ -87,7 +87,15 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm run typecheck:control-plane
-          npm run test:control-plane
+          npm run test:control-plane:coverage
+
+      - name: Upload TypeScript control-plane coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: typescript-control-plane-coverage
+          path: coverage/control-plane/lcov.info
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Lint test suite
         run: >-
@@ -247,7 +255,7 @@ jobs:
         env:
           LOOPX_SHADOW_COMPARISON_OUTPUT: .local/stage2c-observables
         # Keep each module's shared workspace and ordered parity rows on one worker.
-        run: python -m pytest -q -n 2 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
+        run: python -m pytest -q -n 4 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
       - name: Reject deliberate correctness regressions
         if: matrix.suite == 'mutants'
         run: python examples/shared-goal-authority-e2e/mutants.py --output .local/stage2c-mutants

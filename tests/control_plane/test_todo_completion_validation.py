@@ -12,7 +12,16 @@ import pytest
 import loopx.control_plane.todos.completion_validation as completion_validation_module
 import loopx.control_plane.todos.completion_transaction as completion_transaction_module
 from loopx.control_plane.todos.completion_validation_projection import (
+    completion_validation_declaration_sha256,
     project_completion_validation_authority,
+)
+from loopx.control_plane.todos.completion_validation import (
+    resolve_private_completion_validation_declaration,
+)
+from loopx.control_plane.todos.completion_validation_store import (
+    completion_validation_declaration_path,
+    persist_completion_validation_declaration,
+    read_completion_validation_declaration,
 )
 from loopx.event_sourced_state import (
     TODO_ADDED,
@@ -842,10 +851,108 @@ def test_event_projection_preserves_private_validation_and_public_marker() -> No
     assert "validation_command_argv=" in rendered
     public = project_completion_validation_authority(item)
     assert public["completion_validation_required"] is True
+    assert len(public["completion_validation_sha256"]) == 64
     assert "validation_command" not in public
     assert "validation_command_argv" not in public
     assert "validation_label" not in public
     assert "validation_timeout_seconds" not in public
+
+
+def test_private_validation_store_is_owner_only_and_detects_tampering(
+    tmp_path: Path,
+) -> None:
+    declaration = {
+        "validation_command": None,
+        "validation_command_argv": [sys.executable, "-c", "pass"],
+        "validation_label": "private validation",
+        "validation_timeout_seconds": 5,
+    }
+    digest = persist_completion_validation_declaration(
+        runtime_root=tmp_path,
+        goal_id=GOAL_ID,
+        todo_id="todo_private_validation",
+        declaration=declaration,
+    )
+    path = completion_validation_declaration_path(
+        runtime_root=tmp_path,
+        goal_id=GOAL_ID,
+        todo_id="todo_private_validation",
+    )
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert read_completion_validation_declaration(
+        runtime_root=tmp_path,
+        goal_id=GOAL_ID,
+        todo_id="todo_private_validation",
+    ) == declaration
+    assert digest == completion_validation_declaration_sha256(declaration)
+
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    stored["declaration"]["validation_label"] = "tampered validation"
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        read_completion_validation_declaration(
+            runtime_root=tmp_path,
+            goal_id=GOAL_ID,
+            todo_id="todo_private_validation",
+        )
+
+
+def test_canonical_validation_marker_fails_closed_without_private_declaration(
+    tmp_path: Path,
+) -> None:
+    canonical = project_completion_validation_authority(
+        {"validation_command_argv": [sys.executable, "-c", "pass"]}
+    )
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps({"schema_version": 1, "goals": [{"id": GOAL_ID}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="declaration is unavailable"):
+        resolve_private_completion_validation_declaration(
+            canonical_todo=canonical,
+            state_file=tmp_path / "missing.md",
+            runtime_root=tmp_path / "runtime",
+            registry_path=registry,
+            goal_id=GOAL_ID,
+            todo_id="todo_missing_private_validation",
+            role="agent",
+            persist_if_resolved=True,
+        )
+
+
+def test_canonical_validation_digest_rejects_different_private_declaration(
+    tmp_path: Path,
+) -> None:
+    todo_id = "todo_mismatched_private_validation"
+    canonical = project_completion_validation_authority(
+        {"validation_command_argv": [sys.executable, "-c", "pass"]}
+    )
+    persist_completion_validation_declaration(
+        runtime_root=tmp_path / "runtime",
+        goal_id=GOAL_ID,
+        todo_id=todo_id,
+        declaration={
+            "validation_command": None,
+            "validation_command_argv": [sys.executable, "-c", "raise SystemExit(1)"],
+            "validation_label": None,
+            "validation_timeout_seconds": None,
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not match canonical Todo digest"):
+        resolve_private_completion_validation_declaration(
+            canonical_todo=canonical,
+            state_file=tmp_path / "missing.md",
+            runtime_root=tmp_path / "runtime",
+            registry_path=tmp_path / "missing-registry.json",
+            goal_id=GOAL_ID,
+            todo_id=todo_id,
+            role="agent",
+            persist_if_resolved=False,
+        )
 
 
 def test_event_projected_failing_validation_blocks_completion(

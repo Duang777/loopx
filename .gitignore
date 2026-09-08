@@ -15,6 +15,7 @@ dist/
 .mypy_cache/
 .coverage
 coverage.xml
+coverage/
 htmlcov/
 .playwright-cli/
 output/playwright/

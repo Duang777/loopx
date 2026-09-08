@@ -481,6 +481,7 @@ def handle_turn_command(
                     todo_id=todo_id,
                     registry_path=registry_path,
                     goal_id=args.goal_id,
+                    runtime_root=runtime_root,
                 )
                 return project_durable_completion_intent(
                     todo=durable_todo,
@@ -531,6 +532,7 @@ def handle_turn_command(
                         todo_id=todo_id,
                         registry_path=registry_path,
                         goal_id=args.goal_id,
+                        runtime_root=runtime_root,
                     )
                     completion_outcome = project_durable_completion_outcome(
                         todo=durable_todo,
@@ -675,6 +677,7 @@ def handle_turn_command(
                         todo_id=todo_id,
                         registry_path=registry_path,
                         goal_id=args.goal_id,
+                        runtime_root=runtime_root,
                     )
                     return project_durable_completion_outcome(
                         todo=durable_todo,
@@ -703,6 +706,7 @@ def handle_turn_command(
                     todo_id=todo_id,
                     registry_path=registry_path,
                     goal_id=args.goal_id,
+                    runtime_root=runtime_root,
                 )
                 readback = project_durable_terminal_completion_readback(
                     todo=durable_todo,

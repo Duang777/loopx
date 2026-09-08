@@ -7,6 +7,8 @@ of the registered source file. An override cannot bypass either source fence.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,9 @@ from loopx.control_plane.coordination.legacy_writer_fence import (
     LegacyCoordinationWriterFenced,
     legacy_coordination_writer_fence_path,
 )
+from loopx.control_plane.coordination.local_authority import (
+    LocalCoordinationAuthorityUnavailable,
+)
 from loopx.control_plane.quota import monitor_poll
 from loopx.control_plane.scheduler.monitor_poll_writeback import (
     write_monitor_poll_todo_state,
@@ -31,6 +36,7 @@ ADVANCE_ID = "todo_splitroot_advance"
 MONITOR_ID = "todo_splitroot_monitor"
 OVERRIDE_POLL_HASH = "split-v2"
 LEGACY_POLL_HASH = "split-v1"
+REPOSITORY = Path(__file__).resolve().parents[2]
 
 
 def _write_split_root_goal(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
@@ -265,13 +271,14 @@ def test_turn_validated_completion_blocked_when_override_root_is_fenced(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    registry, _state, _runtime_registry, runtime_override = (
+    registry, state, runtime_registry, runtime_override = (
         _write_split_root_goal(tmp_path)
     )
     _engage_fence_at(runtime_override)
     _fence_check_blocks(monkeypatch)
+    before = state.read_bytes()
 
-    with pytest.raises(LegacyCoordinationWriterFenced):
+    with pytest.raises(LocalCoordinationAuthorityUnavailable) as error:
         write_turn_validated_completion(
             registry_path=registry,
             runtime_root_arg=str(runtime_override),
@@ -282,3 +289,68 @@ def test_turn_validated_completion_blocked_when_override_root_is_fenced(
             note="advance to the next bounded slice",
             agent_id=AGENT_ID,
         )
+
+    assert error.value.code == "local_authority_todo_list_unavailable"
+    assert error.value.payload == {
+        "schema_version": "loopx_local_coordination_todo_list_result_v0",
+        "status": "missing",
+        "source_authority": "file_v0",
+        "decision_read_from_provider": True,
+        "legacy_fallback_used": False,
+        "recovery": {
+            "action": "restore_canonical_authority",
+            "runtime_root": str(runtime_override.resolve()),
+            "goal_id": GOAL_ID,
+            "legacy_markdown_fallback_allowed": False,
+            "retry_after": "canonical_provider_readback_loaded",
+        },
+    }
+    assert state.read_bytes() == before
+    assert not (runtime_override / "authority").exists()
+    assert not (runtime_registry / "authority").exists()
+
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "loopx.entrypoint",
+            "--registry",
+            str(registry),
+            "--runtime-root",
+            str(runtime_override),
+            "--format",
+            "json",
+            "todo",
+            "complete",
+            "--goal-id",
+            GOAL_ID,
+            "--todo-id",
+            ADVANCE_ID,
+            "--role",
+            "agent",
+            "--agent-id",
+            AGENT_ID,
+            "--evidence",
+            "split-root provider recovery contract",
+            "--next-agent-todo",
+            "Resume only after canonical authority is restored.",
+            "--next-task-class",
+            "advancement_task",
+        ],
+        cwd=REPOSITORY,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert process.returncode == 1, process.stdout + process.stderr
+    payload = json.loads(process.stdout)
+    assert payload["error_code"] == "local_authority_todo_list_unavailable"
+    assert payload["status"] == "missing"
+    assert payload["source_authority"] == "file_v0"
+    assert payload["decision_read_from_provider"] is True
+    assert payload["legacy_fallback_used"] is False
+    assert payload["recovery"] == error.value.payload["recovery"]
+    assert state.read_bytes() == before
+    assert not (runtime_override / "authority").exists()
+    assert not (runtime_registry / "authority").exists()

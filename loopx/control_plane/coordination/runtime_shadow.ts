@@ -142,6 +142,10 @@ export async function verifyShadowSourceSnapshot(request: ShadowRequest): Promis
   }
   const inventory: JsonObject[] = [];
   const leases: JsonObject[] = [];
+  const currentTodoIds = new Set(
+    (request.projection.todos as JsonObject[]).map((todo) =>
+      String(canonicalAuthorityObject(todo, "source Todo").todo_id)),
+  );
   // ASCII filenames must use the same ordinal order as Python's source snapshot.
   const leaseNames = names.filter((name) => /^[A-Za-z0-9_.-]+\.json$/.test(name)).sort((left, right) => {
     if (left < right) return -1;
@@ -153,7 +157,10 @@ export async function verifyShadowSourceSnapshot(request: ShadowRequest): Promis
     const lease = canonicalAuthorityObject(JSON.parse(data.toString("utf8")), "lease");
     if (lease.goal_id !== request.goal_id || lease.todo_id !== name.slice(0, -5)) throw new ShadowManagementError("source_lease_identity_mismatch");
     inventory.push({ name, bytes_sha256: bytesDigest(data) });
-    leases.push(lease);
+    // The legacy directory is append-retained audit history. The source
+    // inventory proves every file while the canonical head contains only live
+    // edges to Todos that still exist in the current projection.
+    if (currentTodoIds.has(String(lease.todo_id))) leases.push(lease);
   }
   if (!canonicalAuthorityBytes(inventory).equals(canonicalAuthorityBytes(snapshot.lease_inventory)) ||
       !canonicalAuthorityBytes(leases).equals(canonicalAuthorityBytes(request.projection.leases))) {
