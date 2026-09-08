@@ -205,6 +205,13 @@ jobs:
       - name: Build English Developer Book
         run: mkdocs build --strict --config-file docs/book/mkdocs.en.yaml --site-dir ../../output/frontstage-pages/site/docs/book/en
 
+      # MkDocs cleans site/docs and intentionally excludes standalone case HTML.
+      - name: Restore public case pages after documentation builds
+        run: node examples/export-frontstage-share-bundle.mjs --restore-case-pages --out-dir output/frontstage-pages
+
+      - name: Validate homepage navigation and retired links in the published site
+        run: LOOPX_PUBLIC_SITE_DIR="$PWD/output/frontstage-pages/site" npm --prefix apps/presentation/dashboard run smoke:frontstage-browser
+
       - name: Validate rendered Developer Book
         run: python3 examples/dev-book-publication-smoke.py --site-dir output/frontstage-pages/site/docs/book
 

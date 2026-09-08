@@ -25,6 +25,7 @@ const homepageEvidenceAssets = [
 function parseArgs(argv) {
   const args = {
     base: "/",
+    restoreCasePages: false,
     outDir: defaultOutDir,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -33,6 +34,8 @@ function parseArgs(argv) {
       args.base = argv[++index];
     } else if (token === "--out-dir") {
       args.outDir = resolve(argv[++index]);
+    } else if (token === "--restore-case-pages") {
+      args.restoreCasePages = true;
     } else if (token === "--help" || token === "-h") {
       printHelp();
       process.exit(0);
@@ -51,6 +54,8 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log(`Usage: node examples/export-frontstage-share-bundle.mjs [--out-dir DIR] [--base /path/]
+
+--restore-case-pages reapplies catalog pages after MkDocs cleans its output directory.
 
 Builds the public homepage and apps/presentation/dashboard into a public-safe static
 bundle, writes a sanitized goal_channel_projection_v0 status fixture, and creates
@@ -79,12 +84,31 @@ function run(command, args, options = {}) {
   return result.stdout ?? "";
 }
 
-async function copyIndexForFrontstage(siteDir) {
-  const indexPath = resolve(siteDir, "index.html");
-  const frontstageDir = resolve(siteDir, "frontstage");
-  await mkdir(frontstageDir, { recursive: true });
-  const html = await readFile(indexPath, "utf8");
-  await writeFile(resolve(frontstageDir, "index.html"), html);
+async function copyDashboardRoutes(siteDir) {
+  const html = await readFile(resolve(siteDir, "index.html"), "utf8");
+  const routeDir = resolve(siteDir, "developers/projections");
+  await mkdir(routeDir, { recursive: true });
+  await writeFile(resolve(routeDir, "index.html"), html);
+}
+
+async function writeRetiredFrontstageRoutes(siteDir) {
+  // Hosted aliases never load the dashboard or forward goal/status parameters.
+  for (const [route, destination] of [
+    ["frontstage", "docs/showcases/index.en.html"],
+    ["frontstage/developer", "developers/projections/"],
+    ["deprecated/frontstage/ops", "docs/guides/personal-workspace-user-guide/"],
+  ]) {
+    const routeDir = resolve(siteDir, route);
+    await mkdir(routeDir, { recursive: true });
+    const target = "../".repeat(route.split("/").length) + destination;
+    await writeFile(resolve(routeDir, "index.html"), `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LoopX — page moved</title><meta http-equiv="refresh" content="0;url=${target}">
+<link rel="canonical" href="${target}"></head><body>
+<p>This page has moved. / 此页面已迁移。</p><a href="${target}">Continue / 继续访问</a>
+</body></html>
+`);
+  }
 }
 
 async function copyHomepage(siteDir, base) {
@@ -152,11 +176,21 @@ async function copyInteractiveCasePages(siteDir) {
     }
   }
 
+  await mkdir(resolve(siteDir, "docs/showcases"), { recursive: true });
+  await copyFile(resolve(repoRoot, showcaseCatalogPath), resolve(siteDir, showcaseCatalogPath));
   for (const pagePath of interactivePages) {
     const sourcePath = resolve(repoRoot, pagePath);
     const targetPath = resolve(siteDir, pagePath);
     await mkdir(dirname(targetPath), { recursive: true });
-    await copyFile(sourcePath, targetPath);
+    // Source evidence links should open repository files, not missing static
+    // .md/.py/fixture URLs. Catalog JSON is exported alongside the HTML.
+    const html = (await readFile(sourcePath, "utf8")).replace(/href="([^"#?]+\.(?:md|py|json))"/g, (match, href) => {
+      if (/^(?:https?:|\/)/.test(href)) return match;
+      const source = relative(repoRoot, resolve(dirname(sourcePath), href));
+      if (source === showcaseCatalogPath || source.startsWith("../")) return match;
+      return `href="https://github.com/huangruiteng/loopx/blob/main/${source}"`;
+    });
+    await writeFile(targetPath, html);
   }
   return Array.from(interactivePages).sort();
 }
@@ -289,6 +323,9 @@ ${previewBlock}
 - SWE-Marathon research brief: \`${sweMarathonBriefUrl}\`, built from the pinned public-safe aggregate and case-insight projection under \`benchmark/swe-marathon/\`.
 - DeepSWE behavior discoveries: \`${deepSweBehaviorArticleUrl}\`, copied byte-for-byte from the reviewed standalone article at \`${deepSweBehaviorArticlePath}\`.
 - Homepage evidence assets: ${homepageEvidenceAssets.map((path) => `\`${path}\``).join(", ")}.
+- Personal Workspace demo and guide: docs/guides/personal-workspace-user-guide/.
+- Legacy Frontstage URLs redirect to the case directory without loading a dashboard or forwarding status parameters.
+- Projection developer tools: developers/projections/.
 - Primary case source: \`${showcaseCatalogPath}\`.
 - Interactive case pages: ${interactivePages.length ? interactivePages.map((path) => `\`${path}\``).join(", ") : "none"}.
 - Demo shell fixture: \`${projectionFixturePath} --format json\`.
@@ -309,6 +346,8 @@ async function writeManifest(outDir, base, interactivePages) {
     deepswe_behavior_article_entry: "site/benchmarks/deepswe/behavior-discovery/index.html",
     installer_entry: "site/install.sh",
     frontstage_entry: "site/frontstage/index.html",
+    frontstage_redirect: "docs/showcases/index.en.html",
+    projection_developer_entry: "site/developers/projections/index.html",
     content_sources: {
       public_homepage: "apps/presentation/site",
       swe_marathon_brief: "benchmark/swe-marathon",
@@ -384,6 +423,11 @@ async function main() {
   const outDir = args.outDir;
   const siteDir = resolve(outDir, "site");
 
+  if (args.restoreCasePages) {
+    await copyInteractiveCasePages(siteDir);
+    return;
+  }
+
   if (!existsSync(resolve(dashboardDir, "node_modules"))) {
     throw new Error("apps/presentation/dashboard/node_modules is missing; run `npm ci` in apps/presentation/dashboard first");
   }
@@ -403,7 +447,8 @@ async function main() {
   ], { cwd: dashboardDir });
 
   await removeCopiedLiveStatusFiles(siteDir);
-  await copyIndexForFrontstage(siteDir);
+  await copyDashboardRoutes(siteDir);
+  await writeRetiredFrontstageRoutes(siteDir);
   await copyHomepage(siteDir, args.base);
   await copyPublicSiteRoutes(siteDir);
   const interactivePages = await copyInteractiveCasePages(siteDir);

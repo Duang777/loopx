@@ -137,6 +137,18 @@ assertExists(resolve(siteDir, "status.frontstage-share.json"));
 assertExists(resolve(outDir, "README.md"));
 assertExists(resolve(outDir, "frontstage-share-manifest.json"));
 
+// Reproduce MkDocs cleaning its output: restoring cases must leave the rest
+// of the built site intact and include the catalog used by the case pages.
+const originalHomepage = await readFile(resolve(siteDir, "index.html"), "utf8");
+await rm(resolve(siteDir, "docs/showcases"), { recursive: true, force: true });
+run(process.execPath, [resolve(repoRoot, "examples/export-frontstage-share-bundle.mjs"), "--restore-case-pages", "--out-dir", outDir]);
+if (await readFile(resolve(siteDir, "index.html"), "utf8") !== originalHomepage) throw new Error("case restore replaced the homepage");
+assertExists(resolve(siteDir, "docs/showcases/showcase-catalog.json"));
+const restoredCase = await readFile(resolve(siteDir, "docs/showcases/cases/0619-loopx-self-iteration.en.html"), "utf8");
+if (!restoredCase.includes("https://github.com/huangruiteng/loopx/blob/main/docs/showcases/cases/0619-loopx-self-iteration.md")) {
+  throw new Error("case narrative source must not point to an unshipped Markdown URL");
+}
+
 const routerSource = await readFile(resolve(repoRoot, "apps/presentation/dashboard/src/router.tsx"), "utf8");
 if (!routerSource.includes("basepath:") || !routerSource.includes("import.meta.env.BASE_URL")) {
   throw new Error("dashboard router must derive basepath from Vite BASE_URL for GitHub Pages");
@@ -283,8 +295,17 @@ if (!homepageStyles.includes("@keyframes terminal-line-enter") || !homepageStyle
   throw new Error("homepage evidence terminal must support finite replay, pause, and a static reduced-motion state");
 }
 const frontstageHtml = await readFile(resolve(siteDir, "frontstage/index.html"), "utf8");
-if (!frontstageHtml.includes('/loopx/assets/')) {
-  throw new Error("frontstage entry did not retain the compiled dashboard assets");
+if (!frontstageHtml.includes('content="0;url=../docs/showcases/index.en.html"') || frontstageHtml.includes('<script')) {
+  throw new Error("retired Frontstage must redirect without loading the dashboard or forwarding status parameters");
+}
+const developerHtml = await readFile(resolve(siteDir, "developers/projections/index.html"), "utf8");
+if (!developerHtml.includes('/loopx/assets/')) throw new Error("projection developer tools must retain compiled assets");
+for (const [route, target] of [
+  ["frontstage/developer", "../../developers/projections/"],
+  ["deprecated/frontstage/ops", "../../../docs/guides/personal-workspace-user-guide/"],
+]) {
+  const html = await readFile(resolve(siteDir, route, "index.html"), "utf8");
+  if (!html.includes(`content="0;url=${target}"`) || html.includes('<script')) throw new Error(`unsafe legacy redirect: ${route}`);
 }
 
 const status = JSON.parse(await readFile(resolve(siteDir, "status.frontstage-share.json"), "utf8"));
