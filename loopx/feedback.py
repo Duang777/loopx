@@ -43,7 +43,11 @@ PRIVATE_TEXT_PATTERNS = (
     re.compile("docs" + r"\." + "internal", re.I),
     re.compile(r"\bt-20\d{12}-[a-z0-9]+\b"),
     re.compile(r"\b" + "Bear" + r"er\b", re.I),
-    re.compile(r"\b" + "Author" + r"ization\b", re.I),
+    # Match the credential form, not the plain English word: LoopX's own
+    # governance vocabulary says "owner authorization" constantly, and a bare
+    # word match rejected legitimate control-plane summaries. The assignment
+    # form covers both `Authorization: <value>` headers and `authorization=`.
+    re.compile(r"\b" + "Author" + r"ization\s*[:=]", re.I),
     re.compile(r"\b" + "tok" + r"en\s*=", re.I),
     re.compile(r"\b" + "pass" + r"word\b", re.I),
     re.compile(r"\b" + "sec" + r"ret\b", re.I),
