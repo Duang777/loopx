@@ -173,8 +173,10 @@ crossing 一起折叠进完整事务，不能沿着 adapter 逐字段继续加�
 monitor-repair 和 blocked-successor 选择。Quota 为每个 source summary 将容量条件与这些 lane 合为一个请求，
 在 TS 进程内复用既有 resume evaluator；vision-wait、agent-scope、frontier、replan
 共用此投影。删除旧 `deferred_resume.py` 规则 owner，不保留第二份实现。Python 适配层
-只沿用 reader codec（含 legacy task-class 推断及 priority rank 归一化），不再决定
-claim/exclusion 选择或等待路由。这闭合一个读取策略族，不是整个 quota reducer，也未
+只保留 reader 兼容边界，不再决定 claim/exclusion 选择或等待路由。Resume、
+route-continuation、succession-warning 共用 `compact_projection.py` 的字段省略与 scope
+归一化；各 caller 的文本推断差异及 succession 独有字段显式保留，priority rank
+归一化仍在 resume adapter。这闭合一个读取策略族，不是整个 quota reducer，也未
 迁移 monitor/lease writer。相同公开排序键保持 source 顺序；完整计数先于展示截断；
 `monitor_changed` 不进入旧 `todo_done:<monitor>` 修复路径。只读结果不授予执行权限，
 也不是生命周期 receipt；caller 在进程内消费 typed Todo record 后可删除此适配层。

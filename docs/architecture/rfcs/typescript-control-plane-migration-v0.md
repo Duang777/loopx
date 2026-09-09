@@ -224,8 +224,11 @@ Quota composes capacity evaluation with these lanes in one request per source su
 existing TS resume evaluator in-process; vision-wait, agent-scope, frontier and
 replan consumers use the same projection. The old `deferred_resume.py` rule owner
 is removed, not retained behind a second implementation. The Python adapter keeps
-the existing reader codecs (including legacy task-class inference and priority
-rank normalization), not claim/exclusion selection or wait routing. This retires
+the reader compatibility boundary, not claim/exclusion selection or wait routing.
+Resume, route-continuation and succession-warning share `compact_projection.py`
+for field omission and scope normalization; caller-specific text inference and
+succession-only fields remain explicit. Priority rank normalization stays in the
+resume adapter. This retires
 one read-policy family, not the whole quota reducer or the monitor/lease writers.
 Equal public sort keys retain source order; full counts precede display limits;
 `monitor_changed` is not the legacy `todo_done:<monitor>` repair path. This

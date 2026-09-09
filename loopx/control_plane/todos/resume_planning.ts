@@ -154,50 +154,61 @@ function resolveCapacity(items: readonly Item[], source: readonly Item[], capabi
   });
 }
 
-/** One read-only decision for quota lanes, replan candidates and exact waits.
- * No mutation, claim, lease grant, monitor poll, or recovery effect is emitted. */
-export function projectTodoResumePlanning(value: unknown): JsonObject {
-  const request = requireJsonObject(value, "resume planning request");
-  if (request.schema_version !== RESUME_PLANNING_REQUEST) {
-    throw new EffectRuntimeRequestError("resume planning schema mismatch");
-  }
-  const rawSources = requireJsonObject(request.sources, "sources");
+function decodeSources(value: unknown): Record<SourceKey, Item[]> {
+  const rawSources = requireJsonObject(value, "sources");
   const sources = {} as Record<SourceKey, Item[]>;
   for (const key of SOURCE_KEYS) {
     if (!Array.isArray(rawSources[key])) throw new EffectRuntimeRequestError(`${key} must be an array`);
     sources[key] = rawSources[key].map(item);
   }
-  const agent = optionalNonEmptyString(request.agent_id, "agent_id");
-  const limit = requireInteger(request.item_limit, "item_limit");
-  const hasCount = requireBoolean(request.has_deferred_count, "has_deferred_count");
-  const hasVisibleCount = requireBoolean(request.has_visible_deferred_count, "has_visible_deferred_count");
+  return sources;
+}
+
+function deferredPlan(sources: Record<SourceKey, Item[]>, capabilities: unknown) {
   let deferredItems = deferred(sources.deferred_items.length ? sources.deferred_items : sources.items);
   let candidates = deferred(sources.deferred_resume_candidates).filter((entry) => entry.payload.resume_ready === true);
   let capacityFields: JsonObject | null = null;
-  if (request.available_capabilities !== null) {
+  if (capabilities !== null) {
     deferredItems = resolveCapacity(deferredItems, sources.items,
-      requireStringArray(request.available_capabilities, "available_capabilities"));
+      requireStringArray(capabilities, "available_capabilities"));
     candidates = deferredItems.filter((entry) => entry.payload.resume_ready === true);
     capacityFields = { deferred_items: payloads(deferredItems), deferred_resume_candidates: payloads(candidates) };
     // Existing summary readers treat an empty explicit deferred lane as absent,
     // including after capacity resolution; retain that compatibility fallback.
     if (!deferredItems.length) deferredItems = deferred(sources.items);
   }
-  const resumeBlocked = blocked(sources.resume_blocked_items.length ? sources.resume_blocked_items
-    : [...sources.items, ...sources.backlog_items, ...sources.first_open_items]);
-  const monitors = new Set(["monitor_open_items", "current_agent_claimed_monitor_items",
+  return { deferredItems, candidates, capacityFields };
+}
+
+function monitorIds(sources: Record<SourceKey, Item[]>): Set<string> {
+  return new Set(["monitor_open_items", "current_agent_claimed_monitor_items",
     "claimed_monitor_open_items", "items", "backlog_items", "first_open_items"]
     .flatMap((key) => sources[key as SourceKey])
     .filter((entry) => entry.id && entry.payload.task_class === "continuous_monitor")
     .map((entry) => entry.id!));
-  const monitorItems = monitorBlocked(resumeBlocked, monitors);
-  const deferredLanes: JsonObject = deferredItems.length || candidates.length || hasVisibleCount ? {
-    deferred_count: hasCount ? request.deferred_count : deferredItems.length,
-    deferred_visibility_limit: limit, deferred_items: payloads(deferredItems, limit),
+}
+
+interface DisplayOptions {
+  agent: string | null;
+  limit: number;
+  hasCount: boolean;
+  hasVisibleCount: boolean;
+  count: JsonObject[string];
+}
+
+function deferredVisibility(items: Item[], candidates: Item[], options: DisplayOptions): JsonObject {
+  const { agent, limit, hasCount, hasVisibleCount, count } = options;
+  return items.length || candidates.length || hasVisibleCount ? {
+    deferred_count: hasCount ? count : items.length,
+    deferred_visibility_limit: limit, deferred_items: payloads(items, limit),
     deferred_resume_candidates: payloads(candidates, limit),
     ...(agent ? claimLanes(candidates, agent, limit, "deferred_resume") : {}),
   } : {};
-  const blockedLanes: JsonObject = resumeBlocked.length ? {
+}
+
+function blockedVisibility(resumeBlocked: Item[], monitorItems: Item[], options: DisplayOptions): JsonObject {
+  const { agent, limit } = options;
+  return resumeBlocked.length ? {
     resume_blocked_count: resumeBlocked.length, resume_blocked_items: payloads(resumeBlocked, limit),
     ...(monitorItems.length ? {
       monitor_blocked_resume_count: monitorItems.length,
@@ -205,10 +216,33 @@ export function projectTodoResumePlanning(value: unknown): JsonObject {
       ...(agent ? claimLanes(monitorItems, agent, limit, "monitor_blocked_resume") : {}),
     } : {}),
   } : {};
+}
+
+/** One read-only decision for quota lanes, replan candidates and exact waits.
+ * No mutation, claim, lease grant, monitor poll, or recovery effect is emitted. */
+export function projectTodoResumePlanning(value: unknown): JsonObject {
+  const request = requireJsonObject(value, "resume planning request");
+  if (request.schema_version !== RESUME_PLANNING_REQUEST) {
+    throw new EffectRuntimeRequestError("resume planning schema mismatch");
+  }
+  const sources = decodeSources(request.sources);
+  const display: DisplayOptions = {
+    agent: optionalNonEmptyString(request.agent_id, "agent_id"),
+    limit: requireInteger(request.item_limit, "item_limit"),
+    hasCount: requireBoolean(request.has_deferred_count, "has_deferred_count"),
+    hasVisibleCount: requireBoolean(request.has_visible_deferred_count, "has_visible_deferred_count"),
+    count: request.deferred_count,
+  };
+  const { deferredItems, candidates, capacityFields } = deferredPlan(sources, request.available_capabilities);
+  const resumeBlocked = blocked(sources.resume_blocked_items.length ? sources.resume_blocked_items
+    : [...sources.items, ...sources.backlog_items, ...sources.first_open_items]);
+  const monitorItems = monitorBlocked(resumeBlocked, monitorIds(sources));
   return {
-    schema_version: RESUME_PLANNING_RESULT, deferred_lanes: deferredLanes,
-    resume_blocked_lanes: blockedLanes, capacity_fields: capacityFields,
+    schema_version: RESUME_PLANNING_RESULT,
+    deferred_lanes: deferredVisibility(deferredItems, candidates, display),
+    resume_blocked_lanes: blockedVisibility(resumeBlocked, monitorItems, display),
+    capacity_fields: capacityFields,
     deferred_items: payloads(deferredItems), monitor_blocked_items: payloads(monitorItems),
-    blocked_successor_items: payloads(successorWaits(resumeBlocked, deferredItems, agent)),
+    blocked_successor_items: payloads(successorWaits(resumeBlocked, deferredItems, display.agent)),
   };
 }
