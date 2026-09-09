@@ -730,6 +730,7 @@ function buildRecord(request: MonitorRequest): JsonObject {
     generated_at: request.generated_at,
     goal_id: request.goal_id,
     classification: QUOTA_MONITOR_POLL_CLASSIFICATION,
+    material_change: material,
     recommended_action: request.decision.recommended_action ?? recommendationReason ??
       request.decision.reason,
     health_check: healthCheck,

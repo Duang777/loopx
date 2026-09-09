@@ -120,8 +120,25 @@ test("event phase matches the legacy quiet monitor event", async () => {
   const event = result.record?.monitor_event as Record<string, unknown>;
   assert.equal(event.reason_summary, "Wait for a public transition.");
   assert.equal(event.material_change, false);
+  assert.equal(result.record?.material_change, false);
   assert.equal(result.record?.health_check, "monitor-only poll unchanged; no quota spend; no material transition");
   assert.equal(result.record?.delivery_outcome, "surface_only");
+});
+
+test("event phase preserves material change on the complete run record", async () => {
+  const result = await evaluateQuotaMonitorPollCommit(request({
+    observation: observation({
+      todo_id: "todo_public_monitor",
+      result_hash: "approved-42",
+      material_change: true,
+    }),
+  }));
+
+  assert.equal(result.record?.material_change, true);
+  assert.equal(
+    (result.record?.monitor_event as Record<string, unknown>).material_change,
+    true,
+  );
 });
 
 test("admission revalidates due, external, and exact blocked-wait modes", async () => {
