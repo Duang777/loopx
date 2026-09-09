@@ -118,7 +118,7 @@ export function projectDeliveryResponse(value: unknown): JsonObject {
     runs: [input.run], outcome_floor_configured: true }).runs as DeliverySignal[])[0];
   const todo = input.todo === null ? null : requireJsonObject(input.todo, "bound Todo");
   const runAgent = typeof input.run_agent_id === "string" ? input.run_agent_id.trim() : "";
-  const agentId = typeof input.agent_id === "string" ? input.agent_id.trim() : runAgent;
+  const agentId = typeof input.agent_id === "string" ? input.agent_id.trim() : "";
   const owner = typeof todo?.claimed_by === "string" ? todo.claimed_by.trim() : "";
   const excluded = Array.isArray(todo?.excluded_agents) ? todo.excluded_agents : [];
   const condition = todo?.resume_condition && typeof todo.resume_condition === "object"
@@ -131,12 +131,10 @@ export function projectDeliveryResponse(value: unknown): JsonObject {
     && todo.role === "agent" && todo.task_class === "advancement_task"
     && ["open", "deferred"].includes(String(todo.status))
     && (todo.archive_state === undefined || todo.archive_state === "active")
-    && agentId === runAgent && (!owner || owner === agentId) && !excluded.includes(agentId)
+    && Boolean(agentId) && agentId === runAgent && (!owner || owner === agentId) && !excluded.includes(agentId)
     && condition?.schema_version === "todo_resume_condition_v0"
-    && condition.resume_when === todo.resume_when && Boolean(todo.resume_when)
-    && condition.target_todo_id !== todo.todo_id
     && condition.satisfied === false && todo.resume_ready !== true
-    && resumeConditionHasKnownPendingTarget(condition);
+    && resumeConditionHasKnownPendingTarget(condition, todo);
   return {
     schema_version: "delivery_response_v0",
     outcome_floor_applicable: !canonicalWait,

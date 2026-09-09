@@ -93,14 +93,16 @@ def project_delivery_response(
     source = next((item for item in todo_planning_source_items(summary, include_terminal=True)
                    if item.get("todo_id") == run.get("todo_id")), None) if summary else None
     fields = ("todo_id", "role", "status", "task_class", "archive_state", "claimed_by",
-              "excluded_agents", "resume_when", "resume_ready", "resume_condition")
+              "excluded_agents", "resume_when", "resume_ready", "resume_condition",
+              "resume_monitor_generation", "task_repository")
     todo = {key: source[key] for key in fields if key in source} if source else None
     if todo and isinstance(todo.get("resume_condition"), dict):
         condition = todo["resume_condition"]
         todo["resume_condition"] = {key: condition[key] for key in (
             "schema_version", "resume_when", "satisfied", "invalid_target", "invalid_state",
-            "kind", "target_todo_id", "target_status", "target_task_class", "target_archive_state",
-            "baseline_generation", "material_change_generation", "provider_required", "pr_repo", "repository_binding_state",
+            "kind", "target", "target_todo_id", "target_status", "target_task_class", "target_archive_state",
+            "baseline_generation", "material_change_generation", "provider_required", "provider", "capability",
+            "pr_repo", "pr_number", "repository_binding_state", "repository_binding_source",
         ) if key in condition}
     result = effect_runtime_result("work_item.delivery_response.project", {
         "run": _run_facts(run), "todo": todo,

@@ -13,7 +13,7 @@ const waiting = { todo_id: "todo_delivery", role: "agent", status: "deferred",
   task_class: "advancement_task", claimed_by: "agent-a", resume_when: "todo_done:todo_dependency",
   resume_ready: false, resume_condition: { schema_version: "todo_resume_condition_v0",
     resume_when: "todo_done:todo_dependency", satisfied: false, kind: "todo_done",
-    target_status: "open", target_task_class: "advancement_task", target_archive_state: "active" } };
+    target_todo_id: "todo_dependency", target_status: "open", target_task_class: "advancement_task", target_archive_state: "active" } };
 const input = { run, todo: waiting, run_agent_id: "agent-a", agent_id: "agent-a" };
 
 test("wait proof consumes the real resume evaluator for all four condition kinds", () => {
@@ -34,7 +34,35 @@ test("wait proof consumes the real resume evaluator for all four condition kinds
     const condition = (evaluated.conditions as JsonObject[])[0].condition;
     assert.equal(projectDeliveryResponse({ ...input, todo: { ...todo, resume_condition: condition } }).outcome_floor_applicable,
       !valid, resume + JSON.stringify(source));
+    if (valid) {
+      const proof = condition as JsonObject;
+      const mutations: JsonObject[] = [{ kind: "unknown" }, { target: "other_target" }];
+      if (proof.kind === "todo_done" || proof.kind === "monitor_changed") {
+        mutations.push({ target_todo_id: "todo_other" }, { target_todo_id: null }, { target_task_class: "unknown" });
+      }
+      if (proof.kind === "monitor_changed") mutations.push(
+        { baseline_generation: 1 }, { material_change_generation: -1 }, { material_change_generation: 0.5 });
+      if (proof.kind === "capacity_available") mutations.push({ capability: "other" }, { provider_required: true });
+      if (proof.kind === "pr_merged") mutations.push({ pr_number: 2 }, { pr_repo: "example/other" });
+      for (const patch of mutations) assert.equal(projectDeliveryResponse({ ...input,
+        todo: { ...todo, resume_condition: { ...proof, ...patch } } }).reason,
+      "history_supervision", resume + JSON.stringify(patch));
+    }
   }
+});
+
+test("known non-monitor completion classes and repository-bound PR waits remain supported", () => {
+  for (const task_class of ["advancement_task", "user_gate", "user_action", "blocker"]) {
+    assert.equal(projectDeliveryResponse({ ...input, todo: { ...waiting,
+      resume_condition: { ...waiting.resume_condition, target_task_class: task_class } } }).reason, "canonical_todo_wait");
+  }
+  const todo = { ...waiting, resume_when: "pr_merged:#1", task_repository: "git:github.com/example/project" };
+  const evaluated = evaluateTodoResumeConditions({ schema_version: TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION,
+    items: [todo], source_items: [], rollout_events: [], available_capabilities: [] });
+  const condition = (evaluated.conditions as JsonObject[])[0].condition;
+  assert.equal(projectDeliveryResponse({ ...input, todo: { ...todo, resume_condition: condition } }).reason, "canonical_todo_wait");
+  assert.equal(projectDeliveryResponse({ ...input, todo: { ...todo, task_repository: "git:github.com/example/other",
+    resume_condition: condition } }).reason, "history_supervision");
 });
 
 test("a bound blocked observation delegates a current legal wait to canonical planning", () => {
@@ -46,9 +74,24 @@ test("a bound blocked observation delegates a current legal wait to canonical pl
   assert.deepEqual(input, before);
 });
 
+test("exact dependency identity and a supported completion class are required", () => {
+  for (const patch of [
+    { target_todo_id: "todo_other" }, { target_todo_id: null },
+    { target: "todo_other" }, { kind: "capacity_available" },
+    { target_task_class: "unknown_class" }, { target_task_class: "" },
+  ]) {
+    const result = projectDeliveryResponse({ ...input, todo: { ...waiting,
+      resume_condition: { ...waiting.resume_condition, ...patch } } });
+    assert.equal(result.reason, "history_supervision", JSON.stringify(patch));
+    assert.equal(result.outcome_floor_applicable, true);
+    assert.equal((result.outcome_followthrough as JsonObject).required, true);
+  }
+});
+
 test("history alone, missing source, invalid wait, and other actors cannot exempt the floor", () => {
   for (const patch of [
     { todo: null }, { agent_id: "agent-b" }, { run_agent_id: "agent-b" },
+    { agent_id: null }, { run_agent_id: null }, { agent_id: "", run_agent_id: "" },
     { todo: { ...waiting, todo_id: "todo_other" } },
     { todo: { ...waiting, claimed_by: "agent-b" } },
     { todo: { ...waiting, excluded_agents: ["agent-a"] } },
