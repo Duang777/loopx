@@ -1477,10 +1477,10 @@ def serve_chat(
     )
     server.action_service = ChatActionService(
         store=server.action_store,
-        registry_path=registry_path,
+        registry_path=resolved_registry_path,
         chat_store=server.chat_store,
         runtime_controller=server.runtime_controller,
-        workspace_roots=scan_roots,
+        workspace_roots=resolved_scan_roots,
     )
     server.lark_goal_topic_runtime = LarkGoalTopicRuntimeService(
         snapshot_provider=lambda: build_lark_goal_topic_runtime_snapshot(
@@ -1490,7 +1490,7 @@ def serve_chat(
         runtime_root=runtime_root,
         runtime_controller=server.runtime_controller,
     )
-    server.lark_goal_topic_runtime.refresh()
+    server.lark_goal_topic_runtime.start()
     url = f"http://{host}:{port}{DEFAULT_CHAT_PATH}"
     print(f"Serving LoopX Chat at {url}", flush=True)
     print("Agent boundary: local adapters, read-only sandbox, approval policy never", flush=True)

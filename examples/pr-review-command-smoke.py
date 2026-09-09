@@ -14,6 +14,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import loopx.pr_review as pr_review_module  # noqa: E402
+from loopx.capabilities.pr_review_queue.review_contract import (  # noqa: E402
+    REVIEW_POLICY_REVISION,
+)
 from loopx.pr_review import (  # noqa: E402
     _github_search_date,
     build_pr_review_packet,
@@ -72,10 +75,8 @@ def main() -> int:
         "详细中文评审",
         "英文简短结论",
         "complete Chinese five-block review plus one concise English verdict",
-        "Full PR Interpretation Depth",
-        "Walk one positive path",
-        "Walk one negative path",
-        "omits whole files/modules is incomplete",
+        f"Require execution `policy_revision == {REVIEW_POLICY_REVISION}`",
+        "Do not retain expired temporary worktree overrides",
         "Treat `candidate` as a preview, not a durable projection",
         "durable Todo target-key readback -> `--projected-exact-head` -> exact-head review/comment readback -> `--handled-exact-head`",
         "Never send the projection ACK before the Todo exists",
@@ -93,6 +94,14 @@ def main() -> int:
         assert duplicated_contract_heading not in skill_source, (
             duplicated_contract_heading
         )
+    policy_requirement = re.search(
+        r"Require execution `policy_revision == ([0-9]+)`", skill_source
+    )
+    assert policy_requirement, "skill must declare an exact review policy revision"
+    assert int(policy_requirement.group(1)) == REVIEW_POLICY_REVISION, (
+        policy_requirement.group(1),
+        REVIEW_POLICY_REVISION,
+    )
 
     assert _github_search_date("2026-06-28T00:00:00+08:00") == "2026-06-27"
     assert _github_search_date("2026-06-28T00:00:00Z") == "2026-06-28"
@@ -267,7 +276,7 @@ def main() -> int:
         if req.get("evidence_id") == "scope_fit"
     ]
     assert scope_fit_reqs, "scope_fit evidence requirement missing from contract"
-    assert scope_fit_reqs[0]["required_when"] == "code_change", scope_fit_reqs
+    assert scope_fit_reqs[0]["required_when"] == "behavior_bearing_change", scope_fit_reqs
     proportionality_reqs = [
         req
         for req in contract.get("evidence_requirements", [])
@@ -288,7 +297,7 @@ def main() -> int:
         if req.get("evidence_id") == "default_off_isolation"
     ]
     assert isolation_reqs, "default_off_isolation evidence requirement missing"
-    assert isolation_reqs[0]["required_when"] == "code_change"
+    assert isolation_reqs[0]["required_when"] == "behavior_bearing_change"
     assert "paired_counterfactual_validation" in isolation_reqs[0]["fields"]
     authority_reqs = [
         req
@@ -321,6 +330,9 @@ def main() -> int:
     assert code_pr["review_plan"]["applicability"]["scope_fit_required"] is True, (
         code_pr["review_plan"]
     )
+    reuse = code_pr["review_plan"]["result_template"]["evidence"]["repository_reuse"]
+    assert reuse == {"status": "unverified"}, reuse
+    assert code_pr["review_plan"]["applicability"]["repository_reuse_required"] is True
     assert (
         code_pr["review_plan"]["applicability"]["change_proportionality_required"]
         is True
@@ -343,6 +355,7 @@ def main() -> int:
     )
     assert docs_pr is not None, "fixture must include a docs-only PR"
     assert docs_pr["review_plan"]["applicability"]["scope_fit_required"] is False
+    assert "repository_reuse" not in docs_pr["review_plan"]["required_evidence_ids"]
     assert (
         docs_pr["review_plan"]["applicability"]["change_proportionality_required"]
         is False
@@ -686,6 +699,8 @@ def main() -> int:
     assert set(requirements) == {
         "problem_context",
         "architecture_flow",
+        "repository_reuse",
+        "observable_semantics",
         "changed_line_classification",
         "scope_fit",
         "symbol_map",
@@ -752,6 +767,8 @@ def main() -> int:
     assert execution["completion_gate"]["metadata_only_verdict_allowed"] is False
     assert execution["completion_gate"]["stale_head_verdict_allowed"] is False
     assert execution["completion_gate"]["blocking_evidence_verdicts"] == {
+        "repository_reuse": ["unjustified_duplication", "not_yet_proven"],
+        "observable_semantics": ["unintended_drift", "not_yet_proven"],
         "change_proportionality": ["disproportionate", "not_yet_proven"],
         "default_off_isolation": ["not_isolated", "not_yet_proven"],
         "authority_semantics": ["misleading", "not_yet_proven"],

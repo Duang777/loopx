@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -25,12 +26,9 @@ from .event_inbox import (
     ingest_lark_event_inbox,
     inspect_lark_event_inbox,
 )
-from .goal_channel_contracts import bindings_for_goal
+from .goal_channel_contracts import LarkTopicEventDecisionReason, bindings_for_goal
 from .goal_channel_targets import goal_channel_target_for_name
-from .goal_topic_connections import (
-    LarkTopicEventDecisionReason,
-    decide_lark_topic_event,
-)
+from .goal_topic_connections import decide_lark_topic_event
 from .inbox_reply import CommandRunner, reply_lark_event_inbox
 
 Answer = Callable[[Mapping[str, Any], str], str | Mapping[str, Any]]
@@ -46,6 +44,7 @@ _EVENT_PROJECTION = (
     "event_id:(.event_id // .message_id // .id),"
     "message_id:(.message_id // .id),"
     "create_time:.create_time,content:.content,sender_id:.sender_id,"
+    "sender_type:(.sender_type // .sender.sender_type // .event.sender.sender_type),"
     "chat_id:.chat_id,"
     "root_id:(.root_id // .message.root_id // .event.message.root_id),"
     "parent_id:(.parent_id // .reply_to // .message.parent_id // .message.reply_to "
@@ -53,6 +52,9 @@ _EVENT_PROJECTION = (
     "thread_id:(.thread_id // .message.thread_id // .event.message.thread_id),"
     "mentions:(.mentions // .message.mentions // .event.message.mentions // [])}"
 )
+
+_EVENT_READY_PREFIX = "[event] ready "
+_EVENT_DIAGNOSTIC_PREFIX = "[event] "
 
 
 def _opaque_digest(*values: Any) -> str:
@@ -356,11 +358,13 @@ def stream_lark_goal_topic_profile(
             "0",
             "--jq",
             _EVENT_PROJECTION,
-            "--quiet",
         ]
     )
     if health_sink is not None:
-        health_sink({"status": "listening", "error_code": None})
+        # A live child process is not proof that lark-cli registered a consumer
+        # with its local event bus.  Keep the connection non-ready until the
+        # provider emits its explicit ready marker (or a real event arrives).
+        health_sink({"status": "starting", "error_code": None})
     watcher_done = threading.Event()
 
     def stop_consumer() -> None:
@@ -378,6 +382,7 @@ def stream_lark_goal_topic_profile(
     watcher.start()
     event_count = 0
     replied_count = 0
+    provider_ready = False
     try:
         stdout = process.stdout
         if stdout is None:
@@ -390,6 +395,14 @@ def stream_lark_goal_topic_profile(
         for line in stdout:
             if stop.is_set():
                 break
+            stripped = line.strip()
+            if stripped.startswith(_EVENT_READY_PREFIX):
+                provider_ready = True
+                if health_sink is not None:
+                    health_sink({"status": "listening", "error_code": None})
+                continue
+            if stripped.startswith(_EVENT_DIAGNOSTIC_PREFIX):
+                continue
             result = poll_lark_goal_topic_profile_once(
                 profile=profile,
                 snapshot=snapshot_provider(),
@@ -403,6 +416,13 @@ def stream_lark_goal_topic_profile(
                 provider_runner=provider_runner,
                 reply_runner=reply_runner,
             )
+            if int(result.get("event_count") or 0) and not provider_ready:
+                # A provider event is stronger readiness evidence than a
+                # diagnostic marker and protects compatibility with providers
+                # that omit the marker while still emitting the typed stream.
+                provider_ready = True
+                if health_sink is not None:
+                    health_sink({"status": "listening", "error_code": None})
             event_count += int(result.get("event_count") or 0)
             replied_count += int(result.get("replied_count") or 0)
             if health_sink is not None and int(result.get("event_count") or 0):
@@ -444,9 +464,16 @@ def stream_lark_goal_topic_profile(
             process.kill()
             returncode = process.wait(timeout=3)
         watcher.join(timeout=1)
+    stopped = stop.is_set()
     return {
-        "ok": returncode == 0 or stop.is_set(),
-        "status": "stopped" if stop.is_set() else "stream_ended",
+        "ok": stopped or (returncode == 0 and provider_ready),
+        "status": (
+            "stopped"
+            if stopped
+            else "stream_ended"
+            if provider_ready
+            else "stream_not_ready"
+        ),
         "event_count": event_count,
         "replied_count": replied_count,
     }
@@ -470,6 +497,32 @@ class LarkGoalTopicRuntimeService:
         self._lock = threading.Lock()
         self._workers: dict[str, tuple[threading.Event, threading.Thread]] = {}
         self._health: dict[str, dict[str, Any]] = {}
+        self._closed = threading.Event()
+        self._startup_thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Discover existing bindings without blocking the HTTP readiness path."""
+
+        with self._lock:
+            if self._closed.is_set() or self._startup_thread is not None:
+                return
+            self._startup_thread = threading.Thread(
+                target=self._refresh_on_start,
+                name="loopx-lark-startup",
+                daemon=True,
+            )
+            self._startup_thread.start()
+
+    def _refresh_on_start(self) -> None:
+        while not self._closed.is_set():
+            try:
+                self.refresh()
+                return
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Lark binding discovery failed; retrying in the background"
+                )
+            self._closed.wait(5)
 
     @staticmethod
     def _now() -> str:
@@ -585,39 +638,18 @@ class LarkGoalTopicRuntimeService:
         self._update_health(profile, status="stopped", error_code=None)
 
     def refresh(self) -> None:
+        if self._closed.is_set():
+            return
         snapshot = self.snapshot_provider()
         desired = set(_active_profile_configs(snapshot))
-        binding_payloads = snapshot.get("binding_payloads")
-        contexts = snapshot.get("goal_contexts")
-        if isinstance(binding_payloads, Mapping) and isinstance(contexts, Mapping):
-            for goal_id, payload in binding_payloads.items():
-                if not isinstance(payload, Mapping):
-                    continue
-                for binding in bindings_for_goal(payload, str(goal_id)):
-                    raw_routing = binding.get("routing")
-                    routing: Mapping[str, Any] = (
-                        raw_routing if isinstance(raw_routing, Mapping) else {}
-                    )
-                    if routing.get("ingress_mode") != "session_queue":
-                        continue
-                    context = contexts.get(str(goal_id))
-                    context = context if isinstance(context, Mapping) else {}
-                    session_id = str(binding.get("session_id") or "")
-                    work_dir = str(context.get("work_dir") or "")
-                    try:
-                        has_queued_turns = bool(
-                            session_id
-                            and self.runtime_controller.store.queued_turns(session_id)
-                        )
-                    except KeyError:
-                        has_queued_turns = False
-                    if has_queued_turns and work_dir:
-                        self.runtime_controller.resume_session_queue(
-                            session_id=session_id,
-                            work_dir=Path(work_dir).expanduser().resolve(),
-                            objective=str(context.get("objective") or goal_id),
-                        )
+        if self._closed.is_set():
+            return
+        self._resume_session_queues(snapshot)
+        # A filesystem read may outlive server shutdown (for example, while
+        # waiting for OS directory consent). Never start effects after close.
         with self._lock:
+            if self._closed.is_set():
+                return
             stale = set(self._workers) - desired
             missing = desired - set(self._workers)
             for profile in stale:
@@ -643,11 +675,52 @@ class LarkGoalTopicRuntimeService:
                 self._workers[profile] = (stop, thread)
                 thread.start()
 
+    def _resume_session_queues(self, snapshot: Mapping[str, Any]) -> None:
+        binding_payloads = snapshot.get("binding_payloads")
+        contexts = snapshot.get("goal_contexts")
+        if isinstance(binding_payloads, Mapping) and isinstance(contexts, Mapping):
+            for goal_id, payload in binding_payloads.items():
+                if not isinstance(payload, Mapping):
+                    continue
+                for binding in bindings_for_goal(payload, str(goal_id)):
+                    if self._closed.is_set():
+                        return
+                    raw_routing = binding.get("routing")
+                    routing: Mapping[str, Any] = (
+                        raw_routing if isinstance(raw_routing, Mapping) else {}
+                    )
+                    if routing.get("ingress_mode") != "session_queue":
+                        continue
+                    context = contexts.get(str(goal_id))
+                    context = context if isinstance(context, Mapping) else {}
+                    session_id = str(binding.get("session_id") or "")
+                    work_dir = str(context.get("work_dir") or "")
+                    try:
+                        has_queued_turns = bool(
+                            session_id
+                            and self.runtime_controller.store.queued_turns(session_id)
+                        )
+                    except KeyError:
+                        has_queued_turns = False
+                    if has_queued_turns and work_dir:
+                        resolved_work_dir = Path(work_dir).expanduser().resolve()
+                        # Discovery is slow I/O; only cancellation and the
+                        # controller's I/O-free worker admission belong here.
+                        with self._lock:
+                            if self._closed.is_set():
+                                return
+                            self.runtime_controller.resume_session_queue(
+                                session_id=session_id,
+                                work_dir=resolved_work_dir,
+                                objective=str(context.get("objective") or goal_id),
+                            )
+
     def active_profiles(self) -> list[str]:
         with self._lock:
             return sorted(self._workers)
 
     def close(self) -> None:
+        self._closed.set()
         with self._lock:
             workers = list(self._workers.values())
             self._workers.clear()
@@ -781,6 +854,8 @@ def _inbox_config(
             "sender_profile": profile,
             "sender_identity": "bot",
             "bot_display_name": bot_display_name,
+            "bot_app_id": str(identity.get("bot_app_id") or ""),
+            "bot_open_id": str(identity.get("bot_open_id") or ""),
             "chat_id": chat_id,
             "placement_policy": "source_context",
             "editorial_style": "bullet_points_preferred",
@@ -852,6 +927,7 @@ def process_lark_goal_topic_event(
         "message_id": str(event.get("message_id") or ""),
         "create_time": str(event.get("create_time") or ""),
         "content": str(event.get("content") or ""),
+        "sender_type": str(event.get("sender_type") or ""),
         "root_id": str(event.get("root_id") or ""),
         "parent_id": str(event.get("parent_id") or ""),
         "mentions": event.get("mentions")

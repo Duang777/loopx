@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from loopx.control_plane.coordination.coordination_state_contract_generated import (
+    LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
+)
 from loopx.control_plane.coordination.legacy_writer_fence import (
     LegacyCoordinationWriterFenced,
+    legacy_coordination_write_remediation,
     legacy_coordination_todo_lock_path,
     legacy_coordination_writer_fence_path,
     legacy_todo_write_transaction,
@@ -84,6 +89,9 @@ def _engage_fence(runtime_root: Path) -> None:
     fence_path.write_text(json.dumps({"state": "present"}), encoding="utf-8")
 
 
+REPO = Path(__file__).resolve().parents[2]
+
+
 def _blocked_effect_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "loopx.control_plane.coordination.legacy_writer_fence.effect_runtime_result",
@@ -122,13 +130,17 @@ def test_present_fence_delegates_to_typescript_and_blocks(
     path.write_text(json.dumps({"state": "present"}), encoding="utf-8")
     captured: dict[str, object] = {}
 
+    blocked = {
+        "schema_version": LEGACY_COORDINATION_WRITE_CHECK_RESULT_SCHEMA,
+        "status": "blocked",
+        "reason_code": "legacy_coordination_writer_fenced",
+        "authority_mode": "file_v0",
+        "fence_id": "fence-a",
+    }
+
     def invoke(method: str, params: dict[str, object]) -> dict[str, object]:
         captured.update(method=method, params=params)
-        return {
-            "status": "blocked",
-            "reason_code": "legacy_coordination_writer_fenced",
-            "authority_mode": "file_v0",
-        }
+        return dict(blocked)
 
     monkeypatch.setattr(
         "loopx.control_plane.coordination.legacy_writer_fence.effect_runtime_result",
@@ -143,6 +155,85 @@ def test_present_fence_delegates_to_typescript_and_blocks(
 
     assert exc_info.value.code == "legacy_coordination_writer_fenced"
     assert captured["method"] == "coordination.local_authority.legacy_write_check"
+    # The adapter renders the operator remediation from the guard's data and
+    # keeps the complete check result under its contract name.
+    assert str(exc_info.value) == (
+        "legacy coordination writer is fenced; use the promoted canonical authority "
+        "(file_v0) for goal goal-a; fence fence-a; the primary record was not changed"
+    )
+    assert exc_info.value.payload == {"write_check": blocked}
+
+
+_RENDER_CASES: list[tuple[str, dict[str, object], str]] = [
+    (
+        "blocked_file_v0",
+        {"status": "blocked", "reason_code": "legacy_coordination_writer_fenced",
+         "authority_mode": "file_v0", "fence_id": "legacy-writer-fence:goal-a:state-1"},
+        "legacy coordination writer is fenced; use the promoted canonical authority "
+        "(file_v0) for goal goal-a; fence legacy-writer-fence:goal-a:state-1; "
+        "the primary record was not changed",
+    ),
+    (
+        "blocked_opaque_profile",
+        {"status": "blocked", "reason_code": "legacy_coordination_writer_fenced",
+         "authority_mode": "profile-x", "fence_id": "fence-b"},
+        "legacy coordination writer is fenced; use the promoted canonical authority "
+        "(profile-x) for goal goal-a; fence fence-b; the primary record was not changed",
+    ),
+    (
+        "blocked_single_pass_substitution",
+        {"status": "blocked", "reason_code": "legacy_coordination_writer_fenced",
+         "authority_mode": "file_v0", "fence_id": "fence $&{goal_id}"},
+        "legacy coordination writer is fenced; use the promoted canonical authority "
+        "(file_v0) for goal goal-a; fence fence $&{goal_id}; the primary record was not changed",
+    ),
+    (
+        "blocked_without_binding_facts",
+        {"status": "blocked", "reason_code": "legacy_coordination_writer_fenced"},
+        "legacy coordination writer is fenced; use the promoted canonical authority "
+        "(unknown_fail_closed) for goal goal-a; fence unknown; the primary record was not changed",
+    ),
+    (
+        "failed_with_reason",
+        {"status": "failed", "reason_code": "legacy_writer_fence_read_failed",
+         "reason": "legacy coordination writer fence must be engaged",
+         "authority_mode": "unknown_fail_closed"},
+        "legacy coordination writer fence must be engaged",
+    ),
+    (
+        "failed_without_reason",
+        {"status": "failed", "reason_code": "legacy_writer_fence_read_failed",
+         "reason": "", "authority_mode": "unknown_fail_closed"},
+        "legacy coordination writer fence check failed",
+    ),
+    (
+        "invalid_check_request",
+        {"status": "failed", "reason_code": "invalid_legacy_coordination_write_check",
+         "reason": "legacy coordination write check request schema mismatch",
+         "authority_mode": "unknown_fail_closed"},
+        "legacy coordination write check request schema mismatch",
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "guard", "expected"), _RENDER_CASES, ids=[c[0] for c in _RENDER_CASES])
+def test_remediation_renders_identically_in_python_and_typescript(
+    name: str, guard: dict[str, object], expected: str
+) -> None:
+    """Both caller adapters render one text from the same guard data."""
+
+    assert legacy_coordination_write_remediation("goal-a", guard) == expected
+    module = (REPO / "loopx/control_plane/coordination/legacy_writer_fence.ts").as_uri()
+    script = (
+        f"import {{legacyCoordinationWriteRemediation}} from {json.dumps(module)};"
+        "let input='';for await (const chunk of process.stdin) input += chunk;"
+        "process.stdout.write(legacyCoordinationWriteRemediation('goal-a', JSON.parse(input)));"
+    )
+    rendered = subprocess.run(
+        ["node", "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e", script],
+        input=json.dumps(guard), capture_output=True, text=True, check=True, timeout=45,
+    )
+    assert rendered.stdout == expected, name
 
 
 def test_todo_write_transaction_fences_under_the_effective_runtime_root(

@@ -72,15 +72,25 @@ export function ChannelHeader({
     action?.();
   }
 
+  const selectedGoalUsageLabel = selectedGoal
+    ? goalUsageLabel(selectedGoal.usage, {
+      cost: t("drawer.costShort"),
+      duration: t("drawer.durationShort"),
+      period24h: t("drawer.period24h"),
+      period7d: t("drawer.period7d"),
+      tokens: t("drawer.tokensShort"),
+    })
+    : null;
+
   return (
     <header className="personal-channel-header">
       <button aria-expanded={mobileNavigationOpen ?? false} aria-label={t("header.openGoalNavigation")} className="personal-icon-button personal-mobile-menu" onClick={onOpenNavigation} type="button"><Menu size={18} /></button>
       <div className="personal-channel-title">
         <h1>{selectedGoal?.title ?? t("header.manager")}</h1>
         <p>{selectedGoal
-          ? `${selectedGoal.agentLaneCount && selectedGoal.agentLaneCount > 1
+          ? selectedGoal.loadState ? t(selectedGoal.loadState === "error" ? "startup.goalError" : "startup.goalLoading") : `${selectedGoal.agentLaneCount && selectedGoal.agentLaneCount > 1
             ? t("header.workAgentCount", { count: selectedGoal.agentLaneCount })
-            : selectedGoal.agentLabel ?? selectedGoal.agentId} · ${localizedGoalState(selectedGoal.state, locale)}${goalUsageLabel(selectedGoal.usage) ? ` · ${goalUsageLabel(selectedGoal.usage)}` : ""} · ${selectedGoal.nextSentence}`
+            : selectedGoal.agentLabel ?? selectedGoal.agentId} · ${(selectedGoal.loadState ? t(selectedGoal.loadState === "error" ? "startup.goalError" : "startup.goalLoading") : localizedGoalState(selectedGoal.state, locale))}${selectedGoalUsageLabel ? ` · ${selectedGoalUsageLabel}` : ""} · ${selectedGoal.nextSentence}`
           : t("header.managerDescription")}</p>
       </div>
       {selectedGoal ? (

@@ -34,18 +34,31 @@ from ...work_items.autonomous_replan_obligation import (
 )
 from ...work_items.progress_observation import build_replan_context
 from ..goal_vision_policy import (
-    COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD,
+    completed_todo_replan_threshold,
     goal_vision_repeats_advancement_until_closed,
 )
 from ..goal_vision_state import (
     goal_vision_state_is_closed,
-    goal_vision_state_requires_successor,
+)
+from ..goal_vision_read_model import (
+    VISION_ACCEPTANCE_GAP_TRIGGER as VISION_ACCEPTANCE_GAP_TRIGGER,
+    VISION_SUCCESSOR_GAP_TRIGGER as VISION_SUCCESSOR_GAP_TRIGGER,
+    _compact_projection_text,
+    acceptance_gaps_from_agent_vision as acceptance_gaps_from_agent_vision,
+    parse_vision_todo_delta_entries as parse_vision_todo_delta_entries,
 )
 from ..goal_vision_wait import build_goal_vision_wait_state
 from . import outcome_continuity
 from .ack_policy import (
     autonomous_replan_ack_satisfies_obligation,
     replan_successor_transition_ack,
+)
+from .fallback_disposition import (
+    VISION_FRONTIER_TODO_DELTA_ACTIONS,  # noqa: F401
+    FallbackDeclaration,  # noqa: F401
+    agent_scoped_selectable_advancement_todo_ids,  # noqa: F401
+    declared_fallback_gap_from_agent_vision,
+    parse_fallback_declarations,  # noqa: F401
 )
 from .long_todo_chain import (
     LONG_TODO_CHAIN_TRIGGER,
@@ -85,19 +98,10 @@ AUTONOMOUS_REPLAN_OBLIGATION_SCHEMA_VERSION = "autonomous_replan_obligation_v0"
 AUTONOMOUS_REPLAN_REQUIRED_MODE = "autonomous_replan_required"
 FRONTIER_EXHAUSTED_MONITOR_TRIGGER = "frontier_exhausted_monitor_lane"
 MONITOR_NO_CHANGE_STREAK_TRIGGER = "monitor_no_change_streak"
-VISION_ACCEPTANCE_GAP_TRIGGER = "vision_acceptance_gap"
-VISION_SUCCESSOR_GAP_TRIGGER = "vision_successor_required"
 VISION_PROFILE_MISSING_TRIGGER = "required_agent_vision_missing"
 TODO_SUCCESSION_GAP_TRIGGER = TODO_SUCCESSION_WARNING_REASON_CODE
 TODO_TASK_CLASS_ADVANCEMENT = "advancement_task"
 TODO_TASK_CLASS_MONITOR = "continuous_monitor"
-VISION_FRONTIER_TODO_DELTA_ACTIONS = {
-    "activate",
-    "create",
-    "reopen",
-    "resume",
-    "retain",
-}
 
 
 def safe_non_negative_int(value: Any) -> int:
@@ -304,13 +308,6 @@ def autonomous_replan_scope_decision(
     return payload
 
 
-def _compact_projection_text(value: Any, *, limit: int = 360) -> str | None:
-    text = " ".join(str(value or "").strip().split())
-    if not text:
-        return None
-    return text[:limit]
-
-
 def projected_autonomous_replan_ack_for_agent(
     item: dict[str, Any],
     project_asset: dict[str, Any] | None,
@@ -328,89 +325,6 @@ def projected_autonomous_replan_ack_for_agent(
         if autonomous_replan_ack_matches_agent(normalized, agent_id=agent_id):
             return normalized
     return None
-
-
-def acceptance_gaps_from_agent_vision(
-    agent_vision: dict[str, Any] | None,
-    *,
-    goal_status: str | None = None,
-) -> list[dict[str, Any]]:
-    """Convert bounded vision replan triggers into goal-frontier gap records."""
-
-    if not isinstance(agent_vision, dict):
-        return []
-    patch = agent_vision.get("vision_patch") if isinstance(agent_vision.get("vision_patch"), dict) else {}
-    state = str(agent_vision.get("state") or "").strip()
-    if goal_vision_state_is_closed(state):
-        normalized_goal_status = str(goal_status or "").strip().lower()
-        active_goal = normalized_goal_status == "active" or normalized_goal_status.startswith(
-            "active-"
-        )
-        if goal_vision_state_requires_successor(state) and active_goal:
-            return [
-                {
-                    "kind": VISION_SUCCESSOR_GAP_TRIGGER,
-                    "source": "latest_agent_vision",
-                    "agent_id": agent_vision.get("agent_id"),
-                    "state": agent_vision.get("state"),
-                    "goal_status": normalized_goal_status,
-                    "replan_trigger_summary": (
-                        "the current stage vision is closed while the registry goal "
-                        "remains active; establish a successor vision before continuing"
-                    ),
-                    "acceptance_summary": (
-                        "Write the next bounded agent vision, or explicitly retire, "
-                        "supersede, or close the lane with no_followup."
-                    ),
-                    "advancement_policy": "repeat_until_closed",
-                    "generated_at": agent_vision.get("generated_at"),
-                }
-            ]
-        return []
-    acceptance = _compact_projection_text(patch.get("acceptance_summary"), limit=420)
-    explicit_trigger = _compact_projection_text(
-        patch.get("replan_trigger_summary"),
-        limit=240,
-    )
-    trigger = explicit_trigger
-    if not trigger and acceptance:
-        trigger = "active agent vision remains open with acceptance evidence still required"
-    if not trigger:
-        return []
-    gap: dict[str, Any] = {
-        "kind": VISION_ACCEPTANCE_GAP_TRIGGER,
-        "source": "latest_agent_vision",
-        "agent_id": agent_vision.get("agent_id"),
-        "state": agent_vision.get("state"),
-        "replan_trigger_summary": trigger,
-        "replan_trigger_source": (
-            "explicit_vision_trigger"
-            if explicit_trigger
-            else "implicit_open_acceptance"
-        ),
-    }
-    if acceptance:
-        gap["acceptance_summary"] = acceptance
-    vision_todo_ids = [
-        todo_id
-        for value in (agent_vision.get("todo_delta") or [])
-        if isinstance(value, str)
-        and (parts := value.strip().partition(":"))[1]
-        and parts[0].strip().lower() in VISION_FRONTIER_TODO_DELTA_ACTIONS
-        and (todo_id := _compact_projection_text(parts[2], limit=120))
-    ]
-    if vision_todo_ids:
-        gap["vision_todo_ids"] = list(dict.fromkeys(vision_todo_ids))
-    advancement_policy = _compact_projection_text(
-        patch.get("advancement_policy"),
-        limit=32,
-    )
-    if advancement_policy:
-        gap["advancement_policy"] = advancement_policy
-    generated_at = _compact_projection_text(agent_vision.get("generated_at"), limit=80)
-    if generated_at:
-        gap["generated_at"] = generated_at
-    return [gap]
 
 
 def acceptance_gaps_from_agent_profile_requirement(
@@ -1047,6 +961,14 @@ def derive_goal_frontier_replan_obligation_from_summaries(
     compact_acceptance_gaps = [
         item for item in (acceptance_gaps or []) if isinstance(item, dict)
     ]
+    if any(gap.get("vision_todo_ids") for gap in compact_acceptance_gaps):
+        # Diagnostic claim counts retain executor-excluded work. A causal
+        # acceptance obligation needs an actually selectable Todo identity.
+        selectable_frontier_advancement = len(
+            agent_scoped_selectable_advancement_todo_ids(
+                agent_todo_summary, agent_id=agent_id,
+            )
+        )
     successor_vision_required = any(
         item.get("kind")
         in {VISION_SUCCESSOR_GAP_TRIGGER, VISION_PROFILE_MISSING_TRIGGER}
@@ -1416,6 +1338,7 @@ def build_goal_frontier_projection_from_summaries(
     replan_obligation: dict[str, Any] | None,
     acceptance_gaps: list[dict[str, Any]] | None = None,
     vision_wait_state: dict[str, Any] | None = None,
+    fallback_gaps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     user_counts = _summary_task_counts(user_todo_summary)
     agent_counts = _summary_task_counts(agent_todo_summary)
@@ -1453,6 +1376,7 @@ def build_goal_frontier_projection_from_summaries(
         replan_obligation=replan_obligation,
         acceptance_gaps=acceptance_gaps,
         vision_wait_state=vision_wait_state,
+        fallback_gaps=fallback_gaps,
         deferred_successors=_deferred_successors(
             agent_todo_summary,
             agent_id=agent_id,
@@ -1564,7 +1488,9 @@ def build_goal_frontier_projection_context_from_status(
             latest_vision_checkpoint,
             agent_todo_summary=agent_todo_summary,
             agent_id=agent_id,
-            completed_todo_threshold=COMPLETED_TODO_CHAIN_REPLAN_THRESHOLD,
+            completed_todo_threshold=completed_todo_replan_threshold(
+                (project_asset or {}).get("execution_profile")
+            ),
         )
     )
     if _terminal_no_followup_resolves_vision_checkpoint(
@@ -1594,6 +1520,7 @@ def build_goal_frontier_projection_context_from_status(
     )
     vision_wait_state = build_goal_vision_wait_state(
         agent_todo_summary=agent_todo_summary,
+        source_items=agent_todo_source_items,
         agent_id=agent_id,
         acceptance_gaps=source_acceptance_gaps,
         selectable_advancement_count=(
@@ -1602,6 +1529,17 @@ def build_goal_frontier_projection_context_from_status(
         ),
     )
     acceptance_gaps = [] if vision_wait_state else source_acceptance_gaps
+    declared_fallback_gaps = [
+        gap
+        for gap in (
+            declared_fallback_gap_from_agent_vision(
+                latest_agent_vision,
+                agent_todo_summary=agent_todo_summary,
+                agent_id=agent_id,
+            ),
+        )
+        if isinstance(gap, dict)
+    ]
     projected_replan_ack = projected_autonomous_replan_ack_for_agent(
         item,
         project_asset,
@@ -1716,6 +1654,7 @@ def build_goal_frontier_projection_context_from_status(
         replan_obligation=replan_obligation,
         acceptance_gaps=acceptance_gaps,
         vision_wait_state=vision_wait_state,
+        fallback_gaps=declared_fallback_gaps,
     )
     if latest_replan_ack_feedback:
         goal_frontier_projection["replan_ack_feedback"] = (
@@ -1821,6 +1760,7 @@ def build_goal_frontier_projection(
     acceptance_gaps: list[dict[str, Any]] | None = None,
     deferred_successors: dict[str, Any] | None = None,
     vision_wait_state: dict[str, Any] | None = None,
+    fallback_gaps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     replan_required = autonomous_replan_is_required(replan_obligation)
     blockers: list[str] = []
@@ -1883,6 +1823,11 @@ def build_goal_frontier_projection(
     }
     if vision_continuation_audit:
         projection["vision_continuation_audit"] = vision_continuation_audit
+    # Advisory-only field: unlike acceptance_gaps it is never cleared by the
+    # blocked-successor wait state, which is exactly when a declared fallback
+    # would otherwise disappear silently.
+    if fallback_gaps:
+        projection["fallback_gaps"] = fallback_gaps[:1]
     if isinstance(vision_wait_state, dict):
         projection["vision_wait_state"] = vision_wait_state
     if replan_required and isinstance(replan_obligation, dict):

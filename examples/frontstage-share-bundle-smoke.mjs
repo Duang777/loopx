@@ -102,10 +102,52 @@ const siteDir = resolve(outDir, "site");
 assertExists(resolve(siteDir, "index.html"));
 assertExists(resolve(siteDir, "frontstage/index.html"));
 assertExists(resolve(siteDir, "benchmarks/swe-marathon/index.html"));
+assertExists(resolve(siteDir, "benchmarks/deepswe/behavior-discovery/index.html"));
+// Editorial pages must ship their text and locale navigation without an SPA
+// fallback or client-side execution, including on repository-base hosting.
+const blogArticle = "from-one-shot-agents-to-long-horizon-control/";
+for (const locale of ["", "zh/"]) {
+  for (const article of ["", blogArticle]) {
+    const pagePath = resolve(siteDir, "blog", locale, article, "index.html");
+    assertExists(pagePath);
+    const html = await readFile(pagePath, "utf8");
+    const language = locale ? "zh-CN" : "en";
+    if (!html.includes(`<html lang="${language}">`) || !html.includes("<h1>") || html.includes("<script")) {
+      throw new Error(`Blog must provide static content in ${language}: ${pagePath}`);
+    }
+    for (const hreflang of ["en", "zh-CN", "x-default"]) {
+      if (!html.includes(`hreflang="${hreflang}"`)) throw new Error(`Missing Blog language alternate: ${hreflang}`);
+    }
+    const stylesheet = html.match(/<link rel="stylesheet" href="([^"]+)"/);
+    if (!stylesheet) throw new Error("Blog stylesheet is missing");
+    assertExists(resolve(dirname(pagePath), stylesheet[1]));
+    for (const match of html.matchAll(/<a[^>]+href="([^"]+)"/g)) {
+      const href = match[1];
+      if (/^(https?:|#)/.test(href)) continue;
+      if (href.startsWith("/")) throw new Error("Blog navigation must preserve the hosting base");
+      const target = href.split(/[?#]/)[0];
+      // MkDocs pages are built later by the publication workflow.
+      if (target.includes("docs/")) continue;
+      assertExists(resolve(dirname(pagePath), target, "index.html"));
+    }
+  }
+}
 assertExists(resolve(siteDir, "install.sh"));
 assertExists(resolve(siteDir, "status.frontstage-share.json"));
 assertExists(resolve(outDir, "README.md"));
 assertExists(resolve(outDir, "frontstage-share-manifest.json"));
+
+// Reproduce MkDocs cleaning its output: restoring cases must leave the rest
+// of the built site intact and include the catalog used by the case pages.
+const originalHomepage = await readFile(resolve(siteDir, "index.html"), "utf8");
+await rm(resolve(siteDir, "docs/showcases"), { recursive: true, force: true });
+run(process.execPath, [resolve(repoRoot, "examples/export-frontstage-share-bundle.mjs"), "--restore-case-pages", "--out-dir", outDir]);
+if (await readFile(resolve(siteDir, "index.html"), "utf8") !== originalHomepage) throw new Error("case restore replaced the homepage");
+assertExists(resolve(siteDir, "docs/showcases/showcase-catalog.json"));
+const restoredCase = await readFile(resolve(siteDir, "docs/showcases/cases/0619-loopx-self-iteration.en.html"), "utf8");
+if (!restoredCase.includes("https://github.com/huangruiteng/loopx/blob/main/docs/showcases/cases/0619-loopx-self-iteration.md")) {
+  throw new Error("case narrative source must not point to an unshipped Markdown URL");
+}
 
 const routerSource = await readFile(resolve(repoRoot, "apps/presentation/dashboard/src/router.tsx"), "utf8");
 if (!routerSource.includes("basepath:") || !routerSource.includes("import.meta.env.BASE_URL")) {
@@ -147,6 +189,17 @@ const benchmarkHtml = await readFile(resolve(siteDir, "benchmarks/swe-marathon/i
 if (benchmarkHtml !== homepageHtml) {
   throw new Error("SWE-Marathon static route must reuse the compiled public-site entry");
 }
+const deepSweBehaviorHtml = await readFile(
+  resolve(siteDir, "benchmarks/deepswe/behavior-discovery/index.html"),
+  "utf8",
+);
+const canonicalDeepSweBehaviorHtml = await readFile(
+  resolve(repoRoot, "benchmark/deepswe/behavior-discovery/index.html"),
+  "utf8",
+);
+if (deepSweBehaviorHtml !== canonicalDeepSweBehaviorHtml) {
+  throw new Error("DeepSWE behavior article route must be byte-identical to the reviewed standalone source");
+}
 for (const sourceContract of [
   "Your agents keep",
   'secondPrefix: "the "',
@@ -163,10 +216,9 @@ for (const sourceContract of [
   "See in action",
   "查看实战",
   "showTerminalReplay",
-  'url.hash = "showcases"',
+  'href="#showcases"',
   'setActiveTerminal("issue")',
   "setTerminalReplayToken",
-  "scrollIntoView",
   "SetupDialog",
   "EvidenceViewer",
   "TerminalReplay",
@@ -242,8 +294,17 @@ if (!homepageStyles.includes("@keyframes terminal-line-enter") || !homepageStyle
   throw new Error("homepage evidence terminal must support finite replay, pause, and a static reduced-motion state");
 }
 const frontstageHtml = await readFile(resolve(siteDir, "frontstage/index.html"), "utf8");
-if (!frontstageHtml.includes('/loopx/assets/')) {
-  throw new Error("frontstage entry did not retain the compiled dashboard assets");
+if (!frontstageHtml.includes('content="0;url=../docs/showcases/index.en.html"') || frontstageHtml.includes('<script')) {
+  throw new Error("retired Frontstage must redirect without loading the dashboard or forwarding status parameters");
+}
+const developerHtml = await readFile(resolve(siteDir, "developers/projections/index.html"), "utf8");
+if (!developerHtml.includes('/loopx/assets/')) throw new Error("projection developer tools must retain compiled assets");
+for (const [route, target] of [
+  ["frontstage/developer", "../../developers/projections/"],
+  ["deprecated/frontstage/ops", "../../../docs/guides/personal-workspace-user-guide/"],
+]) {
+  const html = await readFile(resolve(siteDir, route, "index.html"), "utf8");
+  if (!html.includes(`content="0;url=${target}"`) || html.includes('<script')) throw new Error(`unsafe legacy redirect: ${route}`);
 }
 
 const status = JSON.parse(await readFile(resolve(siteDir, "status.frontstage-share.json"), "utf8"));
@@ -261,6 +322,7 @@ if (manifest.base !== "/loopx/") {
 if (
   manifest.homepage_entry !== "site/index.html" ||
   manifest.swe_marathon_brief_entry !== "site/benchmarks/swe-marathon/index.html" ||
+  manifest.deepswe_behavior_article_entry !== "site/benchmarks/deepswe/behavior-discovery/index.html" ||
   manifest.frontstage_entry !== "site/frontstage/index.html" ||
   manifest.installer_entry !== "site/install.sh"
 ) {
@@ -271,6 +333,12 @@ if (manifest.content_sources?.public_homepage !== "apps/presentation/site") {
 }
 if (manifest.content_sources?.swe_marathon_brief !== "benchmark/swe-marathon") {
   throw new Error(`manifest benchmark brief source mismatch: ${JSON.stringify(manifest.content_sources)}`);
+}
+if (
+  manifest.content_sources?.deepswe_behavior_article !==
+  "benchmark/deepswe/behavior-discovery/index.html"
+) {
+  throw new Error(`manifest DeepSWE behavior source mismatch: ${JSON.stringify(manifest.content_sources)}`);
 }
 if (manifest.content_sources?.installer_script !== "scripts/install-from-github.sh") {
   throw new Error(`manifest installer source mismatch: ${JSON.stringify(manifest.content_sources)}`);
@@ -344,6 +412,9 @@ if (!readmeText.includes("frontstage/")) {
 }
 if (!readmeText.includes("benchmarks/swe-marathon/")) {
   throw new Error("share bundle README must publish the SWE-Marathon research brief entry");
+}
+if (!readmeText.includes("benchmarks/deepswe/behavior-discovery/")) {
+  throw new Error("share bundle README must publish the DeepSWE behavior article entry");
 }
 
 console.log("frontstage-share-bundle-smoke: ok");

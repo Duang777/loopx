@@ -6,8 +6,9 @@ import {
   ShieldCheck,
   TimerReset,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import type { CSSProperties } from "react";
+import { usePublicPageNavigation } from "./usePublicPageNavigation";
 import benchmarkData from "../../../../benchmark/swe-marathon/data.json";
 import caseInsights from "../../../../benchmark/swe-marathon/case_insights.json";
 import copy from "./swe-marathon-copy.json";
@@ -48,15 +49,6 @@ const armLabels: Record<Language, Record<string, string>> = {
     heartbeat: "LoopX Turn（外部调度 Automation）",
   },
 };
-
-
-function updateLanguage(language: Language) {
-  const url = new URL(window.location.href);
-  if (language === "zh") url.searchParams.set("lang", "zh");
-  else url.searchParams.delete("lang");
-  window.history.replaceState({}, "", url);
-  document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
-}
 
 function HorizonDiagram({ language }: Readonly<{ language: Language }>) {
   const c = copy[language];
@@ -115,9 +107,7 @@ function BarChart({
 }
 
 export function SweMarathonBrief() {
-  const [language, setLanguage] = useState<Language>(() =>
-    new URLSearchParams(window.location.search).get("lang") === "zh" ? "zh" : "en",
-  );
+  const [language, setLanguage] = usePublicPageNavigation();
   const c = copy[language];
   const basePath = import.meta.env.BASE_URL;
 
@@ -125,7 +115,6 @@ export function SweMarathonBrief() {
     document.title = language === "zh"
       ? "LoopX × SWE-Marathon：持续自我验证"
       : "LoopX × SWE-Marathon: Continued self-verification";
-    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
   }, [language]);
 
   const summaries = useMemo(
@@ -137,11 +126,6 @@ export function SweMarathonBrief() {
     [],
   );
 
-  const setLocale = (next: Language) => {
-    setLanguage(next);
-    updateLanguage(next);
-  };
-
   return (
     <div className="bm-page" id="top">
       <header className="bm-topbar">
@@ -151,8 +135,8 @@ export function SweMarathonBrief() {
         <span className="bm-edition">RESEARCH BRIEF / 01</span>
         <div className="bm-top-actions">
           <div className="bm-language" aria-label="Language">
-            <button aria-pressed={language === "en"} className={language === "en" ? "is-active" : ""} onClick={() => setLocale("en")} type="button">EN</button>
-            <button aria-pressed={language === "zh"} className={language === "zh" ? "is-active" : ""} onClick={() => setLocale("zh")} type="button">中文</button>
+            <button aria-pressed={language === "en"} className={language === "en" ? "is-active" : ""} onClick={() => setLanguage("en")} type="button">EN</button>
+            <button aria-pressed={language === "zh"} className={language === "zh" ? "is-active" : ""} onClick={() => setLanguage("zh")} type="button">中文</button>
           </div>
           <a href={repositoryStudyUrl} target="_blank" rel="noreferrer">
             {c.source} <ExternalLink size={13} />

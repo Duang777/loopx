@@ -3,7 +3,7 @@
 - Status: Draft, under maintainer review
 - Initially proposed by: NoKV Lab
 - Widened by: LoopX maintainers
-- Date: 2026-08-05; revised 2026-09-05
+- Date: 2026-08-05; revised 2026-09-07
 - Scope: one provider-neutral LoopX authority contract with built-in file,
   optional NoKV, and optional PostgreSQL provider profiles, complementing
   [`host-integration-surface-v0`](../../reference/protocols/host-integration-surface-v0.md)
@@ -514,6 +514,31 @@ covered. Transport retry metadata is not. The goal-wide `authority_revision`
 is not a client domain precondition and is not part of the request digest. A
 caller may carry a previously observed head revision only as transport
 metadata; changing that observation does not create a new semantic operation.
+
+Operation identity names a caller's logical attempt, not the parameter tuple.
+Mint an id once outside transport retries and reuse it for that attempt; a UUID
+is valid for this purpose. A later independent call may have identical parameters
+and still require a new id (for example, setting a value again after another
+writer changed it). Hashing parameters forever would replay stale history;
+hashing a newly observed provider revision cannot recover the original id after
+a commit whose response was lost.
+
+In the shipped claim/update contract, `changed=false` describes Todo/lease state,
+not the absence of a storage write: a first accepted named no-change operation
+persists its terminal receipt under CAS. Retrying that id after a later state
+change must replay the original no-change result, not perform new work. An empty
+archive selection has a different, explicit no-transaction contract; do not
+generalize it to all verbs. Receipt-only history growth is a real storage cost,
+but optimizing it must retain identity consumption, replay and conflict checks.
+
+Current local facades reuse their generated id within managed-runtime retries.
+Separate CLI invocations are not implicitly one attempt: claim exposes
+`--claim-operation-id`, while create and text/note update do not currently expose
+an equivalent cross-process recovery key. That is a caller-recovery limitation,
+not proof of duplicate business effects or universal exactly-once execution.
+Any extension must define the retry boundary and distinguish retries from new
+intent before adding keys or durable attempt tracking. Test lost responses and
+intervening writes; a source-level ban on UUID construction proves neither.
 
 For every request, the authority performs this sequence:
 
@@ -1421,6 +1446,19 @@ projection-plus-receipt commit, CAS contention, historical receipt replay,
 operation fencing, ordered cursor scans, isolation of returned values, and
 pre-write rejection of malformed JSON.
 
+Promoted `hard_lease` authority also supports one optional ownership
+transaction through the existing Todo-claim caller contract. When the caller
+supplies a task-lease idempotency key and optional expected version, the
+TypeScript owner reads the canonical Todo and its required write scopes,
+reuses the typed lease-acquire decision, and commits the lease, claim, and
+receipt under one provider CAS. Omitting those fields preserves the existing
+claim behavior, and an unpromoted goal rejects the atomic-only options rather
+than attempting a legacy write. File, NoKV, and real PostgreSQL conformance
+includes competing-owner coverage: exactly one complete claim-plus-lease
+tuple wins, the loser receives no receipt, and the winner replays by its exact
+operation identity. This is a cohesive promotion of the existing contract,
+not a second `claim_work` abstraction.
+
 The PostgreSQL adapter also applies one provider-local resource guard before it
 opens a connection: a commit whose canonical envelope exceeds the configured
 `max_commit_bytes` is rejected as typed `store_capacity_exhausted`. The default
@@ -1918,6 +1956,25 @@ it does not promote any provider or complete the Stage 2C promotion.
 - provider promotion, authentication, service recovery, HA, and multi-tenancy;
 - receipt retention or segmentation beyond `retain_all_v0`.
 
+#### TypeScript-first burden-reduction order
+
+Prefer preparatory TypeScript work when it removes authority that the next
+shared-authority stage would otherwise have to migrate under provider pressure.
+The order is deliberately narrow:
+
+1. characterize the caller-observable Python behavior and illegal transitions;
+2. move one already-shipped ownership transaction at a time into the existing
+   TypeScript boundary, starting with atomic claim-plus-lease, followed by
+   completion-plus-successor and the remaining lease lifecycle decisions;
+3. qualify that exact transaction against file, NoKV, and a real isolated
+   PostgreSQL server before changing provider selection;
+4. only then advance binding, migration, canary, and production promotion.
+
+This is not permission for a broad framework rewrite. A preparatory refactor
+belongs in this sequence only when the next RFC stage consumes it directly, it
+removes duplicate decision authority, and caller-visible parity plus rollback
+remain reviewable in the same bounded slice.
+
 ## 12. What the Owner Still Needs to Decide
 
 1. Should the next runtime slice first close renew/release/reclaim and stale
@@ -2236,9 +2293,14 @@ the unresolved gates remain prerequisites for a real promotion.
   writer fence bound to that revision; provider-first `mutate` and
   `todo_read` that never fall back to Markdown.
 - The fence integration: every Python Todo mutation and every native task-lease
-  acquire, renew, transfer, and release checks the durable fence while holding
-  its own lock; an absent fence costs no runtime call; a present, unreadable,
-  or invalid fence fails closed.
+  acquire, renew, transfer, release, verify, and committed releasing
+  fence-close checks the durable fence while holding its own lock; an absent
+  fence costs no runtime call; a present, unreadable, or invalid fence fails
+  closed. A fenced write is rejected before its first side effect as a
+  validation-stage `permission_denied` with no receipt; the shared check owns
+  only the typed reason and the fence binding facts, and each caller adapter
+  renders one provider-neutral remediation from them and carries the check
+  result under `write_check`.
 - The complete Todo read model: `loopx_todo_canonical_read_record_v0` publishes
   a versioned field manifest, and the TypeScript projection rejects a
   replacement that drops fields already present on a stored record.
@@ -2306,10 +2368,14 @@ write that cannot preserve the contract.
   lineage; it does not create the former second local-shadow candidate. Before
   promotion, add sustained mixed-writer parity runs, event-only Todo coverage,
   and the selected provider profile's recovery/capacity evidence.
-- The provider-neutral authority binding, compatibility projection outbox,
-  and conformance rows for file, NoKV, and PostgreSQL. This does not require all
-  providers to promote together; each profile must pass the same contract
-  before it is eligible.
+- Completion of the compatibility projection outbox and conformance rows for
+  file, NoKV, and PostgreSQL. Provider-first create, claim, narrow update,
+  complete, supersede, and role-scoped archive reuse the committed authority
+  journal as durable intent and render native active/archive records into
+  machine-owned Markdown regions with idempotent replay. Lease-file projection,
+  backlog/status readback, the provider-neutral authority binding, and the
+  remaining command inventory still need the same contract. Providers do not
+  promote together; each profile must pass it before it is eligible.
 - Retention, fast path, and measured capacity for the selected first-promotion
   profile; the reference executor's removal and status flips (question 13).
 - Post-promotion rollback: the shipped rollback quarantines a pre-promotion
@@ -2378,38 +2444,140 @@ parity at the same revision before changing a binding or manifest. Questions 8
 and 10's completeness rule applies to domain facts and retained compatibility
 provenance; it does not require native callers to manufacture Markdown addresses.
 
+### Provider-first terminal lifecycle checkpoint (2026-09-07)
+
+Promoted `complete`, `supersede`, and role-scoped `archive` now use one native
+TypeScript transaction across file, NoKV, and PostgreSQL. The authority owner
+decides actor/claim/lease admission; derives successor priority, capability and
+Agent bindings, exclusions, continuation, and predecessor relations from typed
+caller intent; reduces completion policy; commits the Todo/lease/head/outbox
+write set with CAS; and persists replay receipts. Python remains an adapter for
+registry facts, the caller-approved validation effect, intent/result transport,
+and compatibility projection drain; it does not select a different terminal or
+successor outcome for a provider. The legacy Markdown and event writers reuse
+the same pure TypeScript successor decision before materializing their records.
+
+Validation declarations cross the canonical boundary as a required marker and
+SHA-256 digest only. Raw argv stays in a 0600 host-local sidecar and recovery
+must prove the digest before executing it. This keeps provider heads portable
+and public-safe without turning recovery into a silent validation bypass.
+Imported v0 `index` remains the archive-order compatibility fact; native records
+fall back to durable completion/update time and Todo identity. Legacy lease
+files whose Todo no longer exists in the current canonical collection remain
+historical audit material and are excluded from live projection.
+
+Qualification uses one read-only, production-complex snapshot for three arms:
+an immutable legacy baseline clone, an isolated file store, and an isolated
+real PostgreSQL tenant. The provider heads compare exactly; the legacy result
+compares through the declared compatibility projection. Archive comparison
+removes provider-retained archived records and their historical leases from the
+legacy hot view, and ignores absolute imported indexes only after separately
+proving identical per-role relative order. Domain fields, archive selection,
+active leases, and non-target records are never normalized; the source snapshot
+must remain unchanged. The executable rehearsal is
+`examples/control_plane/authority-three-arm-rehearsal.py`. A checked-in,
+deterministic, public-safe scale fixture exercises the same distribution and
+pressure, including hard-lease fences, across every provider conformance suite. It cannot replace the
+read-only three-arm rehearsal because all providers share the new semantic
+owner and can therefore agree on the same regression.
+
+Every pull request that claims progress against this RFC follows the
+[production-scale fixture stewardship contract](../../development/testing-and-quality.md#production-scale-fixture-stewardship--生产规模-fixture-维护契约).
+It declares fixture impact, exercises every affected provider arm, and keeps
+the read-only three-arm rehearsal as a separate promotion gate.
+
+Legacy lifecycle field assembly now calls the single TS field planner described
+in the [TS retirement checkpoint](typescript-control-plane-migration-v0.md#legacy-field-rule-retirement-checkpoint).
+This removes Python decisions without changing the per-goal authority phase:
+unpromoted goals still commit through the locked Markdown writer, while promoted
+goals retain their existing provider transactions and unsupported-field fences.
+The planner neither reads a provider nor grants a lease, CAS receipt, or write
+permission. This checkpoint closes one rule owner, not the remaining mutation
+inventory or local-store/promotion qualification.
+
 ### Next delivery and parallel provider work
 
-The immediate kernel sequence is: (1) a real provider-first Todo lifecycle caller
-with the replaced Python decisions removed; (2) explicit v0 import plus sustained
-consumer/capture/recovery qualification; (3) reviewed promotion with fenced
-export and cleanup. Each slice must prove an end-to-end transaction, not merely
-another schema identifier consolidation. Native contract acceptance alone is
-not permission to bypass any promotion hold.
+Markdown is a **permanent first-class readable projection**. Retire its database
+and business-writer authority, not its human/agent presentation. The
+[TS RFC's delivery sequence](typescript-control-plane-migration-v0.md#next-delivery-sequence)
+owns business-rule unification and caller deletion; this RFC owns one durable
+truth, recovery and cutover. Native CLI conversion and a daemon are not
+prerequisites, and PostgreSQL deployment must not hold local adoption hostage.
 
-The first replacement-first `claim` slice routes both the default Markdown
-writer and the promoted provider transaction through one TypeScript decision.
-Python's default path retains only locked commit and existing projection-
-compatibility duties. This closes duplicate claim policy; it neither promotes
-Markdown to authority nor replaces the remaining unified
-create/update/complete/archive transactions and projection outbox.
+```text
+CLI / Agent / Dashboard → one TS Todo transaction owner → canonical authority
+                                                        ├ structured consumers
+                                                        └ Markdown projection
+```
 
-The following `create` slice routes promoted `todo add` through a native
-provider transaction. The legacy CLI surface remains, but after argument
-validation it performs one typed crossing; TypeScript owns semantic duplicate
-resolution, actor/owner eligibility, CAS, replay receipts, and the projection
-outbox mutation. A deleted Markdown state file stays absent in real subprocess
-CLI preview and apply tests. This removes Markdown commit authority for create
-on promoted goals without claiming that update/complete/archive are ready for
-live promotion; those commands remain fenced until their own transaction
-types land behind the same runtime boundary.
+There are only two authority phases per goal: before cutover, Markdown feeds
+qualified shadow capture; after cutover, the selected canonical provider feeds
+one-way projections. Do not add a third TS-Markdown backend, bidirectional
+live synchronization, or per-command split authority. Unsupported post-cutover
+commands fail closed; they do not fall back to the old writer.
 
-Use file-v0 for bounded conformance and import rehearsal only. Start the
-Section 7.2 embedded-store slice alongside the provider-first Todo caller; both
-converge before long-goal local qualification and promotion. PostgreSQL
-service/deployment work remains parallel; it is not a local-promotion dependency. NoKV remains independently gated by its own lineage and recovery
-qualification. The shared authority owns decisions and receipts; providers own
-durable CAS/transactions, never a second Todo state machine.
+The next complete stage packages are:
+
+1. **Command/consumer closure.** Reuse the merged create, claim, update and
+   #4053 terminal/successor/archive paths. Inventory remaining public mutations
+   and reads against actual callers. Status/attention now joins `todo list` in
+   reading canonical Todo summaries after promotion, without requiring the
+   Markdown file. Missing providers fail closed and empty canonical collections
+   never revive legacy Todos. Refresh recommendation, repair/replan qualification,
+   completion-validation accountability, Todo-add replan binding and guided-start
+   frontier now share that canonical source. A refresh reads one snapshot and
+   passes it through its decisions rather than rereading a changing provider or
+   Markdown at each gate. Provider failure aborts; an empty snapshot is not a
+   fallback signal. This is consumer progress, not promotion proof: Turn/quota,
+   standing decisions, leases, monitor writeback, shared-goal alignment and
+   amendment revision bases still need their own parity inventory. Read authority
+   does not grant writeback. Source/display independence is tested with the
+   shared production-scale fixture and real FileAuthorityStore; these reads do
+   not establish freshness/CAS for a later business commit or change provider
+   defaults. Next Action narrative remains independent of Todo authority.
+
+   Lifecycle admission and the preauthorized terminal fence now share the TS
+   owner across legacy writers and native terminal transactions; the replaced
+   Python rules are removed without changing provider defaults or promotion.
+   This is not full native field-edit support: retain the strict text/note
+   transaction boundary until update's fields, ownership, validation and
+   monitor/resume effects close together. Neither an admission result nor a
+   lease-fence result is a commit receipt. Keep provider CAS/replay and existing
+   writer lock lifetimes unchanged while collecting this deletion payoff.
+2. **Permanent projection closure.** Reuse `provider_projection.py`, the
+   Todo-section renderer and existing journal/outbox. Preserve non-owned human
+   narrative; render owned sections from a known canonical revision, with
+   idempotent repair and freshness/readback evidence. Pending projection delivery
+   is independent of business commit/replay. Direct Markdown edits must never
+   import themselves into authority. Explicit validated edit/import tooling is
+   a separate proposal, not a second writer hidden inside rendering. Missing
+   displays now automatically recover Todo-only sections from canonical state
+   during normal projection delivery
+   ([#4097](https://github.com/huangruiteng/loopx/pull/4097)); recovery reports
+   `recovery_scope=todo_sections_only` and does not restore lost Goal narrative.
+   The [active-state projection contract](../../reference/protocols/active-state-structured-projection-v0.md)
+   defines the shipped recovery boundary. Validate stale/missing/malformed
+   display, crash/retry, revision races, narrative preservation and private-field
+   boundaries.
+3. **One qualified local profile and fenced cutover.** Section 7.2's embedded
+   candidate must prove bounded head/index growth, historical receipts, crash
+   recovery, real CLI readback, capacity and >=10-day soak. File-v0 conformance
+   is not that evidence. Bind one exact lineage/revision/manifest, drain capture,
+   reconcile consumers, fence writers and verify projection recovery plus fenced
+   export/rollback before explicit promotion approval. Do not promote active
+   goals for development tests. PostgreSQL deployment and NoKV qualification
+   proceed independently; changed shared transactions still qualify each
+   affected provider, including a real isolated PostgreSQL server.
+4. **Retirement with named callers.** Remove old Markdown business writers and
+   capture/reference/bridge code only when their final callers and migration
+   windows close. Keep the permanent renderer, qualified import/export, and
+   durable regression coverage. Publish the retained-seam inventory and next
+   deletion condition, rather than indefinitely expanding dual paths.
+
+The current default and Appendix C promotion holds remain unchanged. This plan
+does not declare the whole Todo family, long-goal profile, or shared deployment
+production-ready. Providers keep CAS/transactions durable; they never own a
+second Todo state machine.
 
 ### Parallel delivery plan
 

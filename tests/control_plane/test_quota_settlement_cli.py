@@ -2087,9 +2087,13 @@ def test_begin_turn_rejects_a_non_receipt_runtime_profile(tmp_path: Path) -> Non
 
     assert guard_rc == 1, guard
     assert guard["error_code"] == "QUOTA_VALIDATION_FAILED"
+    # The rejection must also tell an agent-CLI host how to start its turn:
+    # Kiro CLI, ZCode, agy, Gemini CLI, Cursor and custom runners all land on
+    # generic_cli and mint their own identity instead.
     assert guard["reason"] == (
         "--begin-turn requires runtime-profile codex_app_heartbeat "
-        "or codex_app_ssh_goal"
+        "or codex_app_ssh_goal; every other host starts its turn by "
+        "passing its own --turn-instance-id"
     )
 
 
@@ -2439,6 +2443,18 @@ def test_todoless_autonomous_replan_settles_quota_refresh_spend_chain(
 ) -> None:
     project, runtime, registry_path = _write_fixture(tmp_path)
     _configure_autonomous_replan_fixture(project, runtime, registry_path)
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["goals"][0]["control_plane"] = {
+        "periodic_report": {
+            "enabled": True,
+            "profile_preset": "weekly",
+            "route_ref": "project-room",
+        }
+    }
+    registry_path.write_text(
+        json.dumps(registry, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     turn_instance_id = "turn-autonomous-replan-settlement-1"
 
     guard_rc, guard = _run_cli(
@@ -2512,6 +2528,9 @@ def test_todoless_autonomous_replan_settles_quota_refresh_spend_chain(
     assert [
         receipt["step_kind"] for receipt in refresh["settlement_result"]["receipts"]
     ] == ["validation", "durable_writeback"]
+    assert refresh["post_writeback_hooks"]["invoked_count"] == 1
+    assert refresh["post_writeback_hooks"]["intent_count"] == 0
+    assert refresh["post_writeback_hooks"]["failures"] == []
 
     spend_args = _projected_cli_args(
         spend_command,

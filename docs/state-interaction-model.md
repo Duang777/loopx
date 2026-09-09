@@ -762,9 +762,25 @@ For an accountable, Turn-bound refresh, a successful writeback and a satisfied
 vision checkpoint are separate facts. `ok=true` does not imply that an omitted
 vision decision was supplied. Inspect `vision_checkpoint.satisfied`.
 
-If the checkpoint is `missing_required`, retry the original refresh command
-with the **same** Goal, Agent, Todo/obligation, Turn, and delivery fields, adding
-only one vision decision:
+If the checkpoint is `missing_required`, submit a checkpoint-only refresh with
+the **same** Goal, Agent, Todo/obligation, Turn, and delivery fields. Preserve
+the original working directory and explicit target (`--registry`, `--runtime-root`,
+`--project`, `--state-file`), scope (`--progress-scope`, `--agent-lane`), and
+isolation (`--no-global-sync`, `--suppress-external-sinks`) options, with their
+original values and presence. Both first-writeback and replay Markdown list
+the preserve/remove/add rules; do not add isolation flags absent from the
+original command or silently change the delivery target. These instructions
+preserve the original boundary when followed; they do not persist an authority
+ceiling that rejects callers who manually remove flags.
+
+Remove previously executed state-mutation options, even when their values are unchanged: `--next-action`,
+`--autonomous-replan-recorded`, `--repair-delta-kind`, `--usage-json`, and
+`--usage-codex-session`. Remove any dependent options that would become invalid
+without them. Repeating mutations is rejected as
+`checkpoint_supplement_must_not_repeat_mutations`; do not simply append vision
+arguments to an original command that contains these options.
+
+Add only one vision decision:
 
 - `--vision-unchanged-reason 'Existing scope and acceptance still apply.'` when
   a persisted vision genuinely remains applicable;

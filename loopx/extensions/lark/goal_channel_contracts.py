@@ -7,6 +7,7 @@ import re
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from enum import Enum
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, ParamSpec, TypeVar
@@ -40,6 +41,32 @@ PRIVATE_PACKET_KEYS = {
 GATE_ACTION_PREFIX = re.compile(
     r"^(?:(?:[-*•]|\d+[.)])\s*)?(?:\[[ xX]\]\s*)?(?:\[P\d+\]\s*)?"
 )
+
+
+class LarkTopicEventDecisionReason(str, Enum):
+    """Typed, content-free outcome of Goal Topic routing."""
+
+    MATCHED = "matched"
+    INVALID_EVENT = "invalid_event"
+    BINDING_UNAVAILABLE = "binding_unavailable"
+    CHAT_MISMATCH = "chat_mismatch"
+    TOPIC_MISMATCH = "topic_mismatch"
+    ROUTE_AMBIGUOUS = "route_ambiguous"
+    SELF_MESSAGE = "self_message"
+    INVALID_ROUTING_STATE = "invalid_routing_state"
+    NOT_ADDRESSED = "not_addressed"
+
+
+LARK_TOPIC_EVENT_REJECTION_REASONS = {
+    item.value
+    for item in LarkTopicEventDecisionReason
+    if item is not LarkTopicEventDecisionReason.MATCHED
+}
+
+
+def normalize_lark_topic_event_rejection_reason(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized if normalized in LARK_TOPIC_EVENT_REJECTION_REASONS else None
 
 
 _P = ParamSpec("_P")
@@ -216,36 +243,50 @@ def binding_for_goal(
     agent_id: str | None = None,
     connection_id: str | None = None,
 ) -> dict[str, Any] | None:
-    candidates = bindings_for_goal(
-        payload,
-        goal_id,
-        provider_target=provider_target,
-    )
+    # Select one raw connection before resolving its provider target. A target
+    # belongs to one connection; applying it to every sibling lets an unrelated
+    # Agent's target invalidate the requested Agent's otherwise valid binding.
+    candidates = bindings_for_goal(payload, goal_id)
+    selected: dict[str, Any] | None = None
     if connection_id:
-        return next(
+        selected = next(
             (item for item in candidates if item.get("connection_id") == connection_id),
             None,
         )
-    if agent_id is not None:
-        return next(
+    elif agent_id is not None:
+        selected = next(
             (item for item in candidates if item.get("agent_id") == agent_id),
             None,
         )
-    bindings = payload.get("bindings")
-    stored = bindings.get(goal_id) if isinstance(bindings, Mapping) else None
-    default_id = (
-        str(stored.get("default_connection_id") or "")
-        if isinstance(stored, Mapping)
-        else ""
-    )
-    if default_id:
-        selected = next(
-            (item for item in candidates if item.get("connection_id") == default_id),
-            None,
+    else:
+        bindings = payload.get("bindings")
+        stored = bindings.get(goal_id) if isinstance(bindings, Mapping) else None
+        default_id = (
+            str(stored.get("default_connection_id") or "")
+            if isinstance(stored, Mapping)
+            else ""
         )
-        if selected is not None:
-            return selected
-    return candidates[0] if candidates else None
+        if default_id:
+            selected = next(
+                (
+                    item
+                    for item in candidates
+                    if item.get("connection_id") == default_id
+                ),
+                None,
+            )
+        if selected is None and candidates:
+            # Keep the invalid-default fallback aligned with the writer in
+            # _without_goal_topic_connection, which promotes min(connection_id).
+            selected = min(
+                candidates,
+                key=lambda item: str(item.get("connection_id") or ""),
+            )
+    return (
+        _resolve_goal_binding(selected, provider_target=provider_target)
+        if selected is not None
+        else None
+    )
 
 
 def human_gate_auto_notify_enabled(binding: Mapping[str, Any] | None) -> bool:
@@ -718,3 +759,53 @@ def gate_message(
     if kanban_url:
         lines.extend(["", f"Kanban: {kanban_url}"])
     return "\n".join(lines), question
+
+
+def reusable_goal_topic_root(
+    payload: Mapping[str, Any],
+    goal_id: str,
+    *,
+    connection_id: str,
+    provider_target: Mapping[str, Any] | None,
+    chat_id: str,
+) -> str:
+    """Return the established topic root when reconnect may adopt it.
+
+    A reconnect may skip sending a fresh Goal Topic only when the stored
+    connection for this ``connection_id`` is enabled, still resolves through
+    ``provider_target`` (target_ref/provider/chat all validated by the typed
+    reader), and its stored root is a well-formed message id for this chat.
+    Anything else returns "" so the caller sends a new topic.
+    """
+
+    from .goal_channel_transport import MESSAGE_ID_PATTERN
+
+    try:
+        existing = binding_for_goal(
+            payload,
+            goal_id,
+            connection_id=connection_id,
+        )
+        if existing is not None:
+            existing = _resolve_goal_binding(existing, provider_target=provider_target)
+    except ValueError:
+        return ""
+    if not existing or existing.get("enabled") is not True:
+        return ""
+    prior_topic = (
+        existing.get("topic") if isinstance(existing.get("topic"), Mapping) else {}
+    )
+    prior_channel = (
+        existing.get("channel") if isinstance(existing.get("channel"), Mapping) else {}
+    )
+    candidate_root = str(
+        prior_topic.get("root_message_id")
+        or prior_channel.get("pinned_message_id")
+        or ""
+    )
+    if (
+        MESSAGE_ID_PATTERN.fullmatch(candidate_root)
+        and str(prior_channel.get("chat_id") or "") == chat_id
+    ):
+        return candidate_root
+    return ""

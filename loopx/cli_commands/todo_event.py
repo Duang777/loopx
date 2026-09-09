@@ -4,11 +4,18 @@ import argparse
 from collections.abc import Callable
 from pathlib import Path
 
+from ..control_plane.coordination.local_authority import (
+    LocalCoordinationAuthorityRejection,
+)
 from ..control_plane.todos.external_wait_contract import TodoExternalWaitAuthoringError
 from ..control_plane.todos.handoff_mode import HandoffModeError
 from ..control_plane.todos.contract import decision_scope_metadata_value
 from ..control_plane.work_items.task_lease import TaskLeaseError
 from ..file_lock import lock_timeout_error_fields
+from ..control_plane.coordination.legacy_writer_fence import LegacyCoordinationWriterFenced
+from ..control_plane.coordination.shadow_management import ShadowManagementError
+from ..control_plane.coordination.runtime_shadow_writer_adapter import ActiveStateAuthorityMutationError
+from ..control_plane.coordination.local_authority import LocalCoordinationAuthorityUnavailable
 
 
 RolloutEventAppender = Callable[..., dict[str, object]]
@@ -30,7 +37,7 @@ def todo_error_payload(args: argparse.Namespace, exc: Exception) -> dict[str, ob
         "dry_run": True
         if args.todo_command == "suggest"
         else not bool(args.execute)
-        if args.todo_command == "archive-completed"
+        if args.todo_command in {"archive-completed", "project-markdown"}
         else bool(args.dry_run),
         "added": False,
         "already_exists": False,
@@ -40,14 +47,27 @@ def todo_error_payload(args: argparse.Namespace, exc: Exception) -> dict[str, ob
         "error": str(exc),
         **lock_timeout_error_fields(exc),
     }
-    if isinstance(exc, (TaskLeaseError, HandoffModeError)):
+    if isinstance(exc, (TaskLeaseError, HandoffModeError, LegacyCoordinationWriterFenced, ShadowManagementError, ActiveStateAuthorityMutationError, LocalCoordinationAuthorityUnavailable)):
         payload["error_code"] = exc.code
         payload.update(exc.payload)
+    elif isinstance(exc, LocalCoordinationAuthorityRejection):
+        payload["error_code"] = exc.code
+        payload["code"] = exc.code
+        for key, value in exc.payload.items():
+            if key not in {
+                "schema_version",
+                "status",
+                "failure_kind",
+                "reason_code",
+                "reason",
+            }:
+                payload[key] = value
     elif isinstance(exc, TodoExternalWaitAuthoringError):
         payload["error_code"] = exc.code
         if exc.authoring_contract is not None:
             payload["authoring_contract"] = exc.authoring_contract
     return payload
+
 
 def append_todo_rollout_event(
     payload: dict[str, object],

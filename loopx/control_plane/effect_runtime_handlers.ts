@@ -58,13 +58,13 @@ import {
   evaluateTodoCompletionFence,
 } from "./todos/completion_fence.ts";
 import {
-  buildTodoCompletionMetadataUpdates,
   normalizeTodoCompletionValue,
   requireTodoCompletionMetadataValue,
   selectTodoCompletionContinuation,
 } from "./todos/completion_state.ts";
 import { reduceTodoCompletionTransaction } from "./todos/completion_transaction.ts";
 import { transitionTodoNextAction } from "./todos/next_action.ts";
+import { planTodoFieldUpdate } from "./todos/field_update.ts";
 import {
   evaluateTodoResumeConditions,
   normalizeTodoResumeWhen,
@@ -77,6 +77,8 @@ import {
   writeSchedulerState,
 } from "./scheduler/state_store.ts";
 import { buildVisionCheckpoint } from "./goals/vision_checkpoint.ts";
+import { projectVisionWaitCoverage } from "./goals/vision_wait_coverage.ts";
+import { admitGoalAmendmentProposal } from "./goals/goal_amendment_proposal.ts";
 import { projectSharedGoalAlignment } from "./goals/shared_goal_alignment.ts";
 import {
   evaluateDeliveryRoute,
@@ -113,15 +115,26 @@ import {
   rollbackCoordinationRuntimeShadow,
 } from "./coordination/runtime_shadow.ts";
 import {
+  archiveLocalCoordinationTodos,
   claimLocalCoordinationTodo,
   createLocalCoordinationTodo,
   editLocalCoordinationTodo,
+  updateLocalCoordinationTodo,
   mutateLocalCoordinationAuthority,
   listLocalCoordinationTodos,
   promoteLocalCoordinationAuthority,
   readLocalCoordinationTodo,
+  terminalLifecycleLocalCoordinationTodo,
 } from "./coordination/local_authority_runtime.ts";
 import { evaluateCoordinationTodoClaimDecision } from "./coordination/todo_claim.ts";
+import {
+  evaluateCoordinationTodoTerminalDecision,
+  evaluateCoordinationTodoMutationDecision,
+  evaluateCoordinationTerminalFence,
+  evaluateTodoOwnershipGate,
+} from "./coordination/todo_lifecycle_decision.ts";
+import { evaluateCoordinationTodoArchiveSelection } from "./coordination/todo_archive_selection.ts";
+import { evaluateCoordinationTodoSuccessorDerivation } from "./coordination/todo_successor_derivation.ts";
 import {
   checkLegacyCoordinationWriteAllowed,
   engageLegacyCoordinationWriterFence,
@@ -351,7 +364,7 @@ export function createEffectRuntimeHandlers(
     ["todo.completion_state.normalize", normalizeTodoCompletionValue],
     ["todo.completion_state.require_metadata", requireTodoCompletionMetadataValue],
     ["todo.completion_state.continuation_for_write", selectTodoCompletionContinuation],
-    ["todo.completion_state.metadata_updates", buildTodoCompletionMetadataUpdates],
+    ["todo.field_update.plan", planTodoFieldUpdate],
     [
       "todo.claim.decide",
       (params) => evaluateCoordinationTodoClaimDecision(
@@ -371,6 +384,12 @@ export function createEffectRuntimeHandlers(
         },
       ),
     ],
+    ["todo.terminal.decide", evaluateCoordinationTodoTerminalDecision],
+    ["todo.mutation.decide", evaluateCoordinationTodoMutationDecision],
+    ["task_lease.terminal_fence.decide", evaluateCoordinationTerminalFence],
+    ["todo.ownership_gate.decide", evaluateTodoOwnershipGate],
+    ["todo.archive.select", evaluateCoordinationTodoArchiveSelection],
+    ["todo.successor.derive", evaluateCoordinationTodoSuccessorDerivation],
     ["todo.completion.reduce", reduceTodoCompletionTransaction],
     ["todo.next_action.transition", transitionTodoNextAction],
     ["todo.resume_condition.normalize", normalizeTodoResumeWhen],
@@ -388,7 +407,9 @@ export function createEffectRuntimeHandlers(
     ["work_item.planning_inventory.detail", projectTodoPlanningInventoryDetail],
     ["work_item.refresh_recommendation.resolve", resolveRefreshRecommendation],
     ["goal.vision_checkpoint.evaluate", buildVisionCheckpoint],
+    ["goal.vision_wait.coverage", projectVisionWaitCoverage],
     ["goal.shared_goal_alignment.project", projectSharedGoalAlignment],
+    ["goal.amendment_proposal.admit", admitGoalAmendmentProposal],
     ["agent.delivery_workspace.evaluate", evaluateDeliveryWorkspace],
     [
       "quota.delivery_workspace_causality.evaluate",
@@ -414,6 +435,9 @@ export function createEffectRuntimeHandlers(
     ["coordination.local_authority.promote", promoteLocalCoordinationAuthority],
     ["coordination.local_authority.todo_claim", claimLocalCoordinationTodo],
     ["coordination.local_authority.todo_create", createLocalCoordinationTodo],
+    ["coordination.local_authority.todo_update", updateLocalCoordinationTodo],
+    ["coordination.local_authority.todo_terminal", terminalLifecycleLocalCoordinationTodo],
+    ["coordination.local_authority.todo_archive", archiveLocalCoordinationTodos],
     ["coordination.local_authority.todo_compatibility_edit", editLocalCoordinationTodo],
     ["coordination.local_authority.mutate", mutateLocalCoordinationAuthority],
     ["coordination.local_authority.todo_read", readLocalCoordinationTodo],

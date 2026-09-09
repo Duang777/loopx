@@ -40,7 +40,7 @@ def main() -> int:
         "LoopX loop engineering social preview banner",
         "Loop engineering for long-horizon AI agents and peer agent teams.",
         "The open, provider-neutral, stateful control plane for long-horizon agents.",
-        "Objectives, gates, todos, evidence, quota, and handoffs stay stable",
+        "preserves objectives, gates, todos, evidence, quota, and handoffs across turns",
         "## Why LoopX",
         "objective / issue / project",
         "LoopX state: objective + gates + todos + scope + evidence + quota",
@@ -56,7 +56,7 @@ def main() -> int:
         "200+ hours of elapsed loop lifetime",
         "200+ hour public contribution arc",
         "Redacted owner-run showcase",
-        "not 200 hours of continuous model execution",
+        "not continuous model execution or unattended production autonomy",
         "docs/assets/long-running-loop-openviking-trajectory.png",
         "docs/assets/long-running-loop-ml-experiment-trajectory.png",
         "### Presets and Auto Research",
@@ -67,7 +67,7 @@ def main() -> int:
         '<a id="see-it-in-action"></a>',
         '<a id="capability-surface"></a>',
         '<a id="community--feedback"></a>',
-        "The v0.4.x line is a usable local control plane",
+        "LoopX 1.0 is a usable local control plane",
         "docs/assets/loopx-lark-developer-group.png",
         "docs/assets/loopx-wechat-contact.png",
         "WeChat: <code>huangrt00</code>",
@@ -82,7 +82,7 @@ def main() -> int:
         "200+ 小时自然时长",
         "超过 200 小时的公开贡献轨迹",
         "经过脱敏的 owner-run showcase",
-        "`0.4.x` 已经是一套可用的长程 Agent 本地控制面",
+        "LoopX 1.0 已经是一套可用的长程 Agent 本地控制面",
         "docs/assets/loopx-lark-developer-group.png",
         "docs/assets/loopx-wechat-contact.png",
         "微信：<code>huangrt00</code>",
@@ -100,7 +100,7 @@ def main() -> int:
     ]:
         assert required in compact_readme, required
     for required in [
-        "不等于 200 小时连续模型执行",
+        "不是连续模型执行时长或无人值守的生产自治",
         "公司或雇主背书",
         "第三方独立复现",
     ]:

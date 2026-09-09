@@ -8,6 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..capabilities.issue_fix.provider_hooks import IssueFixReviewerProviderHooks
+from ..capabilities.reward_memory.feedback_hint import build_feedback_review_hint
+from ..capabilities.reward_memory.outbound import outbound_guidance_hook
 from ..control_plane.capability_hooks import (
     TURN_START_HOOK_RESULT_SCHEMA_VERSION,
     TurnStartHookRegistration,
@@ -194,6 +196,17 @@ def register_lark_inbox_commands(
         help="Run identity, membership, mention, and provider dry-run checks.",
     )
     send.add_argument("--execute", action="store_true")
+    for outbound in (send, reply):
+        outbound.add_argument(
+            "--message-purpose",
+            choices=("unspecified", "help", "progress", "urgent"),
+            default="unspecified",
+            help="Context for opt-in guidance recall, not send authority.",
+        )
+        outbound.add_argument(
+            "--reviewed-guidance-digest",
+            help="Agent acknowledgement of the exact current pre-send guidance digest; not user approval.",
+        )
     processing = sub.add_parser(
         "processing",
         help=(
@@ -529,6 +542,36 @@ def _render(payload: dict[str, object]) -> str:
     for item in payload.get("items") or []:
         if isinstance(item, dict):
             lines.append(f"- {item.get('message_id')}: {item.get('content')}")
+    guidance = payload.get("outbound_guidance")
+    if isinstance(guidance, dict):
+        lines.append(
+            f"- agent_review_required: {guidance.get('agent_review_required')}"
+        )
+        for item in guidance.get("guidance") or []:
+            lines.append(f"- guidance: {item.get('content_summary')}")
+        if guidance.get("agent_review_required"):
+            review_digest = guidance.get("review_digest")
+            if isinstance(review_digest, str) and review_digest:
+                lines.append(
+                    "Agent: assess this guidance against current evidence and safe alternatives; "
+                    "only if sending is still appropriate, rerun with --reviewed-guidance-digest "
+                    + review_digest
+                    + ". This is not a request for user approval."
+                )
+            else:
+                # configuration_error blocks carry no digest (review cannot
+                # waive them); surface the repair hint instead of a None
+                # placeholder that would send the agent into a retry loop.
+                action = guidance.get("recommended_action")
+                lines.append(
+                    "Agent: guidance review is required but no digest was produced"
+                    + (f"; {action}" if isinstance(action, str) and action else ".")
+                )
+    feedback = payload.get("reward_memory_feedback_review")
+    if isinstance(feedback, dict):
+        lines.append(f"- Reward Memory (advisory): {feedback['instruction']}")
+        lines.append(f"- preview: {feedback['preview_command']}")
+        lines.append("- configured routes: " + json.dumps(feedback["routes"]))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -576,6 +619,19 @@ def handle_lark_inbox_command(
                 config_path=config_path,
                 limit=args.limit,
             )
+            if (
+                payload.get("enabled") is True
+                and payload.get("items")
+                and not getattr(args, "config", None)
+                and not getattr(args, "project", None)
+            ):
+                hint = build_feedback_review_hint(
+                    registry_path=registry_path,
+                    goal_id=getattr(args, "goal_id", None),
+                    agent_id=getattr(args, "agent_id", None),
+                )
+                if hint is not None:
+                    payload["reward_memory_feedback_review"] = hint
         elif args.lark_inbox_command == "ack":
             payload = acknowledge_routed_lark_event_inbox(
                 project=project,
@@ -612,6 +668,13 @@ def handle_lark_inbox_command(
                 text=args.text,
                 execute=args.execute,
                 provider_preflight=args.provider_preflight,
+                before_send=outbound_guidance_hook(
+                    registry_path=registry_path,
+                    goal_id=args.goal_id,
+                    agent_id=args.agent_id,
+                    purpose=getattr(args, "message_purpose", "unspecified"),
+                    reviewed_digest=getattr(args, "reviewed_guidance_digest", None),
+                ),
             )
         elif args.lark_inbox_command == "send":
             routed_config = resolve_routed_lark_inbox_route(
@@ -625,6 +688,13 @@ def handle_lark_inbox_command(
                 text=args.text,
                 execute=args.execute,
                 provider_preflight=args.provider_preflight,
+                before_send=outbound_guidance_hook(
+                    registry_path=registry_path,
+                    goal_id=args.goal_id,
+                    agent_id=args.agent_id,
+                    purpose=getattr(args, "message_purpose", "unspecified"),
+                    reviewed_digest=getattr(args, "reviewed_guidance_digest", None),
+                ),
             )
         elif args.lark_inbox_command == "processing":
             routed_config = resolve_routed_lark_inbox_config(

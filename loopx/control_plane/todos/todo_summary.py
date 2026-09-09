@@ -5,6 +5,7 @@ from datetime import datetime
 import re
 from typing import Any, Callable, Optional
 
+from ..goals.goal_vision_wait_projection import attach_active_vision_waits
 from .contract import (
     TODO_RESUME_KIND_TODO_DONE,
     TODO_STATUS_DONE,
@@ -44,6 +45,7 @@ from .contract import (
     todo_done_for_status,
 )
 from .completion_validation_projection import project_completion_validation_authority
+from .frontier_revision import attach_advancement_frontier_revision_index
 from .handoff_gate import build_todo_handoff_gate_states
 from .handoff_note import attach_todo_handoff_note
 from .projection import (
@@ -761,6 +763,7 @@ def apply_resume_conditions(
     *,
     resume_source_items: list[dict[str, Any]] | None = None,
     rollout_events: list[dict[str, Any]] | None = None,
+    available_capabilities: Any = None,
 ) -> None:
     resume_items = [
         item
@@ -774,6 +777,7 @@ def apply_resume_conditions(
         resume_items,
         source_items=source_items,
         rollout_events=rollout_events,
+        available_capabilities=available_capabilities,
     )
     for item in items:
         resume_when = normalize_todo_resume_when(item.get("resume_when"))
@@ -1059,8 +1063,10 @@ def compact_todo_group(
     preferred_todo_ids: set[str] | None = None,
     resume_source_items: list[dict[str, Any]] | None = None,
     rollout_events: list[dict[str, Any]] | None = None,
+    available_capabilities: Any = None,
     item_limit: int | None = MAX_STATUS_TODOS_PER_ROLE,
     include_task_orchestration_authority: bool = False,
+    vision_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     if not items and not include_empty_source:
         return None
@@ -1076,6 +1082,7 @@ def compact_todo_group(
             source_section=source_section,
         ),
         rollout_events=rollout_events,
+        available_capabilities=available_capabilities,
     )
     lanes = _todo_group_lanes(items, preferred_todo_ids=preferred_todo_ids)
     source_valid = role in {"user", "agent"} and bool(str(source_section or "").strip())
@@ -1200,6 +1207,11 @@ def compact_todo_group(
         ][:MAX_DEFERRED_TODO_VISIBILITY_ITEMS],
         "items": lanes.budgeted_items if item_limit is None else lanes.budgeted_items[:item_limit],
     }
+    attach_advancement_frontier_revision_index(summary, items, role=role)
+    attach_active_vision_waits(
+        summary, vision_runs, role=role, items=items,
+        lineage_items=resume_source_items,
+    )
     if watch_only_monitor_items:
         summary["watch_only_monitor_count"] = len(watch_only_monitor_items)
         summary["watch_only_monitor_due_count"] = len(watch_only_monitor_due_items)

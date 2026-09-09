@@ -42,6 +42,9 @@ from ..control_plane.quota.settlement_cli import (
     render_existing_heartbeat_receipt_payload,
 )
 from ..control_plane.quota.turn_envelope import build_turn_envelope
+from ..control_plane.coordination.legacy_writer_fence import (
+    LegacyCoordinationWriterFenced,
+)
 from ..control_plane.effect_runtime import EffectRuntimeRejected
 from ..control_plane.scheduler.execution_context import (
     GUIDED_START_TURN_RUNTIME_PROFILES,
@@ -238,6 +241,14 @@ def _quota_failure_payload(
         )
         if error.agent_id is not None:
             payload["agent_id"] = error.agent_id
+    elif isinstance(error, LegacyCoordinationWriterFenced):
+        payload.update(
+            {
+                "error_code": error.code,
+                "reason": str(error),
+                **error.payload,
+            }
+        )
     if lock_timeout_fields:
         payload["recommended_action"] = "inspect the lock holder before retrying"
     if command == "monitor-poll":

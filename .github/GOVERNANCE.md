@@ -34,8 +34,9 @@ as a maintainer or grant release, security, or governance authority.
 | [`@maxliux5`](https://github.com/maxliux5) | Write | Active |
 | [`@JackyCSer`](https://github.com/JackyCSer) | Write | Active |
 | [`@steven-kid`](https://github.com/steven-kid) | Write | Active |
-| [`@liubf21`](https://github.com/liubf21) | Write | Invitation pending |
-| [`@wchwawa`](https://github.com/wchwawa) | Write | Invitation pending |
+| [`@liubf21`](https://github.com/liubf21) | Write | Active |
+| [`@wchwawa`](https://github.com/wchwawa) | Write | Active |
+| [`@now-ing`](https://github.com/now-ing) | Write | Invitation pending |
 
 GitHub's repository settings are the operational source of truth for access.
 This public snapshot should be updated through a pull request when a write-role
@@ -75,11 +76,10 @@ the repository rules. Merge, release, security, repository-settings, and
 admin-bypass authority remain governed by this document and the lead
 maintainer.
 
-The matching paths are recorded in [`CODEOWNERS`](CODEOWNERS). That file
-provides automatic review routing. This appointment does not make code-owner
-approval a branch-protection requirement. After at least three, and normally
-five, completed cross-author exact-head review cycles, the lead maintainer may
-separately decide whether to propose required code-owner review.
+The matching paths are recorded in [`CODEOWNERS`](CODEOWNERS). The `main`
+ruleset requires code-owner approval for owned paths. When a pattern lists
+multiple owners, GitHub accepts approval from any one of them, not all of
+them. Cross-subsystem decisions still require the lead maintainer's judgment.
 
 ### Shared Host Integration Seams
 
@@ -106,6 +106,69 @@ routes. Contribution count alone is not sufficient evidence. The decision
 should consider sustained technical judgment, cross-author review quality,
 boundary discipline, responsiveness, and whether the proposed path scope is
 cohesive.
+
+## First-Review Responsibilities
+
+Scope invitations and contributor confirmations are tracked in
+[issue #4069](https://github.com/huangruiteng/loopx/issues/4069).
+
+These assignments route the first technical response; they do not appoint a
+repository-wide maintainer or transfer release, security, or bypass authority.
+The lead maintainer remains the fallback. Contributor availability is
+voluntary: anyone may decline, narrow, pause, or hand back a scope without
+losing attribution for their work. Silence is not acceptance or approval.
+
+| Surface | Contact | Responsibility / status |
+| --- | --- | --- |
+| Chat/runtime session lifecycle | [`@Duang777`](https://github.com/Duang777) | Designated first-review contact: managed-session resume/submit/close, request idempotency, focused regressions and follow-up fixes. Shared goal, quota, lease and permission contracts remain outside this assignment. |
+| Shared goal authority qualification | [`@wchwawa`](https://github.com/wchwawa) | Invited to coordinate implementation review, writer/cursor recovery evidence and bounded qualification. Canonical-authority promotion, provider activation and shared-state policy require separate lead-maintainer review. |
+| Usage and host usage ingestion | [`@liubf21`](https://github.com/liubf21) | Invited to coordinate usage correctness and historical-data compatibility review. Pricing policy and unrelated host/session authority remain outside this scope. |
+| Post-writeback hooks and reporting | [`@now-ing`](https://github.com/now-ing) | Write invitation sent; invited to select one cohesive initial review scope. No CODEOWNERS route until access is active and the scope is accepted. |
+| TypeScript transaction migration | [`@hhyykk`](https://github.com/hhyykk) | Proposed paired review of complete transaction cutovers and Python/TypeScript parity; scope confirmation pending. |
+| Task leases and scheduler boundaries | [`@yuefengw`](https://github.com/yuefengw) | Proposed paired review of lease lifecycle and boundary regressions; scope confirmation pending. |
+| DSH integration | [`@wujc12`](https://github.com/wujc12) | Designated first-review contact for the DSH plugin, installation and host-integration regressions. Shared replan and lifecycle contracts stay separately reviewed. |
+| Reliability diagnostics | [`@songoow`](https://github.com/songoow) | Proposed diagnostic/readback review scope; privacy and first-write data boundaries stay separately reviewed. Scope confirmation pending. |
+
+Start by linking a real cross-author PR, not by creating a quota of new
+implementation work. A review should state the exact head, the governing
+invariant, validation actually performed, and any unresolved boundary. Let the
+author address findings before a maintainer takes over; record a necessary
+takeover and preserve repair attribution.
+
+Review the arrangement after roughly four weeks of participation or three to
+five completed cross-author review cycles. Existing substantive reviews count;
+there is no requirement to manufacture findings. Consider independent closure,
+regression follow-up, scope control and sustainable availability, not PR count.
+Accepted broader appointments and CODEOWNERS additions require a separate PR.
+Review comments from contributors without Write are valuable technical input,
+but do not replace the approval required from an eligible GitHub reviewer.
+
+## Main Branch Merge Gates
+
+The live [main ruleset](https://github.com/huangruiteng/loopx/rules/18121976)
+is the operational authority. It requires a pull request, one approving
+review, code-owner approval where applicable, dismissal of stale approvals,
+approval of the last push by another reviewer, resolved review threads, and
+required status checks against an up-to-date base.
+
+The required-check contract is `Sign-off` plus `merge-gate`, both bound to the
+GitHub Actions app. `merge-gate` in `python-tests.yml` aggregates core
+qualification. During initial rollout, activate that second check only after
+the workflow is merged and both a code change and a documentation-only change
+have produced the intended results. It must fail for missing, failed, cancelled
+or unexpectedly skipped core jobs; only an explicitly classified
+documentation-only change may skip those jobs. See the live ruleset for the
+currently activated checks, rather than inferring activation from this file.
+
+Only `@huangruiteng` retains the existing `always` bypass entry. Write access
+does not grant bypass. A bypass is an exception, not a validation substitute:
+record the exact head, reason, completed checks, known failures and recovery
+plan in the PR. Neither agents nor access invitations create new bypass actors.
+
+CODEOWNERS routes review, not directory-level write permissions. Unassigned
+paths fall back to the lead maintainer; workflow, governance and release-policy
+changes remain lead-maintainer-owned. Do not share owner credentials with
+contributors or give automated reviewers broader credentials than necessary.
 
 ## Project Roles
 

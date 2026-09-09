@@ -5,52 +5,36 @@ admission, permission, artifact, integrity, and reusable agent-runtime boundarie
 around benchmark experiments. It does not own benchmark-family runners, result
 ledgers, or scoring adapters.
 
-## External-agent phase
+## Runner execution boundary
 
-A benchmark harness may own the task container and verifier while delegating only
-the agent phase to a preinstalled command. The harness writes an
-`external_agent_request_v1` JSON file containing the task instruction,
-task-visible workspace, and timeout, then invokes:
+The former `loopx benchmark agent-phase` command and its external-agent v1
+request/result implementation have been removed. There is no replacement
+benchmark-specific subprocess launcher, containment declaration, or environment
+variable interface in this toolkit.
 
-```bash
-loopx benchmark agent-phase \
-  --request "$LOOPSBENCH_EXTERNAL_AGENT_REQUEST" \
-  --result "$LOOPSBENCH_EXTERNAL_AGENT_RESULT" \
-  --solver-command-json '["<solver>", "<arg>"]' \
-  --execute
-```
+- For ordinary benchmark execution, let the existing runner invoke its solver
+  directly. The runner still owns workspace provisioning, credentials,
+  containment, hard timeout, descendant cleanup, verification, and scoring.
+- For LoopX-governed execution, use the existing
+  [Turn contract](../../../docs/reference/protocols/loopx-turn-v0.md):
+  inspect `loopx turn plan`, then explicitly execute
+  `loopx turn run-once --execute` with a supported host or typed host adapter
+  and independent validator. Turn is not an argv-compatible alias for
+  `agent-phase`, and does not replace benchmark isolation or scoring.
 
-The command writes one `external_agent_result_v1` result with hashes and
-bounded lifecycle fields only. It does not provision a task, start Docker,
-access a verifier, calculate a score, upload a result, or grant model or
-credential authority. The solver command is runner-owned and executes in the
-runner-selected current directory; the request workspace must match that
-directory exactly. The solver receives the validated instruction on stdin plus
-only platform lookup, locale, temporary-directory, and phase-specific
-environment variables; ambient credentials are not inherited. This permits a
-direct headless command such as `traex exec --sandbox workspace-write -`
-without a benchmark-specific driver. A provider that needs credentials must
-define a separate explicit authorization contract rather than widening this
-generic boundary.
+Integrations using `LOOPSBENCH_EXTERNAL_AGENT_REQUEST`,
+`LOOPSBENCH_EXTERNAL_AGENT_RESULT`, or
+`LOOPX_EXTERNAL_AGENT_SOLVER_COMMAND_JSON` must remove that bridge before
+upgrading. Existing result files are not rewritten or deleted, but this toolkit
+no longer emits `external_agent_result_v1`. Execution functions under
+`benchmark_toolkit.external_agent` are removed; callers of the retained
+read-only helpers should use the existing `benchmark_toolkit` package exports
+or `benchmark_toolkit.continuation`.
 
-Execution also requires an `external_agent_containment_v1` request object.
-The runner must own a non-escapable containment such as a container, cgroup v2,
-PID namespace, virtual machine, or Windows Job Object, and declare
-`timeout_owner=runner` plus
-`termination_postcondition=drained_before_result_consumption`. The request must
-also carry a runner-owned `external_agent_containment_verification_v1` receipt
-reference with `status=verified`; an unverified prose declaration is rejected.
-A POSIX process group is not sufficient because the solver can create a new
-session. LoopX validates this contract before launch but does not claim to
-create or inspect the containment, does not enforce the timeout itself, and
-never writes a `solver_timeout` result. On timeout, the runner must destroy its
-containment and read back that it is empty before recording the timeout. After
-any solver result, the runner must likewise drain the containment before
-consuming the result or starting a verifier, because the solver may exit while
-leaving detached descendants behind. A runner without that lifecycle must fail
-closed before invoking `agent-phase`.
+Experiment-board records, integrity qualification, public progress and the
+continuation-decision CLI remain unchanged. No run is launched by this migration.
 
-### Bounded continuation decision
+## Bounded continuation decision
 
 When a benchmark treatment deliberately adds LoopX-governed continuation, keep
 process launch and progress observation in the runner and ask LoopX only for the
@@ -1065,6 +1049,49 @@ solver-trajectory slice, even when no case became terminal. This readback is for
 campaign supervision and insight discovery only; it must not expose hidden
 evaluator evidence to the solving arm.
 
+When that readback produces a useful case-level runtime finding before terminal
+scoring, preserve it as a private provisional observation rather than waiting for
+the final grader or overstating it as a scored insight:
+
+```json
+{
+  "schema_version": "benchmark_case_observation_v0",
+  "case": {
+    "benchmark_id": "<public-id>",
+    "case_id": "<public-id>",
+    "arm": "<baseline-or-treatment>"
+  },
+  "run_status": "running",
+  "runtime_outcome": "<ok-error-in_progress-or-unknown>",
+  "duration_ms": null,
+  "evidence_refs": [
+    {
+      "kind": "trace",
+      "trace_id": "<opaque-id-or-null>",
+      "span_id": "<opaque-id-or-null>",
+      "env": "<environment-token-or-null>",
+      "artifact_ref": "<private-pointer-or-null>"
+    }
+  ],
+  "hypothesis": "<provisional-causal-explanation>",
+  "confidence": "medium",
+  "promotion_state": "pending_terminal_score_review"
+}
+```
+
+`trace_id`, `span_id`, and `env` are provider-neutral optional traceability fields.
+Provider-specific session identifiers belong in private provider extensions, not in
+this common contract. Raw evidence references can still disclose sensitive runtime
+topology, so the artifact stays in private benchmark storage. The public experiment
+board records only a compact classification or private artifact handle; it never
+copies trace IDs, spans, URLs, paths, or provider-specific session identifiers.
+
+The provisional observation must not invent a score or treat request success,
+progress, or runtime status as case quality. Once the run is terminal and scoring
+is complete, the analyst re-reads the complete authorized evidence and writes a
+separate `benchmark_case_insight_v0`; it does not relabel the provisional artifact
+as final.
+
 This is a provider obligation, not an effect performed by the reducer: the
 runtime-observation command only returns a typed classification and recommended
 transition. The provider remains responsible for the monitor cycle, trajectory
@@ -1108,6 +1135,15 @@ Record the result in this compact shape:
     "hidden_tests",
     "grader_or_verifier",
     "failure_and_score_details"
+  ],
+  "evidence_refs": [
+    {
+      "kind": "<trace-log-artifact-report-or-other>",
+      "trace_id": "<opaque-id-or-null>",
+      "span_id": "<opaque-id-or-null>",
+      "env": "<environment-token-or-null>",
+      "artifact_ref": "<private-pointer-or-null>"
+    }
   ],
   "insight": {
     "approach_summary": "<what-the-solver-tried>",
@@ -1303,6 +1339,15 @@ to two-arm, four-arm, and other declared benchmark studies. Raw tasks, trajector
 logs, hidden evaluator material, verifier tails, credentials, and local paths have
 no upload schema slot; producers must reduce post-run analysis to the redacted
 insight contract.
+
+### Exploratory behavior findings
+
+Share a selected pattern with settings, sample selection, observations, evidence
+digests, limitations and counterexamples using `--record-kind behavior_finding`.
+It requires no complete study or run-row upload and has no score authority.
+`loopx benchmark behavior-report` projects active findings through the existing
+local provider. See [the bilingual contract and workflow](../../../docs/reference/benchmark-behavior-findings.md)
+for the required fields, evidence boundary and revision commands.
 
 ## Related commands
 

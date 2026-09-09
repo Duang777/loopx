@@ -32,6 +32,11 @@ PR_REVIEW_CATALOG_ENTRY: dict[str, Any] = {
     ),
     "commands": [
         {
+            "command": "loopx pr-review --check-result <result.json> --packet <packet.json> --format json",
+            "purpose": "Reject a declared approval inconsistent with the saved exact head and required evidence.",
+            "write_boundary": "local read-only consistency check; does not verify evidence truth, remote freshness or grant publication/merge authority",
+        },
+        {
             "command": (
                 "loopx pr-review --repo <owner/repo> --state open "
                 "--autonomous-observation --format json"
@@ -63,6 +68,11 @@ PR_REVIEW_CATALOG_ENTRY: dict[str, Any] = {
         },
     ],
     "implemented_protocols": [
+        {
+            "schema_version": "pull_request_review_result_check_v0",
+            "module": "loopx.capabilities.pr_review_queue.result_check",
+            "doc": "loopx/capabilities/pr_review_queue/README.md",
+        },
         {
             "schema_version": "pull_request_review_execution_contract_v2",
             "module": "loopx.capabilities.pr_review_queue.review_contract",
@@ -110,7 +120,7 @@ PR_REVIEW_CATALOG_ENTRY: dict[str, Any] = {
     ],
     "docs": ["loopx/capabilities/pr_review_queue/README.md"],
     "boundaries": [
-        "The shared execution contract owns review depth, evidence completeness, exact-head freshness, symbol-map, walkthrough, validation, failure, code-volume, change-proportionality, default-off isolation, and authority-semantics requirements; host skills only route and publish it.",
+        "The shared execution contract owns review depth, evidence completeness, repository-reuse comparison, exact-head freshness, symbol-map, walkthrough, validation, failure, code-volume, change-proportionality, default-off isolation, and authority-semantics requirements; host skills only route and publish it.",
         "A queue is observed only when result_completeness.complete=true; partial or failed reads are not_observed and never count as unchanged.",
         "Fingerprints cover exact head, formal conclusion, next action, check state, draft state, and mergeability for every open PR.",
         "Current-head review_ready_at, not updatedAt, owns age-fair ordering; one new head after REQUEST_CHANGES may use a bounded fast-feedback slot.",

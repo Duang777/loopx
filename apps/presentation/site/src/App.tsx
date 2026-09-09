@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { usePublicPageNavigation } from "./usePublicPageNavigation";
 
 type Language = "en" | "zh";
 
@@ -132,6 +133,18 @@ const content = {
         ["04", "Outcome driven", "Every run writes validation, ownership, review, and handoff evidence into the next loop."],
       ],
     },
+    explore: {
+      eyebrow: "Explore LoopX",
+      title: "See the workspace. Explore the evidence.",
+      body: "Try the product guide, read the research, and browse the full case collection.",
+      cards: [
+        ["Product demo", "Personal Workspace", "A shared view of Goals, Tasks, Chat, and outputs. Watch the demo and start your own local workspace.", "Watch demo & read guide"],
+        ["Research & evaluation", "SWE-Marathon", "Compare five execution modes across 15 matched tasks, with results, costs, and study limitations.", "Read the study"],
+        ["Research · Chinese", "DeepSWE behavior discoveries", "Explore how domain hints affect implementation and validation in individual cases.", "Read the behavior analysis"],
+        ["Cases", "All LoopX showcases", "Browse public cases, interactive walkthroughs, and their evidence boundaries.", "Browse all cases"],
+      ],
+      developer: "Projection developer tools",
+    },
     learn: {
       eyebrow: "Developer book",
       title: "Choose your path into LoopX.",
@@ -232,6 +245,18 @@ const content = {
         ["03", "Gate-aware", "P0 等待决策时保持可见，独立的 P1、P2 线路可以安全继续。"],
         ["04", "结果驱动", "每轮运行都把验证、归属、审查和交接证据写入下一轮闭环。"],
       ],
+    },
+    explore: {
+      eyebrow: "探索 LoopX",
+      title: "体验工作区，查看研究与案例。",
+      body: "从产品演示到评测结果，找到你想深入了解的内容。",
+      cards: [
+        ["产品演示", "Personal Workspace", "在一个工作区查看目标、任务、对话与产出。观看演示，开始使用本地工作区。", "观看演示与使用指南"],
+        ["研究与评测", "SWE-Marathon", "查看五种执行模式在 15 个匹配任务上的结果、成本与研究局限。", "阅读研究简报"],
+        ["研究与评测", "DeepSWE 行为分析", "从具体案例观察领域提示如何影响实现选择与验证行为。", "阅读行为分析"],
+        ["案例", "完整案例目录", "浏览公开案例、交互式讲解及其证据边界。", "浏览全部案例"],
+      ],
+      developer: "开发者投影工具",
     },
     learn: {
       eyebrow: "开发者手册",
@@ -730,9 +755,7 @@ function SetupDialog({
 }
 
 export function App() {
-  const [language, setLanguage] = useState<Language>(() => {
-    return new URLSearchParams(window.location.search).get("lang") === "zh" ? "zh" : "en";
-  });
+  const [language, setLanguage] = usePublicPageNavigation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [copiedOption, setCopiedOption] = useState<"agent" | "shell" | null>(null);
@@ -744,12 +767,7 @@ export function App() {
 
   useEffect(() => {
     document.body.dataset.language = language;
-    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
     document.title = language === "zh" ? "LoopX — 让长程目标持续推进" : "LoopX — Keep the loop moving";
-    const url = new URL(window.location.href);
-    if (language === "zh") url.searchParams.set("lang", "zh");
-    else url.searchParams.delete("lang");
-    window.history.replaceState({}, "", url);
   }, [language]);
 
   async function copySetup(option: "agent" | "shell") {
@@ -775,13 +793,6 @@ export function App() {
   function showTerminalReplay() {
     setActiveTerminal("issue");
     setTerminalReplayToken((value) => value + 1);
-    const url = new URL(window.location.href);
-    url.hash = "showcases";
-    window.history.replaceState({}, "", url);
-    document.getElementById("showcases")?.scrollIntoView({
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-      block: "start",
-    });
   }
 
   return (
@@ -790,7 +801,7 @@ export function App() {
         Skip to content
       </a>
       <header className="site-header" id="top">
-        <a className="brand" href={basePath} aria-label="LoopX home">
+        <a className="brand" href={`${basePath}${language === "zh" ? "?lang=zh" : ""}`} aria-label="LoopX home">
           <ProductMark />
           <span>LoopX</span>
         </a>
@@ -798,7 +809,8 @@ export function App() {
           <a href="#product">{copy.nav[0]}</a>
           <a href="#workflow">{copy.nav[1]}</a>
           <a href={`${basePath}docs/book/${language === "en" ? "en/" : ""}`}>{copy.nav[2]}</a>
-          <a href="#showcases">{language === "zh" ? "案例" : "Showcases"}</a>
+          <a href="#explore">{language === "zh" ? "探索" : "Explore"}</a>
+          <a href={`${basePath}blog/${language === "zh" ? "zh/" : ""}`}>Blog</a>
           <a href={`${basePath}docs/`}>Docs</a>
         </nav>
         <div className="header-actions">
@@ -831,9 +843,10 @@ export function App() {
             <a href="#workflow" onClick={() => setMenuOpen(false)}>
               {copy.nav[1]}
             </a>
-            <a href="#showcases" onClick={() => setMenuOpen(false)}>
-              {language === "zh" ? "案例" : "Showcases"}
+            <a href="#explore" onClick={() => setMenuOpen(false)}>
+              {language === "zh" ? "探索" : "Explore"}
             </a>
+            <a href={`${basePath}blog/${language === "zh" ? "zh/" : ""}`}>Blog</a>
             <a href={`${basePath}docs/`}>Docs</a>
             <a href="https://github.com/huangruiteng/loopx">GitHub</a>
           </nav>
@@ -872,10 +885,10 @@ export function App() {
                 <span>{copy.copy}</span>
                 <ArrowRight className="button-trailing-icon" size={15} />
               </button>
-              <button className="button button-secondary" type="button" onClick={showTerminalReplay}>
+              <a className="button button-secondary" href="#showcases" onClick={showTerminalReplay}>
                 <Play size={15} fill="currentColor" />
                 {copy.demo}
-              </button>
+              </a>
             </div>
             <div className="supported-hosts">
               <span>WORKS WITH</span>
@@ -979,7 +992,41 @@ export function App() {
             />
           </div>
           <p className="evidence-boundary">{copy.showcase.boundary}</p>
+          <a className="resource-inline-link" href={`${basePath}docs/showcases/index${language === "en" ? ".en" : ""}.html`}>
+            {language === "zh" ? "浏览全部案例" : "Browse all cases"} <ArrowRight size={15} />
+          </a>
         </section>
+
+        <Reveal>
+          <section className="learn-section explore-section" id="explore" aria-labelledby="explore-title">
+            <div className="section-heading">
+              <p className="eyebrow"><span />{copy.explore.eyebrow}</p>
+              <h2 id="explore-title">{copy.explore.title}</h2>
+              <p>{copy.explore.body}</p>
+            </div>
+            <div className="resource-grid">
+              {copy.explore.cards.map(([category, title, body, action], index) => {
+                const paths = [
+                  "docs/guides/personal-workspace-user-guide/",
+                  `benchmarks/swe-marathon/${language === "zh" ? "?lang=zh" : ""}`,
+                  "benchmarks/deepswe/behavior-discovery/",
+                  `docs/showcases/index${language === "en" ? ".en" : ""}.html`,
+                ];
+                return (
+                  <a className="learn-card resource-card" key={title} href={`${basePath}${paths[index]}`}>
+                    <span>{category}</span>
+                    <h3>{title}</h3>
+                    <p>{body}</p>
+                    <b>{action} <ArrowRight size={15} /></b>
+                  </a>
+                );
+              })}
+            </div>
+            <a className="resource-inline-link" href={`${basePath}developers/projections/`}>
+              {copy.explore.developer} <ArrowRight size={15} />
+            </a>
+          </section>
+        </Reveal>
 
         <Reveal>
           <section className="capability-section" aria-labelledby="capability-title">
@@ -1106,8 +1153,9 @@ export function App() {
         <p>{copy.footer}</p>
         <nav>
           <a href="https://github.com/huangruiteng/loopx">GitHub</a>
-          <a href={`${basePath}benchmarks/swe-marathon/${language === "zh" ? "?lang=zh" : ""}`}>Research</a>
-          <a href={`${basePath}frontstage/`}>Frontstage</a>
+          <a href="#explore">{language === "zh" ? "研究与案例" : "Research & cases"}</a>
+          <a href={`${basePath}blog/${language === "zh" ? "zh/" : ""}`}>Blog</a>
+          <a href={`${basePath}docs/guides/personal-workspace-user-guide/`}>Personal Workspace</a>
           <a href={`${basePath}docs/`}>Docs</a>
         </nav>
       </footer>

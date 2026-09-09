@@ -50,35 +50,47 @@ Do not pipe the only copy through `jq`. When an exhaustive request has
 `result_completeness.complete=false`, rerun with its `recommended_limit` before
 reviewing.
 
+Require execution `policy_revision == 1`; a schema name alone is insufficient.
+If missing or unequal, do not publish APPROVE. A conservative REQUEST_CHANGES
+may be published only when it explicitly names the incompatible-policy evidence
+gap; regenerate with current installed LoopX before any later approval. Do not retain
+expired temporary worktree overrides. Honor explicit runtime pins, but
+report incompatible policy instead of silently downgrading the review. The repository
+smoke binds this number to the canonical revision; this is not a freshness claim.
+
 ## Execute One Review Plan
 
 Review `review_groups.unmerged` first, then `review_groups.merged`. For every
 selected PR:
 
-1. Record the packet's exact head and run its `evidence_commands`, plus focused
-   repository-native validation when applicable.
+1. Record the packet's exact head. Start with the capability's
+   `review_execution_contract.decision_procedure`, including on re-review;
+   then run `evidence_commands` and relevant repository-native validation.
 2. Fill `review_plan.result_template` from the shared execution contract;
-   preserve missing evidence as `unverified`. For `default_off_isolation`, run
-   its paired counterfactual across every shared and automatically loaded
-   surface, including skills, agent instructions, prompt templates, help,
-   schemas, install bundles, and provider guidance. Treat installation,
-   discovery, provider readiness, accepted input, and resolver success as
-   availability rather than activation; a runtime default-off flag cannot
-   compensate for capability behavior already projected through a baseline
-   instruction surface. For scoped activation, verify the intended scope and
-   every required subject before capability-specific guidance or effects. For
-   `authority_semantics`, match names to actor authority. Never infer
-   `verified` from metadata or CI.
-3. Apply `completion_gate` literally. If an applicable requirement is missing,
-   do not manufacture a detailed verdict; name the evidence gap.
+   preserve missing evidence as `unverified`. Execute its repository-reuse,
+   default-off, authority and real-path counterfactual requirements rather than
+   repeating them as prose. Never infer `verified` from metadata or CI.
+3. Apply `completion_gate` literally. Save the filled result and check it before
+   publication:
+
+   ```bash
+   loopx --format json pr-review --check-result review-result.json --packet review-packet.json
+   ```
+
+   Fix contradictory verdicts, not evidence labels to obtain a pass. This local
+   check cannot verify evidence truth, architecture judgment, or remote freshness.
+   Preserve the template's `review_policy_revision`; do not relabel an old result
+   without executing the current evidence plan. Verified rows must fill their
+   declared fields; a single generic “reviewed” note is insufficient.
+   Missing material evidence needs a concrete hold/request-changes explanation,
+   not an invented bug or approval inherited from the previous round.
 4. Render the verified result through `review_template`. The five sections are
    output structure, while the execution contract is the evidence authority.
 5. Re-read the remote head immediately before verdict and publication. Restart
    the evidence pass if it changed.
 
-Each PR gets an independent evidence pass and standalone card. A queue table is
-only a preface. For large queues, finish fewer complete cards and name the
-remainder instead of compressing every review into metadata prose.
+Each PR gets an independent evidence pass and standalone card; a queue table is
+only a preface. Finish fewer complete cards rather than metadata-only reviews.
 
 ## Publish And Read Back
 
@@ -122,26 +134,6 @@ Publish two artifacts:
 
 Do not publish before the Chinese section covers the entire PR. Read both
 artifacts back.
-
-## Full PR Interpretation Depth
-
-A complete review is a whole-PR interpretation, not a checklist or findings
-summary. For each selected PR:
-
-1. Read every changed file and map each file to its responsibility, inputs,
-   outputs, and key symbols.
-2. Pick 2-5 behavior-bearing symbols and explain before/after behavior,
-   critical branches, callers/callees, side effects, and failure paths.
-3. Walk one positive path from user/host action to observable result.
-4. Walk one negative path (invalid input, permission, timeout, corrupt state,
-   private boundary, or rollback) and show where it fails closed.
-5. Cover all changed surfaces in the five sections: motivation, approach,
-   concrete changes, main risk, overall judgment.
-6. List validation per surface and name anything not independently verified.
-7. State overall judgment for the entire PR, not only for the top finding.
-
-A review that only repeats the PR body, only discusses one blocker, or omits
-whole files/modules is incomplete and must be reworked.
 
 ## Example / Walkthrough / Smoke-Only PRs
 

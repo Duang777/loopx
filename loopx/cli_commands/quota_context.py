@@ -5,6 +5,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..control_plane.coordination.legacy_writer_fence import (
+    require_legacy_coordination_write_allowed,
+)
 from ..control_plane.quota.error_codes import QuotaCommandValidationError
 from ..control_plane.runtime.status_projection_cache import (
     load_status_projection_cache,
@@ -175,7 +178,8 @@ def validate_quota_command_context_request(
         if profile not in GUIDED_START_TURN_RUNTIME_PROFILES:
             raise QuotaCommandValidationError(
                 "--begin-turn requires runtime-profile codex_app_heartbeat "
-                "or codex_app_ssh_goal"
+                "or codex_app_ssh_goal; every other host starts its turn by "
+                "passing its own --turn-instance-id"
             )
     if (
         (heartbeat_turn_id or begin_turn)
@@ -220,6 +224,13 @@ def prepare_quota_command_context(
         registry_path=registry_path,
         runtime_root_override=runtime_root_arg,
     )
+    if command == "monitor-poll" and args.execute and (args.todo_id or args.target_key):
+        # This command still uses the legacy Todo writer. Preserve its typed
+        # rejection before collecting a promoted read model (which may itself
+        # be unavailable). The writer repeats the check under its mutation lock.
+        require_legacy_coordination_write_allowed(
+            runtime_root=runtime_root, goal_id=args.goal_id,
+        )
     status_goal_id = args.goal_id if command not in {"status", "plan"} else None
     projection_cache_ttl_seconds = int(
         getattr(args, "projection_cache_ttl_seconds", 120)

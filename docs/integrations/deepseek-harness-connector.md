@@ -94,6 +94,17 @@ SDK home by default. Override it with `--dsh-home <path>`; the historical
 Session persistence itself is owned by the selected dsh composition and is not
 implied by the home-directory name.
 
+The headless adapter derives its local session id from a versioned digest of
+`[goal_id, agent_id, todo_id]`, preserving component positions so delimiters
+inside an id cannot alias another lineage. The same lineage produces the same
+id on retries; when all three components are absent, the existing Turn-key
+fallback is retained. These opaque ids stay out of public LoopX state.
+
+Upgrading from the former hyphen-joined naming scheme selects a new session id
+for a populated lineage. The adapter does not fall back to the ambiguous old
+name, rename sessions, or delete existing session files. Any persistence or
+resume behavior for the newly selected id remains owned by the dsh composition.
+
 ## Run One Governed Turn In Process (`--host dsh`)
 
 The built-in host runs the same adapter inside the CLI process:

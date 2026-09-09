@@ -148,6 +148,10 @@ describes a possible future.
 
 ## Contribution And Governance Loop
 
+The [first-review roster](../../.github/GOVERNANCE.md#first-review-responsibilities)
+routes module-level feedback and records pending scope invitations. It does
+not change the stages, promotion gates or implementation authorization here.
+
 1. Choose the closest direction tracker and read its current stage and
    boundary.
 2. Find a bounded task on the

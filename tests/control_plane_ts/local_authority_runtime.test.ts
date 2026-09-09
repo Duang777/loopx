@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { FileAuthorityStore } from "../../loopx/control_plane/coordination/file_authority_store.ts";
 import type { AuthorityStoreCommit } from "../../loopx/control_plane/coordination/authority_store.ts";
-import { canonicalAuthorityBytes } from "../../loopx/control_plane/coordination/authority_store_codec.ts";
+import {
+  AuthorityStoreProtocolError,
+  canonicalAuthorityBytes,
+} from "../../loopx/control_plane/coordination/authority_store_codec.ts";
+import { normalizeTodoAgent } from "../../loopx/control_plane/coordination/todo_agents.ts";
 import {
   TODO_DOMAIN_ITEM_SCHEMA,
   TODO_DOMAIN_READ_RECORD_SCHEMA,
@@ -20,14 +24,18 @@ import {
 import {
   LOCAL_COORDINATION_PROMOTION_REQUEST_SCHEMA,
   LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
+  LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA,
   LOCAL_COORDINATION_TODO_LIST_REQUEST_SCHEMA,
+  LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+  archiveLocalCoordinationTodos,
   listLocalCoordinationTodos,
   claimLocalCoordinationTodo,
   mutateLocalCoordinationAuthority,
   promoteLocalCoordinationAuthority,
   readLocalCoordinationTodo,
+  terminalLifecycleLocalCoordinationTodo,
 } from "../../loopx/control_plane/coordination/local_authority_runtime.ts";
 import {
   COORDINATION_TODO_CLAIM_RESULT_SCHEMA,
@@ -42,10 +50,10 @@ import {
 } from "../../loopx/control_plane/coordination/legacy_writer_fence.ts";
 import {
   bootstrapCoordinationRuntimeShadow,
-  commitCoordinationRuntimeShadow,
   COORDINATION_RUNTIME_SHADOW_BOOTSTRAP_REQUEST_SCHEMA,
-  COORDINATION_RUNTIME_SHADOW_REQUEST_SCHEMA,
 } from "../../loopx/control_plane/coordination/runtime_shadow.ts";
+import { projection as fileProjection, sourceRequest, pendingEntry, settleFiles } from "./shadow_file_fixture.ts";
+import { commitLocalAuthorityShadowEntry } from "../../loopx/control_plane/coordination/local_authority_shadow.ts";
 import { executeTaskLeaseAcquire } from "../../loopx/control_plane/work_items/task_lease_acquire.ts";
 import {
   TASK_LEASE_LIFECYCLE_REQUEST_SCHEMA_VERSION,
@@ -118,35 +126,26 @@ async function claimSeededTodo(
 }
 
 async function qualifiedShadow(root: string) {
-  const baseline = withTodoReadModel({
-    goal_id: "goal-a",
-    todos: [todoRecord()],
-    leases: [],
-  });
+  const baseline = fileProjection([todoRecord()], [], "soft_claim");
+  const statePath = join(root, "ACTIVE_GOAL_STATE.md");
+  await writeFile(statePath, "---\ngoal_id: goal-a\nhandoff_mode: soft_claim\n---\n\n## Agent Todo\n\n");
+  const store = new FileAuthorityStore(join(root, "authority-shadow", "file-v0"), "goal-a");
+  const f = {root, statePath, baseline, store};
   const bootstrapped = await bootstrapCoordinationRuntimeShadow({
+    ...await sourceRequest(f, baseline),
     schema_version: COORDINATION_RUNTIME_SHADOW_BOOTSTRAP_REQUEST_SCHEMA,
-    runtime_root: root,
-    goal_id: "goal-a",
-    operation_id: "bootstrap:goal-a:state-0",
-    source_version: "state:0",
-    projection: baseline,
+    operation_id: "bootstrap:goal-a:state-0", source_version: "state:0",
   });
-  assert.equal(bootstrapped.status, "applied");
-  const projection = withTodoReadModel({
-    ...baseline,
-    todos: [todoRecord({ claimed_by: "agent-a" })],
-  });
-  const mirrored = await commitCoordinationRuntimeShadow({
-    schema_version: COORDINATION_RUNTIME_SHADOW_REQUEST_SCHEMA,
-    runtime_root: root,
-    goal_id: "goal-a",
-    operation_id: "todo:goal-a:todo_a:claim-1",
-    event_kind: "todo_claim",
-    source_version: "state:1",
-    projection,
-  });
-  assert.equal(mirrored.status, "applied");
-  return { projection, providerRevision: String(mirrored.provider_revision) };
+  assert.equal(bootstrapped.status, "applied", JSON.stringify(bootstrapped));
+  const entry = await pendingEntry(f, 1, {handoff_mode: "soft_claim", todos: [todoRecord({claimed_by: "agent-a"})]},
+    {writeClass: "todo_claim"});
+  const mirrored = await commitLocalAuthorityShadowEntry(entry);
+  assert.equal(mirrored.outcome, "delivered", JSON.stringify(mirrored));
+  await settleFiles(f, entry, mirrored);
+  const loaded = await store.loadAuthority();
+  assert.equal(loaded.status, "loaded");
+  if (loaded.status !== "loaded") throw new Error("fixture head missing");
+  return { projection: loaded.head, providerRevision: loaded.provider_revision };
 }
 
 function promotionRequest(
@@ -181,6 +180,7 @@ async function engageFence(request: ReturnType<typeof promotionRequest>) {
     schema_version: LEGACY_COORDINATION_WRITER_FENCE_ENGAGE_REQUEST_SCHEMA,
     runtime_root: request.runtime_root,
     goal_id: request.goal_id,
+    state_path: join(request.runtime_root, "ACTIVE_GOAL_STATE.md"),
     fence: request.writer_fence,
   });
   assert.equal(result.status, "applied");
@@ -201,6 +201,7 @@ test("legacy write guard flips from allowed to fail-closed after the durable fen
     schema_version: LEGACY_COORDINATION_WRITER_FENCE_ENGAGE_REQUEST_SCHEMA,
     runtime_root: request.runtime_root,
     goal_id: request.goal_id,
+    state_path: join(request.runtime_root, "ACTIVE_GOAL_STATE.md"),
     fence: request.writer_fence,
   });
   assert.equal(replayed.status, "replayed");
@@ -208,6 +209,7 @@ test("legacy write guard flips from allowed to fail-closed after the durable fen
     schema_version: LEGACY_COORDINATION_WRITER_FENCE_ENGAGE_REQUEST_SCHEMA,
     runtime_root: request.runtime_root,
     goal_id: request.goal_id,
+    state_path: join(request.runtime_root, "ACTIVE_GOAL_STATE.md"),
     fence: { ...request.writer_fence, fence_id: "legacy-writer-fence:other" },
   });
   assert.equal(conflict.status, "conflict");
@@ -217,17 +219,26 @@ test("legacy write guard flips from allowed to fail-closed after the durable fen
   assert.equal(blocked.authority_mode, "file_v0");
 });
 
-test("explicit local promotion requires qualified shadow and creates replayable canonical authority", async () => {
+test("new file outbox qualification does not implicitly enable canonical promotion", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-promote-"));
   const shadow = await qualifiedShadow(root);
   const request = promotionRequest(root, shadow.projection, shadow.providerRevision);
   await engageFence(request);
-
   const applied = await promoteLocalCoordinationAuthority(request);
+  assert.equal(applied.status, "failed");
+  assert.equal(applied.reason_code, "local_authority_shadow_not_qualified");
+  const canonical = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a", {existingOnly: true});
+  assert.equal((await canonical.loadAuthority()).status, "missing");
+});
+
+test("already canonical provider mutation preserves full Todo fields and receipt replay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-canonical-todo-mutation-"));
+  const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+  const applied = await store.commitAuthority({ expected_provider_revision: null, operation_id: "canonical-seed",
+    events: [], next_projection: withTodoReadModel({goal_id: "goal-a", handoff_mode: "soft_claim",
+      todos: [todoRecord({claimed_by: "agent-a"})], leases: []}), receipts: [] });
   assert.equal(applied.status, "applied");
-  assert.equal(applied.legacy_writer_fenced, true);
-  assert.equal(applied.legacy_fallback_used, false);
-  assert.equal(applied.canonical_authority, "file_v0");
+  if (applied.status !== "applied") throw new Error("canonical fixture failed");
 
   const advanced = await mutateLocalCoordinationAuthority({
     schema_version: LOCAL_COORDINATION_MUTATION_REQUEST_SCHEMA,
@@ -275,9 +286,10 @@ test("explicit local promotion requires qualified shadow and creates replayable 
   assert.equal((unchanged.todo as Record<string, unknown>).claimed_by, "agent-a");
   assert.equal((unchanged.todo as Record<string, unknown>).status, "in_progress");
 
-  const replayed = await promoteLocalCoordinationAuthority(request);
-  assert.equal(replayed.status, "replayed");
-  assert.equal(replayed.provider_revision, applied.provider_revision);
+  const receipt = await store.readReceipt("todo:goal-a:todo_a:advance-after-promotion");
+  assert.equal(receipt.status, "found");
+  if (receipt.status !== "found") throw new Error("mutation receipt missing");
+  assert.equal(receipt.provider_revision, advanced.provider_revision);
 
   const read = await readLocalCoordinationTodo({
     schema_version: LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA,
@@ -328,38 +340,16 @@ test("local promotion fences shadow revision, digest, and writer-fence identity"
   assert.equal((await canonical.loadAuthority()).status, "missing");
 });
 
-test("promotion and provider list fail closed without exact Todo consumer semantics", async () => {
+test("new bootstrap and provider list fail closed without exact Todo consumer semantics", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-semantic-fence-"));
-  const incomplete = {
-    goal_id: "goal-a",
-    todos: [{ todo_id: "todo_a", role: "agent", status: "open" }],
-    leases: [],
-  };
+  const incomplete = { goal_id: "goal-a", todos: [{ todo_id: "todo_a", role: "agent", status: "open" }], leases: [] };
   const bootstrapped = await bootstrapCoordinationRuntimeShadow({
     schema_version: COORDINATION_RUNTIME_SHADOW_BOOTSTRAP_REQUEST_SCHEMA,
-    runtime_root: root,
-    goal_id: "goal-a",
-    operation_id: "bootstrap:goal-a:incomplete",
-    source_version: "state:0",
-    projection: incomplete,
+    runtime_root: root, goal_id: "goal-a", operation_id: "bootstrap:goal-a:incomplete",
+    source_version: "state:0", projection: incomplete,
   });
-  assert.equal(bootstrapped.status, "applied");
-  const mirrored = await commitCoordinationRuntimeShadow({
-    schema_version: COORDINATION_RUNTIME_SHADOW_REQUEST_SCHEMA,
-    runtime_root: root,
-    goal_id: "goal-a",
-    operation_id: "todo:goal-a:incomplete",
-    event_kind: "todo_update",
-    source_version: "state:1",
-    projection: incomplete,
-  });
-  assert.equal(mirrored.status, "applied");
-  const request = promotionRequest(root, incomplete, String(mirrored.provider_revision));
-  request.required_event_kinds = ["todo_update"];
-  await engageFence(request);
-  const rejected = await promoteLocalCoordinationAuthority(request);
-  assert.equal(rejected.status, "failed");
-  assert.equal(rejected.reason_code, "local_authority_shadow_not_qualified");
+  assert.equal(bootstrapped.status, "failed");
+  assert.equal((await new FileAuthorityStore(join(root, "authority-shadow", "file-v0"), "goal-a", {existingOnly: true}).loadAuthority()).status, "missing");
 
   const canonical = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
   const committed = await canonical.commitAuthority({
@@ -510,6 +500,73 @@ test("provider-first Todo claim preserves the complete record and is replay-safe
   });
   assert.equal(repeated.status, "no_change");
   assert.equal(repeated.changed, false);
+});
+
+test("agent id normalization folds any whitespace run like the Python kernel", async () => {
+  // Parity with loopx/control_plane/todos/contract.py normalize_todo_claimed_by:
+  // compact_todo_text collapses every Python-recognized whitespace run (including
+  // U+0085 NEL, U+001C..U+001F information separators, tabs, and NBSP) into
+  // one space before mapping it to "-", so the same claim command keeps working
+  // before and after promotion.
+  const whitespaceVariants = [
+    "Agent A",
+    "Agent\tA",
+    "Agent\u0085A",
+    "Agent\u001cA",
+    "Agent\u001dA",
+    "Agent\u001eA",
+    "Agent\u001fA",
+    "Agent\u00a0A",
+    "\u0085 Agent \t A \u001c ",
+  ];
+  for (const variant of whitespaceVariants) {
+    assert.equal(normalizeTodoAgent(variant, "claimed_by"), "agent-a");
+  }
+  // BOM (U+FEFF) is not Python whitespace and must not be accepted
+  assert.throws(
+    () => normalizeTodoAgent("\ufeffAgent A", "claimed_by"),
+    AuthorityStoreProtocolError,
+  );
+
+  const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-claim-tab-"));
+  const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+  const seeded = await store.commitAuthority({
+    expected_provider_revision: null,
+    operation_id: "promote:claim-tab-test",
+    events: [{ schema_version: "promotion_v0" }],
+    next_projection: withTodoReadModel({
+      goal_id: "goal-a",
+      handoff_mode: "soft_claim",
+      todos: [todoRecord()],
+      leases: [],
+    }),
+    receipts: [],
+  });
+  assert.equal(seeded.status, "applied");
+
+  const applied = await claimLocalCoordinationTodo({
+    schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+    role: "agent",
+    claimed_by: "Agent\u0085A",
+    actor_agent_id: "\u0085 Agent \t A \u001c ",
+    registered_agents: ["agent-a"],
+    operation_id: "todo-claim:goal-a:todo_a:tab",
+    observed_at: "2026-09-05T04:30:00Z",
+    dry_run: false,
+  });
+  assert.equal(applied.status, "applied", JSON.stringify(applied));
+
+  const read = await readLocalCoordinationTodo({
+    schema_version: LOCAL_COORDINATION_TODO_READ_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+  });
+  assert.equal(read.status, "found");
+  assert.equal((read.todo as Record<string, unknown>).claimed_by, "agent-a");
 });
 
 test("one TypeScript decision owns promoted and legacy Todo claims", () => {
@@ -855,6 +912,22 @@ test("provider-first Todo claim validates authority and hard-lease ownership", a
     claimed_by: "agent-a",
   });
   assert.equal(missingLease.reason_code, "handoff_mode_requires_lease");
+  assert.match(
+    String(missingLease.reason),
+    /loopx todo claim --task-lease-idempotency-key/,
+  );
+  assert.match(
+    String(missingLease.reason),
+    /--task-lease-expected-version/,
+  );
+  assert.equal(
+    (missingLease.recovery as Record<string, unknown> | undefined)?.command,
+    "loopx todo claim",
+  );
+  assert.deepEqual(
+    (missingLease.recovery as Record<string, unknown> | undefined)?.requires_flags,
+    ["--task-lease-idempotency-key"],
+  );
 
   const dryRun = await claimLocalCoordinationTodo({
     ...base,
@@ -871,6 +944,84 @@ test("provider-first Todo claim validates authority and hard-lease ownership", a
   assert.equal((unchanged.todo as Record<string, unknown>).claimed_by, undefined);
 });
 
+test("provider-first Todo claim atomically acquires its canonical hard lease", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-claim-lease-"));
+  const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+  assert.equal((await store.commitAuthority({
+    expected_provider_revision: null,
+    operation_id: "promote:claim-with-lease",
+    events: [{ schema_version: "promotion_v0" }],
+    next_projection: withTodoReadModel({
+      goal_id: "goal-a",
+      handoff_mode: "hard_lease",
+      todos: [todoRecord({ required_write_scopes: ["loopx/control_plane/**"] })],
+      leases: [],
+    }),
+    receipts: [],
+  })).status, "applied");
+  const request = {
+    schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+    role: "agent",
+    claimed_by: "agent-a",
+    actor_agent_id: "agent-a",
+    registered_agents: ["agent-a", "agent-b"],
+    operation_id: "todo-claim:goal-a:todo_a:with-lease",
+    observed_at: "2026-09-05T04:30:00Z",
+    dry_run: false,
+    lease_request: {
+      idempotency_key: "turn:claim-with-lease",
+      expected_version: 0,
+      ttl_seconds: 2_700,
+    },
+  };
+
+  const preview = await claimLocalCoordinationTodo({...request, dry_run: true});
+  assert.equal(preview.status, "planned");
+  assert.equal(preview.todo_changed, true);
+  assert.equal(preview.lease_changed, true);
+  const before = await store.loadAuthority();
+  assert.equal(before.status, "loaded");
+  if (before.status !== "loaded") return;
+  assert.deepEqual(before.head.leases, []);
+  assert.equal((await store.readReceipt(request.operation_id)).status, "missing");
+
+  const applied = await claimLocalCoordinationTodo(request);
+  assert.equal(applied.status, "applied", JSON.stringify(applied));
+  assert.equal(applied.todo_changed, true);
+  assert.equal(applied.lease_changed, true);
+  assert.equal(applied.lease_idempotent, false);
+  const after = await store.loadAuthority();
+  assert.equal(after.status, "loaded");
+  if (after.status !== "loaded") return;
+  assert.equal((after.head.todos as Record<string, unknown>[])[0]?.claimed_by, "agent-a");
+  assert.deepEqual(after.head.leases, [applied.lease]);
+  const lease = applied.lease as Record<string, unknown>;
+  assert.equal(lease.schema_version, "task_lease_v0");
+  assert.equal(lease.owner, "agent-a");
+  assert.equal(lease.idempotency_key, "turn:claim-with-lease");
+  assert.deepEqual(lease.write_scopes, ["loopx/control_plane/**"]);
+  assert.equal(lease.version, 1);
+  assert.equal(lease.lease_epoch, 1);
+
+  const replay = await claimLocalCoordinationTodo({
+    ...request,
+    observed_at: "2026-09-05T06:00:00Z",
+  });
+  assert.equal(replay.status, "replayed");
+  assert.deepEqual(replay.original_receipt, applied.original_receipt);
+  const retiredGeneration = await claimLocalCoordinationTodo({
+    ...request,
+    operation_id: "todo-claim:goal-a:todo_a:fresh-after-expiry",
+    observed_at: "2026-09-05T06:00:00Z",
+    lease_request: {...request.lease_request, expected_version: 1},
+  });
+  assert.equal(retiredGeneration.reason_code, "idempotency_key_reuse");
+  assert.deepEqual(await store.loadAuthority(), after);
+});
+
 test("local canonical runtime never falls back when provider state is missing", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-missing-"));
   const result = await readLocalCoordinationTodo({
@@ -882,6 +1033,220 @@ test("local canonical runtime never falls back when provider state is missing", 
   assert.equal(result.status, "missing");
   assert.equal(result.decision_read_from_provider, true);
   assert.equal(result.legacy_fallback_used, false);
+});
+
+test("terminal and archive wire adapters reject coercible numeric values", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-strict-numbers-"));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const terminalRequest = (leaseExpectedVersion: unknown) => ({
+    schema_version: LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo-a",
+    role: "agent",
+    command: "complete",
+    actor_agent_id: "agent-a",
+    registered_agents: ["agent-a"],
+    lifecycle_grants: [],
+    authority_reason: null,
+    decision_outcome: null,
+    operation_id: "terminal-strict-number",
+    lease_idempotency_key: null,
+    lease_expected_version: leaseExpectedVersion,
+    allow_user_gate_auto_acquire: false,
+    requested_no_followup: true,
+    requested_completion_turn_key: null,
+    requested_completion_identity_source: null,
+    linked_successor_todo_ids: [],
+    successor_intents: [],
+    note: null,
+    evidence: "strict wire validation",
+    reason: null,
+    clear_claim: false,
+    validation_declaration: null,
+    validation_receipt: null,
+    completion_policy_request: null,
+    dry_run: false,
+    observed_at: "2026-09-07T12:00:00Z",
+  });
+  const archiveRequest = (maxActiveDone: unknown) => ({
+    schema_version: LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    role: "agent",
+    max_active_done: maxActiveDone,
+    operation_id: "archive-strict-number",
+    dry_run: false,
+    observed_at: "2026-09-07T12:00:00Z",
+  });
+
+  for (const invalid of [true, "1", 1.5]) {
+    let terminalOpened = 0;
+    const terminal = await terminalLifecycleLocalCoordinationTodo(
+      terminalRequest(invalid),
+      {createStore: (directory, goalId) => {
+        terminalOpened += 1;
+        return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+      }},
+    );
+    assert.equal(terminal.status, "failed");
+    assert.equal(
+      terminal.reason_code,
+      "invalid_local_coordination_todo_terminal_lifecycle_request",
+    );
+    assert.match(String(terminal.reason), /lease_expected_version.*safe integer/);
+    assert.equal(terminalOpened, 0);
+
+    let archiveOpened = 0;
+    const archive = await archiveLocalCoordinationTodos(
+      archiveRequest(invalid),
+      {createStore: (directory, goalId) => {
+        archiveOpened += 1;
+        return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+      }},
+    );
+    assert.equal(archive.status, "failed");
+    assert.equal(archive.reason_code, "invalid_local_coordination_todo_archive_request");
+    assert.match(String(archive.reason), /max_active_done.*safe integer/);
+    assert.equal(archiveOpened, 0);
+  }
+
+  let opened = 0;
+  const terminal = await terminalLifecycleLocalCoordinationTodo(
+    terminalRequest(1),
+    {createStore: (directory, goalId) => {
+      opened += 1;
+      return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+    }},
+  );
+  const archive = await archiveLocalCoordinationTodos(
+    archiveRequest(1),
+    {createStore: (directory, goalId) => {
+      opened += 1;
+      return new FileAuthorityStore(directory, goalId, {existingOnly: true});
+    }},
+  );
+  assert.equal(terminal.status, "missing");
+  assert.equal(archive.status, "missing");
+  assert.equal(opened, 2, "legal integers must cross the wire boundary unchanged");
+});
+
+test("terminal wire preserves legacy optional prose semantics", async (t) => {
+  const cases = [
+    {field: "note", value: null, expected: "existing-note"},
+    {field: "note", value: "", expected: "existing-note"},
+    {field: "note", value: "ordinary note", expected: "ordinary note"},
+    {field: "note", value: " \u0085 ", expected: "existing-note"},
+    {field: "note", value: " first\u0085  second ", expected: "first second"},
+    {field: "evidence", value: null, expected: "existing-evidence"},
+    {field: "evidence", value: "", expected: "existing-evidence"},
+    {field: "evidence", value: "ordinary evidence", expected: "ordinary evidence"},
+    {field: "evidence", value: " \u0085 ", expected: "existing-evidence"},
+    {field: "evidence", value: " first\u0085  second ", expected: "first second"},
+    {field: "reason", value: null, expected: "existing-reason", command: "supersede"},
+    {field: "reason", value: "", expected: "existing-reason", command: "supersede"},
+    {field: "reason", value: "ordinary reason", expected: "ordinary reason", command: "supersede"},
+    {field: "reason", value: " \u0085 ", expected: "existing-reason", command: "supersede"},
+    {field: "reason", value: " first\u0085  second ", expected: "first second", command: "supersede"},
+  ] as const;
+
+  for (const [index, item] of cases.entries()) {
+    const root = await mkdtemp(join(tmpdir(), `loopx-terminal-prose-${index}-`));
+    t.after(() => rm(root, {recursive: true, force: true}));
+    const store = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+    assert.equal((await store.commitAuthority({
+      expected_provider_revision: null,
+      operation_id: `seed-prose-${index}`,
+      events: [],
+      next_projection: withTodoReadModel({
+        goal_id: "goal-a",
+        handoff_mode: "soft_claim",
+        todos: [todoRecord({
+          claimed_by: "agent-a",
+          note: "existing-note",
+          evidence: "existing-evidence",
+          reason: "existing-reason",
+        })],
+        leases: [],
+      }),
+      receipts: [],
+    })).status, "applied");
+    const request = {
+      schema_version: LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+      runtime_root: root,
+      goal_id: "goal-a",
+      todo_id: "todo_a",
+      role: "agent",
+      command: "command" in item ? item.command : "complete",
+      actor_agent_id: "agent-a",
+      registered_agents: ["agent-a"],
+      lifecycle_grants: [],
+      authority_reason: null,
+      decision_outcome: null,
+      operation_id: `terminal-prose-${index}`,
+      lease_idempotency_key: null,
+      lease_expected_version: null,
+      allow_user_gate_auto_acquire: false,
+      requested_no_followup: true,
+      requested_completion_turn_key: null,
+      requested_completion_identity_source: null,
+      linked_successor_todo_ids: [],
+      successor_intents: [],
+      note: item.field === "note" ? item.value : null,
+      evidence: item.field === "evidence" ? item.value : null,
+      reason: item.field === "reason" ? item.value : null,
+      clear_claim: false,
+      validation_declaration: null,
+      validation_receipt: null,
+      completion_policy_request: null,
+      dry_run: false,
+      observed_at: "2026-09-08T04:00:00Z",
+    };
+    const result = await terminalLifecycleLocalCoordinationTodo(request);
+    assert.equal(result.status, "applied", `${item.field}=${JSON.stringify(item.value)}: ${JSON.stringify(result)}`);
+    const loaded = await store.loadAuthority();
+    assert.equal(loaded.status, "loaded");
+    if (loaded.status !== "loaded") continue;
+    const todo = (loaded.head.todos as Record<string, unknown>[])[0]!;
+    assert.equal(todo[item.field], item.expected, `${item.field}=${JSON.stringify(item.value)}`);
+  }
+
+  for (const field of ["note", "evidence", "reason"] as const) {
+    const invalid = await terminalLifecycleLocalCoordinationTodo({
+      schema_version: LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA,
+      runtime_root: join(tmpdir(), "loopx-invalid-terminal-prose"),
+      goal_id: "goal-a",
+      todo_id: "todo-a",
+      role: "agent",
+      command: field === "reason" ? "supersede" : "complete",
+      actor_agent_id: "agent-a",
+      registered_agents: ["agent-a"],
+      lifecycle_grants: [],
+      authority_reason: null,
+      decision_outcome: null,
+      operation_id: `terminal-invalid-${field}`,
+      lease_idempotency_key: null,
+      lease_expected_version: null,
+      allow_user_gate_auto_acquire: false,
+      requested_no_followup: true,
+      requested_completion_turn_key: null,
+      requested_completion_identity_source: null,
+      linked_successor_todo_ids: [],
+      successor_intents: [],
+      note: field === "note" ? 1 : null,
+      evidence: field === "evidence" ? 1 : null,
+      reason: field === "reason" ? 1 : null,
+      clear_claim: false,
+      validation_declaration: null,
+      validation_receipt: null,
+      completion_policy_request: null,
+      dry_run: false,
+      observed_at: "2026-09-08T04:00:00Z",
+    }, {createStore: (directory, goalId) =>
+      new FileAuthorityStore(directory, goalId, {existingOnly: true})});
+    assert.equal(invalid.status, "failed");
+    assert.match(String(invalid.reason), new RegExp(`${field} must be a string or null`));
+  }
 });
 
 test("engaged promotion fence blocks every native legacy task-lease writer", async () => {

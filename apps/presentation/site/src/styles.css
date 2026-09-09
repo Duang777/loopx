@@ -33,12 +33,13 @@ html {
 body {
   min-width: 320px;
   margin: 0;
-  overflow-x: hidden;
+  overflow-x: clip;
   background: var(--canvas);
 }
 
 #root {
-  overflow: hidden;
+  /* Clip decorative overflow without trapping the research page sticky bar. */
+  overflow: clip;
 }
 
 button,
@@ -804,6 +805,14 @@ body[data-language="zh"] .hero h1 {
 .reveal-block.is-visible {
   opacity: 1;
   transform: none;
+}
+
+/* A fragment destination must not move or fade while the browser aligns it. */
+.reveal-block[data-anchor-entry],
+.reveal-block:has(:target) {
+  opacity: 1;
+  transform: none;
+  transition: none;
 }
 
 .capability-section,
@@ -2073,3 +2082,10 @@ body.dialog-open {
     transform: none;
   }
 }
+
+/* Reuse the learning cards for the public resource directory. */
+.resource-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 40px; }
+.resource-card { min-height: 244px; }
+.resource-card h3 { margin-top: 32px; }
+.resource-inline-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 24px; font-size: 14px; }
+@media (max-width: 640px) { .resource-grid { grid-template-columns: minmax(0, 1fr); } }

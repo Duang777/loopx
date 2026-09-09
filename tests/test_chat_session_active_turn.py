@@ -153,6 +153,145 @@ def test_concurrent_managed_turn_creation_claims_active_once(
     assert current["active_turn_id"] == active_turn_id
 
 
+def test_chat_idempotency_keys_reject_different_requests(tmp_path: Path) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    store.create_turn(session_id, client_turn_id="turn-key", message="first")
+    store.create_queued_turn(session_id, client_turn_id="queue-key", message="first")
+    store.create_ingress_receipt(
+        session_id,
+        client_ingress_id="ingress-key",
+        mode="live_steering",
+        message="first",
+    )
+
+    with pytest.raises(ValueError, match="client_turn_id already belongs"):
+        store.create_turn(session_id, client_turn_id="turn-key", message="second")
+    with pytest.raises(ValueError, match="client_turn_id already belongs"):
+        store.create_queued_turn(session_id, client_turn_id="queue-key", message="second")
+    with pytest.raises(ValueError, match="client_ingress_id already belongs"):
+        store.create_ingress_receipt(
+            session_id,
+            client_ingress_id="ingress-key",
+            mode="live_steering",
+            message="second",
+        )
+
+
+def test_generated_message_id_skips_transcript_deduplication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session_id = str(
+        store.create_session(
+            goal_id="goal-one",
+            agent_id="codex",
+            executor_endpoint_id="codex",
+            adapter_kind="codex_app_server",
+            upstream_thread_id="thread-one",
+            upstream_mode="chat",
+        )["session_id"]
+    )
+    expected = store.append_message(
+        session_id,
+        role="agent",
+        text="durable completion",
+        message_id="completion-one",
+    )
+    assert (
+        store.append_message(
+            session_id,
+            role="agent",
+            text="ignored replay",
+            message_id="completion-one",
+        )
+        == expected
+    )
+
+    read_messages = chat_store._read_jsonl
+    monkeypatch.setattr(
+        chat_store,
+        "_read_jsonl",
+        lambda _path: pytest.fail("generated message IDs must not scan the transcript"),
+    )
+    appended = store.append_message(session_id, role="user", text="new message")
+
+    assert appended["message_id"] != "completion-one"
+    assert read_messages(store._session_dir(session_id) / "messages.jsonl") == [
+        expected,
+        appended,
+    ]
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("with_image", [False, True])
+def test_managed_replay_compares_durable_attachments(
+    tmp_path: Path, restart: bool, with_image: bool,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session_id = store.create_session(
+        goal_id="goal-one", agent_id="codex", executor_endpoint_id="codex",
+        adapter_kind="codex_app_server", upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )["session_id"]
+    image = {"id": "image-one", "mime_type": "image/png", "name": "example.png"}
+    attachments = [image] if with_image else []
+    original, created = store.create_turn(
+        session_id, client_turn_id="request", message="inspect",
+        attachments=attachments,
+    )
+    assert created
+    assert "attachments" not in original  # No duplicate image payload in Turn state.
+    if restart:
+        store = ChatSessionStore(tmp_path)
+    replay, created = store.create_turn(
+        session_id, client_turn_id="request", message="inspect",
+        attachments=attachments or None,
+    )
+    assert not created
+    assert replay["turn_id"] == original["turn_id"]
+    for changed in ([{**image, "id": "different"}], [] if with_image else [image]):
+        with pytest.raises(ValueError, match="different request"):
+            store.create_turn(
+                session_id, client_turn_id="request", message="inspect", attachments=changed,
+            )
+    with pytest.raises(ValueError, match="different request"):
+        store.create_turn(
+            session_id, client_turn_id="request", message="inspect",
+            attachments=attachments, origin="external",
+        )
+    assert len(store.messages(session_id)) == 1
+
+
+def test_managed_replay_rejects_missing_original_message(tmp_path: Path, monkeypatch) -> None:
+    store = ChatSessionStore(tmp_path)
+    session_id = store.create_session(
+        goal_id="goal-one", agent_id="codex", executor_endpoint_id="codex",
+        adapter_kind="codex_app_server", upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )["session_id"]
+    # Model an interrupted creation after Turn persistence but before transcript append.
+    def interrupted_append(*args, **kwargs):
+        raise OSError("interrupted transcript write")
+
+    monkeypatch.setattr(store, "append_message", interrupted_append)
+    with pytest.raises(OSError, match="interrupted transcript"):
+        store.create_turn(session_id, client_turn_id="request", message="inspect")
+    with pytest.raises(ValueError, match="original request is unavailable"):
+        ChatSessionStore(tmp_path).create_turn(
+            session_id, client_turn_id="request", message="inspect",
+        )
+
+
 def test_completed_turn_cannot_release_a_newer_active_turn(tmp_path: Path) -> None:
     store = ChatSessionStore(tmp_path)
     session = store.create_session(

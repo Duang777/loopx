@@ -31,6 +31,15 @@ parent sender is the app id of the configured profile. A reply to a person,
 another app, or an unverifiable parent remains captured but does not wake the
 agent. The agent does not need to keep a websocket open.
 
+When Lark inbox and the same registered agent's Reward Memory are both enabled,
+a non-empty registry-routed drain can also return an advisory
+`reward_memory_feedback_review` hint. It asks the agent to review reusable
+feedback and preview the existing scoped `reward-memory ingest-event` command;
+it does not ingest chat, grant authority, or change settlement/ACK requirements.
+This explicit path does not require `automatic_ingest=true`. See the
+[Reward Memory inbox workflow](../../../capabilities/reward_memory/README.md#inbox-feedback-review-explicit-ingestion)
+for eligibility, source verification, write/readback and default-off behavior.
+
 ### Optional turn-start Agent reading hook
 
 Realtime collection is the preferred ingress, but a long-running Agent may also
@@ -122,6 +131,19 @@ its local-private chat id, persists every message from that chat, and verifies
 the reply relation through message readback before scheduling a reply. Full-chat
 capture is not full-chat activation; unrelated conversation remains available
 to domain interpretation without being treated as addressed to the bot.
+
+Goal Channel connections do not treat a spawned `lark-cli` child as listener
+readiness. The runtime waits for the provider event bus `ready` marker (or a
+real typed event) before projecting `listening`; startup without that handshake
+remains non-ready and retryable. Multi-Agent onboarding creates an
+Agent-labelled Topic for each route. Users send requests inside the matching
+Topic. A group-level message with more than one eligible Agent route is
+deliberately rejected as ambiguous instead of guessing an Agent from prose.
+
+For a periodic-report request, semantic activation belongs to the Agent. After
+reading an exact item, the Agent calls `loopx periodic-report request` with its
+`message_id`. The Lark adapter validates binding and addressing evidence only;
+it never classifies the text or searches the inbox for weekly-report strings.
 
 ## Activate the provider
 

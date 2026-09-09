@@ -1,15 +1,13 @@
 # LoopX Dashboard
 
-This is the first product dashboard shell for LoopX. It renders the
+This is the Personal Workspace and contributor tooling app for LoopX. It renders the
 status data contract with a React/Vite control-plane UI.
 
 ## Current Status
 
-The dashboard is an experimental operator preview, not the primary LoopX
-workflow. The CLI, status JSON, run history, and active goal files remain the
-source of truth for day-to-day work. Use the dashboard for public-safe demos,
-local inspection, and focused UI experiments until it receives a dedicated
-product iteration pass.
+Personal Workspace is the operator UI for Goals, Tasks, Chat, and outputs.
+The CLI and versioned control-plane projections remain the sources of truth;
+the UI does not create a second state authority.
 
 ## Fresh Clone Public Preview
 
@@ -35,66 +33,30 @@ project summaries.
 also starts the loopback status and Chat services and therefore requires a
 Python 3.11+ interpreter; see the development section below.
 
-The public Frontstage lives at `/frontstage`. It renders only the public-safe
-showcase catalog and bundled presentation fixtures. The former dense
-`goal_channel_projection_v0` board is quarantined as a deprecated diagnostic
-surface; Personal Workspace is the product path for live operator workflows.
-The product interaction baseline lives in
-`docs/product/surfaces/frontstage-dashboard-interaction-baseline.md`: showcase mode is
-the public case-driven homepage surface, while `mode=ops` is the dense,
-read-only legacy diagnostic workspace. Its canonical route is now
-`/deprecated/frontstage/ops`; the old `mode=ops` URL redirects there. Personal
-Workspace (`/`) owns Goal workflows, outputs, and milestone reports.
+Personal Workspace owns Goal, Task, Chat, output, and report workflows. Run
+`loopx dashboard` for the installed local workspace; see the
+[Personal Workspace guide](../../../docs/guides/personal-workspace-user-guide.md)
+for its product demo and operating instructions.
 
-The public first screen teaches the control-plane model without reading status
-JSON: its signal strip summarizes human judgment, asynchronous agent teams,
-public cases, and the live-data boundary. The deprecated diagnostic route keeps
-the old `Role Map`, projected todo lanes, search, and lane filters only so a
-developer can reproduce an existing status slice during migration.
-The `Efficiency Evidence` panel pulls the public-safe self-iteration case from
-the showcase catalog so the hosted frontstage can show commit-backed baseline,
-actual-window, compression, and evidence-boundary signals without exposing raw
-sessions. The `Async Work Loop` and `Showcase Cases` panels render the same
-catalog as animated narrative lanes and compact case cards, linking back to
-public GitHub case pages for deeper reading. Legacy diagnostic lanes are
-derived from the read-only projection; Showcase panels are derived only from
-public-safe showcase metadata. Neither surface is browser write authority.
+Public cases live in the [case directory](../../../docs/showcases/index.en.html).
+The old Frontstage showcase and Ops boards have been removed. Their URLs remain
+only as migration bridges:
 
-The default frontstage route is public showcase mode. It ignores `statusUrl`
-and renders only bundled showcase/demo material, so a copied or hosted URL does
-not accidentally project local registry state.
-`examples/fixtures/frontstage-private-status-trap.public.json` is the synthetic
-negative fixture for that boundary: browser smokes prove its `GH_FAKE_*` live
-status markers stay out of showcase URLs and appear only after an explicit
-deprecated diagnostics load.
+| Old URL | Destination |
+| --- | --- |
+| `/frontstage` | Public case directory; ignores all status parameters |
+| `/frontstage?mode=developer` or `/frontstage/developer` | `/developers/projections` |
+| `/frontstage?mode=ops` or `/deprecated/frontstage/ops` | Personal Workspace `/`, preserving Goal and relative/loopback status source |
 
-For contributor onboarding, use `/frontstage?mode=developer`. This is still a
-public-safe read-only view: it shows the agent-first start path, quota/status
-health checks, peer workspace guard, todo claiming, local server checks,
-and writeback boundary without loading live registry data. It is meant to help
-new developers understand how to enter LoopX from Codex CLI or another
-agent TUI before they open the denser ops board.
+The contributor cockpit at `/developers/projections` retains static contract
+exploration, projection diffing, fixture rules, and component examples. It
+loads no live status source and grants no write authority.
 
-The developer extension cockpit lives at `/frontstage/developer`. It is a
-read-only contributor workbench for status-contract exploration, projection
-diffing, fixture generation rules, smoke-run checklists, and component examples
-so new projection work does not require reverse-engineering the large
-dashboard page. It uses static public contracts and fixtures only; live status
-feeds, registry files, and browser write APIs stay out of this route.
-
-For legacy live local control-plane inspection, explicitly enter the deprecated route:
-`/deprecated/frontstage/ops?statusUrl=http://127.0.0.1:8766/status.json`. The route
-then reads `attention_queue.items[].goal_channel_projection` and stays
-read-only; if the feed is missing or has no projection, the bundled demo
-fixture remains visible. Ops-mode status sources are limited to relative or
-loopback URLs so public frontstage links do not silently pull external/private
-feeds. The ops feed is loaded through a TanStack Query-backed local data layer
-with schema-version freshness checks, stale-daemon repair copy, and a
-`local_dashboard_api` capability projection. It remains read-only by default:
-reward or control-plane write affordances require explicit loopback opt-in,
-advertised capability URLs, and preview-locked local APIs. Do not use ops-mode
-URLs as public links. Its implementation is isolated under
-`src/views/deprecated/`; `src/views/frontstage-page.tsx` remains Showcase-only.
+Hosted Pages aliases are static redirects. `/frontstage/` goes to the public
+case directory, `/frontstage/developer/` to contributor tools, and the old Ops
+path to the Personal Workspace guide. Hosted redirects discard all query
+parameters; they never open or load a visitor's local workspace. Public
+showcases and research remain separate from local operator state.
 
 To create a public-safe static bundle for demos, Lark shares, or future GitHub
 Pages hosting, export the frontstage with the sanitized fixture:
@@ -105,7 +67,7 @@ npm run export:frontstage-share
 ```
 
 The default output is `/tmp/loopx-frontstage-share-bundle`. It includes a
-compiled dashboard, `status.frontstage-share.json`, a direct `/frontstage/`
+compiled dashboard, `status.frontstage-share.json`, legacy `/frontstage/` redirects and a `/developers/projections/`
 static route, a manifest, and a README with the local serve URL. The exporter
 rejects local paths, private registry state, internal document hosts, raw-key
 leaks, token assignments, and private key material before reporting success.

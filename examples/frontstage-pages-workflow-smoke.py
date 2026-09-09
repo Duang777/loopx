@@ -102,6 +102,7 @@ def main() -> int:
         "examples/dev-book-welcome-wagon-smoke.py",
         "python3 examples/dev-book-welcome-wagon-smoke.py --site-dir output/frontstage-pages/site/docs/book",
         "npm run smoke:frontstage-share-bundle",
+        "node examples/export-frontstage-share-bundle.mjs --restore-case-pages --out-dir output/frontstage-pages",
         "npm run export:frontstage-share -- --base /loopx/ --out-dir ../../../output/frontstage-pages",
         "mkdocs build --strict --site-dir output/frontstage-pages/site/docs",
         "mkdocs build --strict --config-file docs/book/mkdocs.zh.yaml --site-dir ../../output/frontstage-pages/site/docs/book",

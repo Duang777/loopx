@@ -77,6 +77,8 @@ function replayCreate(
     provider_revision: receipt.provider_revision,
     cursor: receipt.cursor,
     original_receipt: original,
+    projection_delivery: "pending",
+    projection_source: "committed_authority_journal",
   };
 }
 
@@ -97,9 +99,9 @@ function normalizeCreateInput(rawInput: CoordinationTodoCreateInput): Coordinati
   if (!(input.now instanceof Date) || Number.isNaN(input.now.valueOf())) {
     throw new AuthorityStoreProtocolError("now must be a valid Date");
   }
-  if (todo.status === "done" || todo.done || todo.archive_state !== "active") {
+  if (todo.status === "done" || todo.archive_state !== "active") {
     throw new AuthorityStoreProtocolError(
-      "Todo create requires a non-completed active record with coherent status",
+      "Todo create requires an active record that is not already done",
     );
   }
   if (todo.claimed_by !== undefined) {

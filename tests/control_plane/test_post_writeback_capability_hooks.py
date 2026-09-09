@@ -15,6 +15,9 @@ from unittest.mock import Mock
 import pytest
 
 import loopx.control_plane.capability_hooks as capability_hooks
+from loopx.cli_commands.post_writeback import (
+    dispatch_committed_cli_post_writeback_hooks,
+)
 from loopx.control_plane.capability_hooks import (
     POST_WRITEBACK_HOOK_INPUT_SCHEMA_VERSION,
     POST_WRITEBACK_HOOK_RECEIPT_SCHEMA_VERSION,
@@ -33,6 +36,98 @@ from loopx.capabilities.periodic_report.post_writeback_hook import (
     periodic_report_post_writeback_hook,
     periodic_report_post_writeback_hooks_for_goal,
 )
+
+
+def _projection_goal_fixture(
+    tmp_path: Path,
+    *,
+    state_text: str,
+    runs: list[dict[str, object]],
+) -> tuple[Path, Path]:
+    state_path = tmp_path / "goal.md"
+    state_path.write_text(state_text, encoding="utf-8")
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "goals": [
+                    {
+                        "id": "goal-1",
+                        "repo": str(tmp_path),
+                        "state_file": "goal.md",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    runs_dir = tmp_path / "runtime" / "goals" / "goal-1" / "runs"
+    runs_dir.mkdir(parents=True)
+    (runs_dir / "index.jsonl").write_text(
+        "".join(json.dumps(run) + "\n" for run in runs),
+        encoding="utf-8",
+    )
+    return tmp_path / "runtime", registry_path
+
+
+def _successor_ack_run(
+    *,
+    vision_agent_id: str = "agent-1",
+    ack_agent_id: str | None = None,
+    frontier: str = "frontier-2",
+    obligation: str = "replan-2",
+) -> dict[str, object]:
+    ack: dict[str, object] = {
+        "recorded": True,
+        "frontier_identity": frontier,
+        "semantic_delta": {
+            "accepted": True,
+            "outcomes": ["fresh_vision_path_outcome"],
+            "trigger_kinds": ["vision_successor_required"],
+            "obligation_id": obligation,
+        },
+    }
+    if ack_agent_id is not None:
+        ack["agent_id"] = ack_agent_id
+    return {
+        "generated_at": "2026-08-30T11:00:00Z",
+        "goal_id": "goal-1",
+        "agent_vision": {
+            "schema_version": "goal_vision_replan_contract_v0",
+            "agent_id": vision_agent_id,
+            "state": "active",
+            "vision_patch": {"acceptance_summary": "Next family is bounded."},
+        },
+        "autonomous_replan_ack": ack,
+    }
+
+
+def _closed_vision_run(
+    *,
+    agent_id: str = "agent-1",
+    summary: str = "First family accepted.",
+) -> dict[str, object]:
+    return {
+        "generated_at": "2026-08-30T10:00:00Z",
+        "goal_id": "goal-1",
+        "agent_vision": {
+            "schema_version": "goal_vision_replan_contract_v0",
+            "agent_id": agent_id,
+            "state": "vision_closed",
+            "vision_patch": {"acceptance_summary": summary},
+        },
+        "vision_checkpoint": {
+            "schema_version": "vision_checkpoint_v0",
+            "satisfied": True,
+            "decision": "patched",
+            "triggers": [
+                {
+                    "kind": "material_delivery_outcome",
+                    "delivery_outcome": "outcome_progress",
+                }
+            ],
+        },
+    }
 
 
 def _input() -> dict[str, object]:
@@ -87,14 +182,189 @@ def _source() -> dict[str, object]:
     }
 
 
-def _hook(*, key: str = "periodic-report:stage-123") -> PostWritebackHookRegistration:
+def _mutated_source(mutation: str) -> dict[str, object]:
+    """Apply one bounded input-construction defect to a valid source."""
+
+    source = dict(_source())
+    identity = dict(source["identity"])  # type: ignore[typeddict-item]
+    source["identity"] = identity
+    if mutation in {
+        "goal_id",
+        "agent_id",
+        "turn_instance_id",
+        "effect_id",
+    }:
+        identity[mutation] = ""  # type: ignore[typeddict-item]
+    elif mutation in {"event_kind", "state_version", "committed_at"}:
+        source[mutation] = ""
+    elif mutation == "todo_id_not_a_string":
+        identity["todo_id"] = 123  # type: ignore[typeddict-item]
+    elif mutation == "identity_not_an_object":
+        source["identity"] = 123
+    elif mutation == "durable_not_a_boolean":
+        source["durable"] = "committed"
+    elif mutation == "unknown_source_field":
+        source["extra_field"] = True
+    elif mutation == "empty_agent_id_and_state_version":
+        identity["agent_id"] = ""  # type: ignore[typeddict-item]
+        source["state_version"] = ""
+    else:  # pragma: no cover - guards against typo'd mutation ids.
+        raise AssertionError(f"unknown source mutation: {mutation}")
+    return source
+
+
+# The TypeScript source decoder owns every field rule; these parameters are
+# the full legacy caller inventory of input-construction defects (the four
+# required identity fields plus event_kind/state_version/committed_at all
+# lived in one composition rejection before #3847). Todo-less writebacks are
+# intentionally valid, while a non-string Todo identity remains a decoder
+# rejection. Those verdicts live here and in the typed decoder, never in a
+# second Python validator.
+_SOURCE_REJECTION_MUTATIONS = [
+    "goal_id",
+    "agent_id",
+    "turn_instance_id",
+    "effect_id",
+    "event_kind",
+    "state_version",
+    "committed_at",
+    "todo_id_not_a_string",
+    "identity_not_an_object",
+    "durable_not_a_boolean",
+    "unknown_source_field",
+    "empty_agent_id_and_state_version",
+]
+
+
+@pytest.mark.parametrize("mutation", _SOURCE_REJECTION_MUTATIONS)
+def test_incomplete_source_is_one_typed_composition_rejection(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Every decode-boundary rejection maps to the legacy ValueError."""
+
+    producer_calls: list[int] = []
+    with pytest.raises(ValueError, match="require committed"):
+        dispatch_post_writeback_hooks(
+            [_hook(producer_calls=producer_calls)],
+            source=_mutated_source(mutation),  # type: ignore[arg-type]
+            runtime_root=tmp_path,
+        )
+    assert producer_calls == []
+    receipt_dir = tmp_path / "goals" / "goal-1" / "post_writeback_hooks"
+    assert not receipt_dir.is_dir() or not list(receipt_dir.glob("*.json"))
+
+
+def test_valid_source_dispatches_the_provider_and_writes_a_receipt(
+    tmp_path: Path,
+) -> None:
+    producer_calls: list[int] = []
+    dispatch = dispatch_post_writeback_hooks(
+        [_hook(producer_calls=producer_calls)],
+        source=_source(),  # type: ignore[arg-type]
+        runtime_root=tmp_path,
+    )
+    assert dispatch["failures"] == []
+    assert dispatch["intent_count"] == 1
+    assert producer_calls == [1]
+    receipt_dir = tmp_path / "goals" / "goal-1" / "post_writeback_hooks"
+    assert list(receipt_dir.glob("*.json"))
+
+
+def test_zero_registrations_never_reaches_the_runtime() -> None:
+    """Zero hooks dispatch vacuously without touching the decoder."""
+
+    dispatch = dispatch_post_writeback_hooks(
+        [],
+        source=_mutated_source("agent_id"),  # type: ignore[arg-type]
+    )
+    assert dispatch["failures"] == []
+    assert dispatch["invoked_count"] == 0
+    assert dispatch["intent_count"] == 0
+    assert dispatch["primary_writeback_preserved"] is True
+
+
+def test_bridge_projects_source_rejection_as_hook_attributed_composition_failures(
+    tmp_path: Path,
+) -> None:
+    """The CLI bridge keeps the legacy single-failure projection."""
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    registry_path = tmp_path / "registry.global.json"
+    registry_path.write_text(
+        json.dumps(
+            {"common_runtime_root": str(runtime_root), "goals": [{"id": "goal-1"}]}
+        ),
+        encoding="utf-8",
+    )
+    producer_calls: list[int] = []
+    dispatch = dispatch_committed_cli_post_writeback_hooks(
+        payload={"ok": True, "completed": True},
+        registry_path=registry_path,
+        runtime_root_arg=None,
+        goal_id="goal-1",
+        event_kind="refresh_state",
+        identity={
+            "agent_id": "",
+            "todo_id": "todo-1",
+            "turn_instance_id": "turn-1",
+            "effect_id": "goal-1:agent-1:todo-1:turn-1",
+        },
+        state_version="2026-09-06T00:00:00Z",
+        committed_at="2026-09-06T00:00:00Z",
+        hooks=(
+            _hook(
+                hook_id="periodic_report.stage_completion",
+                key="periodic-report:stage-123",
+                producer_calls=producer_calls,
+            ),
+            _hook(
+                hook_id="periodic_report.vision_completion",
+                key="periodic-report:stage-456",
+                producer_calls=producer_calls,
+            ),
+        ),
+        projection_builder=lambda **_kwargs: {
+            "stage_completion": {
+                "schema_version": "periodic_report_stage_completion_receipt_v0",
+                "stage_identity": "stage-123",
+            }
+        },
+    )
+    assert dispatch["failures"] == [
+        {
+            "hook_id": "periodic_report.stage_completion",
+            "capability_id": "periodic-report",
+            "error_code": "source_projection_failed",
+        },
+        {
+            "hook_id": "periodic_report.vision_completion",
+            "capability_id": "periodic-report",
+            "error_code": "source_projection_failed",
+        },
+    ]
+    assert dispatch["primary_writeback_preserved"] is True
+    assert dispatch["external_writes_performed"] is False
+    assert producer_calls == []
+    receipt_dir = runtime_root / "goals" / "goal-1" / "post_writeback_hooks"
+    assert not receipt_dir.is_dir() or not list(receipt_dir.glob("*.json"))
+
+
+def _hook(
+    *,
+    hook_id: str = "periodic_report.stage_completion",
+    key: str = "periodic-report:stage-123",
+    producer_calls: list[int] | None = None,
+) -> PostWritebackHookRegistration:
     def producer(value: object) -> dict[str, object]:
+        if producer_calls is not None:
+            producer_calls.append(1)
         assert isinstance(value, dict)
         receipt = value["receipt"]
         assert isinstance(receipt, dict)
         return {
             "schema_version": POST_WRITEBACK_HOOK_RESULT_SCHEMA_VERSION,
-            "hook_id": "periodic_report.stage_completion",
+            "hook_id": hook_id,
             "capability_id": "periodic-report",
             "phase": "post_writeback",
             "status": "intent",
@@ -109,7 +379,7 @@ def _hook(*, key: str = "periodic-report:stage-123") -> PostWritebackHookRegistr
         }
 
     return PostWritebackHookRegistration(
-        hook_id="periodic_report.stage_completion",
+        hook_id=hook_id,
         capability_id="periodic-report",
         event_kinds=("refresh_state",),
         intent_kinds=("periodic_report.trigger_evaluation",),
@@ -166,6 +436,48 @@ def test_post_writeback_dispatch_returns_one_effect_free_intent() -> None:
     assert dispatch["failures"] == []
     assert dispatch["primary_writeback_preserved"] is True
     assert dispatch["external_writes_performed"] is False
+
+
+@pytest.mark.parametrize("todo_id", [None, ""], ids=["null", "empty-string"])
+def test_post_writeback_dispatch_accepts_todoless_replan_identity(
+    todo_id: object,
+) -> None:
+    source = _source()
+    identity = source["identity"]
+    assert isinstance(identity, dict)
+    identity["todo_id"] = todo_id
+
+    dispatch = dispatch_post_writeback_hooks([_hook()], source=source)
+
+    assert dispatch["invoked_count"] == 1
+    assert dispatch["intent_count"] == 1
+    assert dispatch["failures"] == []
+
+
+def test_post_writeback_runtime_failure_identifies_rejected_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        capability_hooks,
+        "effect_runtime_result",
+        Mock(
+            side_effect=capability_hooks.EffectRuntimeRejected(
+                "transaction request is invalid",
+                diagnostic_code="invalid_request",
+            )
+        ),
+    )
+
+    dispatch = dispatch_post_writeback_hooks([_hook()], source=_source())
+
+    assert dispatch["invoked_count"] == 0
+    assert dispatch["failures"][0]["error_code"] == "runtime_result_invalid"
+    assert dispatch["runtime_failure"] == {
+        "schema_version": "loopx_post_writeback_runtime_failure_v0",
+        "phase": "preflight",
+        "error_kind": "request_rejected",
+        "diagnostic_code": "invalid_request",
+    }
 
 
 def test_post_writeback_legacy_lock_uses_the_admitted_goal_path(tmp_path: Path) -> None:
@@ -1093,10 +1405,9 @@ def test_todo_complete_survives_unreadable_periodic_report_machine_store(
 def test_periodic_report_projection_reduces_durable_successor_transition(
     tmp_path,
 ) -> None:
-    runtime_root = tmp_path / "runtime"
-    state_path = tmp_path / "goal.md"
-    state_path.write_text(
-        """# Goal
+    runtime_root, registry_path = _projection_goal_fixture(
+        tmp_path,
+        state_text="""# Goal
 
 ## User Todo
 
@@ -1105,75 +1416,14 @@ def test_periodic_report_projection_reduces_durable_successor_transition(
 - [ ] Analyze the next bounded family.
   <!-- loopx:todo todo_id=todo-next status=open task_class=advancement_task claimed_by=agent-1 -->
 """,
-        encoding="utf-8",
-    )
-    registry_path = tmp_path / "registry.json"
-    registry_path.write_text(
-        json.dumps(
-            {
-                "goals": [
-                    {
-                        "id": "goal-1",
-                        "repo": str(tmp_path),
-                        "state_file": "goal.md",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    runs_dir = runtime_root / "goals" / "goal-1" / "runs"
-    runs_dir.mkdir(parents=True)
-    runs = [
-        {
-            "generated_at": "2026-08-30T11:00:00Z",
-            "goal_id": "goal-1",
-            "agent_vision": {
-                "schema_version": "goal_vision_replan_contract_v0",
-                "agent_id": "agent-1",
-                "state": "active",
-                "vision_patch": {"acceptance_summary": "Next family is bounded."},
-            },
-            "autonomous_replan_ack": {
-                "recorded": True,
-                "frontier_identity": "frontier-2",
-                "semantic_delta": {
-                    "accepted": True,
-                    "outcomes": ["fresh_vision_path_outcome"],
-                    "trigger_kinds": ["vision_successor_required"],
-                    "obligation_id": "replan-2",
-                },
-            },
-        },
-        {
-            "generated_at": "2026-08-30T10:00:00Z",
-            "goal_id": "goal-1",
-            "agent_vision": {
-                "schema_version": "goal_vision_replan_contract_v0",
-                "agent_id": "agent-1",
-                "state": "vision_closed",
-                "vision_patch": {"acceptance_summary": "First family accepted."},
-            },
-            "vision_checkpoint": {
-                "schema_version": "vision_checkpoint_v0",
-                "satisfied": True,
-                "decision": "patched",
-                "triggers": [
-                    {
-                        "kind": "material_delivery_outcome",
-                        "delivery_outcome": "outcome_progress",
-                    }
-                ],
-            },
-        },
-    ]
-    (runs_dir / "index.jsonl").write_text(
-        "".join(json.dumps(run) + "\n" for run in runs),
-        encoding="utf-8",
+        runs=[
+            _successor_ack_run(),
+            _closed_vision_run(),
+        ],
     )
 
     projection = build_periodic_report_post_writeback_projection(
-        payload={"state": {"path": str(state_path)}},
+        payload={"state": {"path": str(tmp_path / "goal.md")}},
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -1189,10 +1439,9 @@ def test_periodic_report_projection_reduces_durable_successor_transition(
 def test_periodic_report_projection_reduces_terminal_after_todo_completion(
     tmp_path,
 ) -> None:
-    runtime_root = tmp_path / "runtime"
-    state_path = tmp_path / "goal.md"
-    state_path.write_text(
-        """# Goal
+    runtime_root, registry_path = _projection_goal_fixture(
+        tmp_path,
+        state_text="""# Goal
 
 ## User Todo
 
@@ -1203,54 +1452,34 @@ def test_periodic_report_projection_reduces_terminal_after_todo_completion(
 - [ ] Watch for later external changes.
   <!-- loopx:todo todo_id=todo_watch status=open task_class=continuous_monitor claimed_by=agent-1 watch_only=true next_due_at=2026-09-06T10:30:00Z -->
 """,
-        encoding="utf-8",
-    )
-    registry_path = tmp_path / "registry.json"
-    registry_path.write_text(
-        json.dumps(
+        runs=[
             {
-                "goals": [
-                    {
-                        "id": "goal-1",
-                        "repo": str(tmp_path),
-                        "state_file": "goal.md",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    runs_dir = runtime_root / "goals" / "goal-1" / "runs"
-    runs_dir.mkdir(parents=True)
-    closed_run = {
-        "generated_at": "2026-08-30T10:00:00Z",
-        "goal_id": "goal-1",
-        "agent_id": "agent-1",
-        "agent_vision": {
-            "schema_version": "goal_vision_replan_contract_v0",
-            "agent_id": "agent-1",
-            "state": "vision_closed",
-            "vision_patch": {"acceptance_summary": "Analysis accepted."},
-        },
-        "vision_checkpoint": {
-            "schema_version": "vision_checkpoint_v0",
-            "satisfied": True,
-            "decision": "patched",
-            "triggers": [
-                {
-                    "kind": "material_delivery_outcome",
-                    "delivery_outcome": "primary_goal_outcome",
-                }
-            ],
-        },
-    }
-    (runs_dir / "index.jsonl").write_text(
-        json.dumps(closed_run) + "\n",
-        encoding="utf-8",
+                "generated_at": "2026-08-30T10:00:00Z",
+                "goal_id": "goal-1",
+                "agent_id": "agent-1",
+                "agent_vision": {
+                    "schema_version": "goal_vision_replan_contract_v0",
+                    "agent_id": "agent-1",
+                    "state": "vision_closed",
+                    "vision_patch": {"acceptance_summary": "Analysis accepted."},
+                },
+                "vision_checkpoint": {
+                    "schema_version": "vision_checkpoint_v0",
+                    "satisfied": True,
+                    "decision": "patched",
+                    "triggers": [
+                        {
+                            "kind": "material_delivery_outcome",
+                            "delivery_outcome": "primary_goal_outcome",
+                        }
+                    ],
+                },
+            },
+        ],
     )
 
     projection = build_periodic_report_post_writeback_projection(
-        payload={"state_file": str(state_path)},
+        payload={"state_file": str(tmp_path / "goal.md")},
         registry_path=registry_path,
         runtime_root=runtime_root,
         goal_id="goal-1",
@@ -1260,6 +1489,62 @@ def test_periodic_report_projection_reduces_terminal_after_todo_completion(
     receipt = projection["stage_completion"]
     assert receipt["transition"] == "goal_terminal"
     assert receipt["frontier_identity"] == "validated-goal-terminal"
+
+
+def test_periodic_report_projection_evaluates_turn_capabilities_absent_and_present(
+    tmp_path: Path,
+) -> None:
+    runtime_root, registry_path = _projection_goal_fixture(
+        tmp_path,
+        state_text="""# Goal
+
+## User Todo
+
+## Agent Todo
+
+- [ ] Resume the follow-up once network capacity returns.
+  <!-- loopx:todo todo_id=todo_capacity status=open task_class=advancement_task claimed_by=agent-1 action_kind=gated_work resume_when=capacity_available:network -->
+- [ ] Analyze the next bounded family.
+  <!-- loopx:todo todo_id=todo_next status=open task_class=advancement_task claimed_by=agent-1 -->
+""",
+        runs=[
+            _successor_ack_run(),
+            _closed_vision_run(),
+        ],
+    )
+
+    projection_absent = build_periodic_report_post_writeback_projection(
+        payload={"state_file": str(tmp_path / "goal.md")},
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id="goal-1",
+        agent_id="agent-1",
+    )
+    assert projection_absent.get("stage_completion") is not None
+    next_actions_absent = [
+        item["source_ref"]
+        for item in projection_absent["project_progress"]["items"]
+        if item.get("content_kind") == "next_action"
+    ]
+    assert next_actions_absent == ["todo:todo_next"]
+
+    projection_present = build_periodic_report_post_writeback_projection(
+        payload={
+            "state_file": str(tmp_path / "goal.md"),
+            "available_capabilities": ["network"],
+        },
+        registry_path=registry_path,
+        runtime_root=runtime_root,
+        goal_id="goal-1",
+        agent_id="agent-1",
+    )
+    assert projection_present.get("stage_completion") is not None
+    next_actions_present = [
+        item["source_ref"]
+        for item in projection_present["project_progress"]["items"]
+        if item.get("content_kind") == "next_action"
+    ]
+    assert next_actions_present == ["todo:todo_capacity"]
 
 
 def _published_report_goal_fixtures(
@@ -1284,7 +1569,11 @@ def _published_report_goal_fixtures(
     registry_path = tmp_path / "registry.json"
     registry_path.write_text(
         json.dumps(
-            {"goals": [{"id": "goal-1", "repo": str(tmp_path), "state_file": "goal.md"}]}
+            {
+                "goals": [
+                    {"id": "goal-1", "repo": str(tmp_path), "state_file": "goal.md"}
+                ]
+            }
         ),
         encoding="utf-8",
     )
@@ -1324,7 +1613,9 @@ def test_periodic_report_hook_accepts_projection_after_a_published_report(
                 "schema_version": "goal_vision_replan_contract_v0",
                 "agent_id": "agent-1",
                 "state": "vision_closed",
-                "vision_patch": {"acceptance_summary": "Initial slice accepted and reported."},
+                "vision_patch": {
+                    "acceptance_summary": "Initial slice accepted and reported."
+                },
             },
             "vision_checkpoint": {
                 "schema_version": "vision_checkpoint_v0",
@@ -1748,7 +2039,9 @@ def test_post_writeback_legacy_lock_timeout_isolates_other_hooks(
     assert len(receipts) == 1
 
 
-@pytest.mark.parametrize("controlled_clock", [False, True], ids=["real-clock", "budget"])
+@pytest.mark.parametrize(
+    "controlled_clock", [False, True], ids=["real-clock", "budget"]
+)
 def test_post_writeback_legacy_locks_share_one_batch_deadline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1932,10 +2225,9 @@ def test_post_writeback_ts_cas_lock_timeout_preserves_free_sibling_result(
 def test_periodic_report_projection_isolates_other_agent_ack_and_claimed_todos(
     tmp_path,
 ) -> None:
-    runtime_root = tmp_path / "runtime"
-    state_path = tmp_path / "goal.md"
-    state_path.write_text(
-        """# Goal
+    runtime_root, registry_path = _projection_goal_fixture(
+        tmp_path,
+        state_text="""# Goal
 
 ## User Todo
 
@@ -1944,73 +2236,17 @@ def test_periodic_report_projection_isolates_other_agent_ack_and_claimed_todos(
 - [ ] Analyze the next bounded family for Agent B.
   <!-- loopx:todo todo_id=todo-b status=open task_class=advancement_task claimed_by=agent-b -->
 """,
-        encoding="utf-8",
+        runs=[
+            _successor_ack_run(
+                vision_agent_id="agent-a",
+                ack_agent_id="agent-b",
+                frontier="frontier-b",
+                obligation="replan-b",
+            ),
+            _closed_vision_run(agent_id="agent-a", summary="Agent A first vision."),
+        ],
     )
-    registry_path = tmp_path / "registry.json"
-    registry_path.write_text(
-        json.dumps(
-            {
-                "goals": [
-                    {
-                        "id": "goal-1",
-                        "repo": str(tmp_path),
-                        "state_file": "goal.md",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    runs_dir = runtime_root / "goals" / "goal-1" / "runs"
-    runs_dir.mkdir(parents=True)
-    runs = [
-        {
-            "generated_at": "2026-08-30T11:00:00Z",
-            "goal_id": "goal-1",
-            "agent_vision": {
-                "schema_version": "goal_vision_replan_contract_v0",
-                "agent_id": "agent-a",
-                "state": "active",
-                "vision_patch": {"acceptance_summary": "Agent A next vision."},
-            },
-            "autonomous_replan_ack": {
-                "recorded": True,
-                "agent_id": "agent-b",
-                "frontier_identity": "frontier-b",
-                "semantic_delta": {
-                    "accepted": True,
-                    "outcomes": ["fresh_vision_path_outcome"],
-                    "trigger_kinds": ["vision_successor_required"],
-                    "obligation_id": "replan-b",
-                },
-            },
-        },
-        {
-            "generated_at": "2026-08-30T10:00:00Z",
-            "goal_id": "goal-1",
-            "agent_vision": {
-                "schema_version": "goal_vision_replan_contract_v0",
-                "agent_id": "agent-a",
-                "state": "vision_closed",
-                "vision_patch": {"acceptance_summary": "Agent A first vision."},
-            },
-            "vision_checkpoint": {
-                "schema_version": "vision_checkpoint_v0",
-                "satisfied": True,
-                "decision": "patched",
-                "triggers": [
-                    {
-                        "kind": "material_delivery_outcome",
-                        "delivery_outcome": "outcome_progress",
-                    }
-                ],
-            },
-        },
-    ]
-    (runs_dir / "index.jsonl").write_text(
-        "".join(json.dumps(run) + "\n" for run in runs),
-        encoding="utf-8",
-    )
+    state_path = tmp_path / "goal.md"
 
     # Agent B's ACK and Agent B's claimed Todo must NOT settle Agent A's stage.
     projection_a = build_periodic_report_post_writeback_projection(
@@ -2023,32 +2259,22 @@ def test_periodic_report_projection_isolates_other_agent_ack_and_claimed_todos(
     assert "stage_completion" not in projection_a
 
     # Now make the Todo unclaimed and provide Agent A's own ACK in run history
-    runs.insert(
-        0,
-        {
-            "generated_at": "2026-08-30T11:30:00Z",
-            "goal_id": "goal-1",
-            "agent_vision": {
-                "schema_version": "goal_vision_replan_contract_v0",
-                "agent_id": "agent-a",
-                "state": "active",
-                "vision_patch": {"acceptance_summary": "Agent A next vision."},
-            },
-            "autonomous_replan_ack": {
-                "recorded": True,
-                "agent_id": "agent-a",
-                "frontier_identity": "frontier-a",
-                "semantic_delta": {
-                    "accepted": True,
-                    "outcomes": ["fresh_vision_path_outcome"],
-                    "trigger_kinds": ["vision_successor_required"],
-                    "obligation_id": "replan-a",
-                },
-            },
-        },
-    )
+    agent_a_ack = {
+        **_successor_ack_run(
+            vision_agent_id="agent-a",
+            ack_agent_id="agent-a",
+            frontier="frontier-a",
+            obligation="replan-a",
+        ),
+        "generated_at": "2026-08-30T11:30:00Z",
+    }
+    runs_dir = runtime_root / "goals" / "goal-1" / "runs"
+    prior_runs = [
+        json.loads(row)
+        for row in (runs_dir / "index.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     (runs_dir / "index.jsonl").write_text(
-        "".join(json.dumps(run) + "\n" for run in runs),
+        "".join(json.dumps(run) + "\n" for run in [agent_a_ack, *prior_runs]),
         encoding="utf-8",
     )
     state_path.write_text(

@@ -6,9 +6,9 @@ LoopX 控制台是为工程师与 Agent 深度协作打造的统一本地工作�
 
 ## 🎬 30 秒产品发布演示视频
 
-<video controls width="100%" poster="../assets/personal-workspace/guide_manager_overview.png" style="border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.12);">
-  <source src="../assets/personal-workspace/loopx-dashboard-launch.mp4" type="video/mp4">
-  您的浏览器暂不支持直接播放视频，可下载 <a href="../assets/personal-workspace/loopx-dashboard-launch.mp4">MP4 视频文件</a> 进行查看。
+<video controls width="100%" poster="https://huangruiteng.github.io/loopx/docs/assets/personal-workspace/guide_manager_overview.png" style="border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.12);">
+  <source src="https://huangruiteng.github.io/loopx/docs/assets/personal-workspace/loopx-dashboard-launch.mp4" type="video/mp4">
+  您的浏览器暂不支持直接播放视频，可下载 <a href="https://huangruiteng.github.io/loopx/docs/assets/personal-workspace/loopx-dashboard-launch.mp4">MP4 视频文件</a> 进行查看。
 </video>
 
 > 💡 **视频高光**：终端一键启动 ➔ 管家 4 泳道任务流 ➔ 快捷指令浮动托盘 ➔ 4 列看板与智能「转为 Task」清洗 ➔ 飞书话题直连 ➔ Brutal 野兽派主题切换。
@@ -117,14 +117,19 @@ loopx goal-lifecycle --goal-id <goal-id> --operation resume --execute
 
 在侧边栏点击具体的 Goal（例如 `Apollo Spacecraft Telemetry Pipeline`），进入该 Goal 的独立工作台。
 
-### 4.1 Tasks 任务看板视图
+### 4.1 Tasks 列表与看板视图
 ![Goal Tasks 4 列看板](../assets/personal-workspace/guide_goal_tasks_board.png)
 
-- **4 列看板流转**：
+- 默认显示四列看板；可切换到分组列表，列表中空分组隐藏、已完成分组默认折叠。
+- 看板与列表共享已完成历史（包含归档，排除持续监控任务），按工作 Agent 筛选。列表的已完成组默认折叠；展开并滚动可按需加载，每页 40 条，使用五分钟快照保持翻页稳定。两种视图均只渲染可见区域附近的记录，切换视图保留历史和总数。快照过期可重试，读取失败保留当前记录。只读远端来源不调用本机历史接口。本机历史详情保留 Todo 读取层返回的文本、路径和证据，不额外截断或替换路径；Markdown 读取层原有的 500 字符规范化上限仍适用。
+- 初次连接先显示加载状态，不把示例任务当作实时数据。执行会话连接失败时显示重连提示并退避轮询，隐藏页面暂停新的会话查询。
+- Files 的“前往会话”进入 Goal 会话；“导出摘要”导出安全摘要 Markdown，不下载原始文件。
+
+- **分组含义**：
   - **待确认（Attention Required）**：需用户决策或授权的卡片（黄色/红色标红，显示等待时间）；
   - **待执行 / 进行中（In Progress）**：按 P0 / P1 优先级排列的 Agent 待办事项；
   - **定时与持续（Scheduled & Continuous）**：绑定的周期性检查与监控；
-  - **已完成（Completed）**：最近已交付的待办归档。
+  - **已完成（Completed）**：已标记完成的工作任务；摘要总数与当前可查询明细的范围分别展示。
 
 - **💬 对话建议一键「转为 Task」**：
   - 看板顶部横幅会展示 Agent 最新的进度报告与下一步建议；

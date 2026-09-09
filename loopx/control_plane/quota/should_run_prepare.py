@@ -748,7 +748,11 @@ def _prepare_quota_should_run_item(
         project_asset=project_asset,
         user_todo_summary=user_todo_summary,
         agent_todo_summary=agent_todo_summary,
-        agent_todo_source_items=agent_todo_source_items,
+        agent_todo_source_items=select_planning_inventory_source_items(
+            item.get("agent_todos"),
+            project_asset.get("agent_todos") if project_asset else None,
+            include_terminal=True,
+        ),
         work_lane_contract=work_lane_contract,
         neutral_replan_ack_classifications=AUTONOMOUS_REPLAN_ACK_NEUTRAL_CLASSIFICATIONS,
         registered_agent_ids=registered_agent_ids,

@@ -28,16 +28,19 @@ TURN_KEY = "sha256:" + "0" * 64
 def _signed_request(
     *,
     primary_action: str = "Do the signed thing.",
+    goal_id: str = "g",
+    agent_id: str = "a",
+    todo_id: str | None = None,
 ) -> dict:
     request = {
         "schema_version": dsh_goal_mode.LOOPX_TURN_HOST_REQUEST_SCHEMA,
         "turn_key": TURN_KEY,
         "route": "primary_delivery",
-        "session": {"goal_id": "g", "agent_id": "a"},
+        "session": {"goal_id": goal_id, "agent_id": agent_id},
         "turn_envelope": {
             "schema_version": "loopx_turn_envelope_v0",
-            "goal_id": "g",
-            "agent_id": "a",
+            "goal_id": goal_id,
+            "agent_id": agent_id,
             "action": {
                 "recommended_action": "legacy action must not win",
                 "primary_action": primary_action,
@@ -68,6 +71,8 @@ def _signed_request(
             "completed_phases": list(dsh_goal_mode.COMPLETED_PHASES),
         },
     }
+    if todo_id is not None:
+        request["turn_envelope"]["action"]["selected_todo"] = {"todo_id": todo_id}
     signature = turn_envelope_action_signature_document(
         request["turn_envelope"]
     )
@@ -86,6 +91,91 @@ def _signed_request(
         }
     )
     return request
+
+
+def _lineage_request(
+    *, goal_id: object = None, agent_id: object = None, todo_id: object = None
+) -> dict:
+    envelope: dict[str, object] = {"action": {}}
+    if goal_id is not None:
+        envelope["goal_id"] = goal_id
+    if agent_id is not None:
+        envelope["agent_id"] = agent_id
+    if todo_id is not None:
+        envelope["action"] = {"selected_todo": {"todo_id": todo_id}}
+    return {"turn_envelope": envelope}
+
+
+def test_dsh_session_id_uses_a_versioned_lineage_digest() -> None:
+    # Hyphen-delimited fields are ambiguous: both inputs produced
+    # "goal-a-worker-todo_b-todo_abc" under the historical naming scheme.
+    first = _lineage_request(
+        goal_id="goal-a", agent_id="worker", todo_id="todo_b-todo_abc"
+    )
+    second = _lineage_request(
+        goal_id="goal-a-worker", agent_id="todo_b", todo_id="todo_abc"
+    )
+
+    first_id = turn_host_adapter._derive_session_id(first, TURN_KEY)
+    second_id = turn_host_adapter._derive_session_id(second, TURN_KEY)
+    expected = "dsh-lineage-v1-" + sha256(
+        json.dumps(
+            ["goal-a", "worker", "todo_b-todo_abc"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    assert first_id.startswith("dsh-lineage-v1-")
+    assert second_id.startswith("dsh-lineage-v1-")
+    assert first_id == expected
+    assert first_id != second_id
+    assert first_id == turn_host_adapter._derive_session_id(first, TURN_KEY)
+
+
+def test_dsh_session_id_preserves_missing_lineage_component_positions() -> None:
+    missing_agent = _lineage_request(goal_id="goal", todo_id="todo")
+    missing_todo = _lineage_request(goal_id="goal", agent_id="todo")
+
+    assert turn_host_adapter._derive_session_id(
+        missing_agent, TURN_KEY
+    ) != turn_host_adapter._derive_session_id(missing_todo, TURN_KEY)
+    assert turn_host_adapter._derive_session_id(
+        _lineage_request(), TURN_KEY
+    ) == "dsh-" + "0" * 24
+    assert turn_host_adapter._derive_session_id(
+        _lineage_request(goal_id=False, agent_id=0, todo_id=""), TURN_KEY
+    ) == "dsh-" + "0" * 24
+
+
+def test_dsh_host_passes_lineage_session_id_to_the_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    requests = [
+        _signed_request(
+            goal_id="goal-a", agent_id="worker", todo_id="todo_b-todo_abc"
+        ),
+        _signed_request(
+            goal_id="goal-a-worker", agent_id="todo_b", todo_id="todo_abc"
+        ),
+        _signed_request(
+            goal_id="goal-a", agent_id="worker", todo_id="todo_b-todo_abc"
+        ),
+    ]
+    session_ids: list[str] = []
+
+    def run_fake_dsh_turn(**kwargs: object) -> str:
+        session_ids.append(str(kwargs["session_id"]))
+        return '{"result_kind":"wait"}'
+
+    monkeypatch.setattr(turn_host_adapter, "run_dsh_turn", run_fake_dsh_turn)
+    config = turn_host_adapter.DshHostConfig(workspace=tmp_path)
+    for request in requests:
+        turn_host_adapter.run_dsh_host(request, config=config)
+
+    assert session_ids[0] != session_ids[1]
+    assert session_ids[0] == session_ids[2]
 
 
 def test_dsh_goal_mode_is_a_first_class_subpackage() -> None:

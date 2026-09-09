@@ -2,21 +2,14 @@ name: Python Tests
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/python-tests.yml"
-      - "loopx/**"
-      - "scripts/**"
-      - "tests/**"
-      - "examples/**"
-      - "package.json"
-      - "package-lock.json"
-      - "pyproject.toml"
-      - "tsconfig.control-plane.json"
   push:
     branches:
       - main
     paths:
       - ".github/workflows/python-tests.yml"
+      - ".github/workflows/sonarcloud.yml"
+      - "sonar-project.properties"
+      - "apps/**"
       - "loopx/**"
       - "scripts/**"
       - "tests/**"
@@ -34,12 +27,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pytest:
+  changes:
     runs-on: ubuntu-latest
-    # The parallel suite can take more than 15 minutes through coverage
-    # collation on the hosted runner. Keep the fail-safe bounded while leaving
-    # enough headroom for runner variance and post-test coverage reporting.
-    timeout-minutes: 30
+    timeout-minutes: 3
+    outputs:
+      core_tests: ${{ steps.classify.outputs.core_tests }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Validate merge gate semantics
+        run: python -m unittest discover -s scripts/ci -p 'test_review_gate.py'
+      - name: Classify the exact pull-request change
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            python scripts/ci/review_gate.py classify --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo 'core_tests=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -66,7 +87,15 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm run typecheck:control-plane
-          npm run test:control-plane
+          npm run test:control-plane:coverage
+
+      - name: Upload TypeScript control-plane coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: typescript-control-plane-coverage
+          path: coverage/control-plane/lcov.info
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Lint test suite
         run: >-
@@ -85,14 +114,189 @@ jobs:
           LOOPX_CLI_OUTPUT_BASE_REF: origin/${{ github.event.pull_request.base.ref || 'main' }}
         run: python examples/control_plane/cli-output-budget-regression-smoke.py
 
-      - name: Run fast tests
+  test-shard:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.6"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -e ".[test]"
+          npm ci --ignore-scripts
+      - name: Run test shard
+        # Split the whole collection, not a hand-maintained list of directories.
+        # Without timing history least_duration alternates equal-weight tests.
+        # Each runner retains the measured two-worker pool.
         run: >-
-          python -m pytest -q -n 2
+          python -m pytest -q -n 2 -m "not stage2c_e2e"
+          --splits 2 --group ${{ matrix.shard }}
+          --splitting-algorithm least_duration
+          --durations=25 --durations-min=1
           --cov=loopx
           --cov-report=term
-          --cov-fail-under=19.6
+      - name: Upload shard coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-coverage-${{ matrix.shard }}
+          path: .coverage
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  pytest:
+    # Keep the required check name; a skipped/failed shard must not turn it green.
+    if: always() && needs.changes.outputs.core_tests == 'true'
+    needs: [changes, checks, test-shard]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require every upstream check
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          SHARDS_RESULT: ${{ needs.test-shard.result }}
+        run: |
+          test "$CHECKS_RESULT" = success
+          test "$SHARDS_RESULT" = success
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -e ".[test]"
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: python-coverage-*
+          path: coverage-shards
+      - name: Combine complete coverage and enforce the existing floor
+        run: |
+          test -s coverage-shards/python-coverage-1/.coverage
+          test -s coverage-shards/python-coverage-2/.coverage
+          python -m coverage combine coverage-shards/python-coverage-1/.coverage coverage-shards/python-coverage-2/.coverage
+          python -m coverage report --fail-under=19.6
+          python -m coverage xml -o coverage.xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 3
+
+  sonar:
+    needs: pytest
+    uses: ./.github/workflows/sonarcloud.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  stage2c-suite:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
+    name: stage2c (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [e2e, mutants, installed]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tests/requirements-stage2c-linux-py311.txt
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.6"
+          cache: npm
+      - name: Install locked test and package build tools
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r tests/requirements-stage2c-linux-py311.txt
+          npm ci --ignore-scripts
+      - name: Build and verify the checked-out source package
+        run: |
+          python -m build --no-isolation --wheel --outdir .local/stage2c-source-install
+          python - <<'PYTHON'
+          import hashlib
+          from pathlib import Path
+
+          directory = Path(".local/stage2c-source-install").resolve()
+          wheels = list(directory.glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("Expected exactly one wheel from the checked-out source")
+          wheel = wheels[0]
+          digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          (directory / "requirements.txt").write_text(
+              f"loopx @ {wheel.as_uri()} --hash=sha256:{digest}\n", encoding="utf-8"
+          )
+          PYTHON
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps --no-index -r .local/stage2c-source-install/requirements.txt
+          python -m pip check
+          # Remove the generated source copy before pytest's normal discovery.
+          python -c "import shutil; shutil.rmtree('build')"
+      - name: Qualify real CLI, mixed writers, process death, and recovery
+        if: matrix.suite == 'e2e'
+        env:
+          LOOPX_SHADOW_COMPARISON_OUTPUT: .local/stage2c-observables
+        # Keep each module's shared workspace and ordered parity rows on one worker.
+        run: python -m pytest -q -n 4 --dist loadfile -m stage2c_e2e --durations=20 --junitxml=stage2c-e2e.xml
+      - name: Reject deliberate correctness regressions
+        if: matrix.suite == 'mutants'
+        run: python examples/shared-goal-authority-e2e/mutants.py --output .local/stage2c-mutants
+      - name: Build independently installed distributions
+        if: matrix.suite == 'installed'
+        run: python -m build --no-isolation
+      - name: Qualify wheel outside the repository
+        if: matrix.suite == 'installed'
+        run: python examples/shared-goal-authority-e2e/installed.py --artifact dist/*.whl --report-json installed-wheel.json
+      - name: Qualify sdist outside the repository
+        if: matrix.suite == 'installed'
+        run: python examples/shared-goal-authority-e2e/installed.py --artifact dist/*.tar.gz --report-json installed-sdist.json
+      - name: Retain bounded acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stage2c-correctness-evidence-${{ matrix.suite }}
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            stage2c-e2e.xml
+            .local/stage2c-observables/
+            installed-wheel.json
+            installed-sdist.json
+            .local/stage2c-mutants/
+
+  stage2c-correctness-e2e:
+    # Preserve the public check name and reject failed, cancelled or skipped lanes.
+    if: always() && needs.changes.outputs.core_tests == 'true'
+    needs: [changes, stage2c-suite]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every Stage 2C lane
+        env:
+          STAGE2C_RESULT: ${{ needs.stage2c-suite.result }}
+        run: test "$STAGE2C_RESULT" = success
 
   windows-powershell:
+    needs: changes
+    if: needs.changes.outputs.core_tests == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -133,3 +337,19 @@ jobs:
           node --no-warnings --experimental-strip-types --test
           tests/control_plane_ts/scheduler_heartbeat_commit.test.ts
           tests/control_plane_ts/scheduler_heartbeat_commit_cli.test.ts
+
+  merge-gate:
+    # Always publish one stable outcome, including documentation-only PRs.
+    if: always()
+    needs: [changes, pytest, stage2c-correctness-e2e, windows-powershell]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Reject incomplete or unsuccessful qualification
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/ci/review_gate.py verify

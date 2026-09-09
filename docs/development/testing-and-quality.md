@@ -73,7 +73,91 @@ golden 来让测试通过。
 
 ## Pull-Request Baseline / PR 基线
 
+### Required Merge Check / 必需合并检查
+
+`python-tests.yml` publishes `merge-gate` for every pull request. Code,
+workflow, policy and unknown paths require the existing `pytest` aggregate
+(including TypeScript checks and both Python shards), Stage 2C correctness
+aggregate, and Windows tests to succeed. Failed, cancelled, missing or
+unexpectedly skipped results cannot pass the gate.
+
+For a change limited to allowlisted root Markdown or `docs/**/*.md`, the
+classifier explicitly skips the expensive core jobs and the aggregate checks
+that they were skipped. Runtime prompts, executable documentation, deleted
+code and code renamed into docs are not documentation-only exemptions. A
+missing Git base or failed classification fails closed.
+
+`Sign-off` and `merge-gate` form the required-check contract, bound to GitHub
+Actions. The [live ruleset](https://github.com/huangruiteng/loopx/rules/18121976)
+is authoritative for activation. The lead maintainer alone retains the
+existing bypass exception; record the exact head, reason, validation and known
+failures whenever using it. A bypass does not turn failed tests into a pass.
+
+每个 PR 都会收到 `merge-gate` 结果。代码、工作流、治理规则和未知路径必须通过
+原有核心测试；失败、取消、缺失或意外跳过均不能通过。仅白名单根目录 Markdown
+或 `docs/**/*.md` 的修改可显式跳过昂贵测试；运行时 prompt、可执行文档、代码删除
+及代码移入文档均不享受豁免。实际启用状态以在线规则为准，使用 owner bypass
+必须留下版本、原因、验证和已知失败的记录。
+
+To validate or change the classifier locally:
+
+```bash
+python -m unittest discover -s scripts/ci -p test_review_gate.py
+python scripts/ci/review_gate.py classify --base origin/main --head HEAD
+```
+
+Changes to the classifier or workflow need both code-path and documentation-only
+qualification. Keep required check names stable and never require a
+workflow-level path-filtered check that cannot report on every PR.
+
+PRs opened before activation may need a branch update to produce the new
+required check; an old green suite alone does not supply a missing aggregate.
+
 ### Refactor Real-Path Gate / 重构真实路径门
+
+The PR review capability's `observable_semantics` evidence gate applies to
+behavior-bearing changes, including extractions and backend migrations; it
+does not infer equivalence from a refactor title. Reviewers inventory legacy
+caller branches at an immutable baseline and compare the same synthetic
+inputs at the exact head through the public entrypoint. Include successful
+and rejected paths, full diagnostics/remediation, validation precedence,
+supplied/omitted/empty/clear arguments, persisted readback, ownership and
+receipts, plus replay/concurrency where relevant. A provider suite whose
+implementations share the new rule is not a before/after compatibility test.
+
+重构评审必须区分“相同判定”和“相同可观察语义”：同样拒绝但丢失对象状态或修复
+提示仍是回归；新增认领前提可能阻断旧实现允许的未认领文案修正；`--note` 被 parser
+接受或出现在成功响应中，也不能证明它经过 dispatch 后落盘并能独立回读。先从旧调用
+方及公开契约列出合法／非法分支，再运行基线与精确 head 的对照，不从新实现生成期望。
+
+Show regression sensitivity: the focused case must fail on the historical
+defect or a deliberate dropped-field/detail or stronger-precondition mutation,
+then pass on the fix. Preserve intended changes as explicit justified deltas;
+do not freeze a known baseline bug or normalize away meaningful differences.
+Re-review the full inventory after a correction, not only the previous finding.
+Missing comparison evidence blocks an equivalence-based approval. This is a
+reviewer-executed requirement projected in the packet, not a machine proof
+that the comparison ran. The packet tests protect this requirement's delivery;
+runtime regressions must still test actual behavior.
+
+保留“旧缺陷／语义 mutation 失败、修复后通过”的证据；有意变更需单列理由与验证，
+不能盲目追求字节一致。复审重查完整兼容清单，不沿着上一条发现自动走向批准。缺少
+对照证据就不能宣称等价；packet 测试只证明要求被投影，不证明 agent 已执行或产品无缺陷。
+
+The evidence must be executable, not merely descriptive. Record a replayable
+command or bounded script invocation for baseline, exact head, and the
+sensitivity case, together with the real affected backend, immutable fixture
+fingerprint, exit status, and normalized observation fingerprint. Baseline and
+head use the same harness and fixture unless an intentional delta is declared.
+The mutation run must traverse the same public entrypoint and make an
+independent oracle fail; helper-only unit coverage or conformance among
+providers that all share the candidate rule cannot satisfy this gate.
+
+证据必须可执行，不只是文字描述。基线、精确 head 和敏感性用例都要记录可重放命令
+或有界脚本调用，以及真实受影响 backend、不可变 fixture 指纹、退出状态和归一化观测
+指纹。除非声明并证明有意差异，baseline 与 head 必须使用同一 harness 和 fixture。
+Mutation 运行必须经过同一 public entrypoint，并让独立 oracle 失败；只测 helper，或让共享
+候选规则的多个 provider 互相 conformance，不能通过该门禁。
 
 Refactors must exercise the affected production entrypoint and real backend
 before delivery. Unit tests, mocks, and in-memory conformance remain useful,
@@ -87,6 +171,58 @@ failures or limits. If no safe real environment is available, hold delivery.
 不能替代这项证据。影响 PostgreSQL authority 时，配置指向隔离临时实例的
 `LOOPX_TEST_POSTGRES_URL`，运行 `npm run test:postgresql-authority-store`；跳过不算
 通过。记录精确 commit、后端版本、验证行为与失败或局限；没有安全的真实环境则暂停交付。
+
+When one semantic owner fronts multiple authority providers, use a three-arm
+refactor comparison: the immutable legacy baseline, the file provider, and a
+real PostgreSQL provider. All three arms must start from the same
+production-complex snapshot and execute the same public operations. Compare
+the two provider heads exactly, then compare the baseline semantically after
+the declared compatibility projection. The allowed archive normalization is
+narrow: omit provider-retained `archive_state=archive` records from the legacy
+hot view, omit their historical leases from that hot view, and ignore absolute
+imported `index` values only after separately proving identical per-role
+relative order. Provider provenance may also differ. No domain field, archive
+selection, relative order, active lease, or non-target record may be normalized.
+File/PostgreSQL agreement alone is not compatibility evidence because both
+providers execute the same new rule. Verify that every non-target record and
+the source snapshot are unchanged.
+
+The source snapshot's `lease_inventory` is byte-level audit evidence for every
+legacy lease file observed under the source locks. It is intentionally broader
+than canonical `projection.leases`, which contains only live edges whose Todo is
+present in the current canonical graph. Historical orphan lease files remain in
+the source inventory and never enter the canonical head.
+
+当同一个 semantic owner 服务多个 authority provider 时，重构对照必须包含三臂：
+不可变 legacy baseline、file provider、真实 PostgreSQL provider。三臂从同一份生产
+复杂度快照出发，执行相同 public operation；两个 provider head 要精确相等，baseline
+按显式 compatibility projection 比较。归档场景只允许三项窄归一化：legacy hot view
+不包含 provider 保留的 `archive_state=archive` 记录、不包含这些记录的历史 lease；并且
+只有先单独证明每个 role 的相对顺序完全一致，才可忽略导入 `index` 的绝对值。provider
+provenance 也可不同。domain 字段、归档选择、相对顺序、active lease 和非目标记录均
+不得归一化。File/PostgreSQL 一致不能单独证明兼容，因为它们执行的是同一套新规则。
+还要验证所有非目标记录与源快照保持不变。
+
+源快照中的 `lease_inventory` 是在 source lock 下观察到的全部 legacy lease 文件的
+字节级审计证据；它有意比 canonical `projection.leases` 更宽。后者只包含当前 canonical
+Todo 图中仍有对应 Todo 的 live edge。历史 orphan lease 文件继续留在 source inventory，
+但绝不进入 canonical head。
+
+The archive rehearsal is executable and emits only bounded counts and digest
+prefixes. It never prints raw projections, Todo identifiers, source paths, or
+the PostgreSQL URL. The URL must name a disposable isolated server:
+
+```bash
+LOOPX_TEST_POSTGRES_URL="$DISPOSABLE_POSTGRES_URL" \
+python examples/control_plane/authority-three-arm-rehearsal.py \
+  --registry "$REGISTRY_PATH" \
+  --goal-id "$GOAL_ID" \
+  --execute-isolated-postgresql
+```
+
+归档三臂演练可直接执行，且只输出有界计数和 digest 前缀；不输出 raw projection、
+Todo 标识、源路径或 PostgreSQL URL。URL 必须指向一次性隔离服务。命令中的显式
+`--execute-isolated-postgresql` 只是安全确认，不会授权连接共享或生产数据库。
 
 Keep tests separate from active state: use a disposable database/tenant and
 runtime directory, with synthetic fixtures or an owner-authorized read-only
@@ -103,6 +239,76 @@ not overwritten or restored by the test. Stop the temporary server afterward.
 不为测试晋升正在运行的 goal、切换 provider，或修改其 registry、writer fence、Todo、
 lease。私有快照和原始输出不得进入 Git 或公开 review；快照演练前后比较源指纹。
 发现并发源变更只报告，不擅自覆盖或恢复。测试后停止临时数据库。
+
+Keep a deterministic, public-safe production-scale fixture beside the focused
+cases. Its envelope should cover realistic role/status distributions,
+multi-agent claims, user gates and standing decisions, current and retired
+leases, successor links, validation markers, archival pressure, and enough
+history to exercise ordering and capacity-sensitive paths. Generate content
+from public-safe seeds rather than copying production text or identifiers, and
+run the same fixture through every provider conformance suite. This fixture is
+a durable regression layer; it complements, but never substitutes for, the
+read-only three-arm rehearsal against current production-complex state.
+
+在聚焦用例之外，长期保留确定性、public-safe 的生产规模 fixture。其 envelope 应覆盖
+真实的 role/status 分布、多 Agent claim、User gate 与 standing decision、当前与已退役
+lease、successor link、validation marker、归档压力，以及足以触发顺序和容量敏感路径的
+历史规模。内容必须由公开安全的 seed 生成，不复制生产文本或标识；同一 fixture 要进入
+所有 provider conformance suite。它是持久回归层，只补充、不替代针对当前生产复杂状态
+的只读三臂演练。
+
+### Production-scale fixture stewardship / 生产规模 fixture 维护契约
+
+For decision-owner migrations, inventory command producers as well as state
+fields. A large real-state snapshot does not exercise commands synthesized only
+inside an executor: run unchanged production caller chains, including reclaim,
+replay and stale-writer rejection, before claiming caller closure. Persistent
+public grants and clock-authorized ephemeral executor grants are separate
+contracts; neither a broad allowlist nor agreement across providers proves parity.
+
+迁移决策 owner 时，既要盘点状态字段，也要盘点命令生产者。真实大快照不会自动覆盖
+executor 内部生成的 reclaim 等命令；必须运行未改动的完整调用链，包括接管、重放和
+旧执行者拒绝，再声明调用方已闭合。持久公开 grant 与时钟授权的临时 executor grant
+是不同合同，不能用扩大 allowlist 或 provider 间一致替代行为对齐。
+
+Treat `tests/fixtures/control_plane/coordination_production_scale_v0.json`
+and its generator as a shared acceptance input for both the TypeScript
+control-plane migration and shared-goal-authority RFCs. A pull request that
+changes provider-neutral fields, coordination semantics, or capacity and
+retention assumptions must carry a fixture impact declaration: extend the
+fixture and an independently derived assertion through every affected provider
+arm, or state why the existing dimensions fully cover the change. Storage-only
+provider work may use the unchanged fixture, but still runs the affected arm.
+Runtime routing, promotion, or compatibility work also runs the read-only
+three-arm rehearsal; the fixture never upgrades synthetic agreement into live
+promotion evidence.
+
+Fixture improvements are welcome when they encode an accepted RFC invariant or
+a reproduced public regression that the current envelope misses. Keep each
+addition deterministic, bounded, and public-safe; derive expected behavior
+from the invariant rather than the generator output. Add at least one negative
+or mutation-style assertion that would fail if the new dimension were ignored,
+reuse the same envelope and generator across providers, and do not weaken or
+remove an existing dimension without a reviewed compatibility reason. Never
+copy production text, identifiers, paths, logs, credentials, or private
+snapshots into the fixture. Report the fixture schema, semantic dimension,
+provider arms, and intentional deltas in the PR validation evidence.
+
+将 `tests/fixtures/control_plane/coordination_production_scale_v0.json` 及其
+generator 视为 TypeScript control-plane migration 与 shared-goal-authority 两份 RFC
+共用的验收输入。修改 provider-neutral field、coordination 语义，或容量／保留假设的 PR，
+必须附带 fixture 影响声明：扩展 fixture 与独立推导的断言，并让它通过所有受影响的
+provider arm；或者说明现有维度为何已经完整覆盖该改动。仅修改 provider 物理存储时可以
+复用未变化的 fixture，但仍要运行受影响的 arm。涉及 runtime routing、promotion 或
+compatibility 的工作还要执行只读三臂演练；fixture 绝不能把合成数据一致性升级为真实
+promotion 证据。
+
+欢迎开发者把已接受的 RFC invariant 或已复现、但当前 envelope 尚未覆盖的公共回归沉淀
+进 fixture。每次增强都要保持确定性、有界且 public-safe；expected behavior 必须从
+invariant 独立推导，不能从 generator 当前输出反推。至少增加一个在忽略新维度时会失败的
+negative 或 mutation-style 断言，并让各 provider 复用同一 envelope 和 generator；没有
+经 review 的兼容理由，不得削弱或删除已有维度。禁止复制生产文本、标识、路径、日志、
+凭据或私有快照。PR 验证证据需报告 fixture schema、语义维度、provider arms 与有意差异。
 
 Install the test dependencies once:
 
@@ -128,6 +334,31 @@ network latency, provider availability, or a two-hour matrix.
 `.github/workflows/python-tests.yml` 会在相关 Python PR 上运行这条快速通道。
 它刻意不包含真实模型调用和 full smoke catalog，因此普通迭代不依赖凭证、网络
 时延、模型服务可用性或两小时级测试矩阵。
+
+The Linux suite uses two hosted runners with two xdist workers each.
+`pytest-split` partitions the complete collection using `least_duration`;
+without a timing file, tests have equal weight and alternate between shards.
+Lint, type checks, and the CLI budget run separately. The required `pytest`
+check rejects failed/skipped shards and missing coverage artifacts, then uses
+`coverage combine` to enforce the existing 19.6% floor on the union, not on
+individual shards. Relative coverage paths make reports portable across runners.
+The reusable Sonar workflow consumes that same run's XML and never reruns
+pytest or reads cross-run artifacts. Missing Sonar tokens still skip analysis
+successfully; test jobs receive no Sonar secret. The trigger is the union of
+the former Python and Sonar paths, so app-only and Sonar-configuration changes
+also run this lane, including on forks without a token.
+
+Linux 全套测试分到两台 hosted runner，每台保留两个 xdist worker。`pytest-split`
+按完整 collection 分片；没有历史耗时时，等权测试交替分配。lint、类型检查和 CLI
+预算独立执行。必需的 `pytest` 汇总检查会拒绝失败／跳过的分片和缺失的 coverage，
+合并后再执行原有 19.6% 门槛；不要求单个分片达到全套覆盖率。coverage 使用相对路径，
+Sonar 只复用同一次 run 的 XML，不重复测试、不跨 run 取产物。缺少 token 仍成功跳过
+Sonar，测试 job 不接收 Sonar secret。触发范围取原有两套 workflow 的并集，因此仅改
+前端或 Sonar 配置也走此通道，包括没有 token 的 fork。
+
+Reproduce one shard locally with `python -m pytest -q -n 2 --splits 2 --group 1
+--splitting-algorithm least_duration --cov=loopx`. Omit the split arguments to
+run the complete suite locally. 全量本地测试仍省略分片参数即可。
 
 ## Smokes And Canary / Smoke 与 Canary
 

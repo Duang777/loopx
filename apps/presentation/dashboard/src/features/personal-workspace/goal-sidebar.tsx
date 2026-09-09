@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp, ArrowUpDown, Bot, ChevronDown, ChevronRight, LoaderCircle, Pause, Plus, RotateCcw, Settings2, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { DesktopUpdate } from "./desktop-update";
 import { useGoalOrder } from "./use-goal-order";
 
 import { localizedGoalState, useWorkspaceI18n } from "./i18n";
@@ -47,7 +48,7 @@ export function GoalSidebar({
   const activeGoals = ordering.sorted;
   const stoppedGoals = goals.filter((goal) => goal.activationState === "stopped");
   const goalRow = (goal: WorkspaceGoal, stopped: boolean) => (
-    <div className={`personal-goal-row${ordering.target?.id === goal.goalId ? ordering.target.after ? " is-drop-after" : " is-drop-before" : ""}`} key={goal.goalId} data-reorder-goal={stopped ? undefined : goal.goalId}>
+    <div className={`personal-goal-row${ordering.target?.id === goal.goalId ? ordering.target.after ? " is-drop-after" : " is-drop-before" : ""}`} key={goal.goalId} data-reorder-goal={stopped ? undefined : goal.goalId} data-load-error={goal.loadError}>
       <button
         {...(!stopped ? ordering.pointerProps(goal.goalId) : {})}
         title={stopped ? undefined : t("sidebar.dragGoal")}
@@ -56,10 +57,10 @@ export function GoalSidebar({
         onClick={() => onSelectGoal(goal.goalId)}
         type="button"
       >
-        <span className={`personal-goal-state-dot ${goalStateClass[goal.state]}`} />
+        <span className={`personal-goal-state-dot ${goal.loadState ? "" : goalStateClass[goal.state]}`} />
         <span className="personal-goal-link-copy">
           <strong>{goal.title}</strong>
-          <small>{localizedGoalState(goal.state, locale)}{goal.needsYou && !stopped ? ` · ${t("home.lane.needsYou")}` : ""}</small>
+          <small>{(goal.loadState && (!stopped || selectedGoalId === goal.goalId) ? t(goal.loadState === "error" ? "startup.goalError" : "startup.goalLoading") : localizedGoalState(goal.state, locale))}{goal.needsYou && !stopped ? ` · ${t("home.lane.needsYou")}` : ""}</small>
         </span>
         <ChevronRight size={15} />
       </button>
@@ -154,6 +155,7 @@ export function GoalSidebar({
       </nav>
 
       <div className="personal-sidebar-footer">
+        <DesktopUpdate />
         {onOpenSettings ? (
           <button aria-label={t("settings.open")} className="personal-sidebar-utility" onClick={onOpenSettings} type="button">
             <span className="personal-sidebar-utility-icon"><Settings2 size={17} /></span>

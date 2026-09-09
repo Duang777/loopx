@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import stat
-import hashlib
 import json
 import subprocess
 import sys
@@ -17,9 +16,10 @@ from loopx.control_plane.todos.machine_section_projection import (
 )
 from loopx.cli import build_parser
 from loopx.cli_commands import todo as todo_command
+from loopx.control_plane.todos import provider_projection
 from loopx.control_plane.coordination.local_authority import read_canonical_todos_if_promoted
 from loopx.control_plane.coordination.runtime_shadow import build_todo_runtime_shadow_projection
-from loopx.control_plane.effect_runtime import effect_runtime_result
+from canonical_authority_fixture import initialize_canonical_authority
 
 
 SOURCE = """---
@@ -121,28 +121,49 @@ def test_projection_replaces_only_machine_sections_and_is_idempotent(newline: st
     assert replay.rendered_sha256 == projected.rendered_sha256
 
 
-def test_projection_rejects_missing_role_section() -> None:
+def test_projection_creates_missing_machine_owned_role_section() -> None:
     source = "# Goal\n\nHuman introduction.\n\n## Agent Todo\n\n- [ ] old\n\n## Next Action\n\n- Continue.\n"
-    with pytest.raises(TodoSectionProjectionError, match="required Todo sections: user"):
-        render_canonical_todo_sections(
-            source,
-            [_records()[0]],
-            provider_revision="rev-9",
-        )
+    projected = render_canonical_todo_sections(
+        source,
+        [_records()[0]],
+        provider_revision="rev-9",
+    )
+    assert projected.changed is True
+    assert "## User Todo / Owner Review Reading Queue" in projected.markdown
+    assert "Human introduction." in projected.markdown
+    assert "## Next Action\n\n- Continue." in projected.markdown
+    assert {item["role"] for item in inspect_todo_section_projection(
+        projected.markdown
+    )["sections"]} == {"user", "agent"}
+    replay = render_canonical_todo_sections(
+        projected.markdown,
+        [_records()[0]],
+        provider_revision="rev-9",
+    )
+    assert replay.changed is False
+    assert replay.markdown == projected.markdown
 
 
-def test_projection_does_not_invent_native_markdown_provenance() -> None:
+def test_projection_assigns_display_only_provenance_to_native_records() -> None:
     records = _records()
     for record in records:
         record["schema_version"] = "todo_domain_record_v0"
         del record["source_section"]
         del record["index"]
-    with pytest.raises(ValueError, match="omits required fields: source_section"):
-        render_canonical_todo_sections(SOURCE, records, provider_revision="rev-native")
+    projected = render_canonical_todo_sections(
+        SOURCE,
+        records,
+        provider_revision="rev-native",
+    )
+    assert projected.changed is True
+    assert projected.todo_count == 2
+    assert {item["revision"] for item in inspect_todo_section_projection(
+        projected.markdown
+    )["sections"]} == {"rev-native"}
     assert all("source_section" not in record and "index" not in record for record in records)
 
 
-def test_projection_rejects_unknown_or_derived_field_loss() -> None:
+def test_projection_rejects_unknown_fields_but_allows_known_read_model_fields() -> None:
     unknown = deepcopy(_records())
     unknown[0]["future_field"] = "must-not-disappear"
     with pytest.raises(ValueError, match="unversioned fields: future_field"):
@@ -150,8 +171,110 @@ def test_projection_rejects_unknown_or_derived_field_loss() -> None:
 
     derived = deepcopy(_records())
     derived[0]["resume_ready"] = True
-    with pytest.raises(TodoSectionProjectionError, match="resume_ready"):
-        render_canonical_todo_sections(SOURCE, derived, provider_revision="rev-1")
+    projected = render_canonical_todo_sections(
+        SOURCE,
+        derived,
+        provider_revision="rev-1",
+    )
+    assert projected.changed is True
+    assert "resume_ready" not in projected.markdown
+
+
+def test_projection_renders_native_archive_with_role_and_replays() -> None:
+    source = SOURCE + "\n## Completed Work Archive\n\n- [x] stale archive\n"
+    records = _records()
+    for record in records:
+        record["schema_version"] = "todo_domain_record_v0"
+        record.pop("source_section")
+        record.pop("index")
+    records.append(
+        {
+            "schema_version": "todo_domain_record_v0",
+            "todo_id": "todo_archived",
+            "role": "agent",
+            "status": "done",
+            "done": True,
+            "text": "Completed provider-owned work.",
+            "archive_state": "archive",
+            "task_class": "advancement_task",
+            "created_by": "codex-worker",
+            "last_actor_agent_id": "codex-worker",
+        }
+    )
+
+    projected = render_canonical_todo_sections(
+        source,
+        records,
+        provider_revision="rev-archive",
+    )
+
+    assert "stale archive" not in projected.markdown
+    assert "Completed provider-owned work." in projected.markdown
+    assert "role=agent" in projected.markdown
+    markers = inspect_todo_section_projection(projected.markdown)
+    assert {item["role"] for item in markers["sections"]} == {
+        "user",
+        "agent",
+        "archive",
+    }
+    replay = render_canonical_todo_sections(
+        projected.markdown,
+        records,
+        provider_revision="rev-archive",
+    )
+    assert replay.changed is False
+
+
+def test_projection_creates_archive_region_for_archived_records() -> None:
+    archived = {
+        "schema_version": "todo_domain_record_v0",
+        "todo_id": "todo_archived",
+        "role": "agent",
+        "status": "done",
+        "done": True,
+        "text": "Completed provider-owned work.",
+        "archive_state": "archive",
+    }
+    projected = render_canonical_todo_sections(
+        SOURCE,
+        [archived],
+        provider_revision="rev-archive",
+    )
+    assert "## Completed Work Archive" in projected.markdown
+    assert "Completed provider-owned work." in projected.markdown
+    assert {item["role"] for item in inspect_todo_section_projection(
+        projected.markdown
+    )["sections"]} == {"user", "agent", "archive"}
+    replay = render_canonical_todo_sections(
+        projected.markdown,
+        [archived],
+        provider_revision="rev-archive",
+    )
+    assert replay.changed is False
+
+
+@pytest.mark.parametrize("corrupt_scope", [False, True])
+def test_optional_scope_version_is_display_only_not_permission_to_change_scope(monkeypatch, corrupt_scope):
+    from loopx.control_plane.todos import machine_section_projection as module
+
+    records = _records()
+    records[1]["decision_scope"].pop("schema_version")
+    before = deepcopy(records)
+    original = module._render_record
+
+    def render(record, **kwargs):
+        if corrupt_scope and record.get("decision_scope"):
+            record = {**record, "decision_scope": {**record["decision_scope"], "scope_key": "different_scope"}}
+        return original(record, **kwargs)
+
+    monkeypatch.setattr(module, "_render_record", render)
+    if corrupt_scope:
+        with pytest.raises(TodoSectionProjectionError, match="parity mismatch"):
+            render_canonical_todo_sections(SOURCE, records, provider_revision="scope-version")
+    else:
+        rendered = render_canonical_todo_sections(SOURCE, records, provider_revision="scope-version")
+        assert "direction:action:authority_cutover" in rendered.markdown
+    assert records == before
 
 
 def test_projection_rejects_duplicate_sections_and_unsafe_revision() -> None:
@@ -180,14 +303,14 @@ def test_project_markdown_cli_requires_promoted_exact_revision(
             lambda _path: {"common_runtime_root": str(tmp_path / "runtime")},
         )
         monkeypatch.setattr(
-            todo_command,
+            provider_projection,
             "read_canonical_todos_if_promoted",
             lambda **_kwargs: payload,
         )
         monkeypatch.setattr(
-            todo_command,
-            "resolve_todo_state_path",
-            lambda **_kwargs: (tmp_path, state_path),
+            provider_projection,
+            "resolve_goal_state",
+            lambda **_kwargs: (object(), tmp_path, state_path),
         )
         result = todo_command.handle_todo_command(
             parser.parse_args(
@@ -252,7 +375,7 @@ def test_project_markdown_cli_uses_raw_provider_records(
         lambda _path: {"common_runtime_root": str(tmp_path / "runtime")},
     )
     monkeypatch.setattr(
-        todo_command,
+        provider_projection,
         "read_canonical_todos_if_promoted",
         lambda **_kwargs: {
             "todos": raw_records,
@@ -266,9 +389,9 @@ def test_project_markdown_cli_uses_raw_provider_records(
         lambda **_kwargs: pytest.fail("projection must not consume the enriched list view"),
     )
     monkeypatch.setattr(
-        todo_command,
-        "resolve_todo_state_path",
-        lambda **_kwargs: (tmp_path, state_path),
+        provider_projection,
+        "resolve_goal_state",
+        lambda **_kwargs: (object(), tmp_path, state_path),
     )
     captured: dict[str, object] = {}
 
@@ -303,7 +426,7 @@ def test_project_markdown_cli_publishes_with_atomic_replace(
     original_mode = stat.S_IMODE(state_path.stat().st_mode)
     parent_syncs: list[object] = []
     monkeypatch.setattr(
-        todo_command,
+        provider_projection,
         "_fsync_parent_directory",
         lambda path: parent_syncs.append(path),
     )
@@ -313,7 +436,7 @@ def test_project_markdown_cli_publishes_with_atomic_replace(
         lambda _path: {"common_runtime_root": str(tmp_path / "runtime")},
     )
     monkeypatch.setattr(
-        todo_command,
+        provider_projection,
         "read_canonical_todos_if_promoted",
         lambda **_kwargs: {
             "todos": _records(),
@@ -322,18 +445,19 @@ def test_project_markdown_cli_publishes_with_atomic_replace(
         },
     )
     monkeypatch.setattr(
-        todo_command,
-        "resolve_todo_state_path",
-        lambda **_kwargs: (tmp_path, state_path),
+        provider_projection,
+        "resolve_goal_state",
+        lambda **_kwargs: (object(), tmp_path, state_path),
     )
     replacements: list[tuple[object, object]] = []
-    real_replace = todo_command.os.replace
+    real_replace = provider_projection.os.replace
 
     def record_replace(source, target) -> None:
-        replacements.append((source, target))
+        if Path(target) == state_path:
+            replacements.append((source, target))
         real_replace(source, target)
 
-    monkeypatch.setattr(todo_command.os, "replace", record_replace)
+    monkeypatch.setattr(provider_projection.os, "replace", record_replace)
 
     result = todo_command.handle_todo_command(
         build_parser().parse_args(
@@ -368,7 +492,7 @@ def test_atomic_projection_failure_preserves_original(monkeypatch, tmp_path, ope
     state_path = tmp_path / "ACTIVE_GOAL_STATE.md"
     state_path.write_bytes(b"original\r\n")
     opened = []
-    real_fdopen = todo_command.os.fdopen
+    real_fdopen = provider_projection.os.fdopen
 
     def capture_handle(*args, **kwargs):
         handle = real_fdopen(*args, **kwargs)
@@ -378,10 +502,10 @@ def test_atomic_projection_failure_preserves_original(monkeypatch, tmp_path, ope
     def fail(*_args, **_kwargs):
         raise OSError("injected pre-publication failure")
 
-    monkeypatch.setattr(todo_command.os, "fdopen", capture_handle)
-    monkeypatch.setattr(todo_command.os, operation, fail)
+    monkeypatch.setattr(provider_projection.os, "fdopen", capture_handle)
+    monkeypatch.setattr(provider_projection.os, operation, fail)
     with pytest.raises(OSError, match="injected pre-publication failure"):
-        todo_command._atomic_write_text(state_path, "replacement\n")
+        provider_projection._atomic_write_text(state_path, "replacement\n")
     assert state_path.read_bytes() == b"original\r\n"
     assert opened and all(handle.closed for handle in opened)
     assert list(tmp_path.iterdir()) == [state_path]
@@ -408,7 +532,7 @@ def test_project_markdown_cli_preserves_narrative_boundaries(
         lambda _path: {"common_runtime_root": str(tmp_path / "runtime")},
     )
     monkeypatch.setattr(
-        todo_command,
+        provider_projection,
         "read_canonical_todos_if_promoted",
         lambda **_kwargs: {
             "todos": _records(),
@@ -417,9 +541,9 @@ def test_project_markdown_cli_preserves_narrative_boundaries(
         },
     )
     monkeypatch.setattr(
-        todo_command,
-        "resolve_todo_state_path",
-        lambda **_kwargs: (tmp_path, state_path),
+        provider_projection,
+        "resolve_goal_state",
+        lambda **_kwargs: (object(), tmp_path, state_path),
     )
 
     captured: dict[str, object] = {}
@@ -482,38 +606,7 @@ def test_real_promoted_provider_to_cli_projection(tmp_path: Path) -> None:
     assert state.read_bytes() == source
 
     projection = build_todo_runtime_shadow_projection(goal_id="goal-a", todos=_records())
-    digest = hashlib.sha256(json.dumps(
-        projection, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()).hexdigest()
-    common = {"runtime_root": str(runtime), "goal_id": "goal-a"}
-    for action in ("bootstrap", "commit"):
-        applied = effect_runtime_result(f"coordination.runtime_shadow.{action}", {
-            **common,
-            "schema_version": f"loopx_coordination_runtime_shadow_{action}_v0",
-            "operation_id": f"projection-{action}", "source_version": f"source-{action}",
-            "projection": projection,
-            **({"event_kind": "todo_update"} if action == "commit" else {}),
-        })
-        assert applied["status"] == "applied"
-    revision = applied["provider_revision"]
-    fence = {
-        "schema_version": "loopx_legacy_coordination_writer_fence_v0",
-        "state": "engaged", "goal_id": "goal-a", "fence_id": "projection-fence",
-        "source_version": "source-commit", "source_projection_sha256": digest,
-        "expected_shadow_provider_revision": revision,
-    }
-    engaged = effect_runtime_result("coordination.local_authority.legacy_writer_fence.engage", {
-        **common, "schema_version": "loopx_legacy_coordination_writer_fence_engage_request_v0",
-        "fence": fence,
-    })
-    assert engaged["status"] == "applied"
-    promoted = effect_runtime_result("coordination.local_authority.promote", {
-        **common, "schema_version": "loopx_local_coordination_promotion_request_v0",
-        "operation_id": "projection-promote", "expected_shadow_provider_revision": revision,
-        "expected_shadow_projection_sha256": digest, "minimum_operations": 1,
-        "required_event_kinds": ["todo_update"], "writer_fence": fence,
-    })
-    assert promoted["status"] == "applied"
+    initialize_canonical_authority(runtime, "goal-a", projection, state_path=state)
     before = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id="goal-a")
     revision = before["provider_revision"]
     code, preview = run(revision)

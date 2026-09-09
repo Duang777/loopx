@@ -37,6 +37,74 @@ QUOTA_SETTLEMENT_READBACK_RESULT_SCHEMA = (
 SEMANTIC_REPLAN_GUARD_SCHEMA = "semantic_replan_guard_v0"
 
 
+def _checkpoint_instructions(checkpoint: Mapping[str, Any]) -> str:
+    lines = [
+        "Submit a checkpoint-only refresh with the same Goal, Agent, Todo/obligation, "
+        "Turn, and delivery fields, from the original working directory.",
+        "- Preserve: Keep original values and presence for target, scope, and isolation "
+        "options: `--registry`, `--runtime-root`, `--project`, `--state-file`, "
+        "`--progress-scope`, `--agent-lane`, `--available-capability`, "
+        "`--no-global-sync`, `--suppress-external-sinks`; identity and delivery options: "
+        "`--goal-id`, `--agent-id`, `--todo-id`, `--replan-obligation-id`, "
+        "`--turn-instance-id`, `--completion-todo-id`, `--completion-turn-key`, "
+        "`--classification`, `--recommended-action`, `--delivery-batch-scale`, "
+        "`--delivery-outcome`, `--delivery-boundary`, `--delivery-workspace-path`, "
+        "`--progress-result-class`, `--progress-surface-id`, `--progress-hypothesis-id`, "
+        "`--progress-probe-kind`, `--progress-blocker-id`, `--progress-coverage-scope-id`, "
+        "`--progress-evidence-id`, `--progress-coverage-complete`. Do not add options absent "
+        "from the original command or change its delivery target.",
+        "- Remove: Remove previously executed state-mutation options, even when their "
+        "values are unchanged: `--next-action`, `--autonomous-replan-recorded`, "
+        "`--repair-delta-kind`, `--usage-json`, `--usage-codex-session`. "
+        "Remove dependent options that become invalid without them.",
+        "- Add: Add only one valid vision decision: a valid `--agent-vision-json` packet "
+        "or inline `--vision-*` patch containing your authored vision content.",
+    ]
+    if checkpoint.get("missing_baseline") is True:
+        lines.append(
+            "No persisted vision baseline is available; an unchanged reason cannot "
+            "satisfy this checkpoint."
+        )
+    else:
+        lines[-1] += (
+            " Alternatively use `--vision-unchanged-reason` only if a persisted vision "
+            "exists and its scope and acceptance still apply."
+        )
+    lines.append(
+        "Do not repeat implementation, manufacture a successor, or begin another "
+        "Turn solely to repair this checkpoint. Keep the ordinary one-spend "
+        "settlement order. Recovery remains subject to existing validation and "
+        "does not certify acceptance or bypass replan, identity, or terminal gates."
+    )
+    return "\n".join(lines)
+
+
+def render_first_refresh_checkpoint_hint(payload: dict[str, Any]) -> list[str]:
+    """Explain the first committed missing checkpoint without changing admission."""
+    recovery = payload.get("refresh_recovery")
+    identity = payload.get("settlement_identity")
+    checkpoint = payload.get("vision_checkpoint")
+    if (
+        payload.get("ok") is True
+        and payload.get("appended") is True
+        and payload.get("dry_run") is False
+        and isinstance(recovery, dict)
+        and recovery.get("decision") == "append"
+        and recovery.get("reason") == "first_writeback"
+        and isinstance(identity, dict)
+        and identity
+        and isinstance(checkpoint, dict)
+        and checkpoint.get("required") is True
+        and checkpoint.get("satisfied") is False
+        and checkpoint.get("decision") == "missing_required"
+    ):
+        return [
+            "The writeback succeeded, but the required vision checkpoint is still unsatisfied.",
+            _checkpoint_instructions(checkpoint),
+        ]
+    return []
+
+
 def render_refresh_recovery_markdown(payload: dict[str, Any]) -> str | None:
     """Present an admitted recovery result without deriving settlement policy."""
     recovery = payload.get("refresh_recovery") or {}
@@ -58,9 +126,7 @@ def render_refresh_recovery_markdown(payload: dict[str, Any]) -> str | None:
     if payload.get("error"):
         lines.append(str(payload["error"]))
     elif checkpoint.get("satisfied") is False:
-        lines.append(
-            "Retry the same refresh command and Turn with --vision-unchanged-reason if an existing vision still applies, or --agent-vision-json for a valid vision patch. Do not repeat work or begin a new Turn for this checkpoint."
-        )
+        lines.append(_checkpoint_instructions(checkpoint))
     return "\n".join(lines)
 
 

@@ -88,13 +88,17 @@ function activityTimeLabel(value: string | undefined, locale: string, t: Workspa
 function ManagerHomeBoard({
   goals,
   onSelectGoal,
+  onRetry,
   systemHealth,
 }: {
   goals: WorkspaceGoal[];
   onSelectGoal: (goalId: string) => void;
+  onRetry?: () => void;
   systemHealth?: WorkspaceSystemHealth;
 }) {
   const { locale, t } = useWorkspaceI18n();
+  const currentGoals = goals.filter((goal) => goal.activationState === "active");
+  const failedCount = currentGoals.filter((goal) => goal.loadState === "error").length;
   const activeHomeLanes = [
     { description: t("home.lane.needsYouDescription"), key: "needs_you", label: t("home.lane.needsYou") },
     { description: t("home.lane.runningDescription"), key: "running", label: t("home.lane.running") },
@@ -104,20 +108,20 @@ function ManagerHomeBoard({
   const active = Object.fromEntries(activeHomeLanes.map((lane) => [lane.key, [] as WorkspaceGoal[]])) as Record<(typeof activeHomeLanes)[number]["key"], WorkspaceGoal[]>;
   const history: WorkspaceGoal[] = [];
   const stopped: WorkspaceGoal[] = [];
-  goals.forEach((goal) => {
+  goals.filter((goal) => !goal.loadState).forEach((goal) => {
     const lane = workspaceHomeLaneForGoal(goal);
     if (lane === "history") history.push(goal);
     else if (lane === "stopped") stopped.push(goal);
     else active[lane].push(goal);
   });
   const goalCard = (goal: WorkspaceGoal) => (
-    <button className="personal-home-goal-card" data-goal-state={goal.state} key={goal.goalId} onClick={() => onSelectGoal(goal.goalId)} type="button">
+    <button className="personal-home-goal-card" data-goal-state={goal.loadState ?? goal.state} data-load-error={goal.loadError} key={goal.goalId} onClick={() => onSelectGoal(goal.goalId)} type="button">
       <span className="personal-home-goal-meta"><i />{goal.agentLaneCount && goal.agentLaneCount > 1
         ? t("header.workAgentCount", { count: goal.agentLaneCount })
         : goal.agentLabel ?? goal.agentId}</span>
       <strong>{goal.title}</strong>
-      <p>{goal.needsYou ?? goal.nextSentence}</p>
-      <footer><span>{localizedGoalState(goal.state, locale)}</span><small title={goal.latestActivity}>{goal.latestActivity ? activityTimeLabel(goal.latestActivity, locale, t) : goal.agentTodos.length ? t("home.taskCount", { count: goal.agentTodos.length }) : t("home.noActivity")}</small></footer>
+      <p>{goal.loadError ? t(`startup.error.${goal.loadError}`) : goal.needsYou ?? goal.nextSentence}</p>
+      <footer><span>{(goal.loadState ? t(goal.loadState === "error" ? "startup.goalError" : "startup.goalLoading") : localizedGoalState(goal.state, locale))}</span><small title={goal.latestActivity}>{goal.loadState ? "" : goal.latestActivity ? activityTimeLabel(goal.latestActivity, locale, t) : goal.agentTodos.length ? t("home.taskCount", { count: goal.agentTodos.length }) : t("home.noActivity")}</small></footer>
     </button>
   );
   return (
@@ -138,6 +142,12 @@ function ManagerHomeBoard({
           ) : null}
         </div>
       ) : null}
+      {currentGoals.some((goal) => goal.loadState) ? <section className="personal-home-lane" aria-live="polite">
+        <header>{t("startup.progress", { loaded: currentGoals.filter((goal) => !goal.loadState).length, total: currentGoals.length })}</header>
+        {failedCount ? <div className="personal-stopped-goal-error" role="status"><span>{t("startup.failedCount", { count: failedCount })}</span>
+          <button className="min-h-11 rounded-md border px-3 py-2 text-sm" onClick={onRetry} type="button">{t("startup.retryFailed")}</button></div> : null}
+        {currentGoals.filter((goal) => goal.loadState).map(goalCard)}
+      </section> : null}
       <div className="personal-home-lanes">
         {activeHomeLanes.map((lane) => (
           <section className={`personal-home-lane is-${lane.key}`} data-testid={`personal-home-lane-${lane.key}`} key={lane.key}>
@@ -727,6 +737,7 @@ export function PersonalWorkspacePage({
   const [goalContexts, setGoalContexts] = useState<Record<string, GoalRepositoryContext>>({});
   const [larkConnections, setLarkConnections] = useState<LarkGoalConnection[]>([]);
   const digestInitRef = useRef(false);
+  const digestSinceRef = useRef(Number.NaN);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const channelScrollRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -946,27 +957,30 @@ export function PersonalWorkspacePage({
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [mobileSidebarOpen]);
 
-  // Morning digest: computed once per manager-home visit, measured against the previous visit.
   useEffect(() => {
-    if (digestInitRef.current || selectedGoalId || !items.length) return;
-    digestInitRef.current = true;
-    let since = Number.NaN;
-    try {
-      since = Date.parse(window.localStorage.getItem("loopx-pw-last-visit") ?? "");
-      window.localStorage.setItem("loopx-pw-last-visit", new Date().toISOString());
-    } catch {
-      // Storage unavailable: show current attention count only, without a time baseline.
+    if (selectedGoalId || !items.length) return;
+    if (!digestInitRef.current) {
+      digestInitRef.current = true;
+      try {
+        digestSinceRef.current = Date.parse(window.localStorage.getItem("loopx-pw-last-visit") ?? "");
+        window.localStorage.setItem("loopx-pw-last-visit", new Date().toISOString());
+      } catch {
+        digestSinceRef.current = Number.NaN;
+      }
     }
+    const since = digestSinceRef.current;
     const runs = items.filter((item): item is Extract<WorkspaceTimelineItem, { kind: "run" }> => item.kind === "run").map((item) => item.run);
     const isFresh = (time?: string) => {
       const parsed = Date.parse(time ?? "");
       return !Number.isNaN(since) && !Number.isNaN(parsed) && parsed > since;
     };
-    setDigest({
+    const nextDigest = {
       attention: managerNeedsYouCount,
       done: runs.filter((run) => run.status === "completed" && isFresh(run.latestActivity)).length,
       failed: runs.filter((run) => (run.status === "failed" || run.status === "interrupted") && isFresh(run.latestActivity)).length,
-    });
+    };
+    setDigest((current) => current?.attention === nextDigest.attention
+      && current.done === nextDigest.done && current.failed === nextDigest.failed ? current : nextDigest);
   }, [items, managerNeedsYouCount, selectedGoalId]);
 
   useEffect(() => {
@@ -1710,7 +1724,7 @@ export function PersonalWorkspacePage({
             managerChatOpen={managerChatOpen}
             mobileNavigationOpen={mobileSidebarOpen}
             onOpenGoalCapabilities={selectedGoal ? () => setSelection({ goalId: selectedGoal.goalId, kind: "settings", tab: "capabilities" }) : undefined}
-            onOpenGoalDetail={selectedGoal ? () => setSelection({ item: selectedGoal, kind: "goal" }) : undefined}
+            onOpenGoalDetail={selectedGoal && !selectedGoal.loadState ? () => setSelection({ item: selectedGoal, kind: "goal" }) : undefined}
             onRefresh={callbacks.onRefresh ? () => void refreshWorkspace() : undefined}
             onOpenNavigation={() => setMobileSidebarOpen(true)}
             onOpenManagerChat={() => {
@@ -1750,10 +1764,16 @@ export function PersonalWorkspacePage({
             {!selectedGoal && !managerChatOpen ? (
               <section className="personal-manager-greeting">
                 <span><Bot size={20} /></span>
-                <div><strong>{t("home.greeting")}</strong><p>{t("home.waitingCount", { count: managerNeedsYouCount })} {t("home.blockingSummary", { count: managerBlockingCount })}</p></div>
+                <div><strong>{t("home.greeting")}</strong><p>{model.goals.some((goal) => goal.activationState === "active" && goal.loadState) ? t("startup.partial") : <>{t("home.waitingCount", { count: managerNeedsYouCount })} {t("home.blockingSummary", { count: managerBlockingCount })}</>}</p></div>
               </section>
             ) : null}
-            {selectedGoal && selectedGoalTab === "tasks" ? (
+            {selectedGoal?.loadState ? (
+              <section className="personal-manager-greeting" role="status" data-testid="goal-status-loading">
+                <div><strong>{t(selectedGoal.loadState === "error" ? "startup.goalError" : "startup.goalLoading")}</strong>
+                <p>{t(selectedGoal.loadError ? `startup.error.${selectedGoal.loadError}` : "startup.independent")}</p>
+                {selectedGoal.loadState === "error" ? <button className="min-h-11 rounded-md border px-3 py-2 text-sm" type="button" onClick={() => void callbacks.onRefresh?.()}>{t("startup.retry")}</button> : null}</div>
+              </section>
+            ) : selectedGoal && selectedGoalTab === "tasks" ? (
               <GoalTasksView
                 historyEnabled={!readOnly}
                 goal={selectedGoal}
@@ -1778,7 +1798,7 @@ export function PersonalWorkspacePage({
                 reportState={model.periodicReports}
               />
             ) : !selectedGoal && !managerChatOpen ? (
-              <ManagerHomeBoard goals={workspaceGoals} onSelectGoal={selectGoal} systemHealth={model.systemHealth} />
+              <ManagerHomeBoard goals={workspaceGoals} onRetry={() => void callbacks.onRefresh?.()} onSelectGoal={selectGoal} systemHealth={model.systemHealth} />
             ) : !selectedGoal ? (
               <ChannelTimeline items={managerChatItems} onSelect={setSelection} selectedGoal={null} />
             ) : (

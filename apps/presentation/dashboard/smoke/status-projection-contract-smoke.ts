@@ -1,4 +1,10 @@
-import { parseStatusPayload } from "../src/data/status";
+import { z } from "zod";
+
+import {
+  parseStatusPayload,
+  periodicReportIndexItemSchema,
+  periodicReportIndexResponseSchema,
+} from "../src/data/status";
 import { mergeScopedStatusProjections } from "../src/data/status-merge";
 import {
   beginStatusRequest,
@@ -382,7 +388,56 @@ equal(
   "a scoped server without revision remains compatible",
 );
 
-// 6) fence: overlapping same-source background requests must be latest-wins.
+// 6) usage metrics omitted by the producer remain unknown instead of being
+// normalized into measured zeroes. Run and quota counters retain their existing
+// zero semantics because they describe the sampled history, not measurement.
+const usageWithNoMeasurements = basePayload({
+  usage_summary: {
+    totals: { runs_24h: 0, runs_7d: 0, quota_spend_slots_24h: 0, quota_spend_slots_7d: 0 },
+    goals: [],
+  },
+});
+equal(usageWithNoMeasurements.usage_summary?.totals.input_tokens_24h, undefined, "missing token count stays unknown");
+equal(usageWithNoMeasurements.usage_summary?.totals.cost_usd_24h, undefined, "missing cost stays unknown");
+equal(usageWithNoMeasurements.usage_summary?.totals.runs_24h, 0, "missing run count remains a measured zero");
+
+const activeUsageWithoutTokens = basePayload({
+  goal_projection: {
+    schema_version: "loopx_goal_projection_scope_v0",
+    scope: "active",
+    complete: false,
+    projected_goal_count: 1,
+    registry_goal_count: 2,
+    registry_revision: "registry_activation_v1:usage-rev",
+  },
+  run_history: { available: true, goal_count: 1, run_count: 1, goals: [goal("alpha", "active")], recent_runs: [] },
+  usage_summary: {
+    totals: { runs_24h: 1, runs_7d: 1, quota_spend_slots_24h: 0, quota_spend_slots_7d: 0 },
+    goals: [{ goal_id: "alpha", runs_24h: 1, runs_7d: 1, quota_spend_slots_24h: 0, quota_spend_slots_7d: 0 }],
+  },
+});
+const stoppedUsageWithTokens = basePayload({
+  goal_projection: {
+    schema_version: "loopx_goal_projection_scope_v0",
+    scope: "stopped",
+    complete: false,
+    projected_goal_count: 1,
+    registry_goal_count: 2,
+    registry_revision: "registry_activation_v1:usage-rev",
+  },
+  run_history: { available: true, goal_count: 1, run_count: 1, goals: [goal("gamma", "stopped")], recent_runs: [] },
+  usage_summary: {
+    totals: { runs_24h: 1, runs_7d: 1, quota_spend_slots_24h: 0, quota_spend_slots_7d: 0, input_tokens_24h: 10, input_tokens_7d: 10, cache_tokens_24h: 0 },
+    goals: [{ goal_id: "gamma", runs_24h: 1, runs_7d: 1, quota_spend_slots_24h: 0, quota_spend_slots_7d: 0, input_tokens_24h: 10, input_tokens_7d: 10, cache_tokens_24h: 0 }],
+  },
+});
+const mergedObservedUsage = mergeScopedStatusProjections(activeUsageWithoutTokens, stoppedUsageWithTokens);
+equal(mergedObservedUsage.usage_summary?.totals.input_tokens_24h, 10, "merge sums available token measurements");
+equal(mergedObservedUsage.usage_summary?.totals.cache_tokens_24h, 0, "merge preserves an observed zero measurement");
+equal(mergedObservedUsage.usage_summary?.totals.cost_usd_24h, undefined, "merge retains unknown when neither scope measured cost");
+equal(mergedObservedUsage.usage_summary?.totals.runs_24h, 2, "merge retains run counter semantics");
+
+// 7) fence: overlapping same-source background requests must be latest-wins.
 const url = "/status.json";
 const fence = createStatusRequestFence(null);
 fence.loadedUrl = url;
@@ -401,5 +456,60 @@ const fg = beginStatusRequest(fence, url, { background: false });
 assert(fg !== null, "foreground request starts");
 assert(!statusRequestCanCommit(fence, bg2), "background request cannot commit after foreground started");
 assert(statusRequestCanCommit(fence, fg), "foreground request can commit");
+
+// 8) periodic-report index remains compatible across staggered app/server upgrades.
+const periodicReportItem = {
+  goal_id: "synthetic-goal",
+  agent_id: "synthetic-agent",
+  generation_id: "generation-one",
+  publication_id: "publication-one",
+  delivered_at: "2026-09-06T00:00:00Z",
+  detail_ref: {
+    goal_id: "synthetic-goal",
+    agent_id: "synthetic-agent",
+    generation_id: "generation-one",
+    content_sha256: `sha256:${"1".repeat(64)}`,
+  },
+};
+const legacyPeriodicReportIndexResponseSchema = z.object({
+  ok: z.literal(true),
+  periodic_reports: z.object({
+    schema_version: z.literal("periodic_report_workspace_index_v0"),
+    count: z.number().int().nonnegative(),
+    items: z.array(periodicReportIndexItemSchema),
+  }).strict(),
+}).strict();
+const legacyIndexResponse = {
+  ok: true as const,
+  periodic_reports: {
+    schema_version: "periodic_report_workspace_index_v0" as const,
+    count: 1,
+    items: [periodicReportItem],
+  },
+};
+const newServerLegacyIndexResponse = {
+  ...legacyIndexResponse,
+  periodic_reports: { ...legacyIndexResponse.periodic_reports },
+};
+const windowedIndexResponse = {
+  ok: true as const,
+  periodic_reports: {
+    ...legacyIndexResponse.periodic_reports,
+    returned_count: 1,
+    total_count: 1,
+    limit: 100,
+    offset: 0,
+    truncated: false,
+  },
+};
+legacyPeriodicReportIndexResponseSchema.parse(legacyIndexResponse);
+periodicReportIndexResponseSchema.parse(legacyIndexResponse);
+legacyPeriodicReportIndexResponseSchema.parse(newServerLegacyIndexResponse);
+periodicReportIndexResponseSchema.parse(windowedIndexResponse);
+equal(
+  periodicReportIndexResponseSchema.parse(legacyIndexResponse).periodic_reports.total_count,
+  1,
+  "new reader normalizes a legacy index response",
+);
 
 console.log("status projection contract smoke: ok");

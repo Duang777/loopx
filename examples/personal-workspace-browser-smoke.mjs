@@ -405,35 +405,43 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
       fixture.attention_queue.items.push({
         agent_todos: {
           advancement_done_count: 42,
-          done_count: 4,
+          done_count: 6,
+          deferred_count: 2,
           items: [
             currentTodo,
             { done: false, index: 5, role: "agent", status: "open", task_class: "advancement_task", text: idlessLongTitle, title: idlessLongTitle },
+            { done: false, index: 7, role: "agent", status: "open", task_class: "advancement_task", text: "Full queue follow-up", title: "Full queue follow-up", todo_id: "todo-progress-full" },
+            { done: true, index: 8, role: "agent", status: "deferred", resume_when: "todo_done:todo-progress-full", task_class: "advancement_task", text: "Deferred queue task", title: "Deferred queue task", todo_id: "todo-progress-deferred" },
             { done: true, index: 1, role: "agent", status: "done", task_class: "advancement_task", text: "Completed A", title: "Completed A", todo_id: "todo-progress-a" },
             { done: true, index: 2, role: "agent", status: "done", task_class: "advancement_task", text: "Completed B", title: "Completed B", todo_id: "todo-progress-b" },
             { done: true, index: 3, role: "agent", status: "done", task_class: "advancement_task", text: "Completed C", title: "Completed C", todo_id: "todo-progress-c" },
             { done: true, index: 6, role: "agent", status: "done", task_class: "continuous_monitor", text: "Completed Monitor", title: "Completed Monitor", todo_id: "todo-progress-monitor" },
           ],
-          open_count: 2,
+          deferred_items: [
+            { done: true, index: 8, role: "agent", status: "deferred", resume_when: "todo_done:todo-progress-full", task_class: "advancement_task", text: "Deferred queue task", title: "Deferred queue task", todo_id: "todo-progress-deferred" },
+            { done: true, index: 9, role: "agent", status: "deferred", task_class: "advancement_task", text: "Deferred follow-up outside preview", title: "Deferred follow-up outside preview", todo_id: "todo-progress-deferred-extra" },
+          ],
+          open_count: 3,
           source_section: "Agent Todo",
-          total_count: 6,
+          total_count: 9,
         },
         goal_id: "progress-projection",
         project_asset: {
           agent_todos: {
             advancement_done_count: 42,
-            done: 4,
+            done: 6,
+            deferred_count: 2,
             items: [
               currentTodo,
               { done: false, index: 5, role: "agent", status: "open", task_class: "advancement_task", text: idlessLongTitle.slice(0, 220), title: idlessLongTitle.slice(0, 220) },
             ],
-            open: 2,
+            open: 3,
             recent_completed_advancement_items: [
               { done: true, index: 1, role: "agent", status: "done", task_class: "advancement_task", text: "Completed A", title: "Completed A", todo_id: "todo-progress-a" },
               { done: true, index: 2, role: "agent", status: "done", task_class: "advancement_task", text: "Completed B", title: "Completed B", todo_id: "todo-progress-b" },
               { done: true, index: 3, role: "agent", status: "done", task_class: "advancement_task", text: "Completed C", title: "Completed C", todo_id: "todo-progress-c" },
             ],
-            total: 6,
+            total: 9,
           },
           gate: "none",
           next_action: "Current Todo",
@@ -563,7 +571,11 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
     await route.fulfill({ contentType: "application/json", json: fixture, status: 200 });
   });
   await page.route("**/periodic-report-workspace?*", async (route) => {
-    const goalId = new URL(route.request().url()).searchParams.get("goal_id");
+    const requestUrl = new URL(route.request().url());
+    const goalId = requestUrl.searchParams.get("goal_id");
+    if (requestUrl.searchParams.get("limit") !== "100" || requestUrl.searchParams.get("offset") !== "0") {
+      throw new Error("Periodic-report index request did not negotiate a bounded window");
+    }
     const items = goalId === periodicReportProjection.goal_id ? [{
       goal_id: periodicReportProjection.goal_id,
       agent_id: periodicReportProjection.agent_id,
@@ -580,7 +592,19 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
     }] : [];
     await route.fulfill({
       contentType: "application/json",
-      json: { ok: true, periodic_reports: { schema_version: "periodic_report_workspace_index_v0", count: items.length, items } },
+      json: {
+        ok: true,
+        periodic_reports: {
+          schema_version: "periodic_report_workspace_index_v0",
+          count: items.length,
+          returned_count: items.length,
+          total_count: items.length,
+          limit: 100,
+          offset: 0,
+          truncated: false,
+          items,
+        },
+      },
       status: 200,
     });
   });
@@ -850,7 +874,10 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
       await route.fulfill({ contentType: "application/json", json: {
         ok: true,
         schema_version: "loopx_lark_apps_v0",
-        apps: [{ active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true }],
+        apps: [
+          { active: true, app_ref: "mew", brand: "feishu", label: "LoopX Mew", ready: true, reply_ready: true },
+          { active: true, app_ref: "mew-research", brand: "feishu", label: "LoopX Research", ready: true, reply_ready: true },
+        ],
       }, status: 200 });
       return;
     }
@@ -872,24 +899,29 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
     }
     if (url.pathname === "/api/chat/lark/connections" && request.method() === "POST") {
       const body = request.postDataJSON();
-      const connectionId = `lark-${body.goal_id}-${body.agent_id ?? "default"}`;
+      const bindings = Array.isArray(body.agent_bindings)
+        ? body.agent_bindings
+        : [{ agent_id: body.agent_id ?? null, app_ref: body.app_ref }];
       if (body.execute) {
         const fixture = require(resolve(repoRoot, "examples/status.example.json"));
         const goal = (fixture.run_history?.goals ?? []).find((item) => item.id === body.goal_id);
-        runtime.larkConnections = runtime.larkConnections.filter((item) => item.connection_id !== connectionId);
-        runtime.larkConnections.push({
-          agent_id: body.agent_id ?? null,
-          connection_id: connectionId,
-          app_label: "LoopX Mew", app_ref: body.app_ref, chat_name: body.chat_name, enabled: true,
-          capture_scope: body.capture_scope,
-          event_count: 0, health_error_code: "lark_event_delivery_unverified",
-          goal_id: body.goal_id, goal_title: goal?.id ?? body.goal_id, incoming_mode: body.incoming_mode,
-          ingress_mode: body.ingress_mode,
-          last_event_reason: null, last_event_status: null, listener_error_code: null, listener_status: "listening", replied_count: 0,
-          reply_mode: "topic_reply", target_ref: "product-group", topic_name: goal?.id ?? body.goal_id,
-          topic_setup_required: false, reply_ready: false,
-        });
-        state.larkWrites.push({ ...body });
+        for (const binding of bindings) {
+          const connectionId = `lark-${body.goal_id}-${binding.agent_id ?? "default"}`;
+          runtime.larkConnections = runtime.larkConnections.filter((item) => item.connection_id !== connectionId);
+          runtime.larkConnections.push({
+            agent_id: binding.agent_id ?? null,
+            connection_id: connectionId,
+            app_label: binding.app_ref === "mew-research" ? "LoopX Research" : "LoopX Mew", app_ref: binding.app_ref, chat_name: body.chat_name, enabled: true,
+            capture_scope: body.capture_scope,
+            event_count: 0, health_error_code: "lark_event_delivery_unverified",
+            goal_id: body.goal_id, goal_title: goal?.id ?? body.goal_id, incoming_mode: body.incoming_mode,
+            ingress_mode: body.ingress_mode,
+            last_event_reason: null, last_event_status: null, listener_error_code: null, listener_status: "listening", replied_count: 0,
+            reply_mode: "topic_reply", target_ref: "product-group", topic_name: goal?.id ?? body.goal_id,
+            topic_setup_required: false, reply_ready: false,
+          });
+          state.larkWrites.push({ ...body, agent_id: binding.agent_id, app_ref: binding.app_ref });
+        }
       }
       await route.fulfill({ contentType: "application/json", json: {
         ok: true,
@@ -1603,13 +1635,24 @@ async function main() {
     await page.getByTestId("personal-goal-home").waitFor({ state: "visible" });
     await page.getByText("LoopX Manager", { exact: true }).first().waitFor({ state: "visible" });
     if (await page.locator("html").getAttribute("lang") !== "en") throw new Error("English locale did not survive reload");
-    await page.locator(".personal-goal-link").first().click();
+    await page.locator(".personal-goal-link", { hasText: /loopx meta/i }).click();
     await page.getByRole("button", { name: "Open Goal details or capability settings" }).click();
     await page.getByRole("group", { name: "Goal settings" }).getByRole("button", { name: /Goal details/ }).click();
     await page.getByText("Repository", { exact: true }).waitFor({ state: "visible" });
     await page.getByText("Execution Session", { exact: true }).waitFor({ state: "visible" });
     await page.getByText("Read only", { exact: true }).waitFor({ state: "visible" });
     await page.getByRole("button", { name: /Close details/ }).click();
+    const englishGoalNavigation = page.getByRole("navigation", { name: "Goal view" });
+    await englishGoalNavigation.getByRole("button", { name: "Chat", exact: true }).click();
+    await page.getByText("Agent is waiting for your decision", { exact: true }).first().waitFor({ state: "visible" });
+    await englishGoalNavigation.getByRole("button", { name: "Files", exact: true }).click();
+    const latestRunOutput = page.locator('[data-output-kind="evidence"]', { hasText: "Latest run" }).first();
+    await latestRunOutput.waitFor({ state: "visible" });
+    const englishProjectionText = await page.locator(".personal-workspace-main").innerText();
+    for (const forbidden of ["最近运行", "最近验证", "Agent 正在整理下一步", "Agent 正在推进当前 Goal", "Agent 等待你的决定"]) {
+      if (englishProjectionText.includes(forbidden)) throw new Error(`English projection exposed Chinese UI copy ${forbidden}: ${englishProjectionText}`);
+    }
+    await page.screenshot({ path: resolve(outputDir, "desktop-english-projection-copy.png"), fullPage: false, animations: "disabled" });
 
     const writesBeforeEnglishPreviews = api.durableWriteCount;
     await page.locator(".personal-manager-link").first().click();
@@ -1887,7 +1930,26 @@ async function main() {
     const progressHeader = page.locator(".personal-channel-title p");
     if (!(await progressHeader.innerText()).includes("Current Todo")) throw new Error(`Goal header did not prefer the current Todo: ${await progressHeader.innerText()}`);
     const progressColumn = page.locator(".personal-object-list", { hasText: "待执行 / 进行中" });
-    if ((await progressColumn.locator(".personal-task-card").count()) !== 2) throw new Error("Id-less long Todo was duplicated across compact and full projections");
+    if ((await progressColumn.locator(".personal-task-card").count()) !== 5) throw new Error("Id-less long Todo was duplicated across compact and full projections");
+    await progressColumn.getByText("Full queue follow-up", { exact: true }).waitFor();
+    await progressColumn.getByText("Deferred queue task", { exact: true }).waitFor();
+    await progressColumn.getByText("Deferred follow-up outside preview", { exact: true }).waitFor();
+    async function assertDeferredTask(conditionExpected = true) {
+      const title = conditionExpected ? "Deferred queue task" : "Deferred follow-up outside preview";
+      const card = page.locator(".personal-task-card", { hasText: title });
+      await card.getByText("已延期", { exact: true }).waitFor();
+      if (await card.getByText("待执行", { exact: true }).count()) throw new Error("Deferred task was labeled queued");
+      await card.getByText(title, { exact: true }).click();
+      const drawer = page.getByRole("dialog", { name: "Todo 详情" });
+      await drawer.getByText("等待恢复条件满足后重新评估", { exact: true }).waitFor();
+      const condition = drawer.locator("dl > div", { has: page.getByText("恢复条件", { exact: true }) });
+      await condition.getByText(conditionExpected ? "todo_done:todo-progress-full" : "未设置", { exact: true }).waitFor();
+      if (await drawer.getByText("待执行", { exact: true }).count()) throw new Error("Deferred drawer was labeled ready");
+      await page.screenshot({ path: resolve(outputDir, `deferred-task-${conditionExpected ? "condition" : "missing"}.png`), fullPage: false, animations: "disabled" });
+      await drawer.getByRole("button", { name: /关闭详情/ }).click();
+    }
+    await assertDeferredTask();
+    await assertDeferredTask(false);
     const completedColumn = page.locator(".personal-object-list", { hasText: "已完成" }).last();
     const taskLaneScrollers = page.locator('.personal-task-kanban .personal-task-lane-scroll');
     if (await taskLaneScrollers.count() !== 4) throw new Error('Every desktop Task lane must own a scroll region');
@@ -1916,6 +1978,22 @@ async function main() {
     await page.screenshot({ path: resolve(outputDir, 'completed-history-4087.png'), fullPage: false, animations: 'disabled' });
     await historyScroll.evaluate(element => { element.scrollTop = 0; });
     await completedColumn.getByText('Completed A', { exact: true }).waitFor();
+    // Both presentations retain one snapshot, including archived history and evidence.
+    let historyRequests = 0;
+    page.on('request', request => { if (request.url().includes('/api/chat/completed-todos?')) historyRequests += 1; });
+    await page.getByRole('button', { name: '列表', exact: true }).click();
+    await assertDeferredTask();
+    const listHistory = page.getByTestId('completed-task-lane');
+    await listHistory.getByRole('button', { name: '已完成', exact: false }).click();
+    await listHistory.getByText('4087', { exact: true }).waitFor();
+    await listHistory.getByText('Completed A', { exact: true }).waitFor();
+    await listHistory.locator('.personal-task-lane-scroll').evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await listHistory.getByText('Completed historical Task 4087', { exact: true }).waitFor();
+    if (await listHistory.locator('.personal-completed-row').count() > 20) throw new Error('List history DOM grew with accumulated pages');
+    await page.screenshot({ path: resolve(outputDir, 'completed-history-list.png'), fullPage: false, animations: 'disabled' });
+    await page.getByRole('button', { name: '看板', exact: true }).click();
+    await completedColumn.getByText('Completed A', { exact: true }).waitFor();
+    if (historyRequests) throw new Error('Switching presentation replaced the completed-history snapshot');
     await page.locator(".personal-goal-link", { hasText: "Multi Agent Projection" }).click();
     const multiAgentHeader = await page.locator(".personal-channel-title p").innerText();
     if (!multiAgentHeader.includes("2 个工作 Agent") || multiAgentHeader.includes("codex-older-lane ·")) {
@@ -2221,10 +2299,21 @@ async function main() {
     if (await editDialog.getByLabel("接收范围").inputValue() !== "configured_chat_all") throw new Error("Lark edit mode did not restore capture_scope");
     if (!await editDialog.getByRole("group", { name: "Agent 入站方式" }).getByLabel("异步收件箱").isChecked()) throw new Error("Lark edit mode did not restore ingress_mode");
     if (await editDialog.getByLabel("目标 Agent").inputValue() !== api.larkWrites[0].agent_id) throw new Error("Lark edit mode did not restore agent_id");
-    await editDialog.getByLabel("目标 Agent").selectOption("codex-latest-lane");
-    await editDialog.getByRole("button", { name: "保存连接", exact: true }).click();
+    await editDialog.getByRole("button", { name: "取消", exact: true }).click();
     await editDialog.waitFor({ state: "hidden" });
-    if (api.larkWrites.length !== 2 || api.larkConnections.length !== 2) throw new Error("Peer Agent route did not coexist");
+    await page.locator(".personal-lark-toolbar").getByRole("button", { name: /连接 Lark App/ }).click();
+    const batchDialog = page.getByRole("dialog", { name: "连接 Lark App" });
+    await batchDialog.getByRole("option", { name: "Product group" }).waitFor({ state: "attached" });
+    await batchDialog.getByLabel("群聊").selectOption({ label: "Product group" });
+    await batchDialog.getByLabel("绑定到 Goal").selectOption("multi-agent-projection");
+    await batchDialog.getByRole("checkbox", { name: "连接全部已注册 Agent" }).check();
+    const agentAppGroup = batchDialog.getByRole("group", { name: "每个 Agent 的 Lark App" });
+    await agentAppGroup.getByLabel(/codex-older-lane 的 Lark App/).selectOption("mew-research");
+    await batchDialog.getByRole("button", { name: "一键连接 2 个 Agent", exact: true }).click();
+    await batchDialog.waitFor({ state: "hidden" });
+    if (api.larkWrites.length !== 3 || api.larkConnections.length !== 2) throw new Error("Per-Agent App batch did not preserve both Agent routes");
+    const perAgentAppWrites = Object.fromEntries(api.larkWrites.slice(1).map((item) => [item.agent_id, item.app_ref]));
+    if (perAgentAppWrites["codex-older-lane"] !== "mew-research" || perAgentAppWrites["codex-latest-lane"] !== "mew") throw new Error(`Per-Agent App selection was not preserved: ${JSON.stringify(perAgentAppWrites)}`);
     if (!api.larkConnections.some((item) => item.agent_id === "codex-older-lane") || !api.larkConnections.some((item) => item.agent_id === "codex-latest-lane")) throw new Error("One-click Goal Channel lost a peer Agent route");
     const removedConnection = api.larkConnections.find((item) => item.agent_id === "codex-older-lane");
     const originalAgent = removedConnection.agent_id;

@@ -11,6 +11,9 @@ from .control_plane.goals.configure_goal_service import (
     configure_goal_with_global_sync,
 )
 from .capabilities.periodic_report.workspace import (
+    DEFAULT_WORKSPACE_INDEX_LIMIT,
+    MAX_WORKSPACE_INDEX_LIMIT,
+    MAX_WORKSPACE_INDEX_OFFSET,
     collect_periodic_report_workspace_index,
     read_published_periodic_report_workspace_projection,
 )
@@ -109,6 +112,19 @@ def parse_goal_activation_filter(query: dict[str, list[str]]) -> str | None:
     if len(values) > 1 or (values and values[0] not in {"active", "stopped"}):
         raise ValueError("goal_activation must be active or stopped")
     return values[0] if values else None
+
+
+def _json_boolean(body: dict[str, Any], field: str, *, default: bool = False) -> bool:
+    if field not in body:
+        return default
+    value = body[field]
+    if type(value) is not bool:
+        raise ValueError(f"{field} must be a JSON boolean")
+    return value
+
+
+def _optional_json_boolean(body: dict[str, Any], field: str) -> bool | None:
+    return _json_boolean(body, field) if field in body else None
 
 
 def is_loopback_host(host: str) -> bool:
@@ -296,7 +312,11 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             run_generated_at=run_generated_at,
             reward=reward,
             dry_run=True,
-            write_active_state_summary=bool(body.get("write_active_state_summary")) if append else False,
+            write_active_state_summary=(
+                _json_boolean(body, "write_active_state_summary", default=True)
+                if append
+                else False
+            ),
         )
 
     def _handle_reward_dry_run(self) -> None:
@@ -372,7 +392,9 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
                 run_generated_at=run_generated_at,
                 reward=reward,
                 dry_run=False,
-                write_active_state_summary=bool(body.get("write_active_state_summary", True)),
+                write_active_state_summary=_json_boolean(
+                    body, "write_active_state_summary", default=True
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - preserve validation diagnostics for the local UI.
             self._send_json(
@@ -381,6 +403,7 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
                     "dry_run": False,
                     "appended": False,
                     "error": str(exc),
+                    **({"error_code": exc.code, **getattr(exc, "payload", {})} if isinstance(getattr(exc, "code", None), str) else {}),
                 },
                 status=400,
             )
@@ -446,20 +469,22 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             "goal_id": goal_id,
             "quota_compute": body.get("quota_compute"),
             "quota_window_hours": body.get("quota_window_hours"),
-            "self_repair_enabled": body.get("self_repair_enabled"),
-            "self_repair_health": body.get("self_repair_health"),
-            "self_repair_waiting_projection": body.get("self_repair_waiting_projection"),
+            "self_repair_enabled": _optional_json_boolean(body, "self_repair_enabled"),
+            "self_repair_health": _optional_json_boolean(body, "self_repair_health"),
+            "self_repair_waiting_projection": _optional_json_boolean(
+                body, "self_repair_waiting_projection"
+            ),
             "multi_subagent_feature": body.get("multi_subagent_feature"),
             "orchestration_mode": body.get("orchestration_mode"),
-            "spawn_allowed": body.get("spawn_allowed"),
+            "spawn_allowed": _optional_json_boolean(body, "spawn_allowed"),
             "max_children": body.get("max_children"),
             "allowed_domains": [str(item) for item in allowed_domains] if allowed_domains is not None else None,
-            "clear_allowed_domains": bool(body.get("clear_allowed_domains", False)),
+            "clear_allowed_domains": _json_boolean(body, "clear_allowed_domains"),
             "registered_agents": [str(item) for item in registered_agents] if registered_agents is not None else None,
-            "clear_registered_agents": bool(body.get("clear_registered_agents", False)),
+            "clear_registered_agents": _json_boolean(body, "clear_registered_agents"),
             "peer_task_coordinator": body.get("peer_task_coordinator"),
-            "clear_peer_task_coordinator": bool(
-                body.get("clear_peer_task_coordinator", False)
+            "clear_peer_task_coordinator": _json_boolean(
+                body, "clear_peer_task_coordinator"
             ),
             "agent_profiles": agent_profiles,
             "clear_agent_profiles": (
@@ -486,10 +511,10 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
                 if supervised_agents is not None
                 else None
             ),
-            "clear_supervisor": bool(body.get("clear_supervisor", False)),
+            "clear_supervisor": _json_boolean(body, "clear_supervisor"),
             "write_scope": [str(item) for item in write_scope] if write_scope is not None else None,
-            "replace_write_scope": bool(body.get("replace_write_scope", False)),
-            "clear_write_scope": bool(body.get("clear_write_scope", False)),
+            "replace_write_scope": _json_boolean(body, "replace_write_scope"),
+            "clear_write_scope": _json_boolean(body, "clear_write_scope"),
             "boundary_authority_scopes": (
                 [str(item) for item in boundary_authority_scopes]
                 if boundary_authority_scopes is not None
@@ -499,7 +524,7 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             "boundary_authority_decision_id": body.get("boundary_authority_decision_id"),
             "boundary_authority_recorded_at": body.get("boundary_authority_recorded_at"),
             "boundary_authority_expires_at": body.get("boundary_authority_expires_at"),
-            "clear_boundary_authority": bool(body.get("clear_boundary_authority", False)),
+            "clear_boundary_authority": _json_boolean(body, "clear_boundary_authority"),
         }
 
     def _configure_goal_payload(self, body: dict[str, Any], *, apply: bool, execute: bool) -> dict[str, Any]:
@@ -812,9 +837,33 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
                 registry_path=self.server.registry_path,
             )
             goal_id = (query.get("goal_id") or [""])[0].strip() or None
+            limit_text = (query.get("limit") or [""])[0].strip()
+            offset_text = (query.get("offset") or [""])[0].strip()
+            window_requested = "limit" in query or "offset" in query
+            limit = DEFAULT_WORKSPACE_INDEX_LIMIT if not limit_text else int(limit_text)
+            offset = 0 if not offset_text else int(offset_text)
+            if limit < 0 or limit > MAX_WORKSPACE_INDEX_LIMIT:
+                raise ValueError(
+                    "periodic report index limit must be between 0 and "
+                    f"{MAX_WORKSPACE_INDEX_LIMIT}"
+                )
+            if offset < 0 or offset > MAX_WORKSPACE_INDEX_OFFSET:
+                raise ValueError(
+                    "periodic report index offset must be between 0 and "
+                    f"{MAX_WORKSPACE_INDEX_OFFSET}"
+                )
             index = collect_periodic_report_workspace_index(
-                runtime_root=runtime_root, goal_id=goal_id
+                runtime_root=runtime_root,
+                goal_id=goal_id,
+                limit=limit,
+                offset=offset,
             )
+            if not window_requested:
+                index = {
+                    "schema_version": index["schema_version"],
+                    "count": index["count"],
+                    "items": index["items"],
+                }
         except Exception as exc:  # noqa: BLE001 - local UI needs the read failure.
             self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
@@ -888,6 +937,7 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             "runtime_identity": release_runtime_identity(),
             "status_url": self.server.status_path,
             "health_url": "/healthz",
+            "readiness_url": "/?readiness=1",
             "review_material_url": DEFAULT_REVIEW_MATERIAL_PATH,
             "presentation_surfaces_url": (
                 DEFAULT_EXTENSION_PRESENTATION_SURFACES_PATH
@@ -904,6 +954,25 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             if self.server.control_plane_write_enabled
             else None,
             "control_plane_write_enabled": self.server.control_plane_write_enabled,
+        }
+
+    def _status_readiness(self) -> dict[str, str]:
+        # Read only the existing configuration boundary, not Goal projections,
+        # provider health, or repository scans. An absent registry is a valid
+        # empty installation under load_registry's existing contract.
+        reason = "registry_readable"
+        try:
+            registry = load_registry(self.server.registry_path)
+            if not isinstance(registry, dict):
+                reason = "registry_invalid"
+        except (ValueError, UnicodeError):
+            reason = "registry_invalid"
+        except OSError:
+            reason = "registry_unavailable"
+        return {
+            "schema_version": "loopx_status_readiness_v0",
+            "state": "ready" if reason == "registry_readable" else "failed",
+            "reason": reason,
         }
 
     def do_GET(self) -> None:
@@ -935,10 +1004,27 @@ class StatusRequestHandler(BaseHTTPRequestHandler):
             self._handle_ssh_hosts()
             return
         if path in {"", "/"}:
+            readiness = query.get("readiness")
+            if readiness is not None and readiness != ["1"]:
+                self._send_json(
+                    {"ok": False, "error": "readiness must be specified once as 1"},
+                    status=400,
+                )
+                return
+            if readiness is not None and (
+                not is_loopback_host(str(self.server.server_address[0]))
+                or not is_loopback_origin(self.headers.get("Origin"))
+            ):
+                self._send_json(
+                    {"ok": False, "error": "readiness requires loopback access"},
+                    status=403,
+                )
+                return
             self._send_json(
                 {
                     "ok": True,
                     **self._local_dashboard_api_payload(),
+                    **({"readiness": self._status_readiness()} if readiness is not None else {}),
                 }
             )
             return

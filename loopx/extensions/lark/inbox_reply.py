@@ -147,6 +147,7 @@ def _deliver_lark_inbox_outbound(
     execute: bool = False,
     provider_preflight: bool = False,
     runner: CommandRunner = _default_runner,
+    before_send: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Deliver through one inbox-configured bot with exact provider readback."""
 
@@ -274,19 +275,26 @@ def _deliver_lark_inbox_outbound(
         )
 
     expected_mentions = expected_lark_mention_identities(reply_text)
+    bot_alias_candidates: dict[str, set[str]] = {}
     if expected_mentions:
         member_identity_sets: dict[str, set[str]] = {}
         membership_failed = False
         for identity_kind in sorted(set(expected_mentions.values())):
+            expected_identities = {
+                identity
+                for identity, declared_kind in expected_mentions.items()
+                if declared_kind == identity_kind
+            }
             members = _call(
                 runner,
                 base
                 + [
                     "im",
-                    "chat.members",
-                    "get",
+                    "+chat-members-list",
                     "--chat-id",
                     chat_id,
+                    "--member-types",
+                    "user,bot",
                     "--member-id-type",
                     identity_kind,
                     "--page-all",
@@ -299,9 +307,23 @@ def _deliver_lark_inbox_outbound(
             if members.get("returncode") != 0:
                 membership_failed = True
                 break
-            member_identity_sets[identity_kind] = lark_member_identities(
-                _json_object(members.get("stdout"))
+            member_payload = _json_object(members.get("stdout"))
+            member_identity_sets[identity_kind] = lark_member_identities(member_payload)
+            member_data = member_payload.get("data", member_payload)
+            bots = (
+                member_data.get("bots", []) if isinstance(member_data, Mapping) else []
             )
+            for member in bots if isinstance(bots, list) else []:
+                if not isinstance(member, Mapping):
+                    continue
+                app_id, member_id = member.get("app_id"), member.get("member_id")
+                if (
+                    isinstance(app_id, str)
+                    and app_id
+                    and isinstance(member_id, str)
+                    and member_id in expected_identities
+                ):
+                    bot_alias_candidates.setdefault(app_id, set()).add(member_id)
         if membership_failed or any(
             identity not in member_identity_sets.get(identity_kind, set())
             for identity, identity_kind in expected_mentions.items()
@@ -371,6 +393,34 @@ def _deliver_lark_inbox_outbound(
             format_preflight_passed=True,
             provider_preview_performed=True,
         )
+    guidance = None
+    if before_send is not None:
+        # Bind review to destination/profile as well as content and placement.
+        # The optional binder hashes the verified destination before retrieval.
+        intent_digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps([profile, chat_id, receipt]).encode("utf-8")
+            ).hexdigest()
+        )
+        bind_destination = getattr(before_send, "for_destination", None)
+        scoped_hook = bind_destination(chat_id) if bind_destination else before_send
+        guidance = scoped_hook(intent_digest)
+        if guidance.get("continue_delivery") is not True or not execute:
+            return _result(
+                status="agent_review_required"
+                if guidance.get("agent_review_required")
+                else "preview_ready",
+                ok=True,
+                execute=execute,
+                receipt=receipt,
+                identity_verified=True,
+                membership_verified=True,
+                placement=placement,
+                format_preflight_passed=True,
+                provider_preview_performed=True,
+                provider_preview_verified=True,
+            ) | {"outbound_guidance": dict(guidance)}
     if not execute:
         return _result(
             status="preview_ready",
@@ -443,6 +493,13 @@ def _deliver_lark_inbox_outbound(
         and lark_readback_matches_outbound(
             outbound_text=reply_text,
             message=readback_message,
+            # mget may report a bot's app_id instead of its member_id. Only
+            # accept an unambiguous mapping verified for the mention's declared kind.
+            verified_bot_aliases={
+                app_id: next(iter(identities))
+                for app_id, identities in bot_alias_candidates.items()
+                if len(identities) == 1 and next(iter(identities)) in expected_mentions
+            },
         )
     )
     reaction_cleanup = (
@@ -462,7 +519,7 @@ def _deliver_lark_inbox_outbound(
         reaction_cleanup is not None and reaction_cleanup.get("ok") is True
     )
     completed = bool(verified and reaction_cleanup_verified)
-    return _result(
+    result = _result(
         status=(
             "sent_verified"
             if completed
@@ -491,6 +548,9 @@ def _deliver_lark_inbox_outbound(
         provider_preview_performed=True,
         provider_preview_verified=True,
     )
+    if guidance is not None:
+        result["outbound_guidance"] = dict(guidance)
+    return result
 
 
 def reply_lark_event_inbox(
@@ -502,6 +562,7 @@ def reply_lark_event_inbox(
     execute: bool = False,
     provider_preflight: bool = False,
     runner: CommandRunner = _default_runner,
+    before_send: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reply with the explicit inbox-configured bot and placement policy."""
 
@@ -513,6 +574,7 @@ def reply_lark_event_inbox(
         execute=execute,
         provider_preflight=provider_preflight,
         runner=runner,
+        before_send=before_send,
     )
 
 
@@ -524,6 +586,7 @@ def send_lark_inbox_message(
     execute: bool = False,
     provider_preflight: bool = False,
     runner: CommandRunner = _default_runner,
+    before_send: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Send one verified chat-root message through the configured inbox bot."""
 
@@ -535,6 +598,7 @@ def send_lark_inbox_message(
         execute=execute,
         provider_preflight=provider_preflight,
         runner=runner,
+        before_send=before_send,
     )
     result["schema_version"] = "lark_outbound_message_v0"
     blocker = result.get("blocker")
