@@ -109,8 +109,9 @@ def test_unavailable_typed_owner_does_not_fall_back_to_python_selection(monkeypa
         raise RuntimeError("isolated runtime unavailable")
 
     monkeypatch.setattr(resume_planning, "effect_runtime_result", unavailable)
+    source = {"items": [waiting("todo_wait")]}
     with pytest.raises(RuntimeError, match="isolated runtime unavailable"):
-        project_todo_resume_planning({"items": [waiting("todo_wait")]})
+        project_todo_resume_planning(source)
 
 
 @pytest.mark.parametrize("promoted", [False, True])
