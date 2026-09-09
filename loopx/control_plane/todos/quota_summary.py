@@ -754,6 +754,10 @@ def compact_quota_todo_summary_for_payload(summary: dict[str, Any]) -> dict[str,
     compact: dict[str, Any] = {}
     compacted_lanes: dict[str, dict[str, int]] = {}
     for key, value in summary.items():
+        if key == "advancement_frontier_revision_index":
+            # Decision input is complete by construction, but it is not an
+            # agent-facing diagnostic surface.
+            continue
         if key in {"source_completeness", "closure_intent"}:
             continue
         if isinstance(value, list):
@@ -829,10 +833,7 @@ def _compact_agent_lane_status_todo_summary(
                 }
             continue
         if isinstance(value, dict):
-            if key in {
-                "monitor_writeback",
-                "advancement_frontier_revision_index",
-            }:
+            if key == "monitor_writeback":
                 compact[key] = _compact_quota_payload_nested_warning(value)
             continue
         compact[key] = value
