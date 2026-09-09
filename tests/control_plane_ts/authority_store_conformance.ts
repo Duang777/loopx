@@ -1108,7 +1108,9 @@ export function registerAuthorityStoreConformance(
       // Promise.all alone does not guarantee a CAS race: a late reader may
       // correctly reject the already-claimed Todo before reaching commit.
       // Hold the first two real reads so both transactions see the same head.
-      let releaseReaders!: () => void; // Promise executor assigns synchronously.
+      let releaseReaders: () => void = () => {
+        throw new Error("reader barrier was not initialized");
+      };
       const ready = new Promise<void>((resolve) => { releaseReaders = resolve; });
       let readers = 0;
       const originals = [store, contender].map((backend) => {
