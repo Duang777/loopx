@@ -99,7 +99,7 @@ def project_delivery_response(
         condition = todo["resume_condition"]
         todo["resume_condition"] = {key: condition[key] for key in (
             "schema_version", "resume_when", "satisfied", "invalid_target", "invalid_state",
-            "kind", "target_status", "target_task_class", "target_archive_state",
+            "kind", "target_todo_id", "target_status", "target_task_class", "target_archive_state",
             "baseline_generation", "material_change_generation", "provider_required", "pr_repo", "repository_binding_state",
         ) if key in condition}
     result = effect_runtime_result("work_item.delivery_response.project", {

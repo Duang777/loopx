@@ -134,6 +134,7 @@ export function projectDeliveryResponse(value: unknown): JsonObject {
     && agentId === runAgent && (!owner || owner === agentId) && !excluded.includes(agentId)
     && condition?.schema_version === "todo_resume_condition_v0"
     && condition.resume_when === todo.resume_when && Boolean(todo.resume_when)
+    && condition.target_todo_id !== todo.todo_id
     && condition.satisfied === false && todo.resume_ready !== true
     && resumeConditionHasKnownPendingTarget(condition);
   return {

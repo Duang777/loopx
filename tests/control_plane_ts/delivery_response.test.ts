@@ -55,6 +55,8 @@ test("history alone, missing source, invalid wait, and other actors cannot exemp
     { todo: { ...waiting, status: "done" } },
     { todo: { ...waiting, resume_ready: true } },
     { todo: { ...waiting, resume_condition: null } },
+    { todo: { ...waiting, resume_when: "todo_done:todo_delivery", resume_condition: {
+      ...waiting.resume_condition, resume_when: "todo_done:todo_delivery", target_todo_id: "todo_delivery" } } },
     { todo: { ...waiting, resume_condition: { ...waiting.resume_condition, target_status: null } } },
     { todo: { ...waiting, resume_condition: { ...waiting.resume_condition, target_task_class: "continuous_monitor" } } },
     { todo: { ...waiting, resume_condition: { ...waiting.resume_condition, invalid_state: "target_missing" } } },
