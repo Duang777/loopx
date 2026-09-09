@@ -4,7 +4,10 @@ import {
   jsonObject, requireJsonObject, requireBoolean, requireInteger,
   requireStringArray, optionalNonEmptyString,
 } from "../runtime_decode.ts";
-import { evaluateTodoResumeConditions, TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION } from "./resume_condition.ts";
+import {
+  diagnoseTodoResumeCondition, type ResumeConditionDiagnosis,
+  evaluateTodoResumeConditions, TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION,
+} from "./resume_condition.ts";
 
 export const RESUME_PLANNING_REQUEST = "todo_resume_planning_request_v0";
 export const RESUME_PLANNING_RESULT = "todo_resume_planning_v0";
@@ -36,6 +39,7 @@ interface Item {
   targetId: string | null;
   targetStatus: string | null;
   targetClass: string;
+  diagnosis?: ResumeConditionDiagnosis;
 }
 
 function item(value: unknown): Item {
@@ -86,13 +90,10 @@ function blocked(source: readonly Item[]): Item[] {
     entry.resume !== null && entry.ready === false)));
 }
 
-function monitorBlocked(source: readonly Item[], monitorIds: ReadonlySet<string>): Item[] {
-  return ordered(unique(source.filter((entry) => {
-    const condition = jsonObject(entry.payload.resume_condition) ?? {};
-    return entry.payload.task_class === "advancement_task" && condition.kind !== "monitor_changed" &&
-      entry.targetStatus === "open" &&
-      (entry.targetClass === "continuous_monitor" || monitorIds.has(entry.targetId ?? ""));
-  }).map((entry) => ({ ...entry, payload: {
+function monitorBlocked(source: readonly Item[]): Item[] {
+  return ordered(unique(source.filter((entry) => entry.payload.task_class === "advancement_task" &&
+    entry.diagnosis?.state === "invalid" && entry.diagnosis.reason === "monitor_completion_requires_replan"
+  ).map((entry) => ({ ...entry, payload: {
     ...entry.payload, ...(entry.targetId ? { blocking_monitor_todo_id: entry.targetId } : {}),
   } }))));
 }
@@ -127,7 +128,7 @@ function successorWaits(resumeBlocked: readonly Item[], deferredItems: readonly 
       return entry.payload.task_class === "advancement_task" &&
         (lane === "current_agent" || lane === "unclaimed") && entry.resume !== null &&
         jsonObject(entry.payload.resume_condition)?.satisfied === false &&
-        entry.targetClass !== "continuous_monitor";
+        entry.diagnosis?.state === "pending" && entry.diagnosis.kind !== "monitor_changed";
     }).map((entry) => ({ ...entry, payload: {
       ...entry.payload, resume_when: entry.resume, resume_ready: false,
     } }))).sort((a, b) => Number(b.claim === agent) - Number(a.claim === agent));
@@ -188,6 +189,30 @@ function monitorIds(sources: Record<SourceKey, Item[]>): Set<string> {
     .map((entry) => entry.id!));
 }
 
+function diagnoseSources(sources: Record<SourceKey, Item[]>): void {
+  const monitors = monitorIds(sources);
+  // Compatibility belongs here once, not in every agent-scope consumer. Old
+  // compact conditions may omit kind/class while the same snapshot has them.
+  for (const key of SOURCE_KEYS) sources[key] = sources[key].map((entry) => {
+    const condition = jsonObject(entry.payload.resume_condition);
+    if (!condition || !entry.resume) return entry;
+    const facts = {
+      ...condition, resume_when: entry.resume,
+      target_todo_id: entry.targetId,
+      target_status: entry.targetStatus,
+      target_task_class: monitors.has(entry.targetId ?? "") ? "continuous_monitor" : entry.targetClass,
+    };
+    const diagnosis = diagnoseTodoResumeCondition(facts, entry.id);
+    if (diagnosis.state !== "invalid") return { ...entry, diagnosis };
+    return { ...entry, diagnosis, ready: false, readyTruthy: false, payload: {
+      ...entry.payload, resume_ready: false, resume_condition: {
+        ...condition, satisfied: false, invalid_state: diagnosis.reason,
+        availability_reason: "resume_condition_invalid",
+      },
+    } };
+  });
+}
+
 interface DisplayOptions {
   agent: string | null;
   limit: number;
@@ -226,6 +251,7 @@ export function projectTodoResumePlanning(value: unknown): JsonObject {
     throw new EffectRuntimeRequestError("resume planning schema mismatch");
   }
   const sources = decodeSources(request.sources);
+  diagnoseSources(sources);
   const display: DisplayOptions = {
     agent: optionalNonEmptyString(request.agent_id, "agent_id"),
     limit: requireInteger(request.item_limit, "item_limit"),
@@ -236,7 +262,7 @@ export function projectTodoResumePlanning(value: unknown): JsonObject {
   const { deferredItems, candidates, capacityFields } = deferredPlan(sources, request.available_capabilities);
   const resumeBlocked = blocked(sources.resume_blocked_items.length ? sources.resume_blocked_items
     : [...sources.items, ...sources.backlog_items, ...sources.first_open_items]);
-  const monitorItems = monitorBlocked(resumeBlocked, monitorIds(sources));
+  const monitorItems = monitorBlocked(resumeBlocked);
   return {
     schema_version: RESUME_PLANNING_RESULT,
     deferred_lanes: deferredVisibility(deferredItems, candidates, display),

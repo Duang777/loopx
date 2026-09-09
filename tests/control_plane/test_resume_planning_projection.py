@@ -60,6 +60,85 @@ def test_monitor_generation_wait_is_not_the_monitor_completion_repair_lane() -> 
     assert result["blocked_successor_items"] == []
 
 
+def test_legacy_monitor_lookup_is_diagnosed_once_before_agent_scope_selection() -> None:
+    from loopx.control_plane.agents.agent_scope import _agent_scope_monitor_blocked_resume_candidates
+
+    rows = [waiting(f"todo_{lane}", resume_when="todo_done:todo_monitor", **scope,
+                    resume_condition={"satisfied": False, "target_status": "open", "target": "todo_monitor"})
+            for lane, scope in [("current", {"claimed_by": "agent-a"}), ("unclaimed", {}),
+                                ("other", {"claimed_by": "agent-b"}), ("excluded", {"excluded_agents": ["agent-a"]})]]
+    result = project_todo_resume_planning({"items": rows, "monitor_open_items": [
+        {"todo_id": "todo_monitor", "task_class": "continuous_monitor", "status": "open", "text": "Observe"},
+    ]}, agent_id="agent-a")
+    lanes = result["resume_blocked_lanes"]
+    selected = _agent_scope_monitor_blocked_resume_candidates(lanes, agent_id="agent-a")
+    assert ids(selected) == ["todo_current", "todo_unclaimed"]
+    assert all(row["resume_condition"]["invalid_state"] == "monitor_completion_requires_replan" for row in selected)
+    assert all(row["blocking_monitor_todo_id"] == "todo_monitor" for row in selected)
+    assert lanes["other_agent_monitor_blocked_resume_count"] == 1
+    assert lanes["executor_excluded_self_monitor_blocked_resume_count"] == 1
+
+
+def test_invalid_condition_cannot_become_an_exact_pending_successor_wait() -> None:
+    source = {"items": [waiting("todo_self", resume_when="todo_done:todo_self",
+        resume_condition={"kind": "todo_done", "target_todo_id": "todo_self", "satisfied": False})]}
+    result = project_todo_resume_planning(source, agent_id="agent-a")
+    assert result["blocked_successor_items"] == []
+    row = result["resume_blocked_lanes"]["resume_blocked_items"][0]
+    assert row["resume_condition"]["invalid_state"] == "dependency_self_reference"
+
+
+def test_invalid_deferred_condition_cannot_reuse_a_stale_ready_flag() -> None:
+    row = waiting("todo_stale", status="deferred", resume_ready=True,
+                  resume_when="todo_done:todo_monitor", resume_condition={
+                      "kind": "todo_done", "satisfied": True, "target_status": "open",
+                      "target_todo_id": "todo_monitor", "target_task_class": "continuous_monitor",
+                  })
+    result = project_todo_resume_planning({"deferred_items": [row], "deferred_resume_candidates": [row]}, agent_id="agent-a")
+    assert result["deferred_lanes"]["unclaimed_deferred_resume_count"] == 0
+    assert result["deferred_items"][0]["resume_ready"] is False
+    assert row["resume_ready"] is True  # Diagnosis is a projection, not an edit.
+
+
+@pytest.mark.parametrize("promoted", [False, True])
+@pytest.mark.parametrize("kind", ["todo_done", "monitor_changed"])
+def test_public_quota_distinguishes_monitor_repair_from_generation_wait(tmp_path: Path, promoted: bool, kind: str) -> None:
+    runtime, registry, state = tmp_path / "runtime", tmp_path / "registry.json", tmp_path / "state.md"
+    state.write_text(
+        "---\nstatus: active\n---\n# Goal\n## Objective\nBuild a checked change.\n\n## Agent Todo\n"
+        "- [ ] [P1] Continue after observation.\n"
+        f"  <!-- loopx:todo todo_id=todo_waiting role=agent task_class=advancement_task status=open claimed_by=agent-a resume_when={kind}:todo_monitor resume_monitor_generation=3 -->\n"
+        "- [ ] [P2] Observe dependency.\n"
+        "  <!-- loopx:todo todo_id=todo_monitor role=agent task_class=continuous_monitor status=open claimed_by=agent-a material_change_generation=3 cadence=1d next_due_at=2099-01-01T00:00:00Z -->\n",
+        encoding="utf-8",
+    )
+    write_fixture_registry(project=tmp_path, runtime_root=runtime, registry_path=registry,
+        goal_id="goal-a", domain="resume-planning", adapter_kind="generic_project_goal_v0",
+        state_file=str(state), registered_agents=["agent-a", "agent-b"], quota_allowed_slots=None)
+    if promoted:
+        goal = json.loads(registry.read_text())["goals"][0]
+        fields = parse_active_state_todos(state.read_text(), goal=goal, item_limit=None)
+        projection = build_todo_runtime_shadow_projection(goal_id="goal-a", todos=fields["agent_todos"]["items"], handoff_mode="soft_claim")
+        initialize_canonical_authority(runtime, "goal-a", projection, state_path=state)
+        state.unlink()
+    before = state.read_bytes() if state.exists() else None
+    code, packet = run_json_cli_result("quota", "should-run", "--goal-id", "goal-a", "--agent-id", "agent-a",
+        "--include-detail", "agent-todos", "--scan-path", str(tmp_path), registry_path=registry, runtime_root=runtime)
+    assert code == 0, packet
+    summary = packet["agent_todo_summary"]
+    condition = summary["resume_blocked_items"][0]["resume_condition"]
+    assert condition["availability_reason"] == ("resume_condition_invalid" if kind == "todo_done" else "resume_condition_pending")
+    if kind == "todo_done":
+        assert summary["current_agent_monitor_blocked_resume_count"] == 1
+        assert packet["work_lane_contract"]["obligation"] == "repair_resume_gate_or_close_standing_monitor"
+        assert packet["work_lane_contract"]["selected_todo_id"] == "todo_waiting"
+    else:
+        assert not summary.get("monitor_blocked_resume_count")
+        assert condition["baseline_generation"] == 3
+        assert condition["material_change_generation"] == 3
+    assert (state.read_bytes() if state.exists() else None) == before
+
+
 def test_ready_deferred_lanes_keep_full_counts_before_truncation() -> None:
     items = [waiting(f"todo_ready_{i}", status="deferred", resume_ready=True,
                      claimed_by="agent-a") for i in range(4)]
