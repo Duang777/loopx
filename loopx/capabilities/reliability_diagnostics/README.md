@@ -167,6 +167,10 @@ For live age/stall evaluation, pass the current timezone-aware `--as-of` as in
 the POSIX-shell example. Without it, historical replay uses the last event time
 and reports zero last-event age. This does not establish current liveness.
 
+Explicit `--as-of` values must be ISO-8601 timestamps with `Z` or a UTC offset.
+Empty, malformed, or timezone-free values exit with code 2, even when the ledger
+is missing, empty, or corrupt; this applies with or without `--with-receipt`.
+
 `status --with-receipt` returns both existing contracts from one ledger read.
 Omit the option to retain projection-only output. It grants no control authority
 and does not enable the observer. Concurrent appends are not atomic snapshots;
