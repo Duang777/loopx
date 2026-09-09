@@ -2544,6 +2544,12 @@ The next complete stage packages are:
    monitor/resume effects close together. Neither an admission result nor a
    lease-fence result is a commit receipt. Keep provider CAS/replay and existing
    writer lock lifetimes unchanged while collecting this deletion payoff.
+   Waiting/resume lane selection is now one TS read-policy owner shared by quota,
+   vision-wait, agent-scope and replan. The obsolete Python selector module is
+   deleted; the adapter accepts the same canonical summary after promotion and
+   legacy summary before it. Real CLI coverage includes capacity changes and
+   missing promoted display without writing it. This does not close all quota
+   source paths, authorize monitor writeback, or change provider/promotion holds.
 2. **Permanent projection closure.** Reuse `provider_projection.py`, the
    Todo-section renderer and existing journal/outbox. Preserve non-owned human
    narrative; render owned sections from a known canonical revision, with

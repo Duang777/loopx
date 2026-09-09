@@ -71,6 +71,7 @@ import {
   planTodoExternalWaitTransition,
 } from "./todos/resume_condition.ts";
 import { evaluateSchedulerStateTransition } from "./scheduler/state_transition_rules.ts";
+import { projectTodoResumePlanning } from "./todos/resume_planning.ts";
 import {
   evaluateSchedulerStateOperation,
   loadSchedulerState,
@@ -394,6 +395,7 @@ export function createEffectRuntimeHandlers(
     ["todo.next_action.transition", transitionTodoNextAction],
     ["todo.resume_condition.normalize", normalizeTodoResumeWhen],
     ["todo.resume_condition.evaluate", evaluateTodoResumeConditions],
+    ["todo.resume_planning.project", projectTodoResumePlanning],
     ["todo.external_wait.plan", planTodoExternalWaitTransition],
     ["scheduler.state_transition.evaluate", evaluateSchedulerStateTransition],
     ["scheduler.state.evaluate", evaluateSchedulerStateOperation],

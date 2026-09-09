@@ -191,6 +191,30 @@ legacy update writer**。字段 patch、省略/清空、monitor/resume effect �
 语义 owner，不宣称减少 crossings，native transaction 仍进程内调用。下一步将这些
 crossing 一起折叠进完整事务，不能沿着 adapter 逐字段继续加桥。
 
+等待/恢复规划现由 `todos/resume_planning.ts` 一次完成 deferred、resume-blocked、
+monitor-repair 和 blocked-successor 选择。Quota 为每个 source summary 将容量条件与这些 lane 合为一个请求，
+在 TS 进程内复用既有 resume evaluator；vision-wait、agent-scope、frontier、replan
+共用此投影。删除旧 `deferred_resume.py` 规则 owner，不保留第二份实现。Python 适配层
+只保留 reader 兼容边界，不再决定 claim/exclusion 选择或等待路由。Resume、
+route-continuation、succession-warning 共用 `compact_projection.py` 的字段省略与 scope
+归一化；各 caller 的文本推断差异及 succession 独有字段显式保留，priority rank
+归一化仍在 resume adapter。这闭合一个读取策略族，不是整个 quota reducer，也未
+迁移 monitor/lease writer。相同公开排序键保持 source 顺序；完整计数先于展示截断；
+`monitor_changed` 不进入旧 `todo_done:<monitor>` 修复路径。只读结果不授予执行权限，
+也不是生命周期 receipt；caller 在进程内消费 typed Todo record 后可删除此适配层。
+
+条件 evaluator 与规划 owner 现在共用恢复条件诊断；agent-scope 消费已选好的修复 lane，
+不再重新解释 target 类型/状态。旧 compact 输入缺少 kind/class 时，只从 typed
+`resume_when` 和同一快照的 Monitor 记录补足，不从叙述猜测。本次 refinement 包含
+明确行为修正：自依赖，以及对未完成 Monitor 的 `todo_done` 依赖，被诊断为
+`resume_condition_invalid`，不再当作普通 pending wait。历史已完成 Monitor 依赖仍可
+满足；完成依赖的目标缺失仍为 pending，因局部快照中的缺失不能证明依赖非法。合法的
+generation fence、claim/exclusion、capacity 和 PR 等待语义保持。非法条件不进入
+精确 blocked-successor 等待；Monitor 完成依赖的修复仍可见，且仅在合法执行者范围内
+可选。此诊断不自动改写为 `monitor_changed`、重置 baseline、重写持久状态或增加写入
+准入。普通 add/update 准入及覆盖全部非法条件的通用修复动作仍是独立范围；不能宣称
+全量零行为变化或全部 Todo writer 已闭合。
+
 1. **闭合实际命令与 consumer 清单。** 基于已合入的 create/claim/update 和 #4053
    terminal/successor/archive transaction 推进，不重复建设。按真实合同盘点剩余
    字段编辑、monitor、lease、event caller，把规则迁入既有 TS owner，并在同一切片
