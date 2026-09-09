@@ -190,6 +190,10 @@ label; no legacy prediction is retained without a concrete display consumer.
   settled receipts are never rewritten. Partial progress and valid blocker
   writebacks remain legal. This is an intentional authoring/readback behavior
   correction, not a change to small-delivery policy or a new evidence validator.
+  Refresh validates individual fields in their established order, then checks
+  the normalized claim before registry access or lock creation. Invalid input
+  therefore takes precedence over store errors, including in dry-run mode;
+  state-dependent admission and writeback still share the same runtime lock.
 - Legacy outcome-marker/hint configuration remains readable and preserves
   whether an outcome floor is configured. Its words no longer classify runs.
   No persisted history is rewritten and no new default-off flag restores the

@@ -146,6 +146,9 @@ classification 保留为历史标签；没有明确展示消费者时，不保�
   的矛盾组合。历史冲突以 `unknown` 和 `delivery_claim_conflicts` 保持可读，
   不改写持久化记录或已结算 receipt；合法局部进展和 blocker 写回不受影响。
   这是有意的写入／读取行为修正，不调整小步交付策略，也不是新的证据验证器。
+  Refresh 先按既有顺序校验各字段，再以归一化结果检查组合语义，之后才读取
+  registry 和创建锁。因此非法输入优先于存储错误返回，dry-run 也一致；依赖
+  当前状态的准入与写回仍在同一 runtime 锁内完成。
 - 新交付声明通过现有 writer API 写显式 enum，例如
   `refresh-state --delivery-outcome ... --delivery-batch-scale ...`。
   纯状态刷新仍可不声明交付；本批不强迫每次刷新声明进展。既有写入 enum 校验、
