@@ -976,8 +976,8 @@ def build_agent_response_contract() -> dict[str, Any]:
         },
         "instructions": [
             "Use scheduling_policy plus review_groups as the queue and require result_completeness.complete=true for exhaustive review.",
-            "Follow the capability-ranked review_sequence; only an explicit request-scoped PR selection may override it, and Todo or monitor prose must not replace the stable policy.",
             "Start with review_execution_contract.decision_procedure, before implementation narration or prior-comment closure.",
+            "Follow the capability-ranked review_sequence; only an explicit request-scoped PR selection may override it, and Todo or monitor prose must not replace the stable policy.",
             "Execute each pull_requests[].review_plan against the shared review_execution_contract before drafting prose.",
             "Do not infer verified evidence from title, labels, changed-file counts, metadata_risk_hint, or green CI alone.",
             "Recheck the exact remote head before verdict and publication.",
