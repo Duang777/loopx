@@ -2504,6 +2504,12 @@ owns business-rule unification and caller deletion; this RFC owns one durable
 truth, recovery and cutover. Native CLI conversion and a daemon are not
 prerequisites, and PostgreSQL deployment must not hold local adoption hostage.
 
+Delivery history now shares one TS outcome/scale/follow-through read projection
+across status and quota, deleting the replaced Python decisions. This advances
+the TS RFC independently: it changes no provider, durable history, writer fence
+or promotion eligibility. Markdown remains a readable projection; neither it
+nor narrative history labels become an additional delivery authority.
+
 ```text
 CLI / Agent / Dashboard → one TS Todo transaction owner → canonical authority
                                                         ├ structured consumers
