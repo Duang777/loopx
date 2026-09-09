@@ -203,6 +203,10 @@ label; no legacy prediction is retained without a concrete display consumer.
   Unknown refreshes interrupt statistics, not Todo/replan obligations; no new
   persistent delivery ledger is added. Surface-only supervision and the
   independent small-delivery rule remain unchanged.
+  This exemption requires the parsed target identity and a supported task class;
+  monitor baseline, capability and PR repository/number also bind to the current
+  Todo. Missing actors or stale/mismatched conditions cannot relax supervision.
+  Incomplete legacy conditions remain readable, but are not positive wait proof.
 - Legacy outcome-marker/hint configuration remains readable and preserves
   whether an outcome floor is configured. Its words no longer classify runs.
   No persisted history is rewritten and no new default-off flag restores the
@@ -310,9 +314,9 @@ is not a claim of zero behavior change or full Todo writer closure.
 #### Execution cards after the current stack
 
 This is a **conditional execution plan**, not a merged-status declaration.
-At the 2026-09-09 checkpoint, #4053, #4117 and #4129 are merged; #4122
+At the 2026-09-09 checkpoint, #4053, #4117, #4129, #4122
 (resume diagnosis/planning), #4134 (delivery history) and #4136 (claim diagnosis)
-are open. The canonical delivery-response follow-up is stacked on #4136.
+are merged. The canonical delivery-response follow-up targets that landed main.
 Check their actual merge commits before starting. #4121 (SQLite candidate)
 and #4101 (projection receipt retention) are independent candidates, not
 implicit prerequisites or approved defaults.

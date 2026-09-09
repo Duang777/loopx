@@ -2000,6 +2000,15 @@ CLI / Agent / Dashboard → 唯一 TS Todo 事务 owner → canonical authority
 供数；cutover 后，所选 canonical provider 向单向投影供数。不增加第三种 TS-Markdown
 backend、实时双向同步或按命令拆开的权威；晋升后不支持的命令 fail closed，不能回退旧 writer。
 
+#### 重构主线总览
+
+以下规划保留原有方向；执行卡是它们的展开，不是替代或取消：
+
+1. **闭合 TS 事务与 consumer。** 按 [T0–T3](typescript-control-plane-migration-v0.zh-CN.md#当前-stack-合入后的执行卡) 收口规则并删除重复决策。
+2. **永久投影闭合。** 见下方 D1：Markdown 长期保留为单向展示，不恢复为业务权威。
+3. **一个已资格化的本地 profile 与 fenced cutover。** 见 D2、D3：真实 backend、容量、soak 与显式 promotion 批准缺一不可。
+4. **列明 caller 后退役。** 按 T4 删除无调用者的旧业务 writer；永久 renderer 和必要 import/export 保留。
+
 #### 持久化执行卡
 
 命令清单、update/monitor 事务和 consumer 删除统一按
@@ -2023,6 +2032,8 @@ summary，之前消费 legacy summary；真实 CLI 覆盖容量变化和 promote
 - 从 `loopx/control_plane/todos/provider_projection.py`、既有 Todo-section renderer、
   canonical journal/outbox 入手。复用 #4097 已有的缺失 Todo section 恢复及
   `recovery_scope=todo_sections_only`；它不能恢复丢失的独立 Goal 正文。
+  已交付边界以 [active-state projection contract](../../reference/protocols/active-state-structured-projection-v0.md) 为准。
+  直接编辑 Markdown 不得自动导入 authority；显式验证的 edit/import 工具另提方案，不能隐藏在 renderer 中成为第二个 writer。
 - 按 #4101 实际合入 head 评估 receipt-retention 候选，不再建一条 delivery queue。
   业务已提交与投影尚 pending 必须分别可观测。
 - 验证 crash/retry、并发 revision、缺失／陈旧／非法 display、交付前 receipt

@@ -155,6 +155,9 @@ classification 保留为历史标签；没有明确展示消费者时，不保�
   无绑定的旧 blocker 标签不能建立该例外；其他可执行工作仍由 canonical planner
   选择。unknown 刷新中断统计，不清除 Todo/replan 义务，不新增持久化交付账本。
   连续表层交付监督与独立的小规模交付规则保持不变。
+  该例外必须匹配解析后的 target identity 和合法 task class；monitor baseline、
+  capability、PR repository/number 也绑定当前 Todo。缺失 actor 或陈旧／错配的
+  condition 不能解除监督。旧式不完整条件仍可读取，但不构成正向等待证明。
 - 新交付声明通过现有 writer API 写显式 enum，例如
   `refresh-state --delivery-outcome ... --delivery-batch-scale ...`。
   纯状态刷新仍可不声明交付；本批不强迫每次刷新声明进展。既有写入 enum 校验、
@@ -239,9 +242,9 @@ generation fence、claim/exclusion、capacity 和 PR 等待语义保持。非法
 
 #### 当前 stack 合入后的执行卡
 
-这是**条件式执行规划**，不是已合并声明。2026-09-09 核查时，#4053、#4117、
-#4129 已合并；#4122（resume 诊断／规划）、#4134（交付历史）、#4136（声明诊断）
-仍 open；canonical delivery-response 后续批次叠在 #4136 上。执行前核验实际 merge
+这是**条件式执行规划**，不是所有阶段已完成的声明。2026-09-09 核查时，#4053、#4117、
+#4129、#4122（resume 诊断／规划）、#4134（交付历史）、#4136（声明诊断）均已合并；
+canonical delivery-response 后续批次基于这些已合入的 main。执行前核验实际 merge
 commit。#4121（SQLite 候选）和 #4101（投影 receipt 保留）是独立候选，不自动成为
 依赖或已批准的默认配置。
 

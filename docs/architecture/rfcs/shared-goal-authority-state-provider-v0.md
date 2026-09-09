@@ -2522,6 +2522,15 @@ one-way projections. Do not add a third TS-Markdown backend, bidirectional
 live synchronization, or per-command split authority. Unsupported post-cutover
 commands fail closed; they do not fall back to the old writer.
 
+#### Refactoring roadmap overview
+
+The original direction remains; execution cards expand these stages rather than cancel them:
+
+1. **Close TS transactions and consumers.** Follow [T0–T3](typescript-control-plane-migration-v0.md#execution-cards-after-the-current-stack) to consolidate rules and delete duplicate decisions.
+2. **Permanent projection closure.** D1 below retains Markdown as a long-lived one-way display, never a second business authority.
+3. **One qualified local profile and fenced cutover.** D2/D3 require the real backend, capacity, soak and explicit promotion approval.
+4. **Retirement with named callers.** T4 removes obsolete business writers after their callers exit; permanent rendering and required import/export remain.
+
 #### Durability execution cards
 
 Use the [TS execution cards](typescript-control-plane-migration-v0.md#execution-cards-after-the-current-stack)
@@ -2550,6 +2559,8 @@ source paths, authorize monitor writeback, or change provider/promotion holds.
   Todo-section renderer and canonical journal/outbox. #4097 already recovers
   missing Todo sections with `recovery_scope=todo_sections_only`; reuse it.
   It cannot recover lost independent Goal narrative.
+  The shipped boundary is the [active-state projection contract](../../reference/protocols/active-state-structured-projection-v0.md).
+  Direct Markdown edits must not import themselves into authority; validated edit/import tooling is a separate proposal, never a second writer hidden inside rendering.
 - Evaluate #4101's receipt-retention candidate against its actual merged head;
   do not replace it with another delivery queue. A committed business result
   and pending projection delivery must remain separately observable.
