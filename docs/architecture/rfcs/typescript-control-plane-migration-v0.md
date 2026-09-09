@@ -16,6 +16,21 @@
 
 ## Current implementation checkpoint
 
+Public Todo add/update now resolve role, continuation binding, gate scope and
+deferred-condition requirements through `todos/authoring_scope.ts`. Python's
+`write_policy.py` and duplicated scope selection in `todos.py` are retired;
+the Markdown codec keeps only its early class-check adapter. Materialized
+terminal successors share the resolved-scope invariant without draft inference.
+Intentional corrections: explicit global/lane scope outranks author defaults;
+explicit conflicting binding is rejected rather than overwritten; global gates
+are never inferred from actor identity or `goal_bound`. Existing omitted scope,
+completed-history repair and lifecycle/lease permission boundaries remain.
+
+This closes T1's authoring-scope prerequisite, not the whole update transaction.
+Public metadata expansion, validation/effect closure and provider CAS/replay
+integration remain T1/T2 work. Native update retains its text/note allowlist;
+legacy codecs/locks/writers still have active callers and are not retired here.
+
 A checked-in generator validates the language-neutral contract and emits
 deeply immutable Python/TypeScript bindings, including the native domain and
 projection sections. Both runtimes import these bindings; CI checks source

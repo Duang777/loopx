@@ -2524,6 +2524,12 @@ commands fail closed; they do not fall back to the old writer.
 
 #### Refactoring roadmap overview
 
+Todo authoring scope and terminal successors now share the TS resolved-binding
+invariant. Only explicit `global_gate` can widen blocking to all registered
+agents; `goal_bound` grants no global-gate semantics. This consolidates T1
+admission rules without expanding native update fields, changing provider/profile
+defaults, or releasing D1–D3 projection, real-backend, soak or promotion holds.
+
 The original direction remains; execution cards expand these stages rather than cancel them:
 
 1. **Close TS transactions and consumers.** Follow [T0–T3](typescript-control-plane-migration-v0.md#execution-cards-after-the-current-stack) to consolidate rules and delete duplicate decisions.
