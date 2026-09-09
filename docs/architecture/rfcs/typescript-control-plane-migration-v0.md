@@ -194,6 +194,15 @@ label; no legacy prediction is retained without a concrete display consumer.
   the normalized claim before registry access or lock creation. Invalid input
   therefore takes precedence over store errors, including in dry-run mode;
   state-dependent admission and writeback still share the same runtime lock.
+- Delivery response is a separate typed read decision consumed by quota,
+  handoff and work-lane projection. A scoped blocked observation exempts the
+  historical outcome floor only while its canonical Todo has a positively
+  identified pending resume target. Missing/invalid source, another actor's
+  claim, exclusions and unbound legacy blocker labels cannot establish that
+  exemption. Other runnable work remains selectable by the canonical planner.
+  Unknown refreshes interrupt statistics, not Todo/replan obligations; no new
+  persistent delivery ledger is added. Surface-only supervision and the
+  independent small-delivery rule remain unchanged.
 - Legacy outcome-marker/hint configuration remains readable and preserves
   whether an outcome floor is configured. Its words no longer classify runs.
   No persisted history is rewritten and no new default-off flag restores the

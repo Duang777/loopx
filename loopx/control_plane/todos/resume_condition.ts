@@ -430,6 +430,28 @@ function diagnosedCondition(condition: JsonObject, waitingTodoId: string): JsonO
   };
 }
 
+/** Positive wait proof for consumers that may relax supervision. Historical
+ * absence of an invalid marker is not proof of a valid, identified target. */
+export function resumeConditionHasKnownPendingTarget(condition: JsonObject): boolean {
+  if (condition.schema_version !== "todo_resume_condition_v0" || condition.satisfied !== false
+    || resumeAvailabilityReason(condition) !== "resume_condition_pending") return false;
+  switch (condition.kind) {
+    case "todo_done":
+      return ["open", "deferred"].includes(String(condition.target_status))
+        && typeof condition.target_task_class === "string" && condition.target_task_class !== "continuous_monitor"
+        && (condition.target_archive_state === null || condition.target_archive_state === "active");
+    case "monitor_changed":
+      return condition.target_task_class === "continuous_monitor" && condition.target_status === "open"
+        && typeof condition.baseline_generation === "number" && condition.baseline_generation >= 0
+        && typeof condition.material_change_generation === "number"
+        && condition.material_change_generation <= condition.baseline_generation;
+    case "capacity_available": return condition.provider_required === false;
+    case "pr_merged": return typeof condition.pr_repo === "string" && condition.pr_repo.length > 0
+      && condition.repository_binding_state !== "ambiguous";
+    default: return false;
+  }
+}
+
 export function evaluateTodoResumeConditions(value: unknown): JsonObject {
   const request = requireJsonObject(value, "todo_resume_evaluation_request");
   if (request.schema_version !== TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION) {

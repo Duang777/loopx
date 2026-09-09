@@ -149,6 +149,12 @@ classification 保留为历史标签；没有明确展示消费者时，不保�
   Refresh 先按既有顺序校验各字段，再以归一化结果检查组合语义，之后才读取
   registry 和创建锁。因此非法输入优先于存储错误返回，dry-run 也一致；依赖
   当前状态的准入与写回仍在同一 runtime 锁内完成。
+- delivery response 是 quota、handoff 和 work-lane 共用的 TS 只读决策：只有
+  绑定的 blocked observation 与当前 canonical Todo 的明确、合法等待条件一致，
+  才不施加历史 outcome floor。来源缺失／非法、其他 actor claim、exclusion 和
+  无绑定的旧 blocker 标签不能建立该例外；其他可执行工作仍由 canonical planner
+  选择。unknown 刷新中断统计，不清除 Todo/replan 义务，不新增持久化交付账本。
+  连续表层交付监督与独立的小规模交付规则保持不变。
 - 新交付声明通过现有 writer API 写显式 enum，例如
   `refresh-state --delivery-outcome ... --delivery-batch-scale ...`。
   纯状态刷新仍可不声明交付；本批不强迫每次刷新声明进展。既有写入 enum 校验、
