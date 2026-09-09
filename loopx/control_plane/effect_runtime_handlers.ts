@@ -95,6 +95,7 @@ import {
   qualifyActionSelection,
 } from "./work_items/action_portfolio.ts";
 import { projectQuotaPlanningHorizon } from "./work_items/planning_horizon.ts";
+import { projectDeliveryHistory } from "./work_items/delivery_history.ts";
 import {
   evaluateTaskLeaseAcquireDecision,
   evaluateTaskLeaseWriteScopesOverlap,
@@ -408,6 +409,7 @@ export function createEffectRuntimeHandlers(
     ["work_item.planning_inventory.project", projectTodoPlanningInventory],
     ["work_item.planning_inventory.detail", projectTodoPlanningInventoryDetail],
     ["work_item.refresh_recommendation.resolve", resolveRefreshRecommendation],
+    ["work_item.delivery_history.project", projectDeliveryHistory],
     ["goal.vision_checkpoint.evaluate", buildVisionCheckpoint],
     ["goal.vision_wait.coverage", projectVisionWaitCoverage],
     ["goal.shared_goal_alignment.project", projectSharedGoalAlignment],

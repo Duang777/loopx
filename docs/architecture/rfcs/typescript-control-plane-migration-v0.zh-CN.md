@@ -120,11 +120,16 @@ receipt 过期。
 不能判定交付规模。例如，`unblocked after dependency update` 不构成 blocker
 receipt，`implemented network protocol parser` 不构成仅完成准备工作的证据。
 
-规则继续由 `control_plane/work_items/delivery_outcome.py`、`delivery_signals.py`
-和 `outcome_followthrough.py` 持有。本批在既有 owner 中完成正确性前置修复，不新增
-capability/provider，也不宣称完成 TypeScript 事务迁移。删除关键词推断与 status
-常量，不增加 runtime crossing、schema 或 service；复用已有 typed blocker
-settlement 判定，不复制证据绑定规则。
+`control_plane/work_items/delivery_history.ts` 现在持有完整的交付历史到后续义务
+读投影：outcome、turn kind、scale、连续计数及 follow-through。Status 先选出一批
+有界历史，再调用一次 `work_item.delivery_history.project`；quota 的 latest-run
+消费者以单行调用同一投影。相比此前 Python 本地判断，新增 managed-runtime crossing，
+但不是每个字段或每条历史各跨一次。Python bridge 只发送紧凑 typed facts，不发送
+叙述或证据正文；classification 在决策之后作为展示标签附加。
+删除被替代的 `delivery_signals.py`、`outcome_followthrough.py`、turn-kind 推断
+及 status 连续计数 wrapper，复用已有 TS blocker 绑定规则。Python enum codec 和
+settlement writer predicate 仍有真实 caller，因此保留；本批不是 writer/事务或
+provider 迁移。
 
 验收不变量是**叙述非干涉**：固定 typed fields 与配置，改写叙述或增加未经验证的
 `compact_evidence` / `case_result` 对象，都不能改变交付语义与后续执行义务。
@@ -144,13 +149,16 @@ classification 保留为历史标签；没有明确展示消费者时，不保�
   词语不再分类 run。不改写持久历史，也不新增开关恢复错误行为。此前由未结构化
   历史标签推导的 status、handoff/review 和 quota 决策会发生明确的行为变化。
 
-交付领域的迁移单元是完整的 delivery-history-to-obligation projection，包含规模／结果
-连续计数与 status/quota 消费者。这定义该领域的切片边界，不改变下文 provider-first
-Todo 的交付顺序。每批有界历史最多跨 runtime 一次，删除被替代的
-Python decision，保留独立审阅的 typed case，并通过真实 CLI 验证叙述变异用例。
-旧推断本身错误，因此只有传输 golden parity 不够。另行盘点仍缺少 material-result
-字段的 writer，并用明确兼容计划退役旧 marker/hint 配置。本批不迁移精确的旧
-lifecycle classification code 或其他 cadence policy，不能宣称全局已无文本规则。
+迁移保留独立刻画的合法 typed 行为，并验证真实 refresh/history/status/quota 入口、
+批次基数与叙述非干涉。有一项有意修正单独披露，不能混称 parity：两个非法 work-item
+identifier 不能仅因都归一化为缺失值而被视为相等；此类 observation 不能推断出
+blocker writeback 或解除后续义务。仍在使用的 Python writer predicate 同样拒绝该
+情况，不改写任何活跃历史。
+
+下一步另行盘点仍缺少 material-result 字段的 writer，并用明确兼容计划退役旧
+marker/hint 配置。精确的旧 lifecycle classification code、历史选取与其他 cadence
+policy 不在本批范围内，不能宣称所有 writer 已迁移或全局已无文本规则。这一读策略
+闭合不改变下文 provider-first Todo 顺序，也不等待 provider cutover。
 
 ### Legacy 字段规则退役检查点
 

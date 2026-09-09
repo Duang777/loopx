@@ -1985,6 +1985,11 @@ Markdown 是**长期保留的一等可读投影**。退役的是它的数据库�
 负责业务规则统一和 caller 删除；本 RFC 负责唯一 durable truth、恢复和 cutover。
 CLI 原生 TS 化与 daemon 不是前提，PostgreSQL 部署不能阻塞本地采用。
 
+交付历史现已由 status 与 quota 共用一份 TS outcome/scale/follow-through 读投影，
+删除被替代的 Python decision。这独立推进 TS RFC，不改变 provider、持久历史、
+writer fence 或 promotion 资格。Markdown 仍作为可读投影；它和历史叙述标签都
+不能成为额外的交付权威。
+
 ```text
 CLI / Agent / Dashboard → 唯一 TS Todo 事务 owner → canonical authority
                                                    ├ structured consumers
