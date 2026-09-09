@@ -235,6 +235,23 @@ Equal public sort keys retain source order; full counts precede display limits;
 read-only result grants neither execution authority nor a lifecycle receipt.
 The adapter exits when its callers consume typed Todo records in-process.
 
+Resume condition diagnosis is now shared by the evaluator and planning owner;
+agent-scope consumes the selected repair lane rather than reinterpreting target
+type/status. Old compact inputs may recover omitted kind/class from typed
+`resume_when` and the same snapshot's monitor records, never from narrative.
+This refinement includes explicit behavior corrections: self-dependencies and
+`todo_done` dependencies on unfinished monitors are `resume_condition_invalid`,
+not ordinary pending waits. Completed historical monitor dependencies remain
+satisfied; missing completion targets remain pending because absence in a
+partial snapshot is not proof of an invalid dependency. Valid generation fences,
+claim/exclusion, capacity and PR waits retain their existing semantics. Invalid
+conditions cannot become exact blocked-successor waits. Monitor completion
+repair stays visible and selectable only in the permitted executor scope.
+No automatic conversion to `monitor_changed`, baseline reset, persisted-state
+rewrite or new writer admission is implied. General add/update admission and a
+generic repair action for every invalid condition remain separate scopes; this
+is not a claim of zero behavior change or full Todo writer closure.
+
 1. **Close the actual command and consumer inventory.** Build on the merged
    create/claim/update and #4053 terminal/successor/archive transactions; do not
    recreate them. Inventory remaining field-edit, monitor, lease, and event
