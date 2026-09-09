@@ -162,7 +162,7 @@ def attach_advancement_frontier_revision_index(
     summary: dict[str, Any],
     source_items: list[dict[str, Any]],
     *,
-    role: str,
+    role: str | None,
 ) -> None:
     """Attach the complete decision checkpoint only to Agent Todo summaries."""
 
