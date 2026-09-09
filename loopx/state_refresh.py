@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .control_plane.runtime.time import now_local_iso
+from .control_plane.work_items.delivery_history import require_consistent_delivery_claim
 from .control_plane.work_items.delivery_batch_scale import (
     DELIVERY_BATCH_SCALE_CHOICES as DELIVERY_BATCH_SCALE_CHOICES,
     require_delivery_batch_scale,
@@ -122,6 +123,13 @@ def _serialized_refresh(
     @wraps(function)
     def run(**kwargs: Any) -> dict[str, Any]:
         goal_id = validate_goal_id_path_segment(kwargs["goal_id"])
+        observation = kwargs.get("progress_observation")
+        require_consistent_delivery_claim({
+            "delivery_outcome": kwargs.get("delivery_outcome"),
+            "progress_observation": normalize_progress_observation(
+                observation, work_item_id=kwargs.get("todo_id") or kwargs.get("replan_obligation_id"),
+            ) if observation is not None else None,
+        })
         registry = load_registry(kwargs["registry_path"])
         root = resolve_runtime_root(registry, kwargs["runtime_root_override"])
         if kwargs["dry_run"]:

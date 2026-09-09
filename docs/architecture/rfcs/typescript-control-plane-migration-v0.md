@@ -182,6 +182,14 @@ label; no legacy prediction is retained without a concrete display consumer.
   State-only refresh remains legal without a delivery claim; this patch does
   not require every status refresh to declare progress. Existing write-time
   enum rejection, settlement evidence, quota, and gate checks remain in force.
+- Follow-up claim validation shares one TS diagnosis with historical projection.
+  New writes reject progress paired with preparation-only work, primary outcome
+  paired with blocker work/typed blocked observation, and primary outcome paired
+  with an explicit follow-through requirement. Historical conflicts remain
+  readable as `unknown` plus `delivery_claim_conflicts`; persisted records and
+  settled receipts are never rewritten. Partial progress and valid blocker
+  writebacks remain legal. This is an intentional authoring/readback behavior
+  correction, not a change to small-delivery policy or a new evidence validator.
 - Legacy outcome-marker/hint configuration remains readable and preserves
   whether an outcome floor is configured. Its words no longer classify runs.
   No persisted history is rewritten and no new default-off flag restores the
