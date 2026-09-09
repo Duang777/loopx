@@ -47,6 +47,16 @@ class Case:
 
 
 CASES = [
+    Case('todo_global_gate_inferred', (('loopx/control_plane/todos/authoring_scope.ts', replacement(
+        'intent.global_gate ? true : todo.global_gate',
+        '(intent.global_gate || intent.goal_bound) ? true : todo.global_gate')),),
+         'tests/control_plane_ts/todo_authoring_scope.test.ts', 'global blocking is never inferred'),
+    Case('todo_explicit_scope_overwritten', (('loopx/control_plane/todos/authoring_scope.ts', replacement(
+        'if (requestedBound) fail(', 'if (false) fail(')),),
+         'tests/control_plane_ts/todo_authoring_scope.test.ts', 'explicit continuation and gate'),
+    Case('todo_successor_scope_unbound', (('loopx/control_plane/todos/authoring_scope.ts', replacement(
+        'if (blocks && (goal || !bound || bound !== blocks)) return "agent_binding_conflict";', '')),),
+         'tests/control_plane_ts/todo_authoring_scope.test.ts', 'resolved successor scope'),
     Case('delivery_wait_target_unbound', (('loopx/control_plane/todos/resume_condition.ts', replacement(
         'condition.target_todo_id !== spec.target || ', '')),),
          'tests/control_plane_ts/delivery_response.test.ts', 'exact dependency identity'),
