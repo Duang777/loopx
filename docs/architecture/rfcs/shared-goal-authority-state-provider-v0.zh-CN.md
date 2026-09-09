@@ -2002,6 +2002,11 @@ backend、实时双向同步或按命令拆开的权威；晋升后不支持的�
 
 #### 重构主线总览
 
+Todo authoring scope 已与 terminal successor 共用 TS 最终绑定不变量；仅显式
+`global_gate` 可以扩大阻塞到全部注册 agent，`goal_bound` 不授予全局 gate 语义。
+这是 T1 准入规则收拢；不扩张 native update 字段权限、不改变 provider/profile 默认值，
+也不解除 D1–D3 的投影、真实 backend、soak 或 promotion 条件。
+
 以下规划保留原有方向；执行卡是它们的展开，不是替代或取消：
 
 1. **闭合 TS 事务与 consumer。** 按 [T0–T3](typescript-control-plane-migration-v0.zh-CN.md#当前-stack-合入后的执行卡) 收口规则并删除重复决策。

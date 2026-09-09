@@ -15,6 +15,18 @@
 
 ## 当前实现检查点
 
+公开 Todo add/update 现通过 `todos/authoring_scope.ts` 统一解析角色、continuation
+绑定、gate 作用域与 deferred 条件要求。删除 Python `write_policy.py` 及 `todos.py`
+重复的 scope 选择；Markdown codec 只保留早期 class 检查的适配调用。已物化的 terminal
+successor 共用最终 scope 不变量，不执行草稿默认值推断。
+有意修正：显式全局／单 lane 作用域优先于作者默认值；显式绑定冲突拒绝而非静默覆盖；
+不得从 actor 或 `goal_bound` 推断全局 gate。省略 scope 的更新、历史已完成记录修复、
+lifecycle／lease 权限边界保持。
+
+这是 T1 的 authoring-scope 前置闭合，不是整个 update 事务完成。公开 metadata 扩展、
+validation／effect 闭合和 provider CAS/replay 汇合仍属于 T1/T2。Native update 继续
+保留 text/note allowlist；legacy codec／lock／writer 仍有实际 caller，本批不退役。
+
 受检入的 generator 校验语言中立 contract，并生成深度不可变的 Python/TypeScript
 binding，覆盖原生 domain 与 projection section。两端 runtime 直接 import 生成物；
 CI 检查源数据一致性并拒绝陈旧生成物。这删除了重复 contract loader，但不改变
