@@ -1800,7 +1800,29 @@ async function main() {
     await page.getByText(/^先处理「.+」：.+/u).waitFor({ state: "visible" });
     await page.getByText("查看完整对话", { exact: true }).waitFor({ state: "visible" });
     if (page.url() !== managerUrlBefore) throw new Error(`Manager send navigated away from the overview: ${managerUrlBefore} -> ${page.url()}`);
+    const managerConversationType = await page.locator(".personal-manager-conversation-tray").evaluate((tray) => {
+      const message = getComputedStyle(tray.querySelector("article p, article .personal-md"));
+      const role = getComputedStyle(tray.querySelector("article > strong"));
+      const action = getComputedStyle(tray.querySelector(".personal-manager-conversation-link"));
+      return {
+        actionFontSize: Number.parseFloat(action.fontSize),
+        messageFontSize: Number.parseFloat(message.fontSize),
+        messageLineHeight: Number.parseFloat(message.lineHeight),
+        roleFontSize: Number.parseFloat(role.fontSize),
+      };
+    });
+    if (managerConversationType.messageFontSize < 14
+      || managerConversationType.messageLineHeight < 20
+      || managerConversationType.roleFontSize < 12
+      || managerConversationType.actionFontSize < 14) {
+      throw new Error(`Manager conversation receipt typography is below the readable UI scale: ${JSON.stringify(managerConversationType)}`);
+    }
     await page.screenshot({ path: resolve(outputDir, "manager-conversation-tray-compact.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const compactTrayOverflow = await page.locator(".personal-manager-conversation-tray").evaluate((tray) => tray.scrollWidth - tray.clientWidth);
+    if (compactTrayOverflow > 1) throw new Error(`Manager conversation receipt has ${compactTrayOverflow}px horizontal overflow at mobile width`);
+    await page.screenshot({ path: resolve(outputDir, "manager-conversation-tray-mobile.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 1512, height: 982 });
     await page.getByText("查看完整对话", { exact: true }).click();
     await page.getByRole("navigation", { name: "管家视图" }).waitFor({ state: "visible" });
     if (await page.locator(".personal-home-board").isVisible()) throw new Error("Full manager Chat left the Goal overview visible behind the conversation");
