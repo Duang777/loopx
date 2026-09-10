@@ -16,11 +16,7 @@ Use this skill for `/loopx-pr-review`, explicit PR reviews, or review queues by
 state or time window. Route approval, merge, self-merge, and admin bypass to
 `loopx-pr-merge` after the evidence review is complete.
 
-Run the LoopX CLI before ad hoc GitHub reads:
-
-```bash
-loopx --format json pr-review --state all
-```
+Run `loopx --format json pr-review --state all` before ad hoc GitHub reads.
 
 Translate only explicit filters:
 
@@ -116,6 +112,12 @@ review back, verify its state and rendered body, and return its URL. Merge
 still routes through `loopx-pr-merge`; an `APPROVE` is not merge authority.
 Do not leave a public blocker only in chat.
 
+Immediately before every merge, run `loopx --format json pr-review --repo
+OWNER/REPO --check-merge-readiness NUMBER@HEAD_OID`. Merge only when it returns
+`ready=true` for that unchanged head. A rebase/update restarts review; admin
+bypass never overrides this gate. Author-owned fallback still needs explicit
+user merge authority.
+
 ## Full PR Review And Bilingual Format
 
 Every review must cover the whole PR, not only the top finding. Read the full
@@ -159,13 +161,10 @@ necessary but not enough.
 
 ## Autonomous Queue
 
-For recurring observation, keep one ignored checkpoint and use the same capability:
-
-```bash
-loopx --format json pr-review --repo owner/repo --state open \
-  --autonomous-observation --observation-state-file .local/pr-review-monitor.json \
-  [--projected-exact-head NUMBER@HEAD_OID] [--handled-exact-head NUMBER@HEAD_OID]
-```
+For recurring observation, keep one ignored checkpoint and use `loopx --format
+json pr-review --repo owner/repo --state open --autonomous-observation
+--observation-state-file .local/pr-review-monitor.json` with the projected or
+handled exact-head flags when their corresponding durable receipts exist.
 
 Treat `candidate` as a preview, not a durable projection. Follow this order: durable
 Todo target-key readback -> `--projected-exact-head` -> exact-head review/comment
