@@ -13,7 +13,10 @@ export const MONITOR_SUCCESSOR_RESULT_SCHEMA = "loopx_monitor_successor_plan_res
 export function selectMonitorTodo(items: readonly JsonObject[], todoId: string | null,
   targetKey: string | null): JsonObject {
   if (!todoId && !targetKey) throw new EffectRuntimeRequestError("monitor todo writeback requires --todo-id or --target-key");
-  const matches = items.filter(item => todoId ? item.todo_id === todoId : item.target_key === targetKey);
+  // A completed historical watch must not shadow its active replacement.
+  // Explicit IDs still resolve first so an inactive target gets a rejection.
+  const matches = items.filter(item => todoId ? item.todo_id === todoId :
+    item.target_key === targetKey && item.status !== "done" && item.archive_state !== "archive");
   if (matches.length !== 1) throw new EffectRuntimeRequestError(
     matches.length ? "monitor target matched multiple todos; pass --todo-id" : "monitor todo target was not found");
   const item = matches[0]!;

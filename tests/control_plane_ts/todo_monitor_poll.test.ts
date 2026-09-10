@@ -8,6 +8,7 @@ import {FileAuthorityStore} from "../../loopx/control_plane/coordination/file_au
 import {canonicalAuthoritySha256} from "../../loopx/control_plane/coordination/authority_store_codec.ts";
 import {TODO_DOMAIN_ITEM_SCHEMA, TODO_DOMAIN_READ_RECORD_SCHEMA, TODO_DOMAIN_RECORD_CONTRACT} from "../../loopx/control_plane/coordination/coordination_state_contract.ts";
 import {executeCoordinationMonitorPoll} from "../../loopx/control_plane/coordination/todo_monitor_poll.ts";
+import {selectMonitorTodo} from "../../loopx/control_plane/scheduler/monitor_successor.ts";
 
 async function seeded(overrides: JsonObject = {}, extras: JsonObject[] = []) {
   const store = new FileAuthorityStore(await mkdtemp(join(tmpdir(), "monitor-transaction-")), "goal-a");
@@ -125,4 +126,13 @@ test("retained lease and stale observation cannot mutate either half", async () 
   const leased = await store.loadAuthority();
   assert.equal((await executeCoordinationMonitorPoll(store, {...request, operation_id: "leased"})).status, "failed");
   assert.deepEqual(await store.loadAuthority(), leased);
+});
+
+test("target-key selection ignores completed history but never guesses between live monitors", () => {
+  const active = {todo_id: "todo_current", role: "agent", task_class: "continuous_monitor",
+    target_key: "watch", status: "open", archive_state: "active"};
+  const history = {...active, todo_id: "todo_history", status: "done", archive_state: "archive"};
+  assert.equal(selectMonitorTodo([history, active], null, "watch").todo_id, active.todo_id);
+  assert.throws(() => selectMonitorTodo([history, active], history.todo_id, "watch"), /unfinished/);
+  assert.throws(() => selectMonitorTodo([active, {...active, todo_id: "todo_other"}], null, "watch"), /multiple/);
 });

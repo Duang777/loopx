@@ -352,7 +352,8 @@ digest 仍绑定原始 wire observation，不能因规范化而悄悄使 pending
 planner；单项 create 与 Monitor 批次共用创建准入／语义去重，legacy preflight 与
 native commit 共用目标选择。Python 只路由意图并交付既有 projection outbox。
 
-明确的语义修正：拒绝已完成／归档的 Monitor；创建后继必须实际推进 material-change
+明确的语义修正：拒绝已完成／归档的 Monitor；target-key 选择排除结束的历史项，
+但多个活跃匹配仍要求显式 id；创建后继必须实际推进 material-change
 generation，不能对相同证据重复声明 `material_change=true` 就继续生成任务。
 原 operation 重试恢复原后继，不创建新工作；不附带后继的新 observation 仍可接受。
 User gate 复用既有 actor-bound scope，不推导全局 gate。

@@ -458,6 +458,7 @@ planning; target selection is shared by legacy preflight and native commit.
 Python only routes provider intent and drains the existing projection outbox.
 
 Explicit semantic corrections: completed/archived Monitor targets are rejected;
+target-key selection ignores finished history but never guesses between live matches;
 successor authoring requires an actually advanced material-change generation,
 not merely a repeated `material_change=true` assertion for the same evidence.
 Retrying the original operation recovers the original successors instead of
