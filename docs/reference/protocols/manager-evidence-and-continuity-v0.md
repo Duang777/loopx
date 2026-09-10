@@ -1,9 +1,10 @@
 # Manager evidence and continuity v0
 
-Status: proposed staged design. The synchronous manager transport foundation
-exists on this change branch; the portfolio, shared request ledger, and
-three-goal acceptance below are not yet implemented or qualified end to end.
-This document does not introduce a CLI command or enable Decision Context.
+Status: staged implementation. The synchronous manager transport and read-only
+`goal-portfolio` provider are implemented. Managed conversational turns now read
+fresh scoped Core evidence. The shared cross-entry request ledger, optional
+Decision Context adapter and complete three-goal acceptance remain unqualified;
+this change does not claim those outcomes.
 
 ## Ownership and defaults
 
@@ -44,6 +45,52 @@ must verify those authorities before claiming the old route was preserved;
 failed compensation returns `upgrade_recovery_required`. Shared-registry
 recovery must retain concurrent updates to other Goals. This exception-recovery
 contract does not claim crash-atomic persistence across multiple files.
+
+## Global conversation initialization
+
+The owner manager uses the canonical `loopx-manager` identity and an isolated
+runtime workspace. Session creation requires no Goal, and selecting a Goal
+cannot change its workspace or evidence scope. Every conversational turn reads
+the current authorized registry through `goal-portfolio`, freezes that snapshot
+in a `manager.context` event, and supplies it to the executor. Chat prose is
+never the inventory. Normal manager questions no longer silently use a limited
+frontend projection; explicitly choosing status-only still uses that projection.
+
+For Codex, manager defaults are `gpt-6-astra` with `medium` reasoning. Set
+`LOOPX_MANAGER_MODEL` and `LOOPX_MANAGER_REASONING_EFFORT` on the Chat service to
+override them. Thread start, resume and turn start explicitly carry the settings;
+worker configuration is unchanged. Capabilities expose the manager defaults.
+Legacy managed manager sessions retain their logical identity and bounded chat
+history but start a fresh executor thread in the same Codex home on first
+restore. This removes inherited project instructions without importing sessions
+across homes. Existing home-identity checks still apply.
+
+External manager continuity is also bounded by the exact authorized Goal set.
+An empty, missing, or changing external authorization fails before the model is
+called. When the authorized Goal set changes, LoopX starts a fresh upstream
+thread without the previous model history before supplying the new scope. This
+prevents evidence learned under a former binding from crossing a later
+authorization boundary while retaining the owner-visible local receipt history.
+
+Global means all Goals in the current owner's registry, including stale or
+unavailable entries; it does not claim discovery of unregistered remote hosts.
+External manager channels resolve their current authorized Goal scope through
+an injected control-plane resolver before collection and recheck it before
+handing evidence to the executor. The Lark adapter uses the active connection,
+exact audience, session, executor and connector identity. Missing, disabled or
+ambiguous grants produce no Goal evidence; a session's old Goal is not a grant.
+Changing/revoking scope during collection discards the collected snapshot.
+Global scope never means broadcasting private owner context to all Lark groups.
+A proposal without an exact Goal must not inherit the first visible Goal as a
+write target. The current Todo proposal schema requires entering a specific
+Goal for preview and apply.
+
+Full-inventory reads reuse one Core status collection. Bounded or externally
+scoped reads select their Goal before collection. Inventory and source version
+changes during collection make evidence conflicting; missing sources remain
+unknown. Collection is capped at 128 Goals and eight agents per Goal, with
+explicit omissions. Recorded evidence references identify Core receipts, not
+independent artifact verification.
 
 ## A bounded portfolio with explicit coverage
 
@@ -203,3 +250,24 @@ next action. One delivery spends once against its accountable Goal; another
 Goal may reference the evidence without claiming a second outcome. Protect a
 recurring domain-validation slot in the owner's plan. Infrastructure progress
 does not prove a research hypothesis or improve an investment result.
+
+### Current work details and default manager instructions
+
+Each conversational turn also reads current Todo records through Core's
+canonical-first `list_goal_todos` path for each authorized Goal. This read is
+independent of the age of progress receipts. It retains bounded task titles,
+owner gate/action distinctions, declared priority and target/dependency IDs;
+owner conversations also receive bounded continuation notes. Terminal items
+are excluded and active/included/omitted counts are explicit. Read failures
+mean unknown, never an empty healthy queue. The evidence is a frozen projection,
+not a second Todo store or a fresh claim that old tasks remain urgent.
+
+The neutral manager workspace receives managed `AGENTS.md` instructions and the
+same role contract is supplied to its executor. Custom owner instructions are
+not overwritten. The default manager must connect concrete owner decisions to
+affected work and explain its recommended order; bare Todo IDs, Goal ordering
+and gate counts are insufficient prioritization evidence. It distinguishes
+current declarations from verified execution and names unavailable/truncated
+details. External audiences retain their existing Goal authorization boundary
+and do not receive owner continuation notes. No repository browsing or write
+permission is added to the manager model.

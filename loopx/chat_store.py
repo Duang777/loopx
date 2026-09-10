@@ -286,14 +286,26 @@ class ChatSessionStore:
                     "upstream_thread_id",
                     "upstream_mode",
                     "codex_home",
+                    "manager_context_version",
+                    "manager_authorization_scope_id",
+                    "goal_id",
                 }
                 unknown = set(changes) - allowed
                 if unknown:
                     raise ValueError(f"unsupported chat session fields: {sorted(unknown)}")
+                if "goal_id" in changes:
+                    from .chat_manager import MANAGER_AGENT_GOAL_ID
+                    if _session_channel(payload) != "manager" or changes["goal_id"] != MANAGER_AGENT_GOAL_ID:
+                        raise ValueError("only the owner manager may migrate to global identity")
                 if "upstream_thread_id" in changes:
                     changes["upstream_thread_id"] = _upstream_id(changes["upstream_thread_id"])
                 if "upstream_mode" in changes:
                     changes["upstream_mode"] = _opaque_id(changes["upstream_mode"], field="upstream_mode")
+                if "manager_authorization_scope_id" in changes:
+                    changes["manager_authorization_scope_id"] = _opaque_id(
+                        changes["manager_authorization_scope_id"],
+                        field="manager_authorization_scope_id",
+                    )
                 if "codex_home" in changes:
                     home = changes["codex_home"]
                     if (not isinstance(home, str) or not Path(home).is_absolute()
