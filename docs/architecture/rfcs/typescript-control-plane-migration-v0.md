@@ -16,6 +16,16 @@
 
 ## Current implementation checkpoint
 
+Provider-first text/note updates now accept the active execution key and lease
+version through the existing terminal fence, with automatic acquisition and
+delegated overrides disabled. The same provider revision guards the edit and
+receipt; the lease is never mutated. Explicit `--update-operation-id` supports
+CLI retries with unchanged proof and intent, including historical replay after
+expiry or transfer. Missing/stale proof and historical inactive leases fail
+closed. No-proof receipt fingerprints remain compatible. This is the bounded
+#4105 lease-fence slice, not full T1 metadata or T2 effect closure; legacy updates
+without these options remain unchanged. See the [Todo contract](../../project-agent-todo-contract.md#lease-fenced-canonical-textnote-updates).
+
 Monitor metadata authoring and poll transitions now share `todos/monitor_metadata.ts`.
 Public update composes that owner inside its existing field-plan request; cadence
 calculation stays in-process instead of making two additional scheduler RPCs.

@@ -15,6 +15,13 @@
 
 ## 当前实现检查点
 
+Provider-first text/note 更新现可携带当前执行 key 和租约版本，复用 terminal fence，
+禁用自动获取及委托覆盖。修改和回执受同一个 provider revision 保护，租约不变。
+显式 `--update-operation-id` 支持同凭证、同内容的 CLI 重试，过期或转交后仍可回放
+历史回执。缺失／陈旧凭证及历史非活跃租约拒绝；无凭证的旧回执指纹保持兼容。
+这是 #4105 的租约 fence 切片，不是完整 T1 metadata 或 T2 effect 闭合；不带新选项
+的 legacy 更新不变。用法见 [Todo 合同](../../project-agent-todo-contract.md#lease-fenced-canonical-textnote-updates)。
+
 Monitor metadata authoring 与 poll transition 现共用 `todos/monitor_metadata.ts`。
 公开 update 在已有 field-plan 请求内组合该 owner；cadence 在进程内计算，不再额外
 调用两次 scheduler RPC。删除 Python 的 observation/replay/counter/scope/boundedness
