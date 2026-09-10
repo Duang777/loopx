@@ -1785,6 +1785,96 @@ raise SystemExit(0 if artifact.read_text(encoding="utf-8") == "validated" else 7
     ]
 
 
+def test_turn_run_once_cli_dsh_fresh_sessions_and_iteration_failure(
+    tmp_path: Path,
+) -> None:
+    project, runtime, registry = _write_live_fixture(tmp_path)
+    host_project = tmp_path / "isolated-dsh-workspace"
+    host_project.mkdir()
+    runner = tmp_path / "recording_dsh_runner.py"
+    runner.write_text(
+        """
+import json
+from pathlib import Path
+
+def run_dsh_turn(**kwargs):
+    output = Path(kwargs["workspace"]) / "dsh-session-ids.txt"
+    with output.open("a", encoding="utf-8") as stream:
+        stream.write(kwargs["session_id"] + "\\n")
+    return json.dumps({
+        "result_kind": "iteration_failed",
+        "classification": "fixture_iteration_failed",
+        "summary": "The bounded fixture iteration did not complete.",
+        "next_action": "Await a new controller-authorized iteration.",
+    })
+""",
+        encoding="utf-8",
+    )
+    state_path = (
+        project
+        / ".codex"
+        / "goals"
+        / "loopx-turn-fixture"
+        / "ACTIVE_GOAL_STATE.md"
+    )
+    before_state = state_path.read_text(encoding="utf-8")
+
+    def run(turn_instance_id: str, context: str) -> dict[str, object]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = cli_main(
+                [
+                    "--registry",
+                    str(registry),
+                    "--runtime-root",
+                    str(runtime),
+                    "--format",
+                    "json",
+                    "turn",
+                    "run-once",
+                    "--goal-id",
+                    "loopx-turn-fixture",
+                    "--agent-id",
+                    "codex-fixture",
+                    "--host",
+                    "dsh",
+                    "--project",
+                    str(host_project),
+                    "--dsh-runner",
+                    str(runner),
+                    "--turn-instance-id",
+                    turn_instance_id,
+                    "--iteration-context",
+                    context,
+                    "--scan-root",
+                    str(project),
+                    "--no-global-sync",
+                    "--execute",
+                ]
+            )
+        payload = json.loads(output.getvalue())
+        assert exit_code == 0, json.dumps(payload, indent=2)
+        assert payload["result_kind"] == "iteration_failed"
+        assert payload["status"] == "stopped"
+        assert payload["effects"]["state_written"] is False
+        assert payload["effects"]["quota_spent"] is False
+        return payload
+
+    run("fresh-fixture-1", "fresh")
+    run("fresh-fixture-2", "fresh")
+    run("resume-fixture-1", "resume-if-available")
+    run("resume-fixture-2", "resume-if-available")
+
+    session_ids = (host_project / "dsh-session-ids.txt").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert session_ids[0].startswith("dsh-iteration-v1-")
+    assert session_ids[0] != session_ids[1]
+    assert session_ids[2].startswith("dsh-lineage-v1-")
+    assert session_ids[2] == session_ids[3]
+    assert state_path.read_text(encoding="utf-8") == before_state
+
+
 def test_turn_run_once_cli_completes_selected_todo_after_validation(
     tmp_path: Path,
 ) -> None:

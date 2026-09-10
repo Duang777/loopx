@@ -93,7 +93,8 @@ and `writes_state=false`.
 | durable `no_followup` + fresh terminal frontier + decision user action | — | `terminal` (proven Goal closure wins) |
 | continuing completion + decision user action | — | `user_action_required` |
 | `wait` | any | `wait` |
-| `iteration_failed` | any | `stop` (iteration-scoped, not Goal terminal) |
+| `iteration_failed` | no decision user action | `stop` (iteration-scoped, not Goal terminal) |
+| `iteration_failed` | decision user action | `user_action_required` (fresh decision precedence) |
 | retryable `host_failure`, attempt budget remains | delivery or wait | `wait` with a same-Turn bounded-backoff continuation |
 | retryable `host_failure`, attempt budget exhausted | any | `repair` |
 | non-retryable or legacy `host_failure` / `validation_failed` / `writeback_failed` / `quota_spend_failed` | any | `repair` (route before any successor Turn) |

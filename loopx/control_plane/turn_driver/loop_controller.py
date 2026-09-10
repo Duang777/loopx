@@ -10,8 +10,8 @@ to later adapters (see the Turn Loop Controller plan in docs/development/contrib
 The transition output space is exactly seven dispositions:
 ``run_now | wait | stop | user_action_required | repair | replan | terminal``.
 
-Input validity is enforced at the typed-input boundary, not encoded as a
-seventh disposition. ``decide_loop_disposition`` raises ``ValueError`` when a
+Input validity is enforced at the typed-input boundary, not encoded as an
+eighth disposition. ``decide_loop_disposition`` raises ``ValueError`` when a
 receipt, envelope, or budget cannot be proven against the shared Turn
 contracts, so the caller is responsible for feeding only validated, fresh
 inputs.
