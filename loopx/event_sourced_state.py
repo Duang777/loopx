@@ -584,7 +584,7 @@ class AppendOnlyStateEventStore:
         return self.append_many((event,))[0]
 
     def append_many(self, events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not isinstance(events, (list, tuple)):
+        if type(events) not in (list, tuple):
             return [self.append(event) for event in events]
         if not events:
             return []
@@ -618,6 +618,7 @@ class AppendOnlyStateEventStore:
                     stream.write(
                         json.dumps(normalized, sort_keys=True, ensure_ascii=False) + "\n"
                     )
+                    stream.flush()
                     existing[normalized["event_id"]] = normalized
                     appended.append(normalized)
                     next_sequence += 1
