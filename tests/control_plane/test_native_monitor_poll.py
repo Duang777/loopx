@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 import hashlib
+import json
 
 from canonical_authority_fixture import initialize_canonical_authority
 from test_monitor_followthrough_contract import _write_fixture, _add_monitor, GOAL_ID, AGENT_ID
@@ -89,3 +90,25 @@ def test_native_monitor_later_same_evidence_cannot_create_more_work(tmp_path, ro
     with pytest.raises(RuntimeError, match="new material-change generation"):
         write_monitor_poll_todo_state(**args, **followup, monitor_effect_id="generation-b", generated_at="2026-09-01T01:00:00Z")
     assert read_canonical_todos_if_promoted(runtime_root=runtime, goal_id=GOAL_ID) == before
+
+
+def test_cli_preserves_pending_display_diagnostic_after_business_settlement(tmp_path, monkeypatch, capsys):
+    from loopx.cli import main
+    import loopx.control_plane.todos.provider_projection as delivery
+
+    registry, runtime, _state, monitor = _canonical(tmp_path, native=True)
+
+    def unavailable(**kwargs):
+        raise OSError("synthetic renderer unavailable")
+
+    monkeypatch.setattr(delivery, "project_current_canonical_todos", unavailable)
+    code = main(["--registry", str(registry), "--runtime-root", str(runtime), "--format", "json",
+        "quota", "monitor-poll", "--goal-id", GOAL_ID, "--agent-id", AGENT_ID,
+        "--runtime-profile", "generic_cli", "--todo-id", monitor["todo_id"],
+        "--result-hash", "revision-a", "--material-change", "--next-agent-todo", "Validate observation",
+        "--next-action-kind", "validate", "--execute"])
+    assert code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["todo_writeback"]["projection_delivery"] == "pending"
+    assert result["todo_writeback"]["projection_outbox"]["retry_business_mutation"] is False
+    assert len(read_canonical_todos_if_promoted(runtime_root=runtime, goal_id=GOAL_ID)["todos"]) == 2
