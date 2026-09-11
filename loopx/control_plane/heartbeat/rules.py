@@ -21,12 +21,6 @@ HEARTBEAT_NOTIFICATION_RULE_SHORT = (
     "Due/peer非用户动作；NOTIFY缺动作→"
     "具体user todo未投影，需修复LoopX状态投影；静默时内部修复。"
 )
-HEARTBEAT_NOTIFICATION_RULE_THIN = (
-    "`user_channel.notify` controls OUTPUT only: NOTIFY=向用户输出动作; "
-    "DONT_NOTIFY=安静输出。执行义务看 `agent_must_attempt`/`must_attempt_work`。"
-    "Due/peer非用户动作；NOTIFY缺动作→"
-    "具体user todo未投影，需修复LoopX状态投影；静默时内部修复。"
-)
 HEARTBEAT_VISION_WRITEBACK_RULE_SHORT = (
     "writeback: no-change=`surface_only`/no spend; "
     "unchanged->`--vision-unchanged-reason`; material->actual outcome."
@@ -50,13 +44,25 @@ SCHEDULER_HINT_THIN_RULE = (
 RUNTIME_CAPABILITY_PROJECTION_THIN_RULE = (
     "Observed capabilities -> `--available-capability`; never user gates."
 )
-RUNTIME_EXECUTION_ROUTING_RULE = (
-    "Normal turns use CLI `interaction_contract`; use `loopx-project` for "
+RUNTIME_REPAIR_ROUTING_RULE = (
+    "use `loopx-project` for "
     "lifecycle/registry and `loopx-self-repair` for runtime/projection drift."
 )
+RUNTIME_EXECUTION_ROUTING_RULE = (
+    "Normal turns use CLI `interaction_contract`; " + RUNTIME_REPAIR_ROUTING_RULE
+)
+HOST_LOOP_SAFETY_RULE = (
+    "Follow user authority and repository rules. Protect credentials/private material; "
+    "publish public-safe evidence. Destructive Git/production requires explicit authorization. "
+    "Gate only the affected path; continue independent allowed work."
+)
+HEARTBEAT_TURN_BOOTSTRAP_RULE = (
+    "Per wake, replace `<current_time_iso>` once. Run assignment and guard as separate "
+    "statements in one shell, not a command-prefix assignment; reuse the value on retries."
+)
 HOST_LOOP_QUOTA_DISPATCH_RULE = (
-    "After quota, use selection_command when required; otherwise run "
-    "next_cli_actions[0]."
+    "Quota: use selection_command when required; "
+    "先按指令重新进入，完成获准工作并验证后，再按 next_cli_actions 写回和记账。"
 )
 HOST_LOOP_TODO_CLOSEOUT_RULE = (
     "Done -> successor first; final -> accountable refresh, spend, then "

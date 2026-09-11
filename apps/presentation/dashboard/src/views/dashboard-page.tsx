@@ -136,9 +136,10 @@ function semanticProtectedActionPreview(
   };
 }
 import type { StatusSourceControl } from "../features/personal-workspace/status-source-switcher";
-import { ensureSshSource } from "../data/ssh-host-catalog";
+import { applyRemoteGoalLifecycle, ensureSshSource } from "../data/ssh-host-catalog";
 import {
   addSshTunnelStatusSource,
+  bindConfiguredSshHostAliases,
   defaultLocalStatusSourceUrl,
   loadStatusSourceCatalog,
   localStatusSource,
@@ -489,6 +490,7 @@ type PersonalHomeModel = {
   workers?: WorkspaceWorker[];
 };
 type PersonalManagerMessage = {
+  sourceMessageId?: string;
   activity?: string[];
   agentLabel?: string;
   attachments?: WorkspaceImageAttachment[];
@@ -1242,6 +1244,7 @@ function buildPersonalHomeModel(
             && goal.spawn_policy.spawn_allowed === true
             && goal.spawn_policy.max_children > 0,
           maxChildren: goal.spawn_policy?.max_children ?? 0,
+          modelConfig: goal.spawn_policy?.model_config,
         },
       } : {}),
       title: personalGoalTitle(goal.id, goal.display_name),
@@ -1352,6 +1355,9 @@ function PersonalGoalHome({
   toggleTheme: () => void;
 }) {
   const readOnly = statusSourceControl.activeSource.readOnly;
+  const remoteGoalLifecycleHost = statusSourceControl.activeSource.kind === "ssh_tunnel"
+    ? statusSourceControl.activeSource.hostAlias
+    : undefined;
   const { t } = useWorkspaceI18n();
   const [runtimeAgents, setRuntimeAgents] = useState<Array<{
     adapter_kind: string;
@@ -1542,6 +1548,39 @@ function PersonalGoalHome({
     statusSourceControl.activeSource.statusUrl,
   ]);
 
+  // Worker returns are transcript messages, not new model turns. Keep an open
+  // manager conversation current without replacing in-flight user/agent text.
+  const managerReturnSessionId = selectedGoal ? undefined : runtimeBindings[contextId]?.sessionId;
+  useEffect(() => {
+    if (readOnly || !managerReturnSessionId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const receive = async () => {
+      try {
+        const snapshot = await fetchChatSession(managerReturnSessionId);
+        if (cancelled) return;
+        const replies = snapshot.messages.filter((row) => row.origin === "manager_followup");
+        setMessagesByContext((current) => {
+          const previous = current[contextId] ?? [];
+          const seen = new Set(previous.map((row) => row.sourceMessageId));
+          const fresh = replies.filter((row) => !seen.has(row.message_id));
+          if (!fresh.length) return current;
+          return { ...current, [contextId]: [...previous, ...fresh.map((row) => ({
+            id: managerMessageId.current++, sourceMessageId: row.message_id,
+            role: "assistant" as const, agentLabel: selectedAgent.label,
+            sourceLabel: "管家交接回执", text: visibleAgentMessage(row.text), lines: [],
+          }))] };
+        });
+      } catch {
+        // The durable transcript is retried after reconnection; no model replay.
+      } finally {
+        if (!cancelled) timer = setTimeout(receive, 3000);
+      }
+    };
+    void receive();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [readOnly, managerReturnSessionId, contextId, selectedAgent.label]);
+
   function recordRuntimeBinding(targetContextId: string, binding: PersonalRuntimeBinding | null) {
     setRuntimeBindings((current) => {
       if (binding === null) {
@@ -1609,6 +1648,7 @@ function PersonalGoalHome({
           return {
             ...current,
             [targetContextId]: history.messages.map((message) => ({
+              sourceMessageId: message.message_id,
               agentLabel: message.role === "user" ? undefined : selectedAgent.label,
               attachments: workspaceImageAttachments(message.attachments),
               id: managerMessageId.current++,
@@ -2665,6 +2705,7 @@ function PersonalGoalHome({
                 allowedDomains: preview.after.orchestration.allowed_domains,
                 enabled: preview.feature_summary.multi_subagent === "enabled",
                 maxChildren: preview.after.orchestration.max_children,
+                modelConfig: preview.after.orchestration.model_config,
               },
               previewId: preview.preview_id,
             };
@@ -2675,8 +2716,23 @@ function PersonalGoalHome({
               allowedDomains: result.after.orchestration.allowed_domains,
               enabled: result.feature_summary.multi_subagent === "enabled",
               maxChildren: result.after.orchestration.max_children,
+              modelConfig: result.after.orchestration.model_config,
             };
           },
+          } : {}),
+          ...(remoteGoalLifecycleHost ? {
+            onExecuteGoalLifecycle: async ({ goalId, operation, reason }) => {
+              const result = await applyRemoteGoalLifecycle(
+                remoteGoalLifecycleHost,
+                goalId,
+                operation,
+                reason,
+              );
+              return {
+                activationState: result.activation_state,
+                projectionVerified: result.projection_verified,
+              };
+            },
           } : {}),
           onGoalActivationStateChange,
           onGoalDeleted,
@@ -2816,6 +2872,8 @@ export function DashboardPage() {
   const [statusSourceCatalog, setStatusSourceCatalog] = useState(() =>
     loadStatusSourceCatalog(window.localStorage, window.location.href)
   );
+  const statusSourceCatalogRef = useRef(statusSourceCatalog);
+  statusSourceCatalogRef.current = statusSourceCatalog;
   const [statusUrl, setStatusUrl] = useState(search.statusUrl);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -3031,6 +3089,7 @@ export function DashboardPage() {
   }
 
   function persistStatusSourceCatalog(nextCatalog: typeof statusSourceCatalog) {
+    statusSourceCatalogRef.current = nextCatalog;
     setStatusSourceCatalog(nextCatalog);
     try {
       saveStatusSourceCatalog(window.localStorage, nextCatalog);
@@ -3055,6 +3114,11 @@ export function DashboardPage() {
       persistStatusSourceCatalog(result.catalog);
       selectStatusSource(result.source, { ensureTunnel: input.ensureTunnel });
       return {};
+    },
+    onConfiguredHostsLoaded: (hostAliases) => {
+      const currentCatalog = statusSourceCatalogRef.current;
+      const nextCatalog = bindConfiguredSshHostAliases(currentCatalog, hostAliases);
+      if (nextCatalog !== currentCatalog) persistStatusSourceCatalog(nextCatalog);
     },
     onRemove: (sourceId) => {
       const nextCatalog = removeStatusSource(statusSourceCatalog, sourceId);

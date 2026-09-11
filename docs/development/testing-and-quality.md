@@ -737,6 +737,198 @@ Onboarding 输入来自正式 guided packet builder；provider 调用前只替�
 门禁错误、写入或 quota 消耗。Human gate 的优先级是显式规则：等待用户时没有
 executable work 属于预期状态，不能误判为 projection gap。
 
+## Release-only native Goal regression / 仅发布前的原生 Goal 回归
+
+`scripts/qualify-native-goal-release.py` exercises the real Codex CLI app-server
+Goal lifecycle on a disposable ledger project with two dependent Todos. It
+reuses the shipped native Goal transport and current prompt, then checks an
+independent acceptance oracle, completed Todos, unique bound spends, durable
+writeback readback, and terminal no-follow-up quota. This is not a benchmark
+score or evidence of universal model reliability.
+
+The Codex release arm requests the shipped bootstrap, not an injected private
+work recipe. Deterministic regressions execute the saved CLI loader, change its
+registry inputs, and prove fresh loading, non-recursion, preserved explicit
+policy and removed-agent rejection. Claude's stdio regression loads
+`host_prompt` through the real MCP transport and verifies the same bound Goal.
+These tests are free of model calls; passing them is not a live model pass.
+
+Upgrade regression uses real temporary SQLite/TOML stores, a second connection,
+writer-lock contention, injected mirror failure, journal recovery and stale or
+custom-input rejection. New-runtime reconciliation is exercised through the
+real CLI, while package installation is substituted in that focused test.
+Running-App deployment additionally needs a selected owner-authorized canary
+and delayed readback; synthetic SQLite tests alone do not qualify App caches.
+The output differential permits a bounded one-time transition to the exact
+static-safety marker, not permanent growth allowances or relaxed quota budgets.
+
+```bash
+# No model invocation, no token cost; explicit skipped result, exit 0.
+python3 scripts/qualify-native-goal-release.py
+# Release operator opt-in only; explicit isolated API profile (Responses API).
+# Supply LOOPX_CODEX_QUALIFICATION_API_KEY securely in this process, plus:
+export LOOPX_CODEX_QUALIFICATION_MODEL='<selected-model>'
+export LOOPX_CODEX_QUALIFICATION_BASE_URL='https://example.com/v1'
+python3 scripts/qualify-native-goal-release.py --release-live
+```
+
+Do not add the live command to default pytest, PR CI, per-diff canaries, or
+ordinary developer iteration. The deterministic runner-policy tests may run
+there; they never opt into real model execution. Missing CLI, native Goals or
+the explicit Codex API profile returns `skipped` and exit 0, not a claimed live pass.
+Once qualification is attempted, failed acceptance, incomplete settlement,
+blocked/unfinished Goals and deadline expiry fail with exit 1. The default
+deadline is 1,200 seconds; this is a wall-clock ceiling, not a token budget.
+
+仅 release 前显式开启，避免默认消耗开发者 token。CI/本机环境不支持时跳过且不阻塞，
+但保留 `skipped` 标记；真实执行后失败不能冒充环境跳过。使用操作者显式选择的 API
+模型、地址与密钥，不导入日常 Codex 配置、登录或会话，不修改活跃 Goal/automation。
+任务、registry、runtime 与 Git worktree
+在一次性目录内；沙箱允许该目录及本地 TS worker 所需的网络能力，
+这不是网络隔离，任务不授权外部操作。回归脚本不采集或上传原始对话/工具日志，
+公开结果仅包含状态、计数和错误类别；Codex 会话仅留在一次性隔离目录内。
+两个 runner 均从允许列表创建环境并隔离 HOME、配置和缓存；不透传其他 token、
+认证 socket、shell 启动变量或原始 ARK_API_KEY。Codex 工具 shell 从空环境注入必要
+运行变量，不继承 host API key。Claude host 仅接收所选 provider 的映射密钥；这不是
+对同用户进程或 Claude Bash 的凭据隔离沙箱，不能把真实业务秘密加入测试任务。
+
+### Claude Code and release coverage / Claude Code 与发布覆盖
+
+For focused thin/brief prompt-decision regression, use
+`python3 scripts/qualify-host-prompt-release.py --release-live` only during
+explicit release qualification. It defaults to no calls; missing credentials
+report `skipped`, not a live pass. With securely injected `ARK_API_KEY`, it uses
+Doubao evolving for two independent repetitions of quiet-work, notifying-wait,
+quiet-wait and required-vision-replan cases in each mode. Expected decisions
+remain outside model input. All attempts must pass; no answer correction or
+retry-until-pass is used. Ordinary pytest only checks the probe and negative
+oracles with scripted responses, without provider calls.
+
+This is a synthetic decision-level probe using current generated prompts,
+not proof of tool execution, host scheduling, upgrade delivery or full-Goal
+completion. Keep the Codex/Claude live Goal arms and real CLI/MCP/SQLite tests
+as separate evidence. Only hashes and pass/fail receipts are emitted, not raw
+prompts/responses. Model transport failures fail qualification rather than
+becoming environment skips.
+
+仅发布前显式执行，普通 CI 不调用模型。检查静默不等于空转、等待不能擅自执行、
+vision replan 未关闭时不能提前结束 Goal；这不是完整 Claude/Codex 行为验收的替代。
+
+```bash
+# No provider call by default. Explicit release opt-in uses ARK_API_KEY from the environment.
+python3 scripts/qualify-claude-goal-release.py --release-live
+# A completed inventory stage must not hide unfinished integrity acceptance.
+python3 scripts/qualify-claude-goal-release.py --release-live --scenario replan
+```
+
+This arm uses the same ledger specification, independent oracle and durable
+settlement readback as the Codex arm. It launches actual Claude Code with the
+project's shipped `loop.md` and LoopX stdio MCP server, using
+`doubao-seed-evolving` through Ark's Anthropic-compatible API. It does not
+inherit another Anthropic account, install into the user's Claude configuration,
+or retain host sessions. The subprocess timeout also cleans its process group
+on POSIX. Allowed local development tools are not a security sandbox; the
+synthetic task authorizes no external side effects.
+
+**A headless work-loop pass is not a `/loop` timer pass.** The release report
+explicitly returns `scheduler_qualification=not_run_headless`; interactive
+native wakeup, cancel/resume and process-restart behavior need their own host
+qualification. Do not turn repeated `claude -p` invocations into a substitute
+scheduler and claim host lifecycle coverage.
+
+Before calling a changed host surface release-qualified, distinguish:
+
+| Boundary | Required evidence |
+| --- | --- |
+| Work and terminal closeout | Final candidate, actual host, independent artifact checks, completed Todos and terminal quota; code delivery alone is insufficient. |
+| Idempotency and failure | Real committed lifecycle/writeback/spend followed by lost-response injection and same-intent retries; one final spend. Failed declared validation must not complete or spend. |
+| Authority and transport | Actual MCP initialization/tool invocation and mismatched-agent rejection; existing claim/lease and validation suites remain required. |
+| Host lifecycle | Native scheduler wakeup/cancellation/resume on supported versions, reported separately from headless execution. |
+| Upgrade and isolation | Exact managed-wrapper recognition, preview/apply revision checks, preserved scheduler state, explicit skips, no default model calls or leaked test processes. |
+
+普通 CI 只跑确定性规则、真实 CLI/MCP 和故障注入；模型执行仍仅 release 前显式启用。
+环境缺失可 skip 且退出成功，但最终版本没有完整的真实 host 结果时，不得写成
+“产品级发布验证通过”。单次成功也不是模型可靠性或长程调度 soak 的证明。
+
+The real delivery regression covers ordinary Todo acceptance before internal
+writeback/spend, existing-successor linking, and receipt-backed terminal closure.
+Its task specification describes only the deliverable; the external oracle also
+checks LoopX accounting. Passing non-delivery fixtures does not qualify delivery.
+The same delivery class must pass failed-validation rejection and committed
+response-loss recovery without duplicate spending or premature terminal closure.
+Do not relabel delivery work or weaken the independent oracle to pass a host test.
+
+The `replan` scenario starts from a real, settled filename-inventory Todo and its
+valid `vision_closed` stage decision, not a fabricated missing writeback. The
+business specification still requires file sizes, checksums and a read-only
+integrity verifier. It requires an explicit successor vision/path decision,
+completed concrete successor work and terminal readback. The independent oracle
+checks actual hashes and sizes, then changes, removes and adds files in disposable
+copies; a verifier that silently regenerates its evidence fails. The original
+inventory must retain exactly one spend. This complements the finite delivery
+scenario: a model that simply closes every vision cannot pass both.
+The oracle does not require the literal final disposition `replan`: after the
+new successor has actually delivered, `no_followup` + `stop` is a valid scoped
+decision. It must still pass independent artifact, new successor, durable receipt
+and fresh terminal checks; `vision_closed` + `stop` is not Goal closure.
+
+`replan` 场景从真实完成并结算、具有有效 `vision_closed` 判断的“文件名清单”阶段启动，
+但完整验收仍缺少大小、校验和与只读校验器。测试要求后继 vision/显式路径调整、
+具体后继交付及最终终态；独立验收在一次性副本里篡改、删除、新增文件，拒绝通过
+自动重建清单掩盖错误。每个 Todo 必须恰好结算一次。后继真实交付后，最终路径可为
+`no_followup` + `stop`，不强求字面值 `replan`；`vision_closed` + `stop` 仍不是 Goal
+完成。两种场景都仅 release 前显式运行，普通 CI 不调用模型。
+
+### MCP vision authoring and recovery / MCP vision 写入与恢复
+
+The MCP guard projects `interaction_contract.mcp_channel`. For admitted normal
+Todo delivery, it replaces the raw CLI writeback/spend instructions with
+`complete_task` ownership; those are alternate transports, not two obligations.
+Replan-only and blocked lanes preserve their live CLI actions and binding.
+Vision field and total limits come from the same TS validator, not copied prompt
+constants. Quota admission, permission and workspace facts are unchanged.
+
+MCP 的普通 Todo 交付不再同时要求模型执行 CLI 记账和 MCP 结算两套流程；独立 replan
+仍使用动态 CLI 契约。vision 字段与预算直接来自 TS 校验器，不要求模型猜格式或翻测试。
+
+`complete_task` accepts either `agent_vision` (the existing bounded
+`goal_vision_replan_contract_v0` JSON packet) or `vision_unchanged_reason`.
+An unchanged decision needs a persisted valid baseline. The TypeScript host
+plan forwards that authored decision to its ordinary writeback; v1 requests
+fail closed against old runtimes instead of silently dropping the fields.
+Syntax and vision-budget preflight reuse the TS validator before lifecycle writes;
+baseline-dependent checks still run at writeback. Oversized authoring is a
+correctable input failure, not a terminal Goal failure. If an older/interrupted
+host already completed the Todo but failed writeback, retry `complete_task` with
+the same completion intent and a corrected uncommitted vision. Checkpoint-only
+recovery is not a substitute for unfinished settlement.
+
+If a previously completed MCP Todo omitted its decision, call
+`review_task_vision(todo_id, agent_id, agent_vision=...)` with that same Todo.
+It uses the original host Turn and the same writeback command constructor,
+delegating to the existing typed checkpoint recovery. It neither repeats Todo
+completion nor spends again. Exact replay is idempotent; a conflicting committed
+decision or a later superseding vision is rejected. It does not change Next
+Action or erase other work, gates, or permissions. A genuinely new replan follows
+the current interaction contract under a fresh admitted binding, not an edit to
+an already committed decision. Claude Todo-less replan now projects that identity
+re-entry before any refresh/spend instructions; ordinary MCP Todo delivery is
+unchanged.
+
+Todo acceptance, settled accounting, checkpoint satisfaction and Goal termination
+are separate facts. `vision_closed` closes a stage and still requires a successor
+vision for an active Goal. `no_followup` is an authored scoped closure assertion,
+not a substitute for evidence; remaining acceptance gaps or gates still prevent
+terminal quota. Kernel validation does not independently prove arbitrary prose
+true, so behavior qualification must also inspect the delivered artifacts.
+
+MCP 可随完成操作携带 vision 判断，也可用 `review_task_vision` 在原 Turn 补齐遗漏。
+复用 TS 的既有恢复规则，不新增结算引擎、不重扣额度；已提交的判断不能偷偷改写。
+格式和预算预检在 Todo 完成前拒绝非法输入；若旧宿主已部分完成，则修正未提交的
+vision 并重试原 `complete_task`，不能用仅补 checkpoint 的操作替代未完成结算。
+“checkpoint 满足”不等于“Goal 完成”，`vision_closed` 只结束阶段，真实缺口仍须规划。
+外层任务只描述业务验收，LoopX 协议由宿主内层指令和工具承接。
+
 ## Exact Release Commit Gate / 精确发布 Commit 门
 
 The final release gate does not rerun tests through a second orchestration

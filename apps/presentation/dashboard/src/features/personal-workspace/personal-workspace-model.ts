@@ -54,6 +54,7 @@ export type WorkspaceRepositoryContext = {
 };
 
 export type WorkspaceGoalSubagentConfiguration = {
+  modelConfig?: { model: string; reasoning_effort?: string } | null;
   allowedDomains: string[];
   domainCandidates?: Array<{
     domain: string;
@@ -360,6 +361,14 @@ export type PersonalWorkspaceCallbacks = {
     request: WorkspaceGoalSubagentConfiguration & { goalId: string; previewId: string },
   ) => Promise<WorkspaceGoalSubagentConfiguration>;
   onGoalActivationStateChange?: (goalId: string, activationState: "active" | "stopped") => void;
+  onExecuteGoalLifecycle?: (request: {
+    goalId: string;
+    operation: "stop" | "resume";
+    reason: string;
+  }) => Promise<{
+    activationState: "active" | "stopped";
+    projectionVerified: boolean;
+  }>;
   onGoalDeleted?: (goalId: string) => void;
   onReconcileStatus?: () => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;

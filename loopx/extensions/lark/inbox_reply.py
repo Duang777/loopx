@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,13 @@ from .outbound import (
 )
 
 CommandRunner = Callable[[Sequence[str]], Mapping[str, Any]]
+BOT_IDENTITY_VERIFY_ATTEMPTS = 3
+
+
+class BotIdentityVerification(str, Enum):
+    VERIFIED = "verified"
+    RETRYABLE_VERIFY_FAILED = "retryable_verify_failed"
+    REJECTED = "rejected"
 
 
 def _default_runner(args: Sequence[str]) -> Mapping[str, Any]:
@@ -90,6 +98,51 @@ def _message(value: Any, message_id: str) -> Mapping[str, Any] | None:
             None,
         )
     return None
+
+
+def _bot_identity_verification(
+    *,
+    runner: CommandRunner,
+    base: Sequence[str],
+    expected_name: str,
+) -> BotIdentityVerification:
+    auth = _call(runner, [*base, "auth", "status", "--verify", "--json"])
+    if auth.get("returncode") != 0:
+        return BotIdentityVerification.REJECTED
+    identities = _json_object(auth.get("stdout")).get("identities")
+    identity = identities.get("bot") if isinstance(identities, Mapping) else None
+    if not isinstance(identity, Mapping):
+        return BotIdentityVerification.REJECTED
+    if identity.get("available") is True and identity.get("verified") is True:
+        return (
+            BotIdentityVerification.VERIFIED
+            if str(identity.get("appName") or "") == expected_name
+            else BotIdentityVerification.REJECTED
+        )
+    if str(identity.get("status") or "") == "verify_failed":
+        return BotIdentityVerification.RETRYABLE_VERIFY_FAILED
+    return BotIdentityVerification.REJECTED
+
+
+def _bot_identity_verified(
+    *,
+    runner: CommandRunner,
+    base: Sequence[str],
+    expected_name: str,
+) -> bool:
+    """Retry only the provider's explicit transient verification state."""
+
+    for _attempt in range(BOT_IDENTITY_VERIFY_ATTEMPTS):
+        result = _bot_identity_verification(
+            runner=runner,
+            base=base,
+            expected_name=expected_name,
+        )
+        if result is BotIdentityVerification.VERIFIED:
+            return True
+        if result is BotIdentityVerification.REJECTED:
+            return False
+    return False
 
 
 def _result(
@@ -234,15 +287,10 @@ def _deliver_lark_inbox_outbound(
         )
 
     base = ["lark-cli", "--profile", profile]
-    auth = _call(runner, base + ["auth", "status", "--verify", "--json"])
-    identities = _json_object(auth.get("stdout")).get("identities")
-    identity = identities.get("bot", {}) if isinstance(identities, Mapping) else {}
-    identity_verified = bool(
-        auth.get("returncode") == 0
-        and isinstance(identity, Mapping)
-        and identity.get("available") is True
-        and identity.get("verified") is True
-        and str(identity.get("appName") or "") == reply_config["bot_display_name"]
+    identity_verified = _bot_identity_verified(
+        runner=runner,
+        base=base,
+        expected_name=str(reply_config["bot_display_name"]),
     )
     if not identity_verified:
         return _result(

@@ -14,6 +14,9 @@ MANAGER_AGENT_OBJECTIVE = (
     "Report discovered versus verified coverage and stale/unreadable facts; never infer no progress from missing evidence. "
     "Read each Goal's current_todos and connect its concrete work, owner decisions and unblocked tasks before answering. "
     "The run-history quality and the independent current_todos read have separate freshness: stale progress does not make a freshly read Todo unknown. "
+    "A freshly read Todo proves the stored task state, not the present state of its referenced PR, deployment, access grant or other external dependency. "
+    "Do not tell the owner to merge, approve, grant access or unblock work based only on an old open task or recorded waiting claim. "
+    "Without current authoritative evidence that the external condition still holds, label it an unverified recorded dependency and recommend Agent reconciliation, not owner action. "
     "For owner-priority questions, distinguish user_gate, user_action, and Agent work. Explain what the user must decide, "
     "which task it affects, the declared priority or deadline, and what can continue autonomously. Group related decisions. "
     "Give a reasoned recommended order; label inferred urgency and do not rank by Goal order or gate count. "
@@ -33,9 +36,12 @@ MANAGER_AGENT_OBJECTIVE = (
     "context delivery, not a Todo proposal: do not ask for another confirmation, set priority, change a plan, "
     "or interrupt the receiver. The receiving Agent owns relevance, replanning, and reporting its decision. "
     "Emit proposals=[] for that request. Do not claim delivery before the host returns its receipt. "
+    "A delegated request includes an automatic return path: the worker must send its decision/result back to this original conversation. "
+    "Do not instruct the owner to ask another status question to complete the exchange. Query tools are fallback inspection only. "
     "If the target is missing or ambiguous, explain the exact gap instead of guessing. "
     "Todos are the worker's internal planning and accounting structure; do not translate delegated intent into a CRUD approval flow. "
     "Use loopx_manager_read whenever the question requires inspecting Goal, Todo or delivery evidence; "
+    "For remote/SSH reports, discover sources and read the chosen source_id's portfolio, Todos and deliveries. Local tasks mentioning SSH are not remote evidence. "
     "the initial directory is not a completed investigation. Choose and paginate reads autonomously. "
     "Do not inspect arbitrary repositories, modify files, run shell commands, or mutate LoopX state in this Chat Turn. "
     "Delegate ordinary requested work to the responsible worker with the original intent and constraints; "
@@ -83,7 +89,7 @@ def open_manager_session(
     )
 
 
-MANAGER_CONTEXT_VERSION = 6
+MANAGER_CONTEXT_VERSION = 10
 
 
 def manager_skill_text() -> str:

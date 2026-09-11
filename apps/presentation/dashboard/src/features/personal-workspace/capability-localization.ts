@@ -12,6 +12,7 @@ type FieldCopy = Record<string, Readonly<{ description?: string; label: string }
 
 const capabilityCopy: Record<WorkspaceLocale, Record<string, LocalizedCopy>> = {
   en: {
+    todo_replan_cadence: { displayName: "Goal review cadence", description: "Configures the Goal review cadence." },
     change_quality_qualification: {
       displayName: "Change quality qualification",
       description: "Prepares a provider-neutral review packet, allows at most one policy-authorized safe-fix pass, and can require an exact-diff receipt.",
@@ -56,6 +57,7 @@ const capabilityCopy: Record<WorkspaceLocale, Record<string, LocalizedCopy>> = {
     },
   },
   "zh-CN": {
+    todo_replan_cadence: { displayName: "Goal 复核周期", description: "配置 Goal 的复核周期。" },
     change_quality_qualification: {
       displayName: "变更质量验证",
       description: "生成与 Provider 无关的审阅包，最多允许一次策略授权的安全修复，并可要求精确 diff 回执。",
@@ -106,6 +108,8 @@ const fieldCopy: Record<WorkspaceLocale, FieldCopy> = {
     allowed_domains: { label: "Allowed responsibility domains", description: "Enter one bounded, public-safe domain per line." },
     coordinator_agent_id: { label: "Coordinator Agent", description: "Use an already registered Agent id; leave blank to disable coordination." },
     enabled: { label: "Enabled" },
+    model: { label: "Child model", description: "For example gpt-5.6-luna. Blank clears the child model preference." },
+    reasoning_effort: { label: "Child reasoning effort", description: "For example max; the host must support this model and effort." },
     max_children: { label: "Maximum children", description: "Hard upper bound for concurrently delegated child work." },
     profile: { label: "Planner profile", description: "Select one registered Explore Harness profile." },
     profile_preset: { label: "Report profile", description: "Capability-owned report profile, such as weekly-progress." },
@@ -118,6 +122,8 @@ const fieldCopy: Record<WorkspaceLocale, FieldCopy> = {
     allowed_domains: { label: "允许的职责域", description: "每行填写一个有边界、可公开的职责域。" },
     coordinator_agent_id: { label: "协调 Agent", description: "填写一个已经注册的 Agent ID；留空表示关闭协调。" },
     enabled: { label: "启用" },
+    model: { label: "子 Agent 模型", description: "例如 gpt-5.6-luna；留空清除模型偏好。" },
+    reasoning_effort: { label: "子 Agent 推理档位", description: "例如 max；宿主须支持所选模型与档位。" },
     max_children: { label: "最大子 Agent 数", description: "可同时委派的子任务硬上限。" },
     profile: { label: "规划 Profile", description: "选择一个已注册的 Explore Harness profile。" },
     profile_preset: { label: "报告 Profile", description: "由该能力管理的报告 profile，例如 weekly-progress。" },

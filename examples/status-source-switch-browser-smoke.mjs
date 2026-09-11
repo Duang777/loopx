@@ -78,6 +78,7 @@ async function main() {
       statusGates: new Map(),
       statusRequestsByPort: new Map(),
       statusStartedByPort: new Map(),
+      lifecycleRequests: [],
     };
     const payloads = new Map([
       ["local", statusPayload("local-goal", "Local Goal Only")],
@@ -90,14 +91,14 @@ async function main() {
       localStorage.setItem("loopx-status-source-catalog-v1", JSON.stringify({
         schemaVersion: 1,
         sources: [
-          { kind: "ssh_tunnel", label: "Remote A", statusUrl: "http://127.0.0.1:8876/status.json" },
-          { kind: "ssh_tunnel", label: "Remote B", statusUrl: "http://127.0.0.1:8976/status.json" },
+          { hostAlias: "remote-a", kind: "ssh_tunnel", label: "Remote A", statusUrl: "http://127.0.0.1:8876/status.json" },
+          { hostAlias: "remote-b", kind: "ssh_tunnel", label: "Remote B", statusUrl: "http://127.0.0.1:8976/status.json" },
         ],
       }));
     });
     await page.route(`http://127.0.0.1:${port}/ssh-hosts`, (route) => route.fulfill({
       contentType: "application/json",
-      json: { ok: true, schema_version: "ssh_host_catalog_v0", hosts: [] },
+      json: { ok: true, schema_version: "ssh_host_catalog_v0", hosts: [{ alias: "remote-a" }, { alias: "remote-b" }] },
       status: 200,
     }));
     await page.route(`http://127.0.0.1:${port}/api/ssh-source/ensure`, async (route) => {
@@ -108,6 +109,28 @@ async function main() {
       await route.fulfill({
         contentType: "application/json",
         json: { ok: true, remote_started: true, status_url: `http://127.0.0.1:${body.local_port}/status.json`, tunnel_required: true },
+        status: 200,
+      });
+    });
+    await page.route(`http://127.0.0.1:${port}/api/ssh-source/goal-lifecycle`, async (route) => {
+      const body = route.request().postDataJSON();
+      state.lifecycleRequests.push(body);
+      const payload = payloads.get("8976");
+      if (body.host_alias === "remote-b" && body.goal_id === "remote-b-goal" && body.operation === "stop") {
+        payload.run_history.goals[0].activation_state = "stopped";
+      }
+      await route.fulfill({
+        contentType: "application/json",
+        json: {
+          activation_state: "stopped",
+          changed: true,
+          goal_id: body.goal_id,
+          host_alias: body.host_alias,
+          ok: true,
+          operation: body.operation,
+          projection_verified: true,
+          schema_version: "loopx_remote_goal_lifecycle_v1",
+        },
         status: 200,
       });
     });
@@ -147,6 +170,15 @@ async function main() {
     if (await selectedSourceLabel(sourceSelect) !== "Remote B") throw new Error("A stale status response moved the source selector away from Remote B");
     if (await page.getByText("Remote A Goal Only", { exact: true }).count()) throw new Error("A stale Remote A payload replaced Remote B goals");
     if (!new URL(page.url()).searchParams.get("statusUrl")?.includes("8976")) throw new Error(`The route did not retain Remote B: ${page.url()}`);
+    const remotePause = page.getByRole("button", { name: "停止 Remote B Goal Only", exact: true });
+    await remotePause.waitFor({ state: "visible" });
+    await page.screenshot({ path: resolve(outputDir, "remote-goal-pause.png"), fullPage: false, animations: "disabled" });
+    await remotePause.click();
+    await page.getByText("Remote B Goal Only", { exact: true }).first().waitFor({ state: "hidden" });
+    const lifecycleRequest = state.lifecycleRequests.at(-1);
+    if (lifecycleRequest?.host_alias !== "remote-b" || lifecycleRequest?.goal_id !== "remote-b-goal" || lifecycleRequest?.operation !== "stop") {
+      throw new Error(`Remote Goal pause did not preserve host and Goal identity: ${JSON.stringify(lifecycleRequest)}`);
+    }
 
     state.statusGates.delete("8876");
     state.statusRequestsByPort.set("8876", 0);

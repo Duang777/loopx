@@ -16,7 +16,8 @@ export type StatusSourceControl = {
   activeSource: StatusSource;
   connectionState: StatusSourceConnectionState;
   errorMessage?: string | null;
-  onAdd: (input: { ensureTunnel?: boolean; label: string; statusUrl: string }) => { error?: string };
+  onAdd: (input: { ensureTunnel?: boolean; hostAlias?: string; label: string; statusUrl: string }) => { error?: string };
+  onConfiguredHostsLoaded?: (hostAliases: string[]) => void;
   onRemove: (sourceId: string) => void;
   onSelect: (sourceId: string) => void;
   sources: StatusSource[];
@@ -27,6 +28,7 @@ export function StatusSourceSwitcher({
   connectionState,
   errorMessage,
   onAdd,
+  onConfiguredHostsLoaded,
   onRemove,
   onSelect,
   sources,
@@ -71,6 +73,7 @@ export function StatusSourceSwitcher({
     try {
       const catalog = await fetchConfiguredSshHosts();
       setConfiguredHosts(catalog.hosts);
+      onConfiguredHostsLoaded?.(catalog.hosts.map((host) => host.alias));
       setHostAlias((current) => current || catalog.hosts[0]?.alias || "");
       if (!catalog.hosts.length) setConfiguredHostsError(t("source.hostEmpty"));
     } catch (caught) {
@@ -113,7 +116,7 @@ export function StatusSourceSwitcher({
       setError(configuredDraft.error ?? t("source.invalid"));
       return;
     }
-    const result = onAdd({ ensureTunnel: true, label: configuredDraft.label, statusUrl: configuredDraft.statusUrl });
+    const result = onAdd({ ensureTunnel: true, hostAlias: configuredDraft.hostAlias, label: configuredDraft.label, statusUrl: configuredDraft.statusUrl });
     if (result.error) {
       setError(result.error);
       return;
@@ -142,7 +145,7 @@ export function StatusSourceSwitcher({
       setError(draft.error ?? t("source.invalid"));
       return;
     }
-    const result = onAdd({ ensureTunnel: true, label: draft.label, statusUrl: draft.statusUrl });
+    const result = onAdd({ ensureTunnel: true, hostAlias: draft.hostAlias, label: draft.label, statusUrl: draft.statusUrl });
     if (result.error) setError(result.error);
     else setError(null);
     setLocalPort(freePort);

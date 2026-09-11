@@ -34,7 +34,7 @@ from .chat_manager import (
     MANAGER_AGENT_GOAL_ID, MANAGER_AGENT_OBJECTIVE, is_manager_channel,
     manager_workspace, manager_model_config,
 )
-from .chat_ssh_source_api import SSH_SOURCE_ENSURE_PATH, SshSourceRequestMixin
+from .chat_ssh_source_api import SshSourceRequestMixin
 from .chat_store import ChatSessionStore
 from .control_plane.status.ssh_host_catalog import (
     SSH_HOST_CATALOG_PATH,
@@ -428,6 +428,8 @@ class ChatHTTPServer(ThreadingHTTPServer):
     def server_close(self) -> None:
         if hasattr(self, "lark_app_setup_manager"):
             self.lark_app_setup_manager.close()
+        if hasattr(self, "manager_return_service"):
+            self.manager_return_service.close()
         if hasattr(self, "lark_goal_topic_runtime"):
             self.lark_goal_topic_runtime.close()
         if hasattr(self, "runtime_controller"):
@@ -1342,7 +1344,7 @@ class ChatRequestHandler(
             CHAT_LARK_APP_SETUPS_PATH: self._lark_setup_start,
             CHAT_LARK_CONNECTIONS_PATH: self._lark_connect,
             **self._configuration_post_routes(),
-            SSH_SOURCE_ENSURE_PATH: self._ssh_source_ensure,
+            **self._ssh_source_post_routes(),
         }
         add_goal_subagent_routes(post_dispatch, handler=self)
         if path in post_dispatch:
@@ -1490,6 +1492,8 @@ def serve_chat(
         runtime_controller=server.runtime_controller,
     )
     server.lark_goal_topic_runtime.start()
+    from .extensions.lark.manager_returns import start_return_service
+    server.manager_return_service = start_return_service(server, runtime_root)
     url = f"http://{host}:{port}{DEFAULT_CHAT_PATH}"
     print(f"Serving LoopX Chat at {url}", flush=True)
     print("Agent boundary: local adapters, read-only sandbox, approval policy never", flush=True)

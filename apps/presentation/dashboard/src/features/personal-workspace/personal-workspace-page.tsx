@@ -100,10 +100,10 @@ function ManagerHomeBoard({
   const currentGoals = goals.filter((goal) => goal.activationState === "active");
   const failedCount = currentGoals.filter((goal) => goal.loadState === "error").length;
   const activeHomeLanes = [
-    { description: t("home.lane.needsYouDescription"), key: "needs_you", label: t("home.lane.needsYou") },
-    { description: t("home.lane.runningDescription"), key: "running", label: t("home.lane.running") },
-    { description: t("home.lane.observingDescription"), key: "observing", label: t("home.lane.observing") },
-    { description: t("home.lane.scheduledDescription"), key: "scheduled", label: t("home.lane.scheduled") },
+    { key: "needs_you", label: t("home.lane.needsYou") },
+    { key: "running", label: t("home.lane.running") },
+    { key: "observing", label: t("home.lane.observing") },
+    { key: "scheduled", label: t("home.lane.scheduled") },
   ] as const;
   const active = Object.fromEntries(activeHomeLanes.map((lane) => [lane.key, [] as WorkspaceGoal[]])) as Record<(typeof activeHomeLanes)[number]["key"], WorkspaceGoal[]>;
   const history: WorkspaceGoal[] = [];
@@ -152,7 +152,6 @@ function ManagerHomeBoard({
         {activeHomeLanes.map((lane) => (
           <section className={`personal-home-lane is-${lane.key}`} data-testid={`personal-home-lane-${lane.key}`} key={lane.key}>
             <header><span><i />{lane.label}</span><b>{active[lane.key].length}</b></header>
-            <p>{lane.description}</p>
             <div className="personal-home-lane-list">
               {active[lane.key].length ? active[lane.key].map(goalCard) : <span className="personal-home-empty">{t("home.empty")}</span>}
             </div>
@@ -306,7 +305,6 @@ function SessionRecordHeader({ onClose, onOpenDetails, run }: {
       </header>
       <div>
         <strong>{run.title}</strong>
-        <p>{t("session.recordDescription")}</p>
       </div>
       <dl>
         <div><dt>Agent</dt><dd>{run.agentLabel}</dd></div>
@@ -1093,6 +1091,25 @@ export function PersonalWorkspacePage({
         };
         setActionFeedback(t("feedback.applying", { title: summaryByOperation.stop }));
         callbacks.onGoalActivationStateChange?.(goal.goalId, "stopped");
+      }
+      if (callbacks.onExecuteGoalLifecycle) {
+        if (operation === "delete") {
+          throw new Error("The selected status source does not authorize Goal deletion.");
+        }
+        const result = await callbacks.onExecuteGoalLifecycle({
+          goalId: goal.goalId,
+          operation,
+          reason: reasonByOperation[operation],
+        });
+        if (!result.projectionVerified) {
+          throw new Error("Goal lifecycle projection did not verify.");
+        }
+        projectionOwnedByApply = true;
+        callbacks.onGoalActivationStateChange?.(goal.goalId, result.activationState);
+        setActionFeedback(t("feedback.completed", { title: summaryByOperation[operation] }));
+        if (operation === "stop") selectGoal(null);
+        await (callbacks.onReconcileStatus ?? callbacks.onRefresh)?.();
+        return;
       }
       const proposal = await createPreview({
         actionKind: "goal.lifecycle",
@@ -1932,9 +1949,12 @@ export function PersonalWorkspacePage({
           attentionCount={managerNeedsYouCount}
           goals={workspaceGoals}
           goalArchiveLoadState={goalArchiveLoadState}
+          goalLifecycleOperations={callbacks.onExecuteGoalLifecycle ? ["stop", "resume"] : undefined}
           lifecycleBusyGoalIds={lifecycleBusyGoalIds}
           onRequestGoalCreate={readOnly ? undefined : requestGoalCreate}
-          onRequestGoalLifecycle={readOnly ? undefined : (goal, operation) => void requestGoalLifecycle(goal, operation)}
+          onRequestGoalLifecycle={readOnly && !callbacks.onExecuteGoalLifecycle
+            ? undefined
+            : (goal, operation) => void requestGoalLifecycle(goal, operation)}
           onRetryGoalArchive={callbacks.onRetryGoalArchive || callbacks.onRefresh
             ? () => void (callbacks.onRetryGoalArchive ?? callbacks.onRefresh)?.()
             : undefined}

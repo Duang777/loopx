@@ -91,7 +91,85 @@ recent delivery window is still yesterday through now; arbitrary artifact paths
 and external links are not fetched. Existing non-Codex adapters retain their
 context projection until they implement an equivalent tool contract.
 
-Manager context version 6 starts a fresh upstream session for older manager
+Manager context version 10 starts a fresh upstream session for older manager
 contexts. The logical Chat session and its receipts remain intact. Runtime support
 uses the Codex app-server dynamic tool protocol; explicit upstream terminal
-errors remain errors and are not retried as part of inspection.
+errors remain errors and are not retried as part of inspection. The version
+change refreshes the operating contract on existing installations;
+resuming an old upstream thread would retain its previous instructions.
+
+### Remote evidence sources
+
+The manager discovers SSH aliases through the same host catalog as the frontend
+source switcher. `loopx_manager_read view=sources` lists eligible sources; select
+`source_id=ssh:<alias>` for portfolio, Todo or delivery reads. Reads execute a
+fixed, bounded CLI projection on the selected host, using its global registry,
+not local tasks whose titles mention SSH. Source host and Goal ID jointly identify
+the evidence; a missing declared execution `host_id` does not erase source provenance.
+
+Owner-local conversations may inspect configured hosts on demand. External
+conversations require a persistent, exact host/Goal read grant from the local
+operator, in addition to their live connection authorization:
+
+```sh
+loopx manager-inbox configure-ssh-read-scope --channel-id manager.external.0123456789abcdef01234567 --ssh-host research-host --read-goal-id project-a --execute
+```
+
+Omit `--execute` for a preview; pass no Goals to revoke that host. This grants
+summary reads only, not delegation, shell commands or remote writes. Changed
+grants invalidate upstream manager context; revocation during a read discards
+the result. No remote connections occur merely to list sources. Offline hosts,
+older unsupported remote runtimes and missing Goals remain explicit unknowns.
+
+The remote CLI uses `goal-portfolio --manager-view portfolio|todos|deliveries`
+and the same Core readers as the local manager. Pagination remains explicit.
+Delivery reads support `days=1..90` so latest known historical outcomes can be
+explained alongside fresh current Todos without pretending stale execution is
+current. Both hosts need the updated LoopX runtime.
+
+
+## A delegation returns automatically
+
+The default interaction is one exchange: initial delivery receipt, receiving
+Agent assessment/work, then an audience-ready conclusion back in the original
+conversation. Status queries are optional inspection, not the completion path.
+The receiving Agent still owns relevance and priority; normal context delivery
+never changes its Todos or interrupts its current work.
+
+`manager-inbox read` records the first provision of context to the receiver.
+After `acknowledge`, the request remains in the turn-start hook until the worker
+publishes a conclusion. The worker uses `link` for canonical Todo/evidence lineage
+and `report` to publish the answer intended for the original audience:
+
+```sh
+loopx manager-inbox acknowledge --goal-id research --agent-id worker \
+  --request-id <id> --decision adopt --reason 'Private reasoning about the plan.'
+loopx manager-inbox link --goal-id research --agent-id worker \
+  --request-id <id> --related-todo-id <core-todo-id> --evidence-id sha256:<digest>
+loopx manager-inbox report --goal-id research --agent-id worker \
+  --request-id <id> --phase conclusion --reply-text 'What was assessed or changed, what was validated, and what remains.'
+```
+
+For longer work, `--phase decision` optionally returns a meaningful intermediate
+update. A ready conclusion supersedes an unsent intermediate update. Do not send
+one notification per poll, quote private deliberation, or claim an implementation
+request finished merely because a plan exists. A research-direction request can
+conclude with the adopted/rejected planning decision; deferred or blocked work
+must explain the concrete condition and next action. Completion of this exchange
+is separate from completion of the receiving Goal.
+
+The Chat server hosts a cheap local receipt pump (no model calls and no Codex
+automation). It appends a deduplicated follow-up to the original transcript;
+the open frontend picks it up automatically. For Lark it reuses the current
+binding, captured source Inbox, provider preview, idempotency key and readback.
+It waits until the initial reply is acknowledged, revalidates authority before
+sending, and never retargets a closed/replaced conversation. An offline transport
+retries the persisted answer rather than rerunning the worker. Ambiguous external
+writes remain `verification_required` and are not blindly resent.
+
+New handoffs persist their exact original return route. Legacy requests remain
+queryable; a receiver can explicitly report one only when its exact persisted
+Chat receipt uniquely recovers the route. Historical timestamps stay unknown.
+Replies are immutable and additive, separate from private decision reasons and
+Core progress. Query `manager-inbox status` or `loopx_manager_read view=handoffs`
+for delivery diagnostics. These queries are not required from the user.

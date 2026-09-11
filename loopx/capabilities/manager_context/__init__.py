@@ -192,12 +192,15 @@ def deliver(
     path = _root(runtime_root) / "entries" / _hash(request) / (request_id + ".json")
     with exclusive_file_lock(path.with_suffix(".lock")):
         exists = path.exists()
-        if exists and _read(path) != value:
+        if exists and {k: v for k, v in _read(path).items() if k not in {"delivered_at", "source_channel"}} != value:
             raise ValueError("context request identity conflict")
         if not exists:
-            _write(path, value)
-        if _read(path) != value:
+            from .tracking import _now
+            _write(path, value | {"delivered_at": _now(), "source_channel": session.get("channel_id")})
+        if {k: v for k, v in _read(path).items() if k not in {"delivered_at", "source_channel"}} != value:
             raise ValueError("context delivery readback failed")
+    from .roundtrip import register
+    register(runtime_root, value, session, turn)
     return {
         "request_id": request_id,
         "status": "delivered",
@@ -218,7 +221,9 @@ def pending(runtime_root: Path, goal_id: str, agent_id: str) -> dict:
     )
     items = []
     for path in sorted(folder.glob("*.json")):
-        if (_root(runtime_root) / "decisions" / path.name).exists():
+        from .roundtrip import needs_conclusion
+        decided = (_root(runtime_root) / "decisions" / path.name).exists()
+        if decided and not needs_conclusion(runtime_root, path.stem):
             continue
         item = _read(path)
         if (
@@ -227,6 +232,9 @@ def pending(runtime_root: Path, goal_id: str, agent_id: str) -> dict:
             or item.get("agent_id") != agent_id
         ):
             raise ValueError("context inbox scope mismatch")
+        if decided:
+            item = {**item, "receiver_decision_recorded": True,
+                    "next_action": "Return the original audience a conclusion with manager-inbox report; do not repeat the recorded decision or reprioritize unrelated work."}
         items.append(item)
         if len(items) == 21:
             break
@@ -263,9 +271,12 @@ def acknowledge(
     value = {"request_id": request_id, **target, "decision": decision, "reason": reason}
     path = _root(runtime_root) / "decisions" / (request_id + ".json")
     with exclusive_file_lock(path.with_suffix(".lock")):
-        if path.exists() and _read(path) != value:
-            raise ValueError("context decision already recorded")
-        _write(path, value)
+        if path.exists():
+            if {k: v for k, v in _read(path).items() if k != "decided_at"} != value:
+                raise ValueError("context decision already recorded")
+        else:
+            from .tracking import _now
+            _write(path, value | {"decided_at": _now()})
     return {"ok": True, **value}
 
 

@@ -1382,6 +1382,20 @@ def render_update_plan_markdown(payload: dict[str, Any]) -> str:
     next_command = next_action.get("command")
     if next_command:
         lines.extend(["", "```bash", str(next_command), "```"])
+    prompt_upgrade = payload.get("automation_prompt_upgrade")
+    if isinstance(prompt_upgrade, dict):
+        lines.extend(["", "## Automation Prompts", "",
+                      f"- Status: `{prompt_upgrade.get('status')}`"])
+        if "upgrade_complete" in payload:
+            lines.append(f"- Upgrade complete (runtime + prompts): `{payload['upgrade_complete']}`")
+        for item in prompt_upgrade.get("results", []):
+            lines.append(f"- `{item['automation_id']}`: `{item['status']}`")
+            if item.get("reason"):
+                lines.append(f"  - {item['reason']}")
+        if prompt_upgrade.get("snapshot_file"):
+            lines.append(f"- Private recovery snapshot: `{prompt_upgrade['snapshot_file']}`")
+        if prompt_upgrade.get("next_action"):
+            lines.append(f"- Next: {prompt_upgrade['next_action']}")
     lines.extend(
         [
             "",

@@ -36,6 +36,11 @@ DEFAULT_AGENT = "cc"
 # registry-driven context, shared with the hooks/MCP
 sys.path.insert(0, str(HERE.parent / "hooks"))
 from goal_state import goal_context, find_registry, loop_md_path  # noqa: E402
+from loopx.control_plane.heartbeat.rules import (  # noqa: E402
+    HOST_LOOP_SAFETY_RULE,
+    RUNTIME_REPAIR_ROUTING_RULE,
+    SCOPE_BOUNDED_WORK_RULE,
+)
 
 
 def gh_prefix():
@@ -53,7 +58,7 @@ def slug(name: str) -> str:
     return f"cc-{s}"[:48]
 
 
-def loop_md_content(goal_id, agent_id) -> str:
+def loop_execution_content(goal_id, agent_id) -> str:
     """The per-iteration protocol that native `/loop` runs (written to
     .claude/loop.md). loopx's should_run is the deterministic per-tick gate; the
     agent uses the wired loopx MCP tools, never raw CLI guessing.
@@ -66,15 +71,45 @@ def loop_md_content(goal_id, agent_id) -> str:
         f"<!-- loopx:armed {armed} -->\n"
         f"loopx tick — advance goal `{goal_id}` (agent `{agent_id}`). Use the wired loopx MCP\n"
         f"tools; do NOT run `loopx --help` or guess ids.\n\n"
-        f"1. Call `should_run()`. If should_run=false, say why in ONE line and STOP this\n"
-        f"   iteration (do nothing else) — loopx has paused, gated, or converged.\n"
-        f"2. If should_run=true: `claim_task` the next open todo, do ONE bounded segment,\n"
-        f"   then VERIFY it with a real check (build/test) — never claim success from\n"
-        f"   reasoning — and `complete_task(..., agent_id=\"{agent_id}\", evidence=\"<ran + result>\")`.\n"
-        f"3. Stay within the goal's scope; do not start initiatives outside the todos.\n"
-        f"   Irreversible actions (push/delete) only to finish work already authorized.\n"
-        f"4. Re-check `should_run()`; stop when should_run=false or no open todos remain.\n"
+        f"{HOST_LOOP_SAFETY_RULE}\n{RUNTIME_REPAIR_ROUTING_RULE}\n"
+        "Read complete successful `should_run()` JSON each work iteration. Follow its\n"
+        "current `interaction_contract`: selection/re-entry before admitted work,\n"
+        "then validation and settlement. Never infer completion from an empty Todo list.\n"
+        f"{SCOPE_BOUNDED_WORK_RULE}\n"
+        "Honor claim/lease and user/repository authority; claim only when required.\n"
+        "Run real acceptance checks before `complete_task`; supply truthful evidence\n"
+        f"and the bound agent_id=\"{agent_id}\". Complete only finished Todos, not partial work.\n"
+        "That MCP operation owns writeback/spend: use it INSTEAD OF the raw CLI sequence.\n"
+        "Use interaction_contract.mcp_channel for tool ownership and vision input limits.\n"
+        "At material delivery, compare the Goal's vision/acceptance with actual evidence.\n"
+        "Pass the resulting agent_vision or a justified vision_unchanged_reason to\n"
+        "complete_task. If omitted, use review_task_vision on that completed Todo to\n"
+        "repair its missing checkpoint without another spend. This is not a Goal-stop\n"
+        "shortcut: open acceptance needs replan; vision_closed closes a stage and needs\n"
+        "a successor vision; no_followup requires evidence of no remaining scoped work.\n"
+        "For new replan work not covered by these tools, use the exact live\n"
+        "interaction_contract CLI actions, preserving its binding and settlement order.\n"
+        "Link already planned follow-up via successor_todo_ids; next_agent_todo creates\n"
+        "new work, not a reference to an existing id. Do not duplicate the current plan.\n"
+        "After a lost response, read back or retry the same completion intent; do not\n"
+        "invent a new successor or settlement identity. Recheck `should_run()` afterward.\n"
+        "Continue authorized work while the live contract requires it; notification\n"
+        "silence is not execution silence. Waiting is not completion: follow current\n"
+        "host scheduling guidance without repeated unchanged polling. Terminal\n"
+        "no-follow-up ends this Goal's work; cancel only its own recurring wakeup.\n"
+        "Repair entrypoint errors within authority; an unavailable/incomplete contract\n"
+        "permits neither work nor spending and must not be reported as completion.\n"
     )
+
+
+def loop_md_content(goal_id, agent_id) -> str:
+    from loopx.control_plane.heartbeat.bootstrap_prompt import BOOTSTRAP_INSTRUCTION
+    armed = json.dumps({"goal_id": goal_id, "agent_id": agent_id})
+    return (f"<!-- loopx:armed {armed} -->\nLoopX managed MCP bootstrap v1\n"
+            "Each entry/resume: call the bound LoopX `host_prompt` MCP tool, "
+            "verify its goal_id and agent_id match the armed binding above, "
+            "then read its complete task_body. Do not create another Goal or scheduler.\n"
+            f"{BOOTSTRAP_INSTRUCTION}\n")
 
 
 def write_loop_md(proj: Path, goal_id, agent_id) -> Path:
@@ -230,10 +265,10 @@ def main():
     print(f"  todo_id : {tid}")
     print(f"  scope   : {proj}")
     print(f"  task    : {task}")
-    print(f"  wrote   : .claude/loop.md  (the per-tick protocol)")
+    print("  wrote   : .claude/loop.md  (the per-tick protocol)")
     print()
     print("START WORKING — run native `/loop`  (Claude self-paces)  or  `/loop 10m`  (fixed cadence).")
-    print("Each /loop tick runs: should_run -> claim_task -> ONE bounded verified segment -> complete_task.")
+    print("Each /loop tick follows should_run's current contract; complete_task settles only verified, finished work.")
     print("Stop with Esc or `/loopx off`.")
 
 
