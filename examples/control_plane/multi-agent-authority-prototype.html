@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LoopX 多 Agent Authority 原型</title>
+  <style>
+    :root {
+      --ink: #171717;
+      --body: #4d4d4d;
+      --muted: #8f8f8f;
+      --canvas: #fafafa;
+      --surface: #fff;
+      --soft: #f2f2f2;
+      --border: #ebebeb;
+      --link: #0070f3;
+      --danger: #ee0000;
+      --warning: #a45d00;
+      --success: #087a3e;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font: 14px/1.5 "Geist", "Inter", "Helvetica Neue", Arial, sans-serif;
+    }
+    button { font: inherit; }
+    main { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 48px 0 64px; }
+    h1 { margin: 8px 0 12px; font-size: clamp(30px, 5vw, 48px); line-height: 1; letter-spacing: -.05em; }
+    h2 { margin: 0 0 16px; font-size: 20px; letter-spacing: -.02em; }
+    p { color: var(--body); max-width: 760px; }
+    .eyebrow { color: var(--muted); font: 500 12px/16px "Geist Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
+    .question { margin-bottom: 32px; font-size: 16px; line-height: 24px; }
+    .truth { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 32px; }
+    .truth span { padding: 6px 10px; border: 1px solid var(--border); border-radius: 9999px; background: var(--surface); }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .panel { margin-top: 24px; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+    .card { min-height: 148px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+    .card h3 { margin: 0 0 12px; font-size: 14px; }
+    .meta { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; }
+    .meta dt { color: var(--muted); }
+    .meta dd { margin: 0; font-family: "Geist Mono", monospace; overflow-wrap: anywhere; }
+    .badge { display: inline-block; padding: 2px 7px; border: 1px solid var(--border); border-radius: 9999px; font: 500 12px/16px "Geist Mono", monospace; }
+    .badge.current, .badge.selected, .badge.completed { color: var(--success); }
+    .badge.running, .badge.leased, .badge.held_result { color: var(--warning); }
+    .badge.expired, .badge.rejected { color: var(--danger); }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+    button {
+      min-height: 44px;
+      padding: 10px 14px;
+      color: var(--ink);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { border-color: #c9c9c9; }
+    button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+    button.primary { color: #fff; background: var(--ink); border-color: var(--ink); }
+    button[aria-selected="true"] { color: #fff; background: var(--ink); }
+    .walkthrough { display: grid; grid-template-columns: 220px 1fr; gap: 24px; }
+    .tabs { display: grid; align-content: start; gap: 8px; }
+    .scenario-copy { margin-top: 0; }
+    .step { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+    .step strong { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 9999px; background: var(--soft); }
+    .step button { flex: 1; text-align: left; }
+    .step button:disabled { color: var(--muted); cursor: default; background: var(--soft); }
+    .event-log { margin: 0; padding: 0; list-style: none; font-family: "Geist Mono", monospace; font-size: 12px; }
+    .event-log li { padding: 8px 0; border-top: 1px solid var(--border); }
+    .event-log li:first-child { border-top: 0; }
+    .event-log .error { color: var(--danger); }
+    .empty { color: var(--muted); }
+
+    @media (max-width: 760px) {
+      main { width: min(100% - 32px, 1120px); padding-top: 32px; }
+      .grid, .walkthrough { grid-template-columns: 1fr; }
+      .tabs { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Throwaway logic prototype · no host calls</div>
+    <h1>多 Agent Authority 实验</h1>
+    <p class="question"><strong>问题：</strong>当外部 Host 并行运行多个 Agent 时，LoopX 能否阻止 scope 冲突与过期提交，并保证“执行完成”只有进入 <code>held_result</code>，经过 settlement 才能正式完成 Todo？</p>
+    <div class="truth" aria-label="不可破坏的规则">
+      <span>Host 完成 ≠ Todo 完成</span>
+      <span>过期 lease 不能提交</span>
+      <span>冲突 scope 不能并行</span>
+      <span>只有 LoopX settlement 生效</span>
+    </div>
+
+    <section class="panel">
+      <h2>引导实验</h2>
+      <div class="walkthrough">
+        <div class="tabs" role="tablist" aria-label="实验场景" id="scenario-tabs"></div>
+        <div>
+          <p class="scenario-copy" id="scenario-copy"></p>
+          <div id="scenario-steps"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>自由操作</h2>
+      <div class="controls" id="free-play"></div>
+    </section>
+
+    <section class="panel" aria-live="polite">
+      <h2>当前状态</h2>
+      <div class="grid" id="state-grid"></div>
+    </section>
+
+    <section class="panel">
+      <h2>最近事件</h2>
+      <ol class="event-log" id="event-log"></ol>
+    </section>
+  </main>
+
+  <script>
+    const initialState = () => ({
+      nextBranch: 1,
+      nextLeaseEpoch: 1,
+      todos: {
+        api: { id: "todo-api", scope: "src/api/**", status: "ready", claimedBy: null },
+        docs: { id: "todo-docs", scope: "docs/**", status: "ready", claimedBy: null },
+        shared: { id: "todo-shared", scope: "src/api/**", status: "ready", claimedBy: null }
+      },
+      agents: {
+        alpha: { id: "agent-alpha", status: "idle" },
+        beta: { id: "agent-beta", status: "idle" }
+      },
+      branches: [],
+      settled: [],
+      events: [{ kind: "info", text: "实验已重置；LoopX 持有 canonical state。" }]
+    });
+
+    const activeStates = new Set(["admitted", "leased", "running", "held_result"]);
+    const copy = value => JSON.parse(JSON.stringify(value));
+    const branch = (state, id) => state.branches.find(item => item.id === id);
+    const activeForTodo = (state, todoKey) => state.branches.find(item => item.todoKey === todoKey && activeStates.has(item.status));
+    const addEvent = (state, text, kind = "info") => state.events.unshift({ kind, text });
+
+    function reject(state, text) {
+      addEvent(state, `拒绝：${text}`, "error");
+      return state;
+    }
+
+    function reduce(previous, action) {
+      if (action.type === "RESET") return initialState();
+      const state = copy(previous);
+
+      if (action.type === "ADMIT") {
+        const todo = state.todos[action.todoKey];
+        const agent = state.agents[action.agentKey];
+        if (!todo || !agent) return reject(state, "未知 Todo 或 Agent");
+        if (todo.status !== "ready") return reject(state, `${todo.id} 当前不是 ready`);
+        if (agent.status !== "idle") return reject(state, `${agent.id} 当前不空闲`);
+        const conflict = state.branches.find(item => activeStates.has(item.status) && state.todos[item.todoKey].scope === todo.scope);
+        if (conflict) return reject(state, `${todo.scope} 已由 ${conflict.id} 占用`);
+        const id = `branch-${state.nextBranch++}`;
+        state.branches.push({ id, todoKey: action.todoKey, agentKey: action.agentKey, status: "admitted", leaseEpoch: null });
+        todo.status = "admitted";
+        addEvent(state, `${id} admitted：${agent.id} 可执行 ${todo.id}，尚未获得 lease。`);
+        return state;
+      }
+
+      const item = branch(state, action.branchId);
+      if (!item) return reject(state, `找不到 ${action.branchId}`);
+      const todo = state.todos[item.todoKey];
+      const agent = state.agents[item.agentKey];
+
+      if (action.type === "LEASE") {
+        if (item.status !== "admitted") return reject(state, `${item.id} 不能从 ${item.status} 获取 lease`);
+        item.status = "leased";
+        item.leaseEpoch = state.nextLeaseEpoch++;
+        agent.status = "reserved";
+        todo.claimedBy = agent.id;
+        addEvent(state, `${item.id} 获得 lease epoch ${item.leaseEpoch}。`);
+      } else if (action.type === "START") {
+        if (item.status !== "leased") return reject(state, `${item.id} 不能从 ${item.status} 开始运行`);
+        item.status = "running";
+        agent.status = "running";
+        todo.status = "in_progress";
+        addEvent(state, `Host 启动 ${item.id}；canonical Todo 仍由 LoopX 持有。`);
+      } else if (action.type === "HOST_DONE") {
+        if (item.status !== "running") return reject(state, `${item.id} 的 completion 已过期或状态非法`);
+        item.status = "held_result";
+        agent.status = "idle";
+        todo.status = "awaiting_settlement";
+        addEvent(state, `Host 报告 ${item.id} 完成；结果被 hold，Todo 尚未完成。`);
+      } else if (action.type === "EXPIRE") {
+        if (!new Set(["leased", "running"]).has(item.status)) return reject(state, `${item.id} 没有可失效的 lease`);
+        item.status = "expired";
+        agent.status = "idle";
+        todo.status = "ready";
+        todo.claimedBy = null;
+        addEvent(state, `${item.id} lease 失效；旧 Host 后续提交必须拒绝。`, "error");
+      } else if (action.type === "SELECT") {
+        if (item.status !== "held_result") return reject(state, `${item.id} 没有可 settlement 的 held result`);
+        item.status = "selected";
+        todo.status = "completed";
+        todo.claimedBy = null;
+        state.settled.push(item.id);
+        addEvent(state, `LoopX settlement 选择 ${item.id}；${todo.id} 现在正式 completed。`);
+      } else if (action.type === "DISCARD") {
+        if (item.status !== "held_result") return reject(state, `${item.id} 没有可丢弃的 held result`);
+        item.status = "discarded";
+        todo.status = "ready";
+        todo.claimedBy = null;
+        addEvent(state, `LoopX 丢弃 ${item.id}；${todo.id} 返回 ready。`);
+      }
+      return state;
+    }
+
+    const actions = {
+      admitApiAlpha: { label: "Admit API → Alpha", value: { type: "ADMIT", todoKey: "api", agentKey: "alpha" } },
+      admitDocsBeta: { label: "Admit Docs → Beta", value: { type: "ADMIT", todoKey: "docs", agentKey: "beta" } },
+      admitSharedBeta: { label: "尝试冲突 Shared → Beta", value: { type: "ADMIT", todoKey: "shared", agentKey: "beta" } },
+      lease1: { label: "给 branch-1 发 lease", value: { type: "LEASE", branchId: "branch-1" } },
+      lease2: { label: "给 branch-2 发 lease", value: { type: "LEASE", branchId: "branch-2" } },
+      start1: { label: "启动 branch-1", value: { type: "START", branchId: "branch-1" } },
+      start2: { label: "启动 branch-2", value: { type: "START", branchId: "branch-2" } },
+      done1: { label: "Host 报告 branch-1 完成", value: { type: "HOST_DONE", branchId: "branch-1" } },
+      done2: { label: "Host 报告 branch-2 完成", value: { type: "HOST_DONE", branchId: "branch-2" } },
+      select1: { label: "LoopX 选择 branch-1", value: { type: "SELECT", branchId: "branch-1" } },
+      expire1: { label: "使 branch-1 lease 失效", value: { type: "EXPIRE", branchId: "branch-1" } }
+    };
+
+    const scenarios = [
+      {
+        title: "安全并行",
+        copy: "两个 Agent 处理不重叠 scope。观察 Host 完成后 Todo 仍等待 LoopX settlement。",
+        steps: ["admitApiAlpha", "lease1", "start1", "admitDocsBeta", "lease2", "start2", "done1", "done2", "select1"]
+      },
+      {
+        title: "Scope 冲突",
+        copy: "API 与 Shared Todo 写入同一 scope。第二个 admission 应 fail closed。",
+        steps: ["admitApiAlpha", "lease1", "start1", "admitSharedBeta"]
+      },
+      {
+        title: "过期提交",
+        copy: "Agent 开始运行后 lease 失效；随后到达的旧 completion 不得改变 Todo。",
+        steps: ["admitApiAlpha", "lease1", "start1", "expire1", "done1"]
+      },
+      {
+        title: "完成不等于生效",
+        copy: "Host 正常完成只产生 held result。最后一步才由 LoopX 正式完成 Todo。",
+        steps: ["admitApiAlpha", "lease1", "start1", "done1", "select1"]
+      }
+    ];
+
+    let state = initialState();
+    let selectedScenario = 0;
+    let completedSteps = 0;
+
+    function dispatch(action) {
+      state = reduce(state, action);
+      render();
+    }
+
+    function renderCards() {
+      const cards = [];
+      for (const todo of Object.values(state.todos)) {
+        cards.push(`<article class="card"><h3>${todo.id}</h3><dl class="meta"><dt>状态</dt><dd><span class="badge ${todo.status}">${todo.status}</span></dd><dt>Scope</dt><dd>${todo.scope}</dd><dt>Claim</dt><dd>${todo.claimedBy || "—"}</dd></dl></article>`);
+      }
+      for (const agent of Object.values(state.agents)) {
+        cards.push(`<article class="card"><h3>${agent.id}</h3><dl class="meta"><dt>状态</dt><dd><span class="badge ${agent.status}">${agent.status}</span></dd><dt>Authority</dt><dd>execute only</dd></dl></article>`);
+      }
+      for (const item of state.branches) {
+        cards.push(`<article class="card"><h3>${item.id}</h3><dl class="meta"><dt>状态</dt><dd><span class="badge ${item.status}">${item.status}</span></dd><dt>Todo</dt><dd>${state.todos[item.todoKey].id}</dd><dt>Executor</dt><dd>${state.agents[item.agentKey].id}</dd><dt>Lease epoch</dt><dd>${item.leaseEpoch ?? "—"}</dd></dl></article>`);
+      }
+      document.querySelector("#state-grid").innerHTML = cards.join("");
+    }
+
+    function renderEvents() {
+      document.querySelector("#event-log").innerHTML = state.events.slice(0, 8).map(event => `<li class="${event.kind}">${event.text}</li>`).join("");
+    }
+
+    function renderScenarios() {
+      document.querySelector("#scenario-tabs").innerHTML = scenarios.map((scenario, index) => `<button role="tab" aria-selected="${index === selectedScenario}" data-scenario="${index}">${scenario.title}</button>`).join("");
+      const scenario = scenarios[selectedScenario];
+      document.querySelector("#scenario-copy").textContent = scenario.copy;
+      document.querySelector("#scenario-steps").innerHTML = scenario.steps.map((key, index) => `<div class="step"><strong>${index + 1}</strong><button data-step="${index}" ${index > completedSteps ? "disabled" : ""}>${actions[key].label}</button></div>`).join("");
+    }
+
+    function renderFreePlay() {
+      document.querySelector("#free-play").innerHTML = `<button class="primary" data-reset>重置</button>` + Object.entries(actions).map(([key, action]) => `<button data-action="${key}">${action.label}</button>`).join("");
+    }
+
+    function render() {
+      renderCards();
+      renderEvents();
+      renderScenarios();
+      renderFreePlay();
+    }
+
+    document.addEventListener("click", event => {
+      const scenarioButton = event.target.closest("[data-scenario]");
+      if (scenarioButton) {
+        selectedScenario = Number(scenarioButton.dataset.scenario);
+        completedSteps = 0;
+        state = initialState();
+        render();
+        return;
+      }
+      const stepButton = event.target.closest("[data-step]");
+      if (stepButton) {
+        const step = Number(stepButton.dataset.step);
+        if (step !== completedSteps) return;
+        dispatch(actions[scenarios[selectedScenario].steps[step]].value);
+        completedSteps += 1;
+        render();
+        return;
+      }
+      const actionButton = event.target.closest("[data-action]");
+      if (actionButton) dispatch(actions[actionButton.dataset.action].value);
+      if (event.target.closest("[data-reset]")) {
+        state = initialState();
+        completedSteps = 0;
+        render();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
