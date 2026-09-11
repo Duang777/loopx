@@ -427,6 +427,54 @@ def test_attached_claimed_turn_interrupt_fails_closed(tmp_path: Path) -> None:
     )
 
 
+def test_attached_interrupt_endpoint_preserves_typed_failure(tmp_path: Path) -> None:
+    store = ChatSessionStore(tmp_path)
+    session_id = str(_bind(store)["session"]["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    turn, _created = store.create_queued_turn(
+        session_id,
+        client_turn_id="endpoint-interrupt",
+        message="keep host ownership",
+    )
+    turn_id = str(turn["turn_id"])
+    claim_attached_agent_turn(
+        store=store,
+        session_id=session_id,
+        host_surface=HOST_SURFACE,
+        host_session_id=HOST_SESSION_ID,
+        claim_id="endpoint-interrupt",
+    )
+    responses: list[dict[str, object]] = []
+
+    class Handler:
+        server = SimpleNamespace(runtime_controller=runtime)
+
+        def _send_error(self, message: str, **kwargs: object) -> None:
+            responses.append({"error": message, **kwargs})
+
+        def _send_json(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("interrupt should fail closed")
+
+    ChatRequestHandler._interrupt_turn(Handler(), session_id, turn_id)  # type: ignore[arg-type]
+
+    assert responses == [
+        {
+            "error": "The attached host does not expose interrupt control to LoopX Chat.",
+            "status": 424,
+            "error_code": "attached_session_interrupt_unavailable",
+            "gate": {
+                "kind": "host_tool_gate",
+                "summary": "The active Turn is owned by the attached host.",
+                "next_action": "Stop the Turn in the attached host, then retry.",
+            },
+        }
+    ]
+    assert store.load_turn(session_id, turn_id)["status"] == "running"  # type: ignore[index]
+    session = store.load_session(session_id)
+    assert session is not None and session["status"] == "busy"
+    assert session["active_turn_id"] == turn_id
+
+
 def test_attached_completion_uses_canonical_response_and_terminal_events(
     tmp_path: Path,
 ) -> None:
