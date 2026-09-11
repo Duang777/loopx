@@ -41,6 +41,7 @@ function retainedChatAssets(): Plugin {
         ...previousGenerations,
       ]) {
         const normalized = [...new Set(generation)].sort();
+        if (normalized.some((asset) => !existsSync(resolve(chatOutDir, asset)))) continue;
         if (normalized.every((asset) => retained.has(asset))) continue;
         if (normalized.length && !generations.some((item) => item.join("\0") === normalized.join("\0"))) {
           generations.push(normalized);
