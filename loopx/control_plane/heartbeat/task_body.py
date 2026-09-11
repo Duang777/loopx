@@ -9,13 +9,15 @@ from .rules import (
     DEFAULT_MATERIAL_QUEUE_RULE,
     DEFAULT_PERMISSION_RULE,
     HEARTBEAT_NOTIFICATION_RULE_SHORT,
-    HEARTBEAT_NOTIFICATION_RULE_THIN,
+    HEARTBEAT_TURN_BOOTSTRAP_RULE,
     HEARTBEAT_VISION_WRITEBACK_RULE_SHORT,
     HOST_LOOP_QUOTA_DISPATCH_RULE,
+    HOST_LOOP_SAFETY_RULE,
     HOST_LOOP_TODO_CLOSEOUT_COMPACT_RULE,
     HOST_LOOP_TODO_CLOSEOUT_RULE,
     RUNTIME_CAPABILITY_PROJECTION_THIN_RULE,
     RUNTIME_EXECUTION_ROUTING_RULE,
+    RUNTIME_REPAIR_ROUTING_RULE,
     SCHEDULER_HINT_APPLICATION_RULE,
     SCHEDULER_HINT_COMPACT_RULE,
     SCHEDULER_HINT_THIN_RULE,
@@ -86,17 +88,14 @@ def render_heartbeat_task_body(
     )
     return f"""Advance `{goal_id}` using `{active_state}`.
 
-Generic LoopX lifecycle. Keep project-specific branching out of the
-automation prompt. Put local policy in registry, active-state sections, adapter
-output, `quota should-run.goal_boundary`, or boundary rules; if a lifecycle
-rule is needed, update `{cli_bin} heartbeat-prompt` so all projects inherit it.
 {scope_block}
 
-Before spending delivery compute, make the CLI reachable; set
-`LOOPX_TURN=<current_time_iso>` per trigger, reuse it on retries, and run guard:
+Before spending delivery compute, make the CLI reachable.
+{HEARTBEAT_TURN_BOOTSTRAP_RULE}
 
 ```bash
 {cli_preflight}
+LOOPX_TURN=<current_time_iso>
 {pr_review_pre_quota_block}{quota_guard_command}
 ```
 
@@ -213,14 +212,8 @@ If the result says `should_run=true`:
    for 2 more eligible turns; no spend for the self-cancel turn.
 4. {SCOPE_BOUNDED_WORK_RULE}
    Related work can form a coherent effort; a focused correction may suffice.
-5. Execute that scoped work. Stay inside `goal_boundary` when present and keep
-   public/private boundaries intact. Public-safe repo publication is not an
-   operator gate by itself: for routine public project work, commit, push, and
-   PR creation may proceed autonomously after validation and a clean
-   public/private boundary scan. Stop and surface a user/controller gate only
-   for private or company-internal material, credentials, destructive git
-   operations, production actions, or repository rules that explicitly require
-   review.
+5. Execute that scoped work. Stay inside `goal_boundary` when present.
+   {HOST_LOOP_SAFETY_RULE}
 6. Run validation proportionate to the change and risk.
 7. Write back changed files, validation, critic, and next action to the active
    state. If a user/owner todo appears, do not hide it in prose: use
@@ -290,51 +283,52 @@ def render_brief_heartbeat_task_body(
     pr_review_pre_quota_block = (
         f"{pr_review_pre_quota_command}\n" if pr_review_pre_quota_command else ""
     )
-    return f"""Advance `{goal_id}` using `{active_state}`.
+    policy_tail = _render_compact_policy_tail(
+        material_queue_rule=material_queue_rule,
+        permission_rule=permission_rule,
+        include_default_permission=True,
+    )
+    return f"""推进 `{goal_id}`；状态 `{active_state}`。
 
-Brief LoopX heartbeat; detail:
+Brief 详情：
 `{compact_prompt_command}`.
 {scope_block}
 
-Guard/retry; `LOOPX_TURN=<current_time_iso>`:
+{HEARTBEAT_TURN_BOOTSTRAP_RULE}
 
 ```bash
 {cli_preflight}
+LOOPX_TURN=<current_time_iso>
 {pr_review_pre_quota_block}{quota_guard_command}
 ```
 
 Fail:quiet.
 
-{HEARTBEAT_NOTIFICATION_RULE_THIN}
+{HEARTBEAT_NOTIFICATION_RULE_SHORT}
 {SCOPE_BOUNDED_WORK_RULE}
 {HEARTBEAT_VISION_WRITEBACK_RULE_SHORT}
 
-If `should_run=false`: follow user channel. `monitor_quiet_skip`: receipt/stall
-done; quiet unless replan; write failure: retry same id. External/wait monitor:
-one read-only poll; new evidence -> writeback/spend. Safe bypass if allowed.
+`should_run=false`：按 user channel。`monitor_quiet_skip` 已记 receipt/stall；
+无 replan 静默，写失败同 id 重试。external/wait monitor 只读一次，
+新证据才 writeback/spend；bypass 须获准。
 {SCHEDULER_HINT_THIN_RULE}
 `agent_read_required`: drain/read/triage before work; settle/ACK.
 
-If `should_run=true`: fetch compact; use `status --limit 3` and
-`review-packet --handoff-only`. Obey
-`execution_obligation`, `effective_action`, `recovery_delivery_allowed`,
-`heartbeat_recommendation`, `safe_bypass_kind=outcome_floor_recovery`,
-`goal_boundary`, `delivery_batch_scale`, `delivery_outcome`, outcome streaks,
-`handoff_delivery_contract`; advance scope-bounded work when
-`execution_obligation.must_attempt_work=true`; if recovery, run
-ranker/cross-domain evidence recovery or blocker writeback;
-validate/writeback/todos; {HOST_LOOP_TODO_CLOSEOUT_COMPACT_RULE} Progress(actual,no upgrade):
-`{progress_refresh_state_command}`
-Spend once; no pipe/retry:
-`{quota_spend_command}`
-Post-spend state:
-`{refresh_state_command}`
+`should_run=true`：读 compact、`status --limit 3`、
+`review-packet --handoff-only`；遵守本轮 quota/contract 的权限、交付规模/结果、
+历史约束与 handoff；outcome-floor recovery 须恢复 ranker/cross-domain evidence 或写回 blocker。
+{HOST_LOOP_QUOTA_DISPATCH_RULE}
+交付并验证后，按当前 `interaction_contract.cli_channel.settlement_plan.ordered_steps`
+的精确 identity/effect 顺序结算；无 plan 时按当前 `next_cli_actions`，不使用旧 refresh/spend 配方。
+Todo 验收不等于 Turn 结算或 Goal 完成；仅 terminal no-follow-up 才能收尾，保留 vision replan。
 
-No spend for quiet skips, preflight failures, blocker-push asks, dry-runs, or
-duplicate accounting. Return only under `user_channel.notify=NOTIFY`; else quiet.
+静默跳过、preflight 失败、blocker-push 提问、dry-run、重复记账均不扣额。
+仅 `user_channel.notify=NOTIFY` 时输出，否则静默。
 
-{material_queue_rule}
-{permission_rule}"""
+{HOST_LOOP_SAFETY_RULE}
+{RUNTIME_REPAIR_ROUTING_RULE}
+
+{policy_tail}"""
 def render_compact_heartbeat_task_body(
     *,
     goal_id: str,
@@ -364,10 +358,11 @@ Compact policy: registry/state/adapter/`goal_boundary`.
 Detail: `{expanded_prompt_command}`.
 {scope_block}
 
-Preflight/guard; `LOOPX_TURN=<current_time_iso>`; reuse:
+{HEARTBEAT_TURN_BOOTSTRAP_RULE}
 
 ```bash
 {cli_preflight}
+LOOPX_TURN=<current_time_iso>
 {pr_review_pre_quota_block}{quota_guard_command}
 ```
 
@@ -421,8 +416,7 @@ If `should_run=true`:
    heartbeats with only status/brief checks, replan before quiet no-op.
    Pause/delete only if repair stays stuck 2 more turns.
 7. {SCOPE_BOUNDED_WORK_RULE}
-   Public-safe commit/push/PR may proceed after validation/clean scan. Stop for
-   private/company material, credentials, destructive git, production, or review rules.
+   {HOST_LOOP_SAFETY_RULE}
 8. Validate; write files/validation/critic/next action to active state;
    use `{cli_bin} todo add --goal-id {goal_id} --role user --task-class user_gate|user_action`
    for owner todos and `--role agent` for agent todos, not prose.
@@ -480,8 +474,6 @@ def render_visible_goal_task_body(
         completion_subject="visible Goal",
         pr_review_pre_quota_command=pr_review_pre_quota_command,
         quota_guard_command=quota_guard_command,
-        quota_spend_command=quota_spend_command,
-        progress_refresh_state_command=progress_refresh_state_command,
         material_queue_rule=material_queue_rule,
         permission_rule=permission_rule,
         agent_scope_instruction=agent_scope_instruction,
@@ -525,8 +517,6 @@ def render_traex_visible_goal_task_body(
         completion_subject="visible Goal",
         pr_review_pre_quota_command=pr_review_pre_quota_command,
         quota_guard_command=quota_guard_command,
-        quota_spend_command=quota_spend_command,
-        progress_refresh_state_command=progress_refresh_state_command,
         material_queue_rule=material_queue_rule,
         permission_rule=permission_rule,
         agent_scope_instruction=agent_scope_instruction,
@@ -540,8 +530,6 @@ def _render_goal_task_body(
     completion_subject: str,
     pr_review_pre_quota_command: str,
     quota_guard_command: str,
-    quota_spend_command: str,
-    progress_refresh_state_command: str,
     material_queue_rule: str,
     permission_rule: str,
     agent_scope_instruction: str,
@@ -556,36 +544,31 @@ def _render_goal_task_body(
     policy_tail = _render_compact_policy_tail(
         material_queue_rule=material_queue_rule,
         permission_rule=permission_rule,
-        include_default_permission=True,
     )
     return f"""Advance LoopX goal `{goal_id}` from `{active_state}` {host_preamble}
 {scope_block}
 
 {RUNTIME_EXECUTION_ROUTING_RULE}
+{HOST_LOOP_SAFETY_RULE}
 
-{prequota_block}{HOST_LOOP_QUOTA_DISPATCH_RULE}
-Guard: `{quota_guard_command}`.
+{prequota_block}Each work iteration, read complete successful JSON from:
+`{quota_guard_command}`
+Use the current `interaction_contract`, not remembered commands.
+{HOST_LOOP_QUOTA_DISPATCH_RULE}
+Use `cli_channel.settlement_plan.ordered_steps` when present; preserve identities/flags
+and supply truthful evidence/actual outcomes.
+Do not reconstruct refresh/spend commands. Ambiguous writes need readback/recovery,
+not blind repeats. Repair local entrypoint failures within authority; while the
+contract is unavailable or incomplete, no work/spend and no claim of completion.
 
-`should_run=false`: no delivery/spend; NOTIFY: Chinese action/gate;
-otherwise wait.{host_wait_rule}
-
-`should_run=true`: take highest-priority unblocked in-scope todo by default; choose any
-other eligible Todo with a reason. Honor claims/leases and blocker-push/recovery obligations.
-Before dependencies, persist changed scope/acceptance/non-goal evidence and next todo.
 {SCOPE_BOUNDED_WORK_RULE}
-Progress is not a new Goal boundary. Reuse this Goal until terminal;
-do not create a successor merely to continue. Validate; write public-safe evidence.
-{HOST_LOOP_TODO_CLOSEOUT_RULE}
-
-For classification/scale/outcome, never default or upgrade them to
-`multi_surface` / `outcome_progress`; refresh the accountable progress record
-before spending: `{progress_refresh_state_command}`. Then spend exactly once
-against that refresh; no pipe/retry: `{quota_spend_command}`.
-Rerun the same guard read-only. Complete {completion_subject} only on
-`should_run=false` + terminal no-follow-up; else obey next action.
-
-No spend: gate/wait/dry-run/preflight failure/no-op/duplicate. Stop: private/company
-material, credentials, destructive git, unauthorized production, or repo rules.
+Continue allowed work within user/repository authority; notification controls
+output, not execution. A tool call or settlement is not a stopping target.
+Progress is not a new Goal boundary: do not create a new host Goal merely to
+continue. After settlement recheck quota; use current continuation/wait guidance,
+not repeated unchanged polling.
+Complete {completion_subject} only on `should_run=false` + terminal no-follow-up;
+other no-work states mean wait, not completion.{host_wait_rule}
 
 {policy_tail}"""
 def render_ark_managed_agent_goal_task_body(
@@ -626,8 +609,6 @@ def render_ark_managed_agent_goal_task_body(
         completion_subject="Goal",
         pr_review_pre_quota_command=pr_review_pre_quota_command,
         quota_guard_command=quota_guard_command,
-        quota_spend_command=quota_spend_command,
-        progress_refresh_state_command=progress_refresh_state_command,
         material_queue_rule=material_queue_rule,
         permission_rule=permission_rule,
         agent_scope_instruction=agent_scope_instruction,
@@ -657,33 +638,23 @@ def render_thin_heartbeat_task_body(
         permission_rule=permission_rule,
     )
     scope_sentence = f"\n{agent_scope_instruction}" if agent_scope_instruction else ""
-    quota_guard_instruction = (
-        f"`{quota_guard_command}`"
-        if any(
-            marker in quota_guard_command
-            for marker in (
-                "--available-capability",
-                "--runtime-profile",
-                "--codex-app",
-                "--host-surface",
-                " -H ",
-            )
-        )
-        else "`quota should-run`"
-    )
     pr_review_pre_quota_instruction = (
-        f"`{pr_review_pre_quota_command}`\n"
+        f"{pr_review_pre_quota_command}\n"
         if pr_review_pre_quota_command
         else ""
     )
     return f"""Advance `{goal_id}` from {active_state}.
 
 {RUNTIME_EXECUTION_ROUTING_RULE}
+{HOST_LOOP_SAFETY_RULE}
 {scope_sentence}
 
 {HOST_LOOP_QUOTA_DISPATCH_RULE}
-`LOOPX_TURN=<current_time_iso>`; reuse.
-{pr_review_pre_quota_instruction}{quota_guard_instruction}.
+{HEARTBEAT_TURN_BOOTSTRAP_RULE}
+```sh
+LOOPX_TURN=<current_time_iso>
+{pr_review_pre_quota_instruction}{quota_guard_command}
+```
 {HEARTBEAT_NOTIFICATION_RULE_SHORT}
 {SCOPE_BOUNDED_WORK_RULE}
 {RUNTIME_CAPABILITY_PROJECTION_THIN_RULE}
@@ -694,8 +665,7 @@ Done->todo/rationale; guard receipt; 2 stalls->replan.
 
 P0 blocked: safe P1/P2; monitor quiet/no-spend.
 
-No project branches; {policy_tail} Stop: private material, credentials,
-destructive git, unauthorized prod."""
+{policy_tail}"""
 def render_heartbeat_generator_inputs_markdown(payload: dict[str, Any]) -> str:
     interface_budget = payload.get("interface_budget") if isinstance(payload.get("interface_budget"), dict) else {}
     lines = [

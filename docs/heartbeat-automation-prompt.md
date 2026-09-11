@@ -55,6 +55,118 @@ transport-neutral goal prompt and lets the goal runtime own inner iteration;
 see the host integration protocol instead of adapting this recurring
 automation contract.
 
+### Native Goal bootstrap and live execution instructions
+
+Brief automation now uses the same fully qualified notification/execution rule
+as thin, including `heartbeat_recommendation.agent_must_attempt` and
+`execution_obligation.must_attempt_work`. Brief no longer embeds a second
+static refresh/spend sequence: after validated work it follows the current
+`interaction_contract.cli_channel.settlement_plan.ordered_steps`, or current
+`next_cli_actions` when there is no plan. Generator command fields remain for
+compatibility, not as a stale fallback. Todo acceptance alone is not Turn
+settlement or terminal vision closure. The brief budget remains 3,500 characters.
+
+Brief 与 thin 共用完整执行义务路径；这次有意移除 brief 固定结算配方，而不是
+删除结算义务。真实 App preflight、registry scope、完整 guard 和静态安全规则
+均保留；结算顺序与身份以本轮动态 contract 为准，vision replan 不由历史成功清账。
+
+New supported host activations use `heartbeat-prompt --bootstrap`: a saved
+loader requests the installed rules rather than freezing a long execution body.
+The loader and automation bootstrap share rendering and successful-response
+checks. Registry-derived state is resolved at load time; explicitly supplied
+policy remains bound. The inner command does not request another bootstrap.
+Claude Code loads its inner body through the bound MCP `host_prompt` tool.
+TraeX's separate capability projection remains separate, not embedded by this
+loader. See [prompt upgrade lifecycle](reference/automation-prompt-upgrades.md)
+for automatic exact-managed adoption during `update --apply`, including the
+qualified running-App SQLite/TOML adapter and conflict recovery boundary.
+
+#### Static semantics retained across hosts
+
+Thinning removes duplicated recipes, not authority boundaries. The shared
+runtime body keeps repository rules, credential/private-material protection,
+explicit authorization for destructive Git/production actions, and exception
+routes (`loopx-project` for lifecycle/registry, `loopx-self-repair` for drift).
+These routes are conditional, not mandatory skill calls on every iteration.
+Ordinary Claude MCP iterations still use MCP; the CLI route is not a second
+accounting path.
+
+| Semantic | Owner after thinning |
+| --- | --- |
+| Privacy, repository rules, dangerous-action authority | Shared static safety rule; a trusted host is not blanket permission |
+| Lifecycle or projection repair | Conditional static repair route; repair does not bypass gates |
+| Selection, claims, vision replan, exact settlement identities/order | Current successful interaction contract, not saved command recipes |
+| Blocked path vs whole Goal | Gate only the affected path; continue independent admitted work; only terminal no-follow-up completes the Goal |
+| Git branch/worktree/PR policy | User and repository rules; no generic `No project branches` restriction |
+| Prompt authoring/maintenance advice | Documentation, not per-iteration executor instructions |
+
+For heartbeat shells, assign `LOOPX_TURN` in a separate statement before the
+guard, in the same shell invocation. A command-prefix assignment does not make
+the variable available to argument expansion in Bash/zsh. Reuse the same value
+on retries. Native Goal entry remains host-specific and does not inherit this
+heartbeat bootstrap.
+
+Thin's ceiling is 2,500 characters (previously 1,900), and compact's is 6,500
+(previously 6,200): the additional room covers shared safety and an executable
+Turn/guard block rather than omitting identities or static obligations.
+
+The automation lifecycle is the reference for shared execution, not a wrapper
+around native Goal behavior. Thin automation and Codex CLI/SSH, TraeX and Ark
+Managed Agent Goal bodies share quota dispatch: selection/re-entry, admitted work
+and validation, then the current writeback/settlement instructions. They do not
+share scheduler ownership, host completion, or blocked/resume rules.
+
+Native Goal bodies share a compact bootstrap.
+Generate it with the host's existing profile (for example `heartbeat-prompt
+--runtime-profile codex_cli --goal-id <GOAL_ID> --agent-id <AGENT_ID>`).
+The persistent body binds the Goal/Agent and quota entrypoint; each work iteration
+reads the current complete, successful quota JSON. The **inner execution
+instructions remain in `interaction_contract`**, including selection/re-entry,
+admitted work, and exact `cli_channel.settlement_plan.ordered_steps`.
+
+Native Goal bodies no longer embed a second static accountable refresh/spend
+template. Those command fields remain available in the generator response for
+compatibility/inspection, but are not a fallback for the live settlement plan.
+When no ordered settlement plan applies, consume the current `next_cli_actions`,
+including any required re-entry; do not substitute a saved generator command.
+Execute selection/re-entry before work and writeback/spend only after the
+corresponding validated work; a projected accounting command is not evidence
+that work happened. Preserve the plan's identity and flags, and follow readback
+or recovery after an ambiguous write instead of retrying a guessed command.
+Failed or incomplete contract reads permit neither work nor spend.
+
+An unbound Codex CLI or Ark Goal with selected Todo/replan work now receives a
+quota re-entry template with `--turn-instance-id`. Fill it with one public-safe
+unique work-iteration id and reuse that id on retries. The next packet supplies
+the same ordered settlement machinery used by automation, with `visible-goal`
+attribution. SSH Goal continues to use its existing `--begin-turn` path. This
+fixes the previous unbound native refresh/spend projection: those commands could
+not satisfy the existing settlement identity guard. It does not turn CLI/Ark
+Goals into App heartbeat receipts or move scheduler ownership into LoopX.
+
+The bootstrap retains work-sizing guidance and the distinction between progress
+and Goal completion. A new Todo is not a new host Goal; quiet/blocked states are
+not terminal no-follow-up. Codex alone retains its native blocked/resume rule.
+User/repository authority still applies; a trusted host is not blanket permission.
+This changes newly generated native Goal bodies and thin automation dispatch,
+not active host Goal objectives or benchmark prompts already pinned to a run.
+An installed runtime supplies updated dynamic contracts on later reads; upgrading
+it does not retroactively remove old text from an existing Goal.
+
+Claude Code's MCP-backed `loop.md` follows the same work-sizing rule and current
+quota contract, without a fixed one-segment limit or empty-Todo-list completion
+shortcut. Its `complete_task` tool already owns the ordered writeback/spend
+transaction: callers must not perform a second accounting sequence through CLI.
+Partial work is not Todo completion. Native `/loop` remains Claude's scheduler;
+only the current Goal's wakeup may be cancelled after terminal no-follow-up.
+These changes apply when `loop.md` is regenerated, not by editing active user files.
+The MCP tool now exposes `successor_todo_ids`, reusing CLI/TS completion semantics
+to link known follow-up without creating another Todo. Ordinary acceptance and
+Turn settlement are distinct: the adapter validates/completes work before its
+writeback/spend; only terminal closeout requires the full receipt chain. This
+removes the former delivery-class circular prerequisite, not validation or
+accounting. See the [release test guide](development/testing-and-quality.md#claude-code-and-release-coverage--claude-code-与发布覆盖).
+
 For Codex App, the generated quota command carries the compact explicit runtime
 profile `--runtime-profile codex_app_heartbeat` (generated commands use the
 equivalent compact alias `--codex-app`). The prompt does not restate the
@@ -284,11 +396,6 @@ Replace the placeholders before installing the automation:
 
 ```text
 Advance the goal described in <ACTIVE_GOAL_STATE_PATH>.
-
-Generic LoopX lifecycle. Keep project-specific branching out of the
-automation prompt. Put local policy in registry, active-state sections, adapter
-output, quota should-run.goal_boundary, or boundary rules; if a lifecycle rule
-is needed, update loopx heartbeat-prompt so all projects inherit it.
 
 Before spending delivery compute, first make the LoopX CLI reachable in
 this automation shell, then run the quota guard:

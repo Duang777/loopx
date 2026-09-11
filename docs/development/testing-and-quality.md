@@ -737,6 +737,125 @@ Onboarding 输入来自正式 guided packet builder；provider 调用前只替�
 门禁错误、写入或 quota 消耗。Human gate 的优先级是显式规则：等待用户时没有
 executable work 属于预期状态，不能误判为 projection gap。
 
+## Release-only native Goal regression / 仅发布前的原生 Goal 回归
+
+`scripts/qualify-native-goal-release.py` exercises the real Codex CLI app-server
+Goal lifecycle on a disposable ledger project with two dependent Todos. It
+reuses the shipped native Goal transport and current prompt, then checks an
+independent acceptance oracle, completed Todos, unique bound spends, durable
+writeback readback, and terminal no-follow-up quota. This is not a benchmark
+score or evidence of universal model reliability.
+
+The Codex release arm requests the shipped bootstrap, not an injected private
+work recipe. Deterministic regressions execute the saved CLI loader, change its
+registry inputs, and prove fresh loading, non-recursion, preserved explicit
+policy and removed-agent rejection. Claude's stdio regression loads
+`host_prompt` through the real MCP transport and verifies the same bound Goal.
+These tests are free of model calls; passing them is not a live model pass.
+
+Upgrade regression uses real temporary SQLite/TOML stores, a second connection,
+writer-lock contention, injected mirror failure, journal recovery and stale or
+custom-input rejection. New-runtime reconciliation is exercised through the
+real CLI, while package installation is substituted in that focused test.
+Running-App deployment additionally needs a selected owner-authorized canary
+and delayed readback; synthetic SQLite tests alone do not qualify App caches.
+The output differential permits a bounded one-time transition to the exact
+static-safety marker, not permanent growth allowances or relaxed quota budgets.
+
+```bash
+# No model invocation, no token cost; explicit skipped result, exit 0.
+python3 scripts/qualify-native-goal-release.py
+# Release operator opt-in only; explicit isolated API profile (Responses API).
+# Supply LOOPX_CODEX_QUALIFICATION_API_KEY securely in this process, plus:
+export LOOPX_CODEX_QUALIFICATION_MODEL='<selected-model>'
+export LOOPX_CODEX_QUALIFICATION_BASE_URL='https://example.com/v1'
+python3 scripts/qualify-native-goal-release.py --release-live
+```
+
+Do not add the live command to default pytest, PR CI, per-diff canaries, or
+ordinary developer iteration. The deterministic runner-policy tests may run
+there; they never opt into real model execution. Missing CLI, native Goals or
+the explicit Codex API profile returns `skipped` and exit 0, not a claimed live pass.
+Once qualification is attempted, failed acceptance, incomplete settlement,
+blocked/unfinished Goals and deadline expiry fail with exit 1. The default
+deadline is 1,200 seconds; this is a wall-clock ceiling, not a token budget.
+
+仅 release 前显式开启，避免默认消耗开发者 token。CI/本机环境不支持时跳过且不阻塞，
+但保留 `skipped` 标记；真实执行后失败不能冒充环境跳过。使用操作者显式选择的 API
+模型、地址与密钥，不导入日常 Codex 配置、登录或会话，不修改活跃 Goal/automation。
+任务、registry、runtime 与 Git worktree
+在一次性目录内；沙箱允许该目录及本地 TS worker 所需的网络能力，
+这不是网络隔离，任务不授权外部操作。回归脚本不采集或上传原始对话/工具日志，
+公开结果仅包含状态、计数和错误类别；Codex 会话仅留在一次性隔离目录内。
+两个 runner 均从允许列表创建环境并隔离 HOME、配置和缓存；不透传其他 token、
+认证 socket、shell 启动变量或原始 ARK_API_KEY。Codex 工具 shell 从空环境注入必要
+运行变量，不继承 host API key。Claude host 仅接收所选 provider 的映射密钥；这不是
+对同用户进程或 Claude Bash 的凭据隔离沙箱，不能把真实业务秘密加入测试任务。
+
+### Claude Code and release coverage / Claude Code 与发布覆盖
+
+For focused thin/brief prompt-decision regression, use
+`python3 scripts/qualify-host-prompt-release.py --release-live` only during
+explicit release qualification. It defaults to no calls; missing credentials
+report `skipped`, not a live pass. With securely injected `ARK_API_KEY`, it uses
+Doubao evolving for two independent repetitions of quiet-work, notifying-wait,
+quiet-wait and required-vision-replan cases in each mode. Expected decisions
+remain outside model input. All attempts must pass; no answer correction or
+retry-until-pass is used. Ordinary pytest only checks the probe and negative
+oracles with scripted responses, without provider calls.
+
+This is a synthetic decision-level probe using current generated prompts,
+not proof of tool execution, host scheduling, upgrade delivery or full-Goal
+completion. Keep the Codex/Claude live Goal arms and real CLI/MCP/SQLite tests
+as separate evidence. Only hashes and pass/fail receipts are emitted, not raw
+prompts/responses. Model transport failures fail qualification rather than
+becoming environment skips.
+
+仅发布前显式执行，普通 CI 不调用模型。检查静默不等于空转、等待不能擅自执行、
+vision replan 未关闭时不能提前结束 Goal；这不是完整 Claude/Codex 行为验收的替代。
+
+```bash
+# No provider call by default. Explicit release opt-in uses ARK_API_KEY from the environment.
+python3 scripts/qualify-claude-goal-release.py --release-live
+```
+
+This arm uses the same ledger specification, independent oracle and durable
+settlement readback as the Codex arm. It launches actual Claude Code with the
+project's shipped `loop.md` and LoopX stdio MCP server, using
+`doubao-seed-evolving` through Ark's Anthropic-compatible API. It does not
+inherit another Anthropic account, install into the user's Claude configuration,
+or retain host sessions. The subprocess timeout also cleans its process group
+on POSIX. Allowed local development tools are not a security sandbox; the
+synthetic task authorizes no external side effects.
+
+**A headless work-loop pass is not a `/loop` timer pass.** The release report
+explicitly returns `scheduler_qualification=not_run_headless`; interactive
+native wakeup, cancel/resume and process-restart behavior need their own host
+qualification. Do not turn repeated `claude -p` invocations into a substitute
+scheduler and claim host lifecycle coverage.
+
+Before calling a changed host surface release-qualified, distinguish:
+
+| Boundary | Required evidence |
+| --- | --- |
+| Work and terminal closeout | Final candidate, actual host, independent artifact checks, completed Todos and terminal quota; code delivery alone is insufficient. |
+| Idempotency and failure | Real committed lifecycle/writeback/spend followed by lost-response injection and same-intent retries; one final spend. Failed declared validation must not complete or spend. |
+| Authority and transport | Actual MCP initialization/tool invocation and mismatched-agent rejection; existing claim/lease and validation suites remain required. |
+| Host lifecycle | Native scheduler wakeup/cancellation/resume on supported versions, reported separately from headless execution. |
+| Upgrade and isolation | Exact managed-wrapper recognition, preview/apply revision checks, preserved scheduler state, explicit skips, no default model calls or leaked test processes. |
+
+普通 CI 只跑确定性规则、真实 CLI/MCP 和故障注入；模型执行仍仅 release 前显式启用。
+环境缺失可 skip 且退出成功，但最终版本没有完整的真实 host 结果时，不得写成
+“产品级发布验证通过”。单次成功也不是模型可靠性或长程调度 soak 的证明。
+
+The real delivery regression covers ordinary Todo acceptance before internal
+writeback/spend, existing-successor linking, and receipt-backed terminal closure.
+Its task specification describes only the deliverable; the external oracle also
+checks LoopX accounting. Passing non-delivery fixtures does not qualify delivery.
+The same delivery class must pass failed-validation rejection and committed
+response-loss recovery without duplicate spending or premature terminal closure.
+Do not relabel delivery work or weaken the independent oracle to pass a host test.
+
 ## Exact Release Commit Gate / 精确发布 Commit 门
 
 The final release gate does not rerun tests through a second orchestration
