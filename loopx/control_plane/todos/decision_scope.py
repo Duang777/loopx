@@ -1,7 +1,7 @@
 """Legacy input codec for the single typed decision-dependency rule owner."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from ..effect_runtime import effect_runtime_result
 from .contract import (
@@ -90,8 +90,10 @@ def standing_decision_authority_for_agent(authority: dict[str, Any] | None, *,
                                           agent_id: str | None) -> dict[str, Any] | None:
     if _authority(authority) is None:
         return None
-    return _evaluate("standing", authority=_authority(authority),
-                     agent_id=normalize_todo_claimed_by(agent_id))
+    return cast(dict[str, Any] | None, _evaluate(
+        "standing", authority=_authority(authority),
+        agent_id=normalize_todo_claimed_by(agent_id),
+    ))
 
 
 def build_required_decision_scope_consistency(
@@ -101,14 +103,14 @@ def build_required_decision_scope_consistency(
     user_source_items: list[dict[str, Any]] | None = None,
     standing_decision_authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return _evaluate("consistency",
+    return cast(dict[str, Any], _evaluate("consistency",
         agent_items=_source(agent_todo_summary, agent_source_items, _AGENT_SUMMARY_ITEM_KEYS),
         user_items=_source(user_todo_summary, user_source_items, _USER_SUMMARY_ITEM_KEYS),
         agent_id=normalize_todo_claimed_by(agent_id),
         registered_agents=sorted({value for raw in registered_agent_ids or []
                                   if (value := normalize_todo_claimed_by(raw))}),
         standing_authority=_authority(standing_decision_authority),
-    )
+    ))
 
 
 def build_required_decision_scope_repair_hint(
@@ -193,26 +195,28 @@ def decision_scope_covers(gate_scope: Any, required_scope: Any) -> bool:
     required = normalize_todo_decision_scope(required_scope)
     if not gate or not required:
         return False
-    return _evaluate("covers", gate_scope=gate, required_scope=required)
+    return cast(bool, _evaluate("covers", gate_scope=gate, required_scope=required))
 
 
 def decision_scope_gate_relation(gate: dict[str, Any], agent_item: dict[str, Any]) -> dict[str, Any] | None:
-    return _evaluate("scope_relation", gate=_facts(gate), item=_facts(agent_item))
+    return cast(dict[str, Any] | None, _evaluate("scope_relation", gate=_facts(gate), item=_facts(agent_item)))
 
 
 def exact_todo_gate_relation(gate: dict[str, Any], agent_item: dict[str, Any]) -> dict[str, Any] | None:
-    return _evaluate("exact_relation", gate=_facts(gate), item=_facts(agent_item))
+    return cast(dict[str, Any] | None, _evaluate("exact_relation", gate=_facts(gate), item=_facts(agent_item)))
 
 
 def todo_gate_relation(gate: dict[str, Any], agent_item: dict[str, Any]) -> dict[str, Any] | None:
-    return _evaluate("relation", gate=_facts(gate), item=_facts(agent_item))
+    return cast(dict[str, Any] | None, _evaluate("relation", gate=_facts(gate), item=_facts(agent_item)))
 
 
 def todo_gate_relations(gates: list[dict[str, Any]], items: list[dict[str, Any]]) -> list[list[dict[str, Any] | None]]:
     """Evaluate a consumer's candidate set in one RPC, retaining positional identity."""
     if not gates or not items:
         return [[] for _ in gates]
-    return _evaluate("relations", gates=[_facts(gate) for gate in gates], items=[_facts(item) for item in items])
+    return cast(list[list[dict[str, Any] | None]], _evaluate(
+        "relations", gates=[_facts(gate) for gate in gates], items=[_facts(item) for item in items],
+    ))
 
 
 def todo_gate_relation_blocks_agent(relation: dict[str, Any] | None) -> bool:
