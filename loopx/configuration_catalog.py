@@ -231,6 +231,11 @@ def build_goal_configuration_catalog(
                     "enabled": feature_summary.get("multi_subagent") == "enabled",
                     "max_children": orchestration.get("max_children"),
                     "allowed_domains": list(orchestration.get("allowed_domains") or []),
+                    **(
+                        dict(orchestration["model_config"])
+                        if "model_config" in orchestration
+                        else {}
+                    ),
                 },
                 "required_inputs": {},
                 "consider_when": (

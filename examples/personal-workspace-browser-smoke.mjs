@@ -19,6 +19,7 @@ const dashboardDir = resolve(repoRoot, "apps/presentation/dashboard");
 const outputDir = resolve(repoRoot, "output/playwright/personal-workspace");
 const port = Number(process.env.LOOPX_PERSONAL_WORKSPACE_PORT ?? "5196");
 const packaged = process.env.LOOPX_PERSONAL_WORKSPACE_PACKAGED === "1";
+const collectCoverage = process.env.LOOPX_DASHBOARD_COVERAGE === "1";
 
 const periodicReportProjection = {
   schema_version: "periodic_report_workspace_projection_v0",
@@ -110,6 +111,8 @@ function multiSubagentCapability({ current } = {}) {
       writable_scopes: ["goal"],
       fields: [
         { key: "enabled", label: "Enabled", description: "", input_kind: "boolean", required: false },
+        { key: "model", label: "Child model", description: "", input_kind: "text", required: false },
+        { key: "reasoning_effort", label: "Child reasoning effort", description: "", input_kind: "text", required: false },
         { key: "max_children", label: "Maximum children", description: "", input_kind: "number", required: false, minimum: 1, maximum: 32 },
         { key: "allowed_domains", label: "Allowed responsibility domains", description: "", input_kind: "string_list", required: false },
       ],
@@ -960,6 +963,8 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
       const after = body.enabled
         ? { mode: "multi_subagent", spawn_allowed: true, max_children: body.max_children, allowed_domains: body.allowed_domains }
         : { mode: "default", spawn_allowed: false, max_children: 0 };
+      const modelConfig = body.model_config === undefined ? before.model_config : body.model_config;
+      if (modelConfig) after.model_config = modelConfig;
       const changed = JSON.stringify(before) !== JSON.stringify(after);
       const previewId = `goal-subagents-${body.goal_id}-${JSON.stringify(after)}`;
       if (apply && body.preview_id !== previewId) {
@@ -1271,6 +1276,7 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
 }
 
 async function main() {
+  if (collectCoverage && packaged) throw new Error("Source coverage requires the development smoke with source maps");
   const { chromium } = loadPlaywright();
   await mkdir(outputDir, { recursive: true });
   const results = new Map(Array.from({ length: 24 }, (_, index) => [index + 1, { status: "UNTESTED", note: "" }]));
@@ -1302,6 +1308,15 @@ async function main() {
     }
     await capabilityOffPage.close();
     const page = await browser.newPage({ viewport: { width: 1512, height: 982 } });
+    const coverageEntries = [];
+    if (collectCoverage) await page.coverage.startJSCoverage({ resetOnNavigation: false });
+    async function checkpointCoverage() {
+      if (!collectCoverage) return;
+      // V8 may discard old execution contexts on reload. Preserve their real
+      // counters before navigating, then merge all intervals by source file.
+      coverageEntries.push(...await page.coverage.stopJSCoverage());
+      await page.coverage.startJSCoverage({ resetOnNavigation: false });
+    }
     const pageErrors = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("console", (message) => {
@@ -1352,6 +1367,7 @@ async function main() {
     const expectedOrder = [initialOrder[1], initialOrder[2], initialOrder[0], ...initialOrder.slice(3)];
     if (JSON.stringify(await readOrder()) !== JSON.stringify(expectedOrder)) throw new Error('Pointer Goal reorder failed');
     if (page.url() !== beforeDragUrl) throw new Error('Dragging accidentally selected a Goal');
+    await checkpointCoverage();
     await page.reload({ waitUntil: 'networkidle' });
     if (JSON.stringify(await readOrder()) !== JSON.stringify(expectedOrder)) throw new Error('Goal order did not survive reload');
     // Escape cancels rather than committing a partially completed gesture.
@@ -1529,6 +1545,23 @@ async function main() {
     await page.getByLabel("最多子代理数").selectOption("2");
     const writesBeforeSubagentPreview = api.durableWriteCount;
     api.freezeGoalSubagentStatusProjection = true;
+    await page.getByRole("button", { name: "使用 Luna / max", exact: true }).click();
+    if (await page.getByRole("textbox", { name: "子 Agent 模型", exact: true }).inputValue() !== "gpt-5.6-luna") throw new Error("Luna preset did not fill the model");
+    if (await page.getByRole("combobox", { name: "子 Agent 推理档位", exact: true }).inputValue() !== "max") throw new Error("Luna preset did not fill max effort");
+    if (api.durableWriteCount !== writesBeforeSubagentPreview) throw new Error("Model preset performed a write");
+    await page.getByRole("button", { name: "预览配置调整", exact: true }).click();
+    await page.getByText("预览已锁定，确认后才会写入这个 Goal。", { exact: true }).waitFor({ state: "visible" });
+    const offModelPreview = api.goalSubagentPreviews.at(-1);
+    if (offModelPreview?.enabled !== false || offModelPreview?.model_config?.model !== "gpt-5.6-luna") throw new Error("Model-only preview must preserve disabled execution");
+    if (api.durableWriteCount !== writesBeforeSubagentPreview) throw new Error("Model-only preview performed a write");
+    await page.locator(".personal-subagent-preview").getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByRole("button", { name: "使用 Luna / max", exact: true }).click();
+    await page.screenshot({ path: resolve(outputDir, "goal-subagent-model-desktop.png"), fullPage: false, animations: "disabled" });
+    const modelViewport = page.viewportSize();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("textbox", { name: "子 Agent 模型", exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: resolve(outputDir, "goal-subagent-model-mobile.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize(modelViewport);
     await subagentSwitch.click();
     await page.getByText("预览已锁定，确认后才会写入这个 Goal。", { exact: true }).waitFor({ state: "visible" });
     if (api.durableWriteCount !== writesBeforeSubagentPreview) throw new Error("Unrestricted sub-agent preview mutated durable Goal state");
@@ -1591,20 +1624,23 @@ async function main() {
       throw new Error("The superseding authoritative status did not update allowed domains");
     }
     if (api.durableWriteCount !== writesBeforeSubagentPreview + 1) throw new Error("Status supersession produced a durable write");
+    if (api.goalSubagentWrites[0]?.model_config?.model !== "gpt-5.6-luna" || api.goalSubagentWrites[0]?.model_config?.reasoning_effort !== "max") throw new Error("Native model preference did not survive UI request");
 
+    await page.getByRole("button", { name: "清除模型偏好", exact: true }).click();
     const codeDomain = page.getByRole("checkbox", { name: /code/u });
     const validationDomain = page.getByRole("checkbox", { name: /validation/u });
     await codeDomain.waitFor({ state: "visible" });
     await validationDomain.waitFor({ state: "visible" });
     await codeDomain.check();
     await validationDomain.check();
-    await page.getByRole("button", { name: "预览边界调整", exact: true }).click();
+    await page.getByRole("button", { name: "预览配置调整", exact: true }).click();
     await page.getByText("预览已锁定，确认后才会写入这个 Goal。", { exact: true }).waitFor({ state: "visible" });
     if (api.durableWriteCount !== writesBeforeSubagentPreview + 1) throw new Error("Restricted sub-agent preview mutated durable Goal state");
     if ([...(api.goalSubagentPreviews.at(-1)?.allowed_domains ?? [])].sort((a, b) => a.localeCompare(b)).join(",") !== "code,validation") throw new Error("Sub-agent preview lost the bounded task domains");
     await page.locator(".personal-subagent-preview").getByRole("button", { name: "确认", exact: true }).click();
     await page.getByText("已写入，并通过共享 Goal 状态读回校验。", { exact: true }).waitFor({ state: "visible" });
     if (api.durableWriteCount !== writesBeforeSubagentPreview + 2) throw new Error("Restricted sub-agent apply did not produce exactly one additional Goal write");
+    if (api.goalSubagentWrites.at(-1)?.model_config !== null) throw new Error("Clearing the model was not sent explicitly");
     await page.screenshot({ path: resolve(outputDir, "goal-subagent-toggle.png"), fullPage: false, animations: "disabled" });
 
     await enabledSubagentSwitch.click();
@@ -1652,6 +1688,7 @@ async function main() {
     if (await page.locator("html").getAttribute("lang") !== "en") throw new Error("Language switch did not update the document locale");
     if (await page.evaluate(() => localStorage.getItem("loopx-pw-locale")) !== "en") throw new Error("English locale was not persisted");
     await page.screenshot({ path: resolve(outputDir, "desktop-settings-english.png"), fullPage: false, animations: "disabled" });
+    await checkpointCoverage();
     await page.reload({ waitUntil: "networkidle" });
     await page.getByTestId("personal-goal-home").waitFor({ state: "visible" });
     await page.getByText("LoopX Manager", { exact: true }).first().waitFor({ state: "visible" });
@@ -2205,6 +2242,8 @@ async function main() {
     await multiSubagentEnabled.waitFor({ state: "visible" });
     await waitForInputValue(multiSubagentMaxChildren, "4");
     await multiSubagentEnabled.check();
+    await page.getByLabel(/^子 Agent 模型/u).fill("gpt-5.6-luna");
+    await page.getByLabel(/^子 Agent 推理档位/u).fill("max");
     await multiSubagentMaxChildren.fill("3");
     await multiSubagentDomains.fill("code\nvalidation");
     await page.screenshot({ path: resolve(outputDir, "goal-subagent-capability-zh-cn.png"), fullPage: false, animations: "disabled" });
@@ -2213,6 +2252,8 @@ async function main() {
     const multiSubagentPreview = api.goalConfigurationRequests.findLast((item) => item.phase === "preview" && item.capability_id === "multi_subagent");
     if (JSON.stringify(multiSubagentPreview?.configuration) !== JSON.stringify({
       enabled: true,
+      model: "gpt-5.6-luna",
+      reasoning_effort: "max",
       max_children: 3,
       allowed_domains: ["code", "validation"],
     })) {
@@ -2320,7 +2361,7 @@ async function main() {
     await page.getByRole("button", { name: /Goal capabilities/ }).click();
     await page.getByRole("button", { name: /Adaptive child capacity/ }).click();
     await page.getByRole("heading", { level: 2, name: "Adaptive child capacity", exact: true }).waitFor({ state: "visible" });
-    for (const label of [/^Enabled$/u, /^Maximum children/u, /^Allowed responsibility domains/u]) {
+    for (const label of [/^Enabled$/u, /^Child model/u, /^Child reasoning effort/u, /^Maximum children/u, /^Allowed responsibility domains/u]) {
       await page.getByLabel(label).waitFor({ state: "visible" });
     }
     await page.screenshot({ path: resolve(outputDir, "goal-subagent-capability-en.png"), fullPage: false, animations: "disabled" });
@@ -2388,6 +2429,7 @@ async function main() {
       throw new Error(`Lark route mismatch API readback mismatch: ${JSON.stringify(mismatchReadback)}`);
     }
     await page.getByRole("button", { name: "返回工作区", exact: true }).click();
+    await checkpointCoverage();
     await page.reload({ waitUntil: "networkidle" });
     await page.getByTestId("personal-goal-home").waitFor({ state: "visible" });
     await page.getByRole("button", { name: "设置", exact: true }).click();
@@ -2833,6 +2875,7 @@ async function main() {
     if (!recoveryTurn) throw new Error("Active recovery Turn was not accepted");
 
     try {
+      await checkpointCoverage();
       await page.reload({ waitUntil: "networkidle" });
       await page.getByTestId("personal-goal-home").waitFor({ state: "visible" });
       await page.locator(".personal-goal-link").first().click();
@@ -3052,6 +3095,7 @@ async function main() {
     await page.screenshot({ path: resolve(outputDir, "desktop-settings-loopx-theme.png"), fullPage: false, animations: "disabled" });
     await page.getByRole("button", { name: "返回工作区", exact: true }).click();
     if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "loopx") throw new Error("Workspace did not apply the LoopX standard theme readback");
+    await checkpointCoverage();
     await page.reload({ waitUntil: "networkidle" });
     await page.getByTestId("personal-goal-home").waitFor({ state: "visible" });
     if (await page.locator(".personal-workspace-shell").getAttribute("data-pw-theme") !== "loopx") throw new Error("LoopX standard theme did not survive reload");
@@ -3063,6 +3107,13 @@ async function main() {
     if (!(await page.locator(".personal-digest-card").isVisible().catch(() => false))) throw new Error("Morning digest card did not render on the manager home");
     pass(17, "Manager home keeps the morning digest while omitting the redundant Agent worker strip.");
     pass(20, "Empty and populated Tasks boards keep identical width and four equal columns at desktop and wide desktop viewports.");
+    if (collectCoverage) {
+      const { writeDashboardBrowserCoverage } = await import("./dashboard-browser-coverage.mjs");
+      coverageEntries.push(...await page.coverage.stopJSCoverage());
+      await writeDashboardBrowserCoverage(coverageEntries, {
+        repoRoot, dashboardDir, outputDir: resolve(repoRoot, "coverage/dashboard"),
+      });
+    }
     const report = { criteria: Object.fromEntries(results), observations };
     await writeFile(resolve(outputDir, "acceptance-results.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
     console.log(`personal-workspace-browser-smoke (${packaged ? "packaged" : "development"}): ok\npreview=${url}\nscreenshot=${resolve(outputDir, "desktop-first-screen.png")}`);
