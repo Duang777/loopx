@@ -847,18 +847,19 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
       const answer = "已沿用当前 Goal 与 Agent Session。接下来会先核对状态，再继续推进。";
       await new Promise((resolveWait) => setTimeout(resolveWait, /(中断控制|刷新恢复)/u.test(turnMessages.get(turnId) ?? "") ? 5000 : 1200));
       const activeSession = sessions.get(sessionId);
+      const visible = messages.get(sessionId) ?? [];
+      const completed = visible.some((message) => message.message_id === `${turnId}-assistant`);
+      const event = (id, kind, payload) => `id: ${id}\nevent: ${kind}\ndata: ${JSON.stringify({ event_id: id, sequence: Number(id), kind, created_at: "2026-08-13T01:00:02Z", payload })}\n\n`;
       if (!activeSession || activeSession.active_turn_id !== turnId) {
-        await route.fulfill({ contentType: "text/event-stream", body: "", status: 200 });
+        await route.fulfill({ contentType: "text/event-stream", body: completed ? event("1", "assistant.delta", { text: answer }) + event("2", "turn.completed", { response: { schema_version: "loopx_chat_agent_response_v0", message: answer, proposals: [], gate: null } }) : "", status: 200 });
         return;
       }
-      const visible = messages.get(sessionId) ?? [];
-      if (!visible.some((message) => message.message_id === `${turnId}-assistant`)) {
+      if (!completed) {
         visible.push({ message_id: `${turnId}-assistant`, turn_id: turnId, role: "assistant", text: answer, created_at: "2026-08-13T01:00:02Z" });
       }
       messages.set(sessionId, visible);
-      const event = (id, kind, payload) => `id: ${id}\nevent: ${kind}\ndata: ${JSON.stringify({ event_id: id, sequence: Number(id), kind, created_at: "2026-08-13T01:00:02Z", payload })}\n\n`;
-      await route.fulfill({ contentType: "text/event-stream", body: event("1", "assistant.delta", { text: answer }) + event("2", "turn.completed", { response: { schema_version: "loopx_chat_agent_response_v0", message: answer, proposals: [], gate: null } }), status: 200 });
       sessions.set(sessionId, { ...activeSession, active_turn_id: null, status: "ready", updated_at: "2026-08-13T01:00:02Z" });
+      await route.fulfill({ contentType: "text/event-stream", body: event("1", "assistant.delta", { text: answer }) + event("2", "turn.completed", { response: { schema_version: "loopx_chat_agent_response_v0", message: answer, proposals: [], gate: null } }), status: 200 });
       return;
     }
     if (url.pathname === "/api/chat/goals/contexts") {
@@ -1090,20 +1091,21 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
             : "已沿用当前 Goal 与 Agent Session。接下来会先核对状态，再继续推进。";
     await new Promise((resolveWait) => setTimeout(resolveWait, /(中断控制|刷新恢复)/u.test(operatorMessage) ? 5000 : 1200));
     const activeSession = sessions.get(sessionId);
+    const visible = messages.get(sessionId) ?? [];
+    const completed = visible.some((message) => message.message_id === `${turnId}-assistant`);
+    const event = (id, kind, payload) => `id: ${id}\nevent: ${kind}\ndata: ${JSON.stringify({ event_id: id, sequence: Number(id), kind, created_at: "2026-08-13T01:00:02Z", payload })}\n\n`;
     if (!activeSession || activeSession.active_turn_id !== turnId) {
-      await route.fulfill({ contentType: "text/event-stream", body: "", status: 200 });
+      await route.fulfill({ contentType: "text/event-stream", body: completed ? event("1", "assistant.delta", { text: answer }) + event("2", "turn.completed", { response: { schema_version: "loopx_chat_agent_response_v0", message: answer, proposals: [], protected_action: protectedAction, gate: null } }) : "", status: 200 });
       return;
     }
     if (sessionId && messages.has(sessionId)) {
-      const visible = messages.get(sessionId);
-      if (!visible.some((message) => message.message_id === `${turnId}-assistant`)) {
+      if (!completed) {
         visible.push({ message_id: `${turnId}-assistant`, turn_id: turnId, role: "assistant", text: answer, created_at: "2026-08-13T01:00:02Z" });
       }
     }
-    const event = (id, kind, payload) => `id: ${id}\nevent: ${kind}\ndata: ${JSON.stringify({ event_id: id, sequence: Number(id), kind, created_at: "2026-08-13T01:00:02Z", payload })}\n\n`;
-    await route.fulfill({ contentType: "text/event-stream", body: event("1", "assistant.delta", { text: answer }) + event("2", "turn.completed", { response: { schema_version: "loopx_chat_agent_response_v0", message: answer, proposals: [], protected_action: protectedAction, gate: null } }), status: 200 });
     const current = sessions.get(sessionId);
     if (current?.active_turn_id === turnId) sessions.set(sessionId, { ...current, active_turn_id: null, status: "ready", updated_at: "2026-08-13T01:00:02Z" });
+    await route.fulfill({ contentType: "text/event-stream", body: event("1", "assistant.delta", { text: answer }) + event("2", "turn.completed", { response: { schema_version: "loopx_chat_agent_response_v0", message: answer, proposals: [], protected_action: protectedAction, gate: null } }), status: 200 });
   });
   await page.route("**/api/actions?**", async (route) => {
     const url = new URL(route.request().url());
