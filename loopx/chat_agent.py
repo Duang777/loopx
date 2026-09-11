@@ -53,6 +53,44 @@ def _approval_gate(summary: str) -> dict[str, str]:
     }
 
 
+def _terminal_turn_error(error: Any, fallback: str) -> CodexChatAgentError:
+    """Project only the app-server's typed error, never its arbitrary prose."""
+    info = error.get("codexErrorInfo") if isinstance(error, dict) else None
+    # App-server v2 exposes camel-case discriminators. Unknown/new variants
+    # retain the generic failure; message/additionalDetails are not evidence
+    # of a policy decision and may contain private upstream content.
+    known = {
+        "cyberPolicy": ("cyber_policy", "Codex 上游返回了安全策略拦截，本轮未完成。"),
+        "misalignmentPolicyViolation": (
+            "misalignment_policy_violation", "Codex 上游返回了策略违规拦截，本轮未完成。",
+        ),
+        "usageLimitExceeded": ("usage_limit_exceeded", "Codex 上游用量已达限制，本轮未完成。"),
+        "rateLimitExceeded": ("rate_limit_exceeded", "Codex 上游请求频率受限，本轮未完成。"),
+        "contextWindowExceeded": ("context_window_exceeded", "Codex 上下文超过限制，本轮未完成。"),
+        "unauthorized": ("unauthorized", "Codex 上游身份验证失败，本轮未完成。"),
+    }
+    selected = known.get(info) if isinstance(info, str) else None
+    if selected is None:
+        return CodexChatAgentError(
+            fallback,
+            gate=_host_tool_gate(fallback, "Inspect the Codex host error before continuing."),
+        )
+    code, summary = selected
+    policy = info in {"cyberPolicy", "misalignmentPolicyViolation"}
+    return CodexChatAgentError(
+        summary,
+        error_code=code,
+        gate={
+            "kind": "policy_gate" if policy else "host_tool_gate",
+            "summary": summary,
+            "next_action": (
+                "本轮已终止，不会自动重放；请查看上游说明。"
+                if policy else "请处理对应的上游限制后再继续。"
+            ),
+        },
+    )
+
+
 def _is_legacy_model_catalog_error(value: Any) -> bool:
     # App-server currently reports catalog schema failures only as JSON-RPC
     # prose. Keep this compatibility classifier bound to its three stable
@@ -192,6 +230,7 @@ def _turn_prompt(
             }
         ],
         "protected_action": None,
+        "context_handoff": None,
         "gate": None,
     }
     role = (
@@ -224,9 +263,13 @@ def _turn_prompt(
         + "The operator message below is the current task. Answer it directly and do not replace it "
         + "with an autonomous project task. "
         + planning_limits
-        + "When the operator requests a durable Goal, Todo, Agent binding, heartbeat, monitor, gate, or correction change, "
+        + "Outside manager intent delegation, when the operator requests a durable Goal, Todo, Agent binding, heartbeat, monitor, gate, or correction change, "
         "describe the bounded proposal clearly so LoopX can route it through typed preview and explicit apply. "
         + protected_action_contract
+        + "Exception for the manager's supplied context_delegation catalog: when the current user explicitly asks "
+        "to delegate ordinary work or forward context for another Agent to assess/replan, emit context_handoff={goal_id,agent_id} using "
+        "one exact catalog recipient, proposals=[], and no confirmation gate. Otherwise context_handoff=null. "
+        "The host delivers the original user message, with no model-authored priority or task edits. "
         + "Never claim the change has been written without a verified control-plane receipt. "
         "If you encounter an identity, approval, or host-tool gate, stop and describe it in gate. "
         "Reply in Chinese unless the operator asks for another language. Keep proposals bounded and reviewable. "
@@ -251,6 +294,8 @@ class CodexChatAgentSession:
     work_dir: Path
     context_summary: str = ""
     execution_mode: bool = False
+    model: str | None = None
+    reasoning_effort: str | None = None
     response_timeout_sec: float = 30.0
     idle_timeout_sec: float = 180.0
     hard_timeout_sec: float = 900.0
@@ -281,6 +326,8 @@ class CodexChatAgentSession:
         resume_thread_id: str | None = None,
         execution_mode: bool = False,
         codex_home: Path | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
         _compatibility_catalog_path: Path | None = None,
     ) -> "CodexChatAgentSession":
         resolved = shutil.which(codex_bin)
@@ -342,6 +389,8 @@ class CodexChatAgentSession:
             idle_timeout_sec=idle_timeout_sec,
             hard_timeout_sec=hard_timeout_sec,
             execution_mode=execution_mode,
+            model=model,
+            reasoning_effort=reasoning_effort,
             model_catalog_compatibility_applied=_compatibility_catalog_path is not None,
         )
         try:
@@ -363,11 +412,17 @@ class CodexChatAgentSession:
                 {
                     **({"threadId": resume_thread_id, "excludeTurns": True} if resume_thread_id else {}),
                     "cwd": str(root),
+                    **({"model": model} if model else {}),
+                    **({"config": {"model_reasoning_effort": reasoning_effort}} if reasoning_effort else {}),
                     "sandbox": "workspace-write" if execution_mode else "read-only",
                     "approvalPolicy": "never",
                 },
                 request_id=2,
             )
+            if model and thread_result.get("model") not in {None, model}:
+                raise session._runtime_error("Codex did not apply the requested manager model.")
+            if reasoning_effort and thread_result.get("reasoningEffort") not in {None, reasoning_effort}:
+                raise session._runtime_error("Codex did not apply the requested manager reasoning effort.")
             session.thread_id = _extract_id(thread_result, "thread", "threadId")
             if not session.thread_id:
                 raise session._runtime_error("Codex app-server did not return a thread id.")
@@ -395,6 +450,8 @@ class CodexChatAgentSession:
                     resume_thread_id=resume_thread_id,
                     execution_mode=execution_mode,
                     codex_home=runtime_home,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
                     _compatibility_catalog_path=catalog_path,
                 )
         except Exception:
@@ -609,6 +666,8 @@ class CodexChatAgentSession:
                 "threadId": self.thread_id,
                 "input": turn_input,
                 "cwd": str(self.work_dir),
+                **({"model": self.model} if self.model else {}),
+                **({"effort": self.reasoning_effort} if self.reasoning_effort else {}),
                 "approvalPolicy": "never",
             },
             request_id=request_id,
@@ -659,11 +718,25 @@ class CodexChatAgentSession:
             params = message.get("params")
             if on_event:
                 phase = {
-                    "turn/started": "正在连接 Agent",
-                    "item/started": "正在读取 Goal 上下文",
-                    "item/completed": "已完成一项检查",
-                    "turn/completed": "正在整理回答",
+                    "turn/started": "Agent 已开始处理",
+                    "item/completed": "Agent 返回了处理状态",
+                    "turn/completed": "Agent 回合已结束",
                 }.get(method)
+                if method == "item/started":
+                    item = params.get("item") if isinstance(params, dict) else None
+                    item_type = str(item.get("type") or "") if isinstance(item, dict) else ""
+                    # Transport activity does not prove a Goal read or a
+                    # successful check. Project only the typed activity; do
+                    # not expose arbitrary item text, command or tool inputs.
+                    phase = {
+                        "userMessage": "Agent 已收到消息",
+                        "agentMessage": "Agent 正在生成回答",
+                        "reasoning": "Agent 正在思考",
+                        "commandExecution": "Agent 正在执行命令",
+                        "mcpToolCall": "Agent 正在调用工具",
+                        "dynamicToolCall": "Agent 正在调用工具",
+                        "webSearch": "Agent 正在检索",
+                    }.get(item_type, "Agent 正在处理")
                 if phase:
                     on_event("agent.phase", {"label": phase, "method": method})
             if method == "item/agentMessage/delta" and isinstance(params, dict):
@@ -686,7 +759,10 @@ class CodexChatAgentSession:
                 turn = params.get("turn") if isinstance(params, dict) else None
                 turn_status = str(turn.get("status") or "") if isinstance(turn, dict) else ""
                 if turn_status == "failed":
-                    raise self._runtime_error("Codex app-server reported a terminal turn failure.")
+                    raise _terminal_turn_error(
+                        turn.get("error"),
+                        "Codex app-server reported a terminal turn failure.",
+                    )
                 if turn_status == "interrupted":
                     raise CodexChatAgentError(
                         "Codex app-server reported an interrupted turn.",
@@ -705,7 +781,10 @@ class CodexChatAgentSession:
                             {"label": "Codex 正在重试", "method": method},
                         )
                     continue
-                raise self._runtime_error("Codex app-server reported a turn error.")
+                raise _terminal_turn_error(
+                    params.get("error") if isinstance(params, dict) else None,
+                    "Codex app-server reported a turn error.",
+                )
         visible_tail = display_filter.finish()
         if visible_tail and on_event:
             visible_delta_count += 1

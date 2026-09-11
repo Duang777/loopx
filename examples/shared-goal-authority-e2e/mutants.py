@@ -67,6 +67,15 @@ CASES = [
     Case('monitor_route_rewrites_fingerprint', (('loopx/control_plane/quota/monitor_poll_commit.ts', replacement(
         '  monitorSuccessorIntent(result);', '  Object.assign(result, monitorSuccessorIntent(result));')),),
          'tests/control_plane_ts/quota_monitor_poll_commit.test.ts', 'preserves the legacy pending observation fingerprint'),
+    Case('governance_exclusion_ignored', (('loopx/control_plane/goals/shared_goal_work.ts', replacement(
+        'else if (!excluded)', 'else if (true)')),),
+         'tests/control_plane_ts/shared_goal_work.test.ts', 'alignment selection respects exclusions'),
+    Case('canonical_zero_basis_stale_admitted', (('loopx/control_plane/goals/goal_amendment_proposal.ts', replacement(
+        'if (proposal.base_source_basis_digest !== derived.source_basis_digest) facts.push("base_source_basis_digest_mismatch");',
+        'if (false) facts.push("base_source_basis_digest_mismatch");')),),
+         'tests/control_plane_ts/goal_amendment_proposal.test.ts', 'canonical Todo bases cannot'),
+    Case('governance_reads_legacy_after_promotion', (('loopx/control_plane/goals/shared_goal_work_source.py', replacement(
+        'if canonical is None:', 'if True:')),), 'tests/control_plane/test_canonical_goal_governance.py::test_empty_canonical_is_authoritative_and_missing_display_is_not_repaired'),
     Case('delivery_wait_target_unbound', (('loopx/control_plane/todos/resume_condition.ts', replacement(
         'condition.target_todo_id !== spec.target || ', '')),),
          'tests/control_plane_ts/delivery_response.test.ts', 'exact dependency identity'),
@@ -145,6 +154,27 @@ CASES.extend([
                  "capture_lineage_id": self._lineage_id, "committed_at": utc_now_text()},
             )''')),),
         "tests/control_plane/test_shadow_drain_e2e.py::test_primary_sigkill_preserves_complete_bytes_and_proves_before_marker[before_replace]"),
+])
+
+# Ladder parity-half rows (s2c2.*) drive the same lifecycle through the public
+# CLI; these mutants remove one operator-visible truth each and must turn the
+# corresponding row red.
+LADDER_ROW = "tests/control_plane/test_shared_goal_authority_e2e.py::test_ladder_row_passes_or_is_declared_unverified"
+CASES.extend([
+    Case("status_hides_prepared_only", ((COORDINATION + "local_authority_shadow_outbox.py", replacement(
+        '            "committed_pending": sum(1 for entry in entries if entry.is_committed),\n'
+        '            "prepared_only": sum(1 for entry in entries if not entry.is_committed),',
+        '            "committed_pending": len(entries),\n'
+        '            "prepared_only": 0,')),),
+        LADDER_ROW + "[s2c2.sigkill_between_primary_write_and_drain]"),
+    Case("qualification_ignores_drift", ((COORDINATION + "runtime_shadow.ts", replacement(
+        "const matched = localAuthorityShadowHeadDigest(request.projection) === localAuthorityShadowHeadDigest(lineage.head.head);",
+        "const matched = true;")),),
+        LADDER_ROW + "[s2c2.parity_divergent_detects_foreign_edit]"),
+    Case("replay_counted_as_delivery", ((COORDINATION + "local_authority_shadow_adapter.py", replacement(
+        '                    self._result.replayed += 1\n                    self._result.no_op += int(receipt["no_op"])',
+        '                    self._result.delivered += 1\n                    self._result.no_op += int(receipt["no_op"])')),),
+        LADDER_ROW + "[s2c2.sigkill_mid_drain]"),
 ])
 
 
@@ -298,7 +328,7 @@ CASES.append(Case("python_fence_remediation_truncated", (
     (COORDINATION + "legacy_writer_fence.py", replacement(
         'LEGACY_WRITER_FENCED_REMEDIATION = (\n    "legacy coordination writer is fenced; use the promoted canonical authority "\n    "({authority_mode}) for goal {goal_id}; fence {fence_id}; "\n    "the primary record was not changed"\n)',
         'LEGACY_WRITER_FENCED_REMEDIATION = "legacy coordination writer is fenced"')),
-), "tests/control_plane/test_shadow_fence_caller_parity_e2e.py::test_fence_caller_parity[cli-todo_update_status-engaged]"))
+), "tests/control_plane/test_shadow_fence_caller_parity_e2e.py::test_fence_caller_parity[cli-todo_capture_followups-engaged]"))
 CASES.append(Case("fence_envelope_schema_leak", (
     (COORDINATION + "legacy_writer_fence.ts", replacement(
         "    this.payload = { write_check: writeCheck };",
