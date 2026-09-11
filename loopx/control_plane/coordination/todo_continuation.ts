@@ -1,0 +1,243 @@
+/** Explicit cross-agent, cross-session continuation over the current Todo.
+ * This is a local workflow note, not a history, search or ownership protocol.
+ * Phase 1: same-machine, different registered agents.
+ *
+ * Stage A supports two handoff styles:
+ * - Legacy: rationale + source_refs (manual, compact)
+ * - Rich context: work_summary + structured fields (approaches_tried,
+ *   next_steps, files_touched, key_decisions, open_questions)
+ * Both produce a typed continuation note validated by the shared
+ * continuation_note.ts predicate. The rich form lets a source agent dump
+ * complete working context so the target agent does not need to re-explain
+ * what was done, what failed, and what comes next.
+ */
+import {stat} from "node:fs/promises";
+import {isAbsolute, resolve, relative} from "node:path";
+import type {JsonObject} from "../effect_program.ts";
+import type {AuthorityStore} from "./authority_store.ts";
+import {canonicalAuthorityObject, canonicalAuthoritySha256, requireAuthorityStoreId} from "./authority_store_codec.ts";
+import {indexCoordinationProjection, validateCoordinationTodoReadModel} from "./coordination_projection.ts";
+import {executeCoordinationTodoUpdate} from "./todo_update.ts";
+import {executeCoordinationTodoClaim} from "./todo_claim.ts";
+import {
+  CONTINUATION_NOTE_MARKER,
+  buildContinuationNote,
+  computeContinuationTodoFacts,
+  validateContinuationNote,
+  type ContinuationNoteContext,
+  type ContinuationNoteValidation,
+} from "./continuation_note.ts";
+
+const accepted = new Set(["applied", "replayed", "recovered", "no_change"]);
+const reject = (reason_code: string, reason: string): JsonObject =>
+  ({ok: false, status: "rejected", reason_code, reason});
+
+function bounded(value: unknown, name: string, max: number): string {
+  if (typeof value !== "string" || !value.trim() || value.length > max) {
+    throw new Error(`${name} must be non-empty text of at most ${max} characters`);
+  }
+  return value;
+}
+
+function optionalString(value: unknown, name: string, max: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || !value.trim() || value.length > max) {
+    throw new Error(`${name} must be non-empty text of at most ${max} characters when provided`);
+  }
+  return value;
+}
+
+// Excludes claimed_by so handoff verification ignores the expected ownership transfer.
+function stableFacts(todo: JsonObject): string {
+  const copy = {...todo};
+  for (const key of ["note", "updated_at", "last_actor_agent_id", "claimed_by"]) delete copy[key];
+  return canonicalAuthoritySha256(copy);
+}
+
+async function availability(workspace: unknown, artifacts: unknown): Promise<JsonObject> {
+  if (typeof workspace !== "string" || !isAbsolute(workspace)) throw new Error("workspace must be absolute");
+  if (!Array.isArray(artifacts) || artifacts.length > 8) throw new Error("at most eight artifacts are supported");
+  const inspect = async (path: string, directory: boolean) => {
+    try { const info = await stat(path); return directory ? info.isDirectory() : info.isFile(); }
+    catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; }
+  };
+  const workspaceAvailable = await inspect(workspace, true);
+  const rows = [];
+  for (const value of artifacts) {
+    const ref = bounded(value, "artifact", 240);
+    if (isAbsolute(ref) || relative(workspace, resolve(workspace, ref)).split(/[\\/]/u).includes("..")) {
+      throw new Error("artifacts must be workspace-relative paths");
+    }
+    rows.push({ref, available: await inspect(resolve(workspace, ref), false)});
+  }
+  return {workspace_available: workspaceAvailable, artifacts: rows,
+    ready: workspaceAvailable && rows.every(row => row.available)};
+}
+
+function buildContextFromInput(input: JsonObject): ContinuationNoteContext {
+  // Rich context: prefer structured fields.
+  const context: Record<string, unknown> = {};
+  const workSummary = optionalString(input.work_summary, "work_summary", 2000);
+  if (workSummary) context.work_summary = workSummary;
+  // Legacy fallback: rationale + source_refs.
+  const rationale = optionalString(input.rationale, "rationale", 600);
+  if (rationale) context.rationale = rationale;
+  if (Array.isArray(input.source_refs)) {
+    if (input.source_refs.length > 20) throw new Error("at most 20 source_refs are supported");
+    context.source_refs = input.source_refs.map(v => bounded(v, "source reference", 180));
+  }
+  if (Array.isArray(input.approaches_tried)) {
+    if (input.approaches_tried.length > 20) throw new Error("at most 20 approaches_tried are supported");
+    context.approaches_tried = input.approaches_tried.map(v => {
+      if (typeof v !== "object" || v === null) throw new Error("approaches_tried entries must be objects");
+      const e = v as Record<string, unknown>;
+      const outcome = String(e.outcome);
+      if (!["success", "partial", "failed"].includes(outcome)) {
+        throw new Error("approaches_tried outcome must be success, partial, or failed");
+      }
+      return {approach: bounded(e.approach, "approach", 300), outcome: outcome as "success" | "partial" | "failed",
+        reason: bounded(e.reason, "reason", 300)};
+    });
+  }
+  if (Array.isArray(input.next_steps)) {
+    if (input.next_steps.length > 20) throw new Error("at most 20 next_steps are supported");
+    context.next_steps = input.next_steps.map(v => bounded(v, "next_step", 300));
+  }
+  if (Array.isArray(input.files_touched)) {
+    if (input.files_touched.length > 50) throw new Error("at most 50 files_touched are supported");
+    context.files_touched = input.files_touched.map(v => {
+      if (typeof v !== "object" || v === null) throw new Error("files_touched entries must be objects");
+      const e = v as Record<string, unknown>;
+      const action = String(e.action);
+      if (!["read", "edited", "created", "deleted"].includes(action)) {
+        throw new Error("files_touched action must be read, edited, created, or deleted");
+      }
+      const entry: Record<string, unknown> = {path: bounded(e.path, "path", 240),
+        action: action as "read" | "edited" | "created" | "deleted"};
+      const summary = optionalString(e.summary, "file summary", 200);
+      if (summary) entry.summary = summary;
+      return entry;
+    });
+  }
+  if (Array.isArray(input.key_decisions)) {
+    if (input.key_decisions.length > 20) throw new Error("at most 20 key_decisions are supported");
+    context.key_decisions = input.key_decisions.map(v => {
+      if (typeof v !== "object" || v === null) throw new Error("key_decisions entries must be objects");
+      const e = v as Record<string, unknown>;
+      return {decision: bounded(e.decision, "decision", 300),
+        rationale: bounded(e.rationale, "decision rationale", 300)};
+    });
+  }
+  if (Array.isArray(input.open_questions)) {
+    if (input.open_questions.length > 20) throw new Error("at most 20 open_questions are supported");
+    context.open_questions = input.open_questions.map(v => bounded(v, "open_question", 300));
+  }
+  // Must have at least one of: work_summary or rationale.
+  if (!context.work_summary && !context.rationale) {
+    throw new Error("provide at least one of: work_summary (rich context) or rationale (legacy)");
+  }
+  return context;
+}
+
+export async function executeTodoContinuation(store: AuthorityStore, value: unknown): Promise<JsonObject> {
+  const input = canonicalAuthorityObject(value, "continuation request");
+  const goalId = requireAuthorityStoreId(input.goal_id, "goal id");
+  const todoId = requireAuthorityStoreId(input.todo_id, "Todo id");
+  const agentId = requireAuthorityStoreId(input.agent_id, "agent id");
+  const sessionId = bounded(input.session_id, "session id", 160);
+  if (!["prepare", "inspect", "adopt"].includes(String(input.action))) throw new Error("invalid continuation action");
+  if (!Array.isArray(input.registered_agents) || !input.registered_agents.includes(agentId)) {
+    return reject("actor_not_registered", "Use the registered lane bound to this host session");
+  }
+  const registered = input.registered_agents.map(v => requireAuthorityStoreId(v, "registered agent"));
+  const targetAgentId = input.target_agent_id != null
+    ? requireAuthorityStoreId(input.target_agent_id, "target agent id") : null;
+  if (targetAgentId != null && !registered.includes(targetAgentId)) {
+    return reject("target_agent_not_registered", "Target agent must be registered for this goal");
+  }
+  const head = await store.loadAuthority();
+  if (head.status !== "loaded") return {ok: false, ...head};
+  validateCoordinationTodoReadModel(head.head, goalId);
+  const projection = indexCoordinationProjection(head.head, goalId);
+  const todo = projection.todos.get(todoId);
+  if (!todo) return reject("todo_not_found", "The stable Todo ID no longer exists; do not recreate it from text");
+  if (todo.status !== "open" || todo.archive_state !== "active") return reject("todo_not_open", "Todo is no longer open and active");
+  // The existing metadata writer cannot yet prove a lease-bearing note update.
+  // Preserve its boundary instead of inventing a second lease/transfer protocol.
+  if (![undefined, "legacy", "soft_claim"].includes(head.head.handoff_mode as string | undefined) || projection.leases.has(todoId)) {
+    return reject("continuation_lease_unsupported", "Stage A supports lease-free local Todos only; use existing lease/handoff commands for leased work");
+  }
+  const common = {goal_id: goalId, todo_id: todoId, expected_role: "agent",
+    actor_agent_id: agentId, registered_agents: registered, dry_run: false, now: new Date()};
+  if (input.action === "prepare") {
+    if (todo.claimed_by !== agentId) return reject("continuation_owner_required", "Only the current Todo owner can prepare a continuation note");
+    const context = buildContextFromInput(input);
+    const todoFacts = computeContinuationTodoFacts(todo);
+    const noteObj = buildContinuationNote(context, sessionId, todoFacts);
+    const note = JSON.stringify(noteObj);
+    const result = await executeCoordinationTodoUpdate(store, {...common,
+      operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
+      expected_provider_revision: requireAuthorityStoreId(input.expected_provider_revision, "expected revision"),
+      patch: {note}, clear_fields: []});
+    const current = await store.loadAuthority();
+    const verified = current.status === "loaded" &&
+      indexCoordinationProjection(current.head, goalId).todos.get(todoId)?.note === note;
+    return {ok: accepted.has(String(result.status)) && verified, action: "prepare", result,
+      note_readback_verified: verified, goal_id: goalId, todo_id: todoId,
+      provider_revision: current.status === "loaded" ? current.provider_revision : null};
+  }
+  const environment = await availability(input.workspace, input.artifacts ?? []);
+  const noteValidation: ContinuationNoteValidation = validateContinuationNote(todo.note, computeContinuationTodoFacts(todo));
+  const validNote = noteValidation.valid;
+  const note = noteValidation.note;
+  // Build a digest-friendly summary. The CLI can render this as a readable
+  // handoff context for the target agent.
+  const digest = validNote ? {
+    work_summary: typeof note!.work_summary === "string" ? note!.work_summary : undefined,
+    rationale: typeof note!.rationale === "string" ? note!.rationale : undefined,
+    approaches_tried: Array.isArray(note!.approaches_tried) ? note!.approaches_tried : undefined,
+    next_steps: Array.isArray(note!.next_steps) ? note!.next_steps : undefined,
+    files_touched: Array.isArray(note!.files_touched) ? note!.files_touched : undefined,
+    key_decisions: Array.isArray(note!.key_decisions) ? note!.key_decisions : undefined,
+    open_questions: Array.isArray(note!.open_questions) ? note!.open_questions : undefined,
+    source_refs: Array.isArray(note!.source_refs) ? note!.source_refs : undefined,
+  } : undefined;
+  const packet: JsonObject = {ok: true, action: "inspect", goal_id: goalId, todo_id: todoId,
+    provider_revision: head.provider_revision, todo_status: todo.status, claimed_by: todo.claimed_by,
+    note_state: validNote ? "current" : note?.kind === CONTINUATION_NOTE_MARKER ? "stale" : "missing",
+    availability: environment, decision_rationale: validNote ? note!.rationale : null,
+    evidence_refs: [`todo:${todoId}`, `revision:${head.provider_revision}`, ...(validNote && Array.isArray(note!.source_refs) ? note!.source_refs as string[] : [])],
+    next_step: validNote && environment.ready === true ? todo.text : "Restore workspace/artifacts and ask the source session to prepare a current decision note",
+    can_adopt: validNote && environment.ready === true && note!.source_session !== sessionId,
+    digest};
+  if (input.action === "inspect") return packet;
+  if (!packet.can_adopt) return {...packet, ...reject("continuation_not_ready", "Inspect and repair the reported note/session/availability gap before adopting")};
+  const adoptOwnerId = targetAgentId ?? agentId;
+  const preClaimFacts = stableFacts(todo);
+  // Construct a handoff transfer grant binding source owner, target owner,
+  // todo id, exact revision, and current continuation-note fingerprint. The
+  // note fingerprint is computed by the shared validateContinuationNote so the
+  // final claim authority reuses the exact same canonicalization. An invalid
+  // note yields empty noteFacts, which the final decision will reject.
+  const transferGrant = adoptOwnerId !== todo.claimed_by ? {
+    schema_version: "todo_transfer_grant_v0" as const,
+    source_agent_id: todo.claimed_by as string,
+    target_agent_id: adoptOwnerId,
+    todo_id: todoId,
+    expected_revision: requireAuthorityStoreId(input.expected_provider_revision, "expected revision"),
+    continuation_note_facts: noteValidation.noteFacts,
+  } : undefined;
+  const result = await executeCoordinationTodoClaim(store, {...common, claimed_by: adoptOwnerId,
+    operation_id: requireAuthorityStoreId(input.operation_id, "operation id"),
+    expected_provider_revision: requireAuthorityStoreId(input.expected_provider_revision, "expected revision"),
+    transfer_grant: transferGrant});
+  // Historical receipt replay alone never proves current authority.
+  const current = await store.loadAuthority();
+  const currentTodo = current.status === "loaded" ? indexCoordinationProjection(current.head, goalId).todos.get(todoId) : undefined;
+  const verified = currentTodo?.status === "open" && currentTodo.archive_state === "active" &&
+    currentTodo.claimed_by === adoptOwnerId && currentTodo.note === todo.note && stableFacts(currentTodo) === preClaimFacts &&
+    current.status === "loaded" && current.provider_revision === result.provider_revision;
+  return {...packet, action: "adopt", ok: accepted.has(String(result.status)) && verified,
+    claim: result, current_authority_verified: verified, target_agent_id: adoptOwnerId,
+    provider_revision: current.status === "loaded" ? current.provider_revision : null};
+}
