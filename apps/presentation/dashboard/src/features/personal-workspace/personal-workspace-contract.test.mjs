@@ -471,8 +471,8 @@ assert.match(
 );
 assert.match(
   larkSettings,
-  /targetAppsReady\s*=\s*targetAgentBindings\.length\s*>\s*0\s*&&\s*targetAgentBindings\.every/,
-  "Connect readiness requires every selected Agent App to be reply-ready",
+  /targetAppsReady\s*=\s*Boolean\(editingConnection\)\s*\|\|\s*targetAgentBindings\.length\s*>\s*0\s*&&\s*targetAgentBindings\.every/,
+  "New connections require every selected Agent App to be reply-ready while edits preserve their stored identity",
 );
 assert.match(
   larkSettings,
