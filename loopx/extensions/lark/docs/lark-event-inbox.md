@@ -305,8 +305,13 @@ can read the configured chat. A profile/app mismatch fails with
 `lark_inbox_reply_sender_identity_mismatch`; a profile that cannot access the
 configured chat fails with
 `lark_inbox_reply_sender_not_in_configured_chat`. Neither failure falls back
-to another app. Public results contain only compact status/receipt fields, not
-the profile, chat id, message id, reply text, or provider payload.
+to another app. Inbox and Goal Channel replies retry only the provider's
+explicit transient `verify_failed` Bot identity state, up to three checks.
+Command failures, malformed identity responses, and configured Bot name
+mismatches fail immediately; membership, provider preview, idempotency, send,
+and readback gates remain unchanged. Public results contain only compact
+status/receipt fields, not the profile, chat id, message id, reply text, or
+provider payload.
 
 ## Host collector lifecycle
 

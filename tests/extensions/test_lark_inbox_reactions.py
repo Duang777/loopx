@@ -327,6 +327,7 @@ class ReplyRunner:
         include_mentioned_member: bool = True,
         member_bucket: str = "users",
         member_read_denied: bool = False,
+        auth_failures: int = 0,
     ) -> None:
         self.calls: list[list[str]] = []
         self.matching_readback = matching_readback
@@ -336,11 +337,29 @@ class ReplyRunner:
         self.include_mentioned_member = include_mentioned_member
         self.member_bucket = member_bucket
         self.member_read_denied = member_read_denied
+        self.auth_failures = auth_failures
 
     def __call__(self, args: Sequence[str]) -> dict[str, Any]:
         call = list(args)
         self.calls.append(call)
         if call[3:6] == ["auth", "status", "--verify"]:
+            if self.auth_failures:
+                self.auth_failures -= 1
+                return {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        {
+                            "identities": {
+                                "bot": {
+                                    "available": False,
+                                    "verified": False,
+                                    "status": "verify_failed",
+                                }
+                            }
+                        }
+                    ),
+                    "stderr": "",
+                }
             return {
                 "returncode": 0,
                 "stdout": json.dumps(
@@ -764,6 +783,85 @@ def test_reply_preview_verifies_provider_without_writing(tmp_path: Path) -> None
     ]
     assert len(provider_calls) == 1
     assert "--dry-run" in provider_calls[0]
+
+
+def test_reply_retries_transient_bot_identity_verification(tmp_path: Path) -> None:
+    config, _, project = _fixture(tmp_path, lifecycle=False)
+    runner = ReplyRunner(auth_failures=1)
+
+    result = reply_lark_event_inbox(
+        project=project,
+        config_path=config,
+        message_id="om_reaction_fixture",
+        text="处理完成",
+        execute=True,
+        runner=runner,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "sent_verified"
+    auth_calls = [
+        call for call in runner.calls if call[3:6] == ["auth", "status", "--verify"]
+    ]
+    assert len(auth_calls) == 2
+
+
+def test_reply_fails_closed_after_bounded_bot_identity_retries(
+    tmp_path: Path,
+) -> None:
+    config, _, project = _fixture(tmp_path, lifecycle=False)
+    runner = ReplyRunner(auth_failures=3)
+
+    result = reply_lark_event_inbox(
+        project=project,
+        config_path=config,
+        message_id="om_reaction_fixture",
+        text="处理完成",
+        execute=True,
+        runner=runner,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "gate_required"
+    assert result["blocker"] == "lark_inbox_reply_sender_identity_mismatch"
+    auth_calls = [
+        call for call in runner.calls if call[3:6] == ["auth", "status", "--verify"]
+    ]
+    assert len(auth_calls) == 3
+    assert not any(
+        "+messages-send" in call or "+messages-reply" in call for call in runner.calls
+    )
+
+
+def test_reply_does_not_retry_permanent_bot_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    config, _, project = _fixture(tmp_path, lifecycle=False)
+    runner = ReplyRunner()
+
+    def mismatched_name(args: Sequence[str]) -> dict[str, Any]:
+        result = runner(args)
+        if list(args)[3:6] == ["auth", "status", "--verify"]:
+            payload = json.loads(result["stdout"])
+            payload["identities"]["bot"]["appName"] = "Another Bot"
+            result["stdout"] = json.dumps(payload)
+        return result
+
+    result = reply_lark_event_inbox(
+        project=project,
+        config_path=config,
+        message_id="om_reaction_fixture",
+        text="处理完成",
+        execute=True,
+        runner=mismatched_name,
+    )
+
+    assert result["ok"] is False
+    assert result["blocker"] == "lark_inbox_reply_sender_identity_mismatch"
+    auth_calls = [
+        call for call in runner.calls if call[3:6] == ["auth", "status", "--verify"]
+    ]
+    assert len(auth_calls) == 1
 
 
 def test_reply_rejects_literal_backslash_n_before_provider(tmp_path: Path) -> None:
