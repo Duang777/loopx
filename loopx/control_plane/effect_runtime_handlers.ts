@@ -101,6 +101,7 @@ import {
   qualifyActionSelection,
 } from "./work_items/action_portfolio.ts";
 import { projectQuotaPlanningHorizon } from "./work_items/planning_horizon.ts";
+import { projectTaskGraphTopology } from "./work_items/task_graph.ts";
 import { projectDeliveryHistory, projectDeliveryResponse } from "./work_items/delivery_history.ts";
 import { validateDeliveryClaim } from "./work_items/delivery_outcome.ts";
 import {
@@ -127,6 +128,7 @@ import {
   acknowledgeLocalCoordinationTodoArchive,
   archiveLocalCoordinationTodos,
   claimLocalCoordinationTodo,
+  continueLocalTodo,
   createLocalCoordinationTodo,
   editLocalCoordinationTodo,
   updateLocalCoordinationTodo,
@@ -146,7 +148,9 @@ import {
 import { evaluateCoordinationTodoArchiveSelection } from "./coordination/todo_archive_selection.ts";
 import {evaluateStandingDecisionProjection} from "./todos/standing_decision.ts";
 import {evaluateDecisionScope} from "./todos/decision_scope.ts";
+import {evaluateCapabilityGate} from "./agents/capability_gate.ts";
 import {captureArchivedTodoDependencies} from "./todos/archive_capture.ts";
+import {projectAdvancementFrontier, evaluateLongTodoChain} from "./todos/frontier_revision.ts";
 import { evaluateCoordinationTodoSuccessorDerivation } from "./coordination/todo_successor_derivation.ts";
 import {
   checkLegacyCoordinationWriteAllowed,
@@ -381,6 +385,7 @@ export function createEffectRuntimeHandlers(
     ["todo.public_update.plan", planPublicTodoUpdate],
     ["todo.standing_decision.project", evaluateStandingDecisionProjection],
     ["todo.decision_scope.evaluate", evaluateDecisionScope],
+    ["agent.capability_gate.evaluate", evaluateCapabilityGate],
     ["todo.archive.capture_dependencies", captureArchivedTodoDependencies],
     ["todo.monitor_metadata.plan", planMonitorMetadata],
     ["todo.authoring_scope.plan", planTodoAuthoringScope],
@@ -414,6 +419,8 @@ export function createEffectRuntimeHandlers(
     ["todo.resume_condition.evaluate", evaluateTodoResumeConditions],
     ["todo.resume_planning.project", projectTodoResumePlanning],
     ["todo.quota_planning.project", projectTodoQuotaPlanning],
+    ["todo.frontier_revision.project", projectAdvancementFrontier],
+    ["goal.long_todo_chain.evaluate", evaluateLongTodoChain],
     ["todo.external_wait.plan", planTodoExternalWaitTransition],
     ["scheduler.state_transition.evaluate", evaluateSchedulerStateTransition],
     ["scheduler.state.evaluate", evaluateSchedulerStateOperation],
@@ -423,6 +430,7 @@ export function createEffectRuntimeHandlers(
     ["work_item.action_portfolio.project", projectQuotaActionPortfolio],
     ["work_item.action_selection.qualify", qualifyActionSelection],
     ["work_item.planning_horizon.project", projectQuotaPlanningHorizon],
+    ["work_item.task_graph.topology", projectTaskGraphTopology],
     ["work_item.planning_inventory.project", projectTodoPlanningInventory],
     ["work_item.planning_inventory.detail", projectTodoPlanningInventoryDetail],
     ["work_item.refresh_recommendation.resolve", resolveRefreshRecommendation],
@@ -456,6 +464,7 @@ export function createEffectRuntimeHandlers(
     ],
     ["coordination.runtime_shadow.rollback", rollbackCoordinationRuntimeShadow],
     ["coordination.local_authority.promote", promoteLocalCoordinationAuthority],
+    ["coordination.local_authority.todo_continuation", continueLocalTodo],
     ["coordination.local_authority.todo_claim", claimLocalCoordinationTodo],
     ["coordination.local_authority.todo_create", createLocalCoordinationTodo],
     ["coordination.local_authority.todo_update", updateLocalCoordinationTodo],

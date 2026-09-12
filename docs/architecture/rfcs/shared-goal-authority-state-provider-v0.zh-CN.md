@@ -2102,6 +2102,13 @@ selector 见 TS RFC 的 T3 卡。真实 FileAuthorityStore CLI 测试覆盖展�
 不写回。这是 consumer 规则收拢，不是 transaction/store 改造、provider 资格化或
 整 Goal cutover。
 
+长链 checkpoint 读取现由同一 typed frontier revision/ACK 策略处理 legacy 与 canonical
+来源（TS RFC T3）。Index 在展示限制之前生成；被排除工作不能误触发该 Agent，
+不完整或有歧义的 checkpoint 不能确认长链已处理。Python 保留持久 v0 codec，
+不再持有第二套 revision/threshold 策略。这是 consumer 改造，不新增 provider、
+commit receipt、promotion 路由或 Markdown writer。既有 CAS/replay、永久投影与
+D1–D3 资格化要求保持不变。
+
 以下规划保留原有方向；执行卡是它们的展开，不是替代或取消：
 
 1. **闭合 TS 事务与 consumer。** 按 [T0–T3](typescript-control-plane-migration-v0.zh-CN.md#当前-stack-合入后的执行卡) 收口规则并删除重复决策。
@@ -2110,6 +2117,12 @@ selector 见 TS RFC 的 T3 卡。真实 FileAuthorityStore CLI 测试覆盖展�
 4. **列明 caller 后退役。** 按 T4 删除无调用者的旧业务 writer；永久 renderer 和必要 import/export 保留。
 
 #### 持久化执行卡
+
+Task graph 的 T3 topology consumer 现共用 inventory/horizon 关系目录，消费
+一次已提供的 status 快照。缺失/截断指标描述读取完整度，不代表 canonical
+有效性或 promotion 资格。File/SQLite 在 Markdown 展示缺失时的 reader 回放
+必须只读：图不修复展示，也不改变 authority。本批删除 Python 重复关系与
+遍历知识，不改变以下 D1–D3 门禁。
 
 命令清单、update/monitor 事务和 consumer 删除统一按
 [TS 执行卡](typescript-control-plane-migration-v0.zh-CN.md#当前-stack-合入后的执行卡)
@@ -2125,6 +2138,11 @@ wire，不改变 provider 默认或 promotion。这仍是有界的非 terminal p
 不是通用 native metadata 支持；Active lease 下的状态变化及 Monitor 规划/effect 仍不
 支持。准入结果和 lease-fence 结果都不是 commit receipt；兑现删除收益时，provider
 CAS/replay 与既有 writer 持锁生命周期不变。
+同一事务现通过共享公开 TS planner 接受有界工作要求声明，字段清单和有意拒绝变化见
+T1。File、NoKV、SQLite 与 PostgreSQL conformance 覆盖别名、显式清空、后续编辑后
+的旧操作重放、非法输入原子性和 lease 拒绝；复杂容量 fixture 携带工作要求验证其他
+lifecycle 操作不会丢字段。这不资格化新 profile、不扩大 execution grant，也不改变
+D1–D3／promotion hold；Markdown 继续作为独立的永久投影。
 等待/恢复 lane 选择现由 quota、vision-wait、agent-scope、replan 共用一个 TS 读取
 策略 owner，删除旧 Python selector 模块。适配层在 promotion 后消费同一 canonical
 summary，之前消费 legacy summary；真实 CLI 覆盖容量变化和 promoted display
@@ -2137,7 +2155,19 @@ T3 decision-dependency 读取策略现由同一 TS owner 解释 scope coverage�
 不改变默认 provider 或放宽 D3 promotion hold。Markdown 继续作为永久单向展示，
 后续执行卡与退役条件保留。
 
+Scoped fallback 的选择与门禁关系也已复用同一 TS decision owner，删除 Python
+词语重合匹配和选择循环。显式依赖及 global gate 保留，旧完整 action key 相同仅
+保留阻塞兼容；键不同或缺少事实不能证明独立性。这是披露语义变化的 T3 consumer 闭合，
+不是新 provider，也不代表 D1–D3 已资格化。来源适配、永久投影和 promotion hold
+不变；具体规则见 TS 执行卡及 decision-scope 协议。
+
 **D1 — 资格化永久投影交付，可与 T1/T2 重叠推进。**
+
+能力缺口 consumer 在 legacy/canonical 输入上共用 TS requirement/resolution owner，
+包括 quota 的 Monitor 能力分流。删除 Python missing-set 与 owner/repair 决策 builder，
+保留来源适配和只读候选排序。这是披露修复优先级、空来源和 identity 修正的 T3 读取
+规则收拢，不是能力启用、持久权限回执或 D1–D3 资格化。永久 Markdown 投影与 cutover
+门禁不变。
 
 T2 的无 lease 原生 Monitor 观察与独立后继现由同一 canonical CAS／receipt 提交；
 route planner 本身仍不授予权限。CLI 将已提交回执交给既有 journal/outbox renderer，

@@ -1,3 +1,5 @@
+import { compileActionReviewPlan, isStaleActionFailure } from "./action-review-plan";
+import { refreshAttention } from "./attention-details";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { AlertCircle, Bot, CalendarClock, FileText, ListPlus, MessageCircleQuestion, Paperclip, Plus, RefreshCw, Send, X } from "lucide-react";
 
@@ -347,8 +349,9 @@ function defaultTimeline(model: WorkspaceModel, selectedGoalId: string | null, t
   const goal = model.goals.find((candidate) => candidate.goalId === selectedGoalId);
   if (!goal) return items;
   if (goal.needsYou) {
+    const currentAttention = model.userTodos.find((item) => item.goalId === goal.goalId);
     items.push({
-      attention: {
+      attention: currentAttention ? { ...currentAttention, goalTitle: goal.title } : {
         blocking: goal.needsYouBlocking ?? false,
         goalId: goal.goalId,
         goalTitle: goal.title,
@@ -500,6 +503,7 @@ function lifecycleOperationFor(proposal: TypedActionProposal): GoalLifecycleOper
 
 function workspaceProposal(proposal: TypedActionProposal, t: WorkspaceTranslate): WorkspaceActionPreview {
   const lifecycleOperation = lifecycleOperationFor(proposal);
+  const reviewPlan = compileActionReviewPlan(proposal);
   const title = typeof proposal.normalized_parameters.title === "string"
     ? proposal.normalized_parameters.title
     : typeof proposal.normalized_parameters.goal_id === "string"
@@ -523,6 +527,7 @@ function workspaceProposal(proposal: TypedActionProposal, t: WorkspaceTranslate)
         : proposal.summary;
   return {
     actionKind: proposal.action_kind,
+    reviewPlan,
     fields: proposalFields(proposal.normalized_parameters, t),
     goalId: typeof proposal.normalized_parameters.goal_id === "string" ? proposal.normalized_parameters.goal_id : undefined,
     impact: proposal.action_kind === "goal.create"
@@ -553,7 +558,7 @@ function workspaceProposal(proposal: TypedActionProposal, t: WorkspaceTranslate)
       : proposal.action_kind === "todo.create" && proposal.normalized_parameters.start_execution === true
         ? t("proposal.primary.todoStart")
         : t("proposal.primary.apply"),
-    status: proposalStatus(proposal.status),
+    status: proposal.status === "applied" && reviewPlan.interaction !== "completed" ? "error" : proposalStatus(proposal.status),
     title: localizedSummary,
   };
 }
@@ -916,6 +921,7 @@ export function PersonalWorkspacePage({
   }, [managerChatItems.length, managerChatOpen, latestMessageTextLength]);
   const drawerSelection = useMemo<Exclude<WorkspaceDrawerSelection, { kind: "settings" }> | null>(() => {
     if (selection?.kind === "settings") return null;
+    if (selection?.kind === "attention") return { kind: "attention", item: refreshAttention(selection.item, model.attentionHistory ?? model.userTodos) };
     if (selection?.kind === "goal") {
       const currentGoal = workspaceGoals.find((goal) => goal.goalId === selection.item.goalId);
       return currentGoal ? { item: currentGoal, kind: "goal" } : selection;
@@ -925,7 +931,7 @@ export function PersonalWorkspacePage({
       item.kind === "run" && item.run.runId === selection.item.runId
     );
     return currentRun ? { item: currentRun.run, kind: "run" } : selection;
-  }, [items, selection, workspaceGoals]);
+  }, [items, selection, workspaceGoals, model.attentionHistory, model.userTodos]);
 
   useEffect(() => {
     if (readOnly) {
@@ -1065,6 +1071,7 @@ export function PersonalWorkspacePage({
   }
 
   async function requestGoalLifecycle(goal: WorkspaceGoal, operation: GoalLifecycleOperation) {
+    setMobileSidebarOpen(false);
     const reasonByOperation: Record<GoalLifecycleOperation, string> = {
       delete: "Deleted from the owner workspace",
       resume: "Resumed from the owner workspace",
@@ -1122,8 +1129,12 @@ export function PersonalWorkspacePage({
         },
         summary: summaryByOperation[operation],
       }, { select: operation !== "stop" });
+      if (proposal.goalId !== goal.goalId || proposal.lifecycleOperation !== operation) {
+        setSelection(null);
+        throw new Error(t("actionReview.targetChanged"));
+      }
       if (operation === "stop") {
-        if (proposal.status === "ready") {
+        if (proposal.reviewPlan?.interaction === "direct") {
           projectionOwnedByApply = true;
           await applyProposal(proposal, {
             lifecycleProjection: stopProjection ?? undefined,
@@ -1237,6 +1248,7 @@ export function PersonalWorkspacePage({
       presentation?: "drawer" | "feedback";
     } = {},
   ) {
+    if (proposal.reviewPlan && !proposal.reviewPlan.canApply) return;
     const showDrawer = options.presentation !== "feedback";
     const inferredLifecycleChange = proposal.actionKind === "goal.lifecycle"
       && proposal.goalId
@@ -1251,7 +1263,7 @@ export function PersonalWorkspacePage({
       : null;
     const lifecycleChange = options.lifecycleProjection ?? inferredLifecycleChange;
     setActionFeedback(t("feedback.applying", { title: proposal.title }));
-    const applying = { ...proposal, status: "applying" as const };
+    const applying = { ...proposal, reviewPlan: proposal.reviewPlan ? { ...proposal.reviewPlan, interaction: "pending" as const, reason: "apply_pending" as const, canApply: false as const } : undefined, status: "applying" as const };
     setProposals((current) => ({ ...current, [proposal.previewId]: applying }));
     if (showDrawer) setSelection({ item: applying, kind: "proposal" });
     if (lifecycleChange && !lifecycleChange.optimisticApplied) {
@@ -1277,17 +1289,26 @@ export function PersonalWorkspacePage({
         return;
       }
       const result = await applyTypedAction(proposal.previewId);
+      if (result.proposal.proposal_id !== proposal.previewId
+        || result.proposal.action_kind !== proposal.actionKind
+        || (proposal.actionKind === "goal.lifecycle" && (
+          result.proposal.normalized_parameters.goal_id !== proposal.goalId
+          || lifecycleOperationFor(result.proposal) !== proposal.lifecycleOperation
+        ))) {
+        throw new ChatApiError(t("actionReview.targetChanged"), { error_code: "action_response_mismatch" });
+      }
       const applied = workspaceProposal(result.proposal, t);
       setProposals((current) => ({ ...current, [proposal.previewId]: applied }));
       if (showDrawer) setSelection({ item: applied, kind: "proposal" });
-      if (result.proposal.status !== "applied" || result.proposal.receipt?.projection_verified !== true) {
+      if (applied.reviewPlan?.interaction !== "completed") {
         if (lifecycleChange) {
           callbacks.onGoalActivationStateChange?.(lifecycleChange.goalId, lifecycleChange.previous);
         }
+        setSelection({ item: applied, kind: "proposal" });
         setActionFeedback(
           result.proposal.status === "stale"
             ? t("feedback.stale")
-            : t("feedback.notCompleted", { status: result.proposal.status }),
+            : t(`actionReview.${applied.reviewPlan!.reason}`),
         );
         return;
       }
@@ -1316,6 +1337,7 @@ export function PersonalWorkspacePage({
         const gate = rawGate && typeof rawGate === "object" ? rawGate as Record<string, unknown> : {};
         const gated = {
           ...proposal,
+          reviewPlan: proposal.reviewPlan ? { ...proposal.reviewPlan, interaction: "gated" as const, reason: "authority_gate" as const, canApply: false as const } : undefined,
           gate: {
             kind: String(gate.kind ?? "protected_action"),
             nextAction: typeof gate.next_action === "string" ? gate.next_action : undefined,
@@ -1334,14 +1356,16 @@ export function PersonalWorkspacePage({
         }
         return;
       }
-      const stale = error instanceof Error && /stale|状态.*变化|conflict/i.test(error.message);
+      const stale = error instanceof ChatApiError && isStaleActionFailure(error.payload);
+      const readbackMismatch = error instanceof ChatApiError && error.payload.error_code === "action_response_mismatch";
       const failed = {
         ...proposal,
+        reviewPlan: proposal.reviewPlan ? { ...proposal.reviewPlan, interaction: stale ? "refresh" as const : "repair" as const, reason: readbackMismatch ? "readback_unverified" as const : stale ? "stale_proposal" as const : "apply_failed" as const, canApply: false as const } : undefined,
         errorMessage: error instanceof Error ? error.message : String(error),
         status: (stale ? "stale" : "error") as "stale" | "error",
       };
       setProposals((current) => ({ ...current, [proposal.previewId]: failed }));
-      if (showDrawer) setSelection({ item: failed, kind: "proposal" });
+      setSelection({ item: failed, kind: "proposal" });
       setActionFeedback(t("feedback.executionFailed", { error: failed.errorMessage }));
     }
   }
@@ -1716,7 +1740,7 @@ export function PersonalWorkspacePage({
 
   return (
     <WorkspaceShell
-      drawer={drawerSelection ? <ContextDrawer agents={agents} callbacks={effectiveDrawerCallbacks} goalNotifications={model.goalNotifications ?? []} goals={workspaceGoals} inspectorExpanded={taskInspectorExpanded} larkConnections={readOnly ? [] : larkConnections} onClose={() => {
+      drawer={drawerSelection ? <ContextDrawer agents={agents} attentionHistory={model.attentionHistory ?? model.userTodos} onSelectAttention={(item) => setSelection({ kind: "attention", item })} callbacks={effectiveDrawerCallbacks} goalNotifications={model.goalNotifications ?? []} goals={workspaceGoals} inspectorExpanded={taskInspectorExpanded} larkConnections={readOnly ? [] : larkConnections} onClose={() => {
         if (drawerSelection.kind === "proposal"
           && ["applied", "rejected"].includes(drawerSelection.item.status)
           && !(drawerSelection.item.actionKind === "heartbeat.bind" && drawerSelection.item.status === "applied")) {

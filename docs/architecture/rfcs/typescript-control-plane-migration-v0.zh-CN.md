@@ -325,6 +325,21 @@ field codec 仍有真实 caller，不引入公开 update 限制。Native metadat
 T2 原子后续动作尚未全部闭合。Lease-edit PR #4152 已合入；有界规划更新复用该
 fence 及既有 CAS/receipt 事务。下一步继续剩余字段/effect 清单，不另建 update engine。
 
+工作要求编辑现已闭合：没有保留 lease 的非 Monitor Agent Todo，可通过既有 v1
+planning 事务更新 `action_kind`、`task_domain`、`task_repository`、
+`required_write_scopes`、`required_capabilities`、`target_capabilities` 和
+`explore_result_node_refs`。公开 legacy 编辑与 native planning 共用
+`todos/work_requirements.ts`；Monitor successor authoring 与 receipt verification
+复用其仓库／capability codec，删除 scheduler 私有副本，不增加 RPC 或 store。
+省略／空白标量保留原值，显式空集合清除要求。有意修正：非法成员、不安全仓库和超出
+容量的 Explore 引用使整笔公开更新拒绝，不再静默丢掉要求或截断引用；纯文案编辑不会
+重新审查无关历史字段。SCP 风格的含密码 userinfo 同样拒绝，包括 Monitor 后继路由；
+仅带用户名的 Git transport 仍合法。仓库／capability 别名保持同一规范化 replay identity。
+要求不是授权：ownership、决策结果、任意 raw patch、Monitor 编辑及带 lease 的要求
+变化仍受限。Python 读取／bootstrap codec 与 legacy writer 仍有真实调用者，本批
+不退役它们，也不宣称完整 T1。下一步结合 lifecycle admission 与 validation effect
+闭合 ownership／decision metadata，再推进 T2 剩余带 lease Monitor 事务。
+
 - 复用现有 provider text/note 事务、lifecycle 准入、field-plan 和 completion
   规则。先枚举公开 metadata 编辑与显式 clear，不把 `UPDATE_FIELDS` 扩成所有存储
   字段，也不让 generic patch 获得 terminal transition 权限。
@@ -375,6 +390,15 @@ promotion 已完成。
 
 **T3 — 闭合剩余 structured consumer，删除各自旧读路径。**
 
+Task graph topology 与 inventory/horizon 共用 `work_items/planning_relations.ts`。
+一轮纯 TS 请求拥有关系发现、稳定有界遍历、边去重与缺失/截断完整度；删除
+Python 的前驱索引、条件拆解和遍历。Python 保留 status 来源适配及节点、
+evidence/handoff 的脱敏展示。明确的语义修正：successor 谱系不再冒充完成
+依赖，unblocks 方向修正，补 Monitor generation 条件，上限处保留平行关系
+和菱形汇合边。详见[图协议](../../reference/protocols/task-graph-projection-v0.md#typed-todo-topology)。
+不改变生命周期准入、claim/lease 或默认 provider。来源仍可能不完整：本批
+闭合一个 T3 解释边界，不宣称所有图来源交付或 T1–T4 已完成。
+
 Quota 的 scope/claim 消费者现通过每个 source 一次 `todo.quota_planning.project`，
 组合选择、有限展示与既有 resume planner。`quota_selection.ts` 替代 Python
 claim-visibility 模块及 Agent-scope 中独立的 User gate/action 过滤器。Python
@@ -416,8 +440,41 @@ scope coverage 和 open-gate routing。
 Python 保留 legacy 解码和修复展示，删除第二套规则。Agent fallback、global Todo、
 summary 对候选关系批量调用，避免每对 Todo 一次 RPC；legacy completion 也复用覆盖规则。
 验证覆盖复杂容量 fixture、展示上限之外的完整 provider 来源、陈旧／缺失展示和隔离真实
-状态快照 parity。T3 仍需处理旧 action-token fallback 路由及从压缩 summary 重建诊断的
+状态快照 parity。Scoped fallback 的资格、优先级、去重和门禁关系现已收拢到同一 TS
+owner，删除 Python action-token 门禁匹配和选择循环。显式依赖及 global gate 优先；
+旧 action_kind 相同仅保留阻塞兼容，不再以词语重合推断依赖。键不同或缺少依赖事实时，
+不能证明候选是安全 fallback。这有意移除词语推断和无证据的安全绕行，详见
+[fallback 协议](../../reference/protocols/decision-scope-v0.md#scoped-fallback-selection)。
+Python 保留 lane 来源适配和展示压缩，不增加 provider 读取或 resume 重算。
+T3 仍需处理从压缩 summary 重建诊断的
 消费者，不把它们列为已迁移；不宣称 T1/T2、全部 T3 或持久化／promotion 完成。
+
+能力缺口与修复路由现由 `agents/capability_gate.ts` 统一解释执行前提、修复产出、
+owner/Agent 责任和受阻 Todo 绑定。Quota planning v1 传归一化的要求，而不是 Python
+算好的 missing；Monitor 分流在 TS 进程内复用同一规则。公共 gate 一次批处理，精确目标
+恢复调用保留有界、只缓存归一化值的桥接，不保留第二套判断。Python 继续负责 legacy
+codec、候选来源／资格和共享 profile/rank 适配。明确修正：共享缺口绑定最高优先级受阻
+Todo，同一 Todo 的不同展示不重复计算，权威空 backlog 不再复活陈旧 first-item。
+target capability 是修复产出，不是安装或授权。没有新 provider／inventory／enablement／
+promotion；压缩候选来源的上限和其余 T3 consumer 仍需分别闭合。
+
+Advancement-frontier checkpoint 闭合：`todos/frontier_revision.ts` 现统一 Agent
+选择、完整度、实质内容哈希、长链阈值与精确 ACK/rearm 分类。Python 保留 v0 字段清单
+与 legacy JSON/metadata codec，使合法且未变化的 frontier 保持已有指纹；删除旧 Python
+revision builder、index selector 和分两步执行的长链决策。终态 advancement 仍影响
+实质身份；仅更新时间不重新触发。阈值仍是 15 项 advancement，或存在 advancement
+时的 20 项可选 open Todo。被排除的 unclaimed 工作不再改变该 Agent 的 checkpoint，
+包括没有 claimed Todo 的 Agent；取消 exclusion 后，该工作重新相关。选中 frontier
+中的重复 ID、重复匹配的 index lane 与不完整时间不能提供完整 checkpoint 或压制
+replan。这些是明确的只读语义修正，不是执行授权。既有 canonical source 在展示截断前
+生成 index。复杂 fixture 经真实 provider 验证 accepted ACK、excluded/eligible 修改、
+新可用工作及陈旧／缺失展示；私有快照只读对照结果不公开原始数据。
+本批闭合一个 T3 规则组，不代表其余 consumer 或 T1/T2/D1–D3 完成。
+
+来源 facts 超过 512 KiB 时使用无损 deflate/base64 传输，保留精确 v0 内容和共享
+2 MiB 请求边界。TS 拒绝畸形载荷及解压超过 64 MiB 的输入，不截断 Todo，也不
+静默退回 Python 决策。真实 completed-history HTTP 和完整 checkpoint 尾项变更
+回归保护传输容量语义。
 
 列表过滤现改用 `compact_evaluated_todo_group`，不再用仅活动项重算 resume。
 初始解析／canonical 读取仍通过 TS owner 在完整来源上求值；过滤要求匹配的已求值
