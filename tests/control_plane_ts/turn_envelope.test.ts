@@ -10,6 +10,8 @@ import {
   turnEnvelopeActionSignatureDocument,
 } from "../../loopx/control_plane/quota/turn_envelope.ts";
 import { EffectRuntimeRequestError } from "../../loopx/control_plane/effect_runtime_errors.ts";
+import type { JsonObject } from "../../loopx/control_plane/effect_program.ts";
+import { TURN_ENVELOPE_SECTION_TARGETS } from "../../loopx/control_plane/quota/turn_envelope_budget.ts";
 
 function payload(): Record<string, unknown> {
   return {
@@ -69,6 +71,33 @@ const protocolActionFields = {
   llm: "no_api",
   agent_action: "advance one bounded segment",
 };
+
+test("pending capability action outranks stale replan commands and remains signed", () => {
+  const source = payload();
+  const command = "loopx periodic-report consume-pending --goal-id goal-turn-envelope --agent-id agent-ts --execute";
+  source.effective_action = "governed_capability_intent";
+  source.pending_capability_intent = {
+    schema_version: "pending_capability_intent_projection_v0",
+    capability_id: "periodic-report", intent_kind: "periodic_report.trigger_evaluation",
+    idempotency_key: "periodic-report:fixture", intent_digest: "sha256:" + "a".repeat(64),
+    goal_id: "goal-turn-envelope", agent_id: "agent-ts", state: "pending",
+    action_kind: "consume_periodic_report_intent", action_summary: "Prepare one report",
+    command, generation_authorized: true, external_delivery_authorized: true,
+    agent_read_required: true,
+  };
+  source.replan_action_packet = {
+    schema_version: "fixture-replan", decision: "replan",
+    writeback_contract: { successor_command: "loopx todo add --goal-id goal-turn-envelope" },
+  };
+  const envelope = buildTurnEnvelope({payload: source, protocol_action_fields: protocolActionFields, scheduler_execution_args: ""});
+  assert.equal(envelope.replan_action_packet, null);
+  assert.deepEqual((envelope.writeback as JsonObject).next_cli_actions, [command]);
+  const signed = turnEnvelopeActionSignatureDocument(envelope);
+  assert.deepEqual((signed.action as JsonObject).capability_intent, source.pending_capability_intent);
+  (source.pending_capability_intent as JsonObject).command = "untrusted replacement";
+  assert.throws(() => buildTurnEnvelope({payload: source, protocol_action_fields: protocolActionFields,
+    scheduler_execution_args: ""}), /action is unsupported/);
+});
 
 test("Turn envelope transaction owns compaction and signature construction", () => {
   const source = payload();
@@ -193,6 +222,21 @@ test("v0 compaction metric preserves Unicode code-point compatibility", () => {
     (envelope.compaction as Record<string, unknown>).source_json_bytes,
     [...JSON.stringify(source)].length,
   );
+});
+
+test("warning accounting converges across decimal-width and ratio boundaries", () => {
+  assert.equal(Object.values(TURN_ENVELOPE_SECTION_TARGETS).reduce((a, b) => a + b, 0), 8192);
+  for (let size = 6_000; size < 6_300; size += 1) {
+    const source = payload();
+    source.goal_boundary = { execution_profile: { padding: "界".repeat(size) } };
+    const envelope = buildTurnEnvelope({ payload: source, protocol_action_fields: {}, scheduler_execution_args: "" });
+    const metric = envelope.compaction as Record<string, any>;
+    const bytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+    assert.equal(metric.envelope_utf8_bytes, bytes);
+    assert.equal(metric.envelope_json_bytes, [...JSON.stringify(envelope)].length);
+    assert.equal(Object.values(metric.warning.section_bytes as Record<string, number>).reduce((a, b) => a + b, 0), bytes);
+    assert.equal(metric.warning.excess_bytes, bytes - 8192);
+  }
 });
 
 test("signature key ordering preserves Python Unicode code-point compatibility", () => {

@@ -1,3 +1,4 @@
+import {leaseOwnerRejection as ownerRejection} from "../work_items/task_lease_eligibility.ts";
 import type { JsonObject } from "../effect_program.ts";
 import type { AuthorityStore, AuthorityStoreCommit, AuthorityStoreReceiptResult } from "./authority_store.ts";
 import {
@@ -7,6 +8,7 @@ import {
   requireAuthorityStoreId,
 } from "./authority_store_codec.ts";
 import {validateContinuationNote, computeContinuationTodoFacts} from "./continuation_note.ts";
+import {projectionDelivery} from "../todos/projection_delivery.ts";
 import {normalizeRegisteredTodoAgents, normalizeTodoAgent} from "./todo_agents.ts";
 import {
   prepareCoordinationProjectionCommit,
@@ -23,7 +25,6 @@ import {
   normalizeIdempotencyKey,
   normalizeTtl,
   normalizeWriteScopes,
-  ownerRejection,
   TASK_LEASE_SCHEMA_VERSION,
   utcIsoformat,
   type LeaseRecord,
@@ -450,7 +451,7 @@ export async function executeCoordinationTodoClaim(
       provider_revision: receipt.provider_revision,
       cursor: receipt.cursor,
       original_receipt: original,
-      projection_delivery: result.changed === false ? "not_required" : "pending",
+      projection_delivery: projectionDelivery(result.changed !== false),
       projection_source: "committed_authority_journal",
     };
   };
@@ -536,11 +537,6 @@ export async function executeCoordinationTodoClaim(
     if (handoffMode === "hard_lease" && leaseRequest !== null) {
       const todoFact = todoLeaseFact(todo);
       const currentActive = currentLease !== undefined && leaseIsActive(currentLease, input.now);
-      const currentEffective = currentLease !== undefined && currentActive && ownerRejection(
-        todoFact,
-        normalizeAgent(currentLease.owner),
-        input.registered_agents,
-      ) === null;
       const otherLeases = projection.lease_todo_ids.flatMap((todoId) => {
         if (todoId === input.todo_id) return [];
         const candidate = projection.leases.get(todoId)!;
@@ -565,7 +561,6 @@ export async function executeCoordinationTodoClaim(
         lease: currentLease === undefined ? null : {
           present: true,
           active: currentActive,
-          effective: currentEffective,
           status: typeof currentLease.status === "string" ? currentLease.status : null,
           owner: normalizeAgent(currentLease.owner),
           idempotency_key: typeof currentLease.idempotency_key === "string"

@@ -1084,8 +1084,27 @@ Stage 3/4 qualification 必须保持以下 ownership 与 proof 边界：
 | Stage 2B PostgreSQL candidate | PostgreSQL store/RLS conformance，不代表 runtime promotion |
 | Stage 2C runtime shadow | parity、read-candidate、bootstrap、rollback、cutover kernel 与 writer fence |
 | Stage 2 slice | reference aggregate/provider 实现与初步 NoKV 证据 |
+| Stage 1 semantic transaction core (#4280) | 共享严格 transaction 解码、clone 隔离、revision 投影，以及 file/NoKV parity fixture |
 | Stage 3 slice | 可恢复 lifecycle、retention 结论与 live provider 限制 |
 | Stage-ladder evidence | 可执行 stage claim、环境 gate 与 pending row |
+
+#### Stage 1 semantic transaction core（#4280）：共享 transaction 语义核心
+
+file 与 NoKV adapter 现在共同使用
+`loopx/control_plane/coordination/authority_store_transactions.ts`。该模块负责
+committed transaction 的精确顶层 key 集合、严格 JSON/object-list 校验、canonicalization、
+显式 structured clone，以及逻辑 `transactionForRevision` 投影。provider envelope、
+storage generation、failure mapping 与 provider-specific revision salt 仍由各自 adapter
+负责。这样消除了重复的语义知识，但没有增加新的 authority writer，也没有改变默认的
+authority source。SQLite 与 PostgreSQL 的 row/envelope 迁移仍属于后续 provider stage。
+
+公开 fixture 位于
+`tests/control_plane_ts/authority_store_transactions.test.ts`，会把 native、reordered
+legacy-compatible、unknown-key、malformed-list、malformed-nested 与 non-string identity
+记录同时送入 shared decoder 以及当前两个 active provider 的 file/NoKV read path。它还
+验证 scan 结果是隔离 clone，并验证 provider metadata 不会进入 logical revision projection。
+这些是 Stage 1 parity 证据，不代表 provider promotion，也不代表后续 provider profile
+已经完成资格化。
 
 #### Stage 2C 观察基础：本地提交后 capture
 
@@ -2123,6 +2142,16 @@ Task graph 的 T3 topology consumer 现共用 inventory/horizon 关系目录，�
 有效性或 promotion 资格。File/SQLite 在 Markdown 展示缺失时的 reader 回放
 必须只读：图不修复展示，也不改变 authority。本批删除 Python 重复关系与
 遍历知识，不改变以下 D1–D3 门禁。
+
+T3 lease inspect 已将 Todo、lease 与 handoff mode 绑定到同一 provider revision，
+promotion 后不再读取本地旧 lease 文件；canonical 空租约集合保持为空。资格策略与
+当前 acquire/lifecycle 共用 TS owner，包含 claim 分歧和 exclusion；读取结果不是
+租约授权，也不是 commit receipt。该 reader 闭合和重复规则删除不代表 provider
+资格化，不改变 CAS/replay 或 D1–D3；永久 Markdown 展示与后续规划继续保留。
+ownership 编辑在 promotion 后现在与现有 update transaction 共用 typed authoring
+和 lifecycle 边界。claim/exclusion 门禁保留，带 lease 的 ownership 重写继续拒绝；
+promotion 前仍保留 Markdown writer 兼容路径。这删除了一条重复决策路径，但不代表
+provider 已资格化、不改变 promotion 默认值，也不放宽 D1–D3。
 
 命令清单、update/monitor 事务和 consumer 删除统一按
 [TS 执行卡](typescript-control-plane-migration-v0.zh-CN.md#当前-stack-合入后的执行卡)
