@@ -11,6 +11,8 @@ def render_loopx_turn_plan_markdown(payload: dict[str, object]) -> str:
         return f"LoopX Turn plan failed: {error}"
     host = payload.get("host") if isinstance(payload.get("host"), dict) else {}
     route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    capability = payload.get("capability_action") if isinstance(payload.get("capability_action"), dict) else {}
+    intent = capability.get("intent") if isinstance(capability.get("intent"), dict) else {}
     envelope = payload.get("turn_envelope")
     return "\n".join(
         [
@@ -20,6 +22,8 @@ def render_loopx_turn_plan_markdown(payload: dict[str, object]) -> str:
             f"- route: {route.get('kind')}",
             f"- would_invoke_host: {route.get('would_invoke_host')}",
             "- side_effects: none",
+            *(["- capability_action: required (not executed)",
+               f"- next_command: {capability.get('command') or intent.get('command')}"] if capability else []),
             *turn_envelope_budget_warning_lines(
                 envelope if isinstance(envelope, dict) else {}
             ),
