@@ -822,7 +822,51 @@ periodic digest, Lark rendering, or model assistance.
 - retain current backends and renderers;
 - publish the protocol and focused tests.
 
+The bounded implementation lives in Dashboard's
+`features/personal-workspace/action-review-plan.ts`. `compileActionReviewPlan`
+compiles proposals already validated by the Chat transport schema into an internal
+`action_review_plan_v0` union; this is not a new public wire contract or legal-action
+catalog. The Goal directory consumes `direct` for stop and the existing proposal
+drawer consumes the explanation and apply state. Resume and delete remain reviewed;
+incomplete, unknown-permission or stale lifecycle proposals offer recheck rather
+than direct execution. The shared Chat transport schema requires every validation
+evidence item to be non-blank text, preserving the original string. Malformed or
+mixed arrays fail parsing and show an execution error without calling apply. The
+compiler reuses the same schema for direct invocations; only lifecycle completeness
+requires a nonempty array, preserving generic actions with empty evidence arrays.
+Backend preview/apply, fingerprint and reducers are unchanged.
+
+This slice also corrects failed-readback presentation: an `applied` proposal without
+`projection_verified: true` cannot display completion. Failed direct actions open
+the exception details and roll back optimistic display. Other actions keep their
+existing reviewed path. Remote SSH lifecycle keeps its own binding/readback contract;
+CLI and Lark gain no new entry points. Validation uses Dashboard's
+`smoke:action-review-plan`, `smoke:personal-workspace`, and
+`smoke:personal-workspace-packaged` scripts.
+
+
+Lifecycle preview and apply responses are checked against the requested Goal,
+operation and proposal identity. Generic deferred actions retain the existing retry
+path when the store carries a historical gate. Failure presentation uses Chat error
+codes and proposal status instead of classifying translated error messages.
+
 ### Stage 2: attention and disclosure plan
+
+Current Dashboard slice: opening a Needs You item shows the reason, evidence,
+linked Todo/Agent, declared decision scope, and supersession relationship already
+present in the public Todo projection. Only explicit `user_gate` records are
+labeled as decisions; other records do not infer reading or authorization from
+prose. Selected details refresh from their current source. An item absent from
+the current projection, or retained while its source read is failing, is
+unavailable rather than completed and no longer offers decision actions. Loading
+and failures are scoped to the current source and affected Goal. Replacement
+navigation requires an explicit `superseded_by`
+target in the same source and Goal. Reading does not resolve a gate; ordinary
+items retain their existing governed preview.
+
+This is partial Stage 2 delivery. It does not implement a cross-channel disclosure
+compiler, read acknowledgments, authorization classification, or automatic
+deduplication. CLI and Lark contracts are unchanged.
 
 - compile material attention-queue deltas;
 - separate selection, delivery, interaction, and density;

@@ -420,6 +420,27 @@ atomic follow-up are not fully closed. Lease-edit PR #4152 is merged; bounded
 planning updates now reuse that fence and the existing CAS/receipt transaction.
 Continue with the remaining field/effect inventory, not another update engine.
 
+Work-requirement editing is now closed for non-Monitor Agent Todos without a
+retained lease: `action_kind`, `task_domain`, `task_repository`,
+`required_write_scopes`, `required_capabilities`, `target_capabilities` and
+`explore_result_node_refs` use the existing v1 planning transaction. Public
+legacy edits and native planning share `todos/work_requirements.ts`; Monitor
+successor authoring and receipt verification reuse its repository/capability
+codecs instead of retaining scheduler-owned copies. No new RPC or store is added.
+Omitted/blank scalar input preserves state; explicit empty collections clear
+requirements. Deliberate correction: invalid members, unsafe repository routes
+and over-capacity Explore references reject the whole public update rather than
+silently dropping requirements or truncating references.
+SCP-style password-bearing userinfo is rejected too, including Monitor successor
+routes; username-only Git transports remain valid. Unrelated historical
+fields are not revalidated by a copy edit. Repository/capability aliases retain
+one normalized replay identity. Requirements declare needed work, not a grant:
+ownership, decision outcomes, generic raw patches, Monitor edits and leased
+requirement changes remain fenced. The Python reader/bootstrap codec and legacy
+writer still have real callers; this slice does not retire them or complete T1.
+Next close ownership/decision metadata with their lifecycle admission and
+validation effects, then the remaining leased Monitor transaction in T2.
+
 - Reuse the current provider text/note transaction, lifecycle admission,
   field-plan and completion rules. Enumerate actual public metadata edits and
   explicit-clear behavior before implementation; this is not permission to
@@ -487,6 +508,32 @@ delivery. This does not finish all T2 commands or authorize whole-Goal promotion
 
 **T3 — close remaining structured consumers, then remove their old reads.**
 
+Task-graph topology now shares `work_items/planning_relations.ts` with inventory
+and horizon. One pure TS request owns relationship discovery, deterministic
+bounded traversal, edge deduplication and missing/truncated completeness; the
+Python predecessor indexes, condition parser and traversal are retired. Python
+retains status source adaptation and public-safe node/evidence/handoff rendering.
+This intentionally distinguishes successor lineage from completion dependencies,
+corrects unblocks direction, includes Monitor generation conditions and preserves
+parallel/diamond edges at the node cap. See the [graph contract](../../reference/protocols/task-graph-projection-v0.md#typed-todo-topology).
+It does not change lifecycle admission, claim/lease semantics or default provider.
+The status source can still be incomplete: this closes one T3 interpretation
+boundary, not all graph source delivery or the remaining T1–T4 work.
+
+Capability resolution now shares `agents/capability_gate.ts`: missing prerequisites,
+repair outputs, owner/agent resolution and blocked-Todo bindings have one typed
+owner. Quota planning v1 passes normalized requirements, not Python-computed
+missing lists; Monitor partitioning invokes the same rule in-process. The public
+gate uses one batch; exact-target recovery callers retain a bounded value-only
+cached bridge to that rule, not a second implementation. Python keeps legacy
+codecs, candidate source/eligibility and the shared profile/rank adapter.
+Disclosed corrections: a shared resolution binding names the highest-priority
+blocked Todo, display variants deduplicate by Todo identity, and an authoritative
+empty backlog never revives stale first-item diagnostics. Target capabilities
+remain repair outputs, not permission or installed capabilities. No new provider,
+source inventory, enablement or promotion is introduced; compact candidate-source
+limits and the remaining T3 consumers still require their own closure.
+
 Quota's scope/claim consumer now composes selection, bounded visibility and the
 existing resume planner in one `todo.quota_planning.project` call per source.
 `quota_selection.ts` replaces the Python claim-visibility module and the separate
@@ -541,9 +588,41 @@ Agent fallback, global Todo and summary consumers batch their candidate relation
 to avoid one RPC per pair. Legacy completion still uses the shared coverage rule.
 Validation covers the production-scale fixture, complete provider reads beyond
 display limits, stale/missing display, and isolated real-state snapshot parity.
-Remaining T3 work includes legacy action-token fallback routing and consumers
-that reconstruct diagnostics from compact summaries; do not call those migrated.
+Scoped fallback selection now shares that TS owner for eligibility, priority,
+deduplication and gate relations. The Python action-token gate matcher and
+selection loop are retired. Explicit dependencies/global gates take precedence;
+equal legacy action labels retain blocking compatibility, not word-overlap
+authority. Different or missing labels cannot certify safe independence. This
+deliberately removes inferred overlap dependencies and unjustified safe bypass;
+see the [fallback contract](../../reference/protocols/decision-scope-v0.md#scoped-fallback-selection).
+Python retains lane source adaptation and compact presentation; no new provider
+read or resume evaluation is added. Remaining T3 work includes consumers that
+reconstruct diagnostics from compact summaries; do not call those migrated.
 This does not close T1/T2, all T3 consumers, or any durability/promotion hold.
+
+Advancement-frontier checkpoint closure: `todos/frontier_revision.ts` now owns
+agent selection, completeness, material hashing, long-chain thresholds and exact
+ACK/rearm classification. Python retains the v0 field manifest and legacy JSON/
+metadata codecs so unchanged legal frontiers retain their persisted fingerprints;
+the old Python revision builder, index selector and two-step long-chain decision
+are retired. Terminal advancement rows still affect material identity, while
+timestamp-only maintenance does not rearm it. Thresholds remain 15 advancement
+Todos or 20 selectable open Todos with advancement work. Excluded unclaimed work
+no longer changes that Agent's checkpoint, including Agents with no claimed rows;
+removing the exclusion makes that work relevant again. Duplicate identities in a
+selected frontier, duplicate matching index lanes and incomplete timestamps cannot
+provide a complete checkpoint or suppress replanning. These are explicit read
+corrections, not new execution permissions. The existing canonical source feeds
+the index before display truncation. Complex-fixture tests replay accepted ACKs,
+excluded/eligible edits and newly available work through a real provider with
+stale/missing display; a read-only private-snapshot comparison remains private.
+This closes one T3 rule group, not the remaining consumers or T1/T2/D1–D3.
+
+Large source facts use lossless deflate/base64 transport above 512 KiB, retaining
+the exact v0 material bytes and the shared 2 MiB request boundary. The TS decoder
+rejects malformed payloads and inflation beyond 64 MiB; it never truncates rows
+or silently falls back to Python decisions. Real completed-history HTTP reads
+and complete-checkpoint tail edits guard against transport-size regressions.
 
 The list-filter consumer now uses `compact_evaluated_todo_group` instead of
 re-running resume evaluation on active-only rows. Initial parsing/canonical reads

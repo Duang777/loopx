@@ -2655,6 +2655,14 @@ and retired Python selectors. Real FileAuthorityStore CLI tests cover missing an
 stale display without writing it back. This is consumer-rule consolidation, not
 a transaction/store change, provider qualification or whole-Goal cutover.
 
+Long-chain checkpoint reads now use one typed frontier revision/ACK policy across
+legacy and canonical sources (TS RFC T3). The index is built before display limits;
+excluded work cannot spuriously rearm another Agent, and an incomplete or ambiguous
+checkpoint cannot acknowledge the chain. Python keeps the persisted v0 codec, not
+a second revision/threshold policy. This is a consumer change: it adds no provider,
+commit receipt, promotion route or Markdown writer. Existing CAS/replay, permanent
+projection and D1–D3 qualification remain unchanged.
+
 The original direction remains; execution cards expand these stages rather than cancel them:
 
 1. **Close TS transactions and consumers.** Follow [T0–T3](typescript-control-plane-migration-v0.md#execution-cards-after-the-current-stack) to consolidate rules and delete duplicate decisions.
@@ -2664,6 +2672,21 @@ The original direction remains; execution cards expand these stages rather than 
 
 #### Durability execution cards
 
+The task graph's T3 topology consumer now shares the inventory/horizon relation
+catalog and consumes one supplied status snapshot. Its missing/truncated metrics
+describe read completeness, not canonical validity or promotion qualification.
+File/SQLite reader replay with a missing Markdown display must remain read-only;
+the graph never repairs display or changes authority. This retires duplicate
+Python relationship/traversal knowledge without changing the D1–D3 gates below.
+
+Capability-gap consumers now share the TS requirement/resolution owner across
+legacy and canonical inputs, including quota's Monitor capability partition.
+The old Python missing-set and owner/repair decision builders are removed;
+source adaptation and read-only candidate ordering remain. This is T3 read-policy
+consolidation with disclosed resolution-priority/empty-source/identity corrections,
+not capability enablement, a durable permission receipt or D1–D3 qualification.
+The existing permanent Markdown projection and cutover holds remain unchanged.
+
 The T3 decision-dependency read policy now shares one TS owner for scope coverage,
 exact links and consistency diagnostics. Explicit gate recipients are independent
 of claim attribution; conflicting exact targets request repair rather than grant
@@ -2671,6 +2694,14 @@ approval. This removes duplicate consumer knowledge, not provider transactions.
 It does not qualify D1/D2, alter the default provider, or relax D3 promotion holds.
 Markdown remains the permanent one-way display; the remaining execution cards
 below are unchanged.
+
+Scoped fallback now consumes the same typed decision owner for selection and
+gate relations, retiring the Python token-overlap matcher and selection loop.
+Exact dependency authority and explicit global gates remain; equal legacy action
+keys retain blocking compatibility, while different/missing keys cannot prove independence. This
+is a T3 consumer closure with disclosed semantics, not a new provider or a D1–D3
+qualification. Source adaptation, permanent projection and all promotion holds
+remain unchanged; see the TS card and decision-scope contract for the exact rules.
 
 Use the [TS execution cards](typescript-control-plane-migration-v0.md#execution-cards-after-the-current-stack)
 for command inventory, update/monitor transactions and consumer deletion. Do not
@@ -2690,6 +2721,13 @@ lease status changes and Monitor planning/effects remain unsupported. Neither an
 admission result nor a lease-fence result is a commit receipt. Keep provider
 CAS/replay and existing writer lock lifetimes unchanged while collecting this
 deletion payoff.
+The same transaction now accepts bounded work-requirement declarations through
+the shared public TS planner (field list and intentional rejection changes are
+in T1). File, NoKV, SQLite and PostgreSQL conformance exercise aliases, explicit
+clear, replay after a later edit, invalid-input atomicity and lease rejection.
+The production-scale fixture carries requirements across unrelated lifecycle
+operations. This does not qualify a new profile, widen an execution grant, or
+change D1–D3/promotion holds; Markdown remains an independent permanent projection.
 Waiting/resume lane selection is now one TS read-policy owner shared by quota,
 vision-wait, agent-scope and replan. The obsolete Python selector module is
 deleted; the adapter accepts the same canonical summary after promotion and

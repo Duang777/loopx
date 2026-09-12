@@ -657,7 +657,39 @@ Durable report 与 living document 还必须携带 artifact identity、source li
 - 保持当前 backend 与 renderer；
 - 发布 protocol 与聚焦测试。
 
+当前有界实现位于 Dashboard 的 `features/personal-workspace/action-review-plan.ts`。
+`compileActionReviewPlan` 从已通过 Chat transport schema 的 proposal 编译内部
+`action_review_plan_v0` union；它不是新的公开 wire contract 或合法动作目录。
+Goal 列表的暂停入口消费 `direct`，现有动作抽屉消费解释与可执行状态。
+恢复与删除仍需 review；不完整、未知权限或 stale 的生命周期提案停止直接执行，
+提供重新检查入口。共享 Chat transport schema 要求每条 validation evidence
+均为非空白字符串，保留原文本；无效或混合证据数组拒绝解析并显示执行失败，
+不会触发 apply。编译器复用同一 schema 校验直接调用的输入；仅生命周期直接
+执行额外要求数组非空，其他动作原有的空数组审阅路径保持兼容。
+后端 preview/apply、fingerprint 与 reducer 不变。
+
+本切片同时修正失败读回的展示：`applied` 但无 `projection_verified: true`
+不能显示已完成，直接操作也会打开异常详情并回滚乐观显示。其他动作保留原有
+reviewed 路径；远端 SSH 生命周期入口仍使用其自身的绑定与读回契约。CLI、Lark
+没有新增入口。验证入口为 Dashboard 的 `smoke:action-review-plan`、
+`smoke:personal-workspace` 与 `smoke:personal-workspace-packaged`。
+
+
+生命周期 preview/apply 返回值会核对请求的 Goal、操作与 proposal 身份。
+其他动作暂缓后即使保留历史 gate，仍保持原有重试入口。失败展示使用 Chat
+错误码和提案状态，不再按错误文案推测 stale 状态。
+
 ### Stage 2：Attention 与 Disclosure Plan
+
+当前 Dashboard 切片：从「需要你」进入事项详情，可查看已有 Todo 投影中的原因、证据、
+目标 Todo/Agent、声明的决策范围和替代关系。只有明确的 `user_gate` 显示为需要决定；
+其他事项不从文案推断阅读或授权含义。已选详情随当前来源更新；来源已无该事项时显示
+不可用；来源读取中或失败时保留的历史事项同样不能视为当前有效，也不再提供决定
+操作。来源与 Goal 的失效状态不会传播到其他健康来源或 Goal。仅当同一来源、同一 Goal 中有明确的
+`superseded_by` 目标时提供跳转。阅读不会关闭 gate。现有普通事项仍沿用受控预览。
+
+此切片尚未实现跨渠道披露编译器、已读回执、授权分类或自动去重，属于 Stage 2 的部分
+交付。CLI 和 Lark 契约保持不变。
 
 - 编译 material attention-queue deltas；
 - 分离 selection、delivery、interaction 与 density；
