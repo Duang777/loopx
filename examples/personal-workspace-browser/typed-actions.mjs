@@ -10,6 +10,61 @@ import { openWorkspacePage } from "./scenario-context.mjs";
 export const typedActionsScenario = {
   id: "typed-actions",
   async run({ browser, collectCoverage, url }) {
+    // Real Goal button -> typed preview -> compiler -> drawer/apply, with only
+    // the service boundary controlled. No test computes the plan under review.
+    for (const width of [1512, 390]) {
+      const review = await openWorkspacePage(browser, url, { viewport: { width, height: 982 } });
+      const { page: reviewPage, api: reviewApi } = review;
+      try {
+        for (const [patch, mode] of [
+          [{ permission_classification: "protected" }, "review"],
+          [{ validation_evidence: [] }, "refresh"],
+          [{ stale: { current_state_fingerprint: "fixture-r2" } }, "refresh"],
+        ]) {
+          const before = reviewApi.actionApplies.length;
+          reviewApi.nextLifecycleProposalPatch = patch;
+          if (width < 640) await reviewPage.locator(".personal-mobile-menu").click();
+          await reviewPage.getByRole("button", { name: "停止 Product Release", exact: true }).click();
+          await reviewPage.locator(`[data-action-review="${mode}"]`).waitFor({ state: "visible" });
+          if (reviewApi.actionApplies.length !== before) throw new Error("Unsafe lifecycle preview applied directly");
+          if (reviewApi.goalActivationStates.get("product-release") !== "active") throw new Error("Unsafe preview changed state");
+          if (mode === "refresh" && !(await reviewPage.getByRole("button", { name: "停止 Goal", exact: true }).isDisabled())) throw new Error("Incomplete or stale preview remained applicable");
+          await reviewPage.getByRole("button", { name: "关闭", exact: true }).click();
+        }
+        for (const evidence of [[null], [""], [" \t"], [{}], ["valid", null], ["valid", {}], ["valid", ""]]) {
+          const before = reviewApi.actionApplies.length;
+          reviewApi.nextLifecycleProposalPatch = { validation_evidence: evidence };
+          if (width < 640) await reviewPage.locator(".personal-mobile-menu").click();
+          await reviewPage.getByRole("button", { name: "停止 Product Release", exact: true }).click();
+          await reviewPage.locator(".personal-action-feedback").filter({ hasText: "validation_evidence" }).waitFor({ state: "visible" });
+          if (reviewApi.actionApplies.length !== before) throw new Error("Malformed evidence bypassed the transport schema and applied");
+          if (reviewApi.goalActivationStates.get("product-release") !== "active") throw new Error("Malformed evidence changed durable state");
+          if (await reviewPage.locator('[data-action-review="direct"]').count()) throw new Error("Malformed evidence produced a direct review plan");
+          if (width < 640) await reviewPage.locator(".personal-mobile-menu").click();
+          await reviewPage.getByRole("button", { name: "停止 Product Release", exact: true }).waitFor({ state: "visible" });
+          if (width < 640) await reviewPage.keyboard.press("Escape");
+        }
+        reviewApi.nextLifecycleProposalPatch = { normalized_parameters: { goal_id: "other-goal", operation: "stop" }, context: { goal_id: "other-goal" } };
+        const beforeMismatch = reviewApi.actionApplies.length;
+        if (width < 640) await reviewPage.locator(".personal-mobile-menu").click();
+        await reviewPage.getByRole("button", { name: "停止 Product Release", exact: true }).click();
+        await reviewPage.getByText("预览目标与请求的 Goal 或操作不一致", { exact: false }).waitFor({ state: "visible" });
+        if (reviewApi.actionApplies.length !== beforeMismatch) throw new Error("Mismatched response target was applied");
+        for (const outcome of ["stale", "unverified", "mismatch-id", "mismatch-goal", "mismatch-operation"]) {
+          reviewApi.nextLifecycleApplyOutcome = outcome;
+          if (width < 640) await reviewPage.locator(".personal-mobile-menu").click();
+          await reviewPage.getByRole("button", { name: "停止 Product Release", exact: true }).click();
+          await reviewPage.locator(`[data-action-review="${outcome === "stale" ? "refresh" : "repair"}"]`).waitFor({ state: "visible" });
+          if (await reviewPage.getByText("已应用，LoopX 状态将刷新。", { exact: true }).count()) throw new Error("Unverified or stale apply displayed completion");
+          if (reviewApi.goalActivationStates.get("product-release") !== "active") throw new Error("Failed apply lost rollback");
+          if (outcome !== "stale" && await reviewPage.getByText("应用失败，没有写入任何变更。", { exact: true }).count()) throw new Error("Unverified readback falsely claimed no write");
+          await reviewPage.screenshot({ path: resolve(outputDir, `action-review-${width}-${outcome}.png`), fullPage: false, animations: "disabled" });
+          await reviewPage.getByRole("button", { name: "关闭", exact: true }).click();
+        }
+      } finally {
+        await review.close();
+      }
+    }
     const capabilityOff = await openWorkspacePage(browser, url, {
       apiOptions: { goalSubagentConfigurationEnabled: false },
     });
@@ -67,6 +122,7 @@ export const typedActionsScenario = {
       await page.getByRole("button", { name: "恢复 Product Release", exact: true }).click();
       await page.getByText("确认执行", { exact: true }).waitFor({ state: "visible" });
       const resumePreview = api.actionPreviews.findLast((preview) => preview.action_kind === "goal.lifecycle" && preview.normalized_parameters.operation === "resume");
+      await page.locator('[data-action-review="review"]').filter({ hasText: "恢复自动调度前需要确认" }).waitFor({ state: "visible" });
       if (!resumePreview || resumePreview.normalized_parameters.goal_id !== "product-release") throw new Error("Goal resume did not create the expected typed preview");
       if (api.durableWriteCount !== writesBeforeLifecyclePreview + 1) throw new Error("Goal resume preview wrote state before owner confirmation");
       api.nextLifecycleApplyDelayMs = 900;

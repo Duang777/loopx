@@ -284,6 +284,8 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
 
   const actionKinds = new Map(Array.from(actionProposals.values(), (proposal) => [proposal.proposal_id, proposal.action_kind]));
   const state = {
+    nextLifecycleProposalPatch: null,
+    nextLifecycleApplyOutcome: null,
     actionApplies: [],
     actionCancels: [],
     actionPreviews: [],
@@ -1143,6 +1145,10 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         validation_evidence: ["fixture validation"], available_transitions: ["apply", "cancel"],
         status: "preview_ready", receipt: null, stale: null, created_at: "2026-08-13T01:00:00Z", updated_at: "2026-08-13T01:00:00Z",
       };
+      if (body.action_kind === "goal.lifecycle" && state.nextLifecycleProposalPatch) {
+        Object.assign(proposal, state.nextLifecycleProposalPatch);
+        state.nextLifecycleProposalPatch = null;
+      }
       actionProposals.set(proposal_id, proposal);
       await route.fulfill({ contentType: "application/json", json: { ok: true, proposal }, status: 201 });
       return;
@@ -1173,6 +1179,22 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
           },
           status: 409,
         });
+        return;
+      }
+      if (actionKind === "goal.lifecycle" && state.nextLifecycleApplyOutcome) {
+        const outcome = state.nextLifecycleApplyOutcome;
+        state.nextLifecycleApplyOutcome = null;
+        const proposal = { ...actionProposals.get(apply[1]),
+          status: outcome === "stale" ? "stale" : "applied",
+          stale: outcome === "stale" ? { current_state_fingerprint: "fixture-r2" } : null,
+          receipt: outcome === "stale" ? null : { projection_verified: outcome.startsWith("mismatch-") },
+          ...(outcome === "mismatch-id" ? { proposal_id: "another-proposal" } : {}),
+          ...(outcome === "mismatch-goal" ? { normalized_parameters: { goal_id: "other-goal", operation: "stop" } } : {}),
+          ...(outcome === "mismatch-operation" ? { normalized_parameters: { goal_id: "product-release", operation: "resume" } } : {}),
+        };
+        actionProposals.set(apply[1], proposal);
+        await route.fulfill({ contentType: "application/json", status: outcome === "stale" ? 409 : 200,
+          json: outcome === "stale" ? { ok: false, error_code: "action_stale", error: "Source state changed", proposal } : { ok: true, proposal } });
         return;
       }
       let acceptedTurn = null;

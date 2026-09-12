@@ -1,3 +1,4 @@
+import type { ActionReviewPlan } from "./action-review-plan-types";
 import type { GoalAcceptanceObservation } from "../../data/goal-acceptance-observation";
 import type { AttentionDetails } from "./attention-details";
 import type { WorkspaceLoadError } from "../../data/workspace-progressive-status";
@@ -200,6 +201,7 @@ export type WorkspaceSchedule = {
 };
 
 export type WorkspaceActionPreview = {
+  reviewPlan?: ActionReviewPlan;
   actionKind:
     | "goal.create"
     | "goal.update"
