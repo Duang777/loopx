@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfoNotFoundError
 
 import pytest
 
+from loopx.capabilities.periodic_report import machine_defaults as periodic_defaults
 from loopx.capabilities.machine_configuration.builtins import (
     build_builtin_machine_configuration_registry,
 )
@@ -86,6 +88,20 @@ def _remove_defaults(runtime_root: Path) -> None:
         execute=True,
         expected_plan_revision=preview["plan_revision"],
     )
+
+
+def test_utc_defaults_do_not_require_an_external_timezone_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_timezone(_name: str) -> None:
+        raise ZoneInfoNotFoundError
+
+    monkeypatch.setattr(periodic_defaults, "ZoneInfo", missing_timezone)
+
+    build_builtin_machine_configuration_registry()
+    subscription = resolve_goal_periodic_report_subscription(_goal("research"), None)
+
+    assert subscription["timezone"] == "UTC"
 
 
 def test_machine_defaults_require_a_route_when_weekly_reports_are_enabled() -> None:
