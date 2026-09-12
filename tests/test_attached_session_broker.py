@@ -721,6 +721,43 @@ def test_attached_close_rejects_active_claim_and_preserves_completion(
     assert runtime.wait_for_turn(session_id=session_id, turn_id=turn_id)["status"] == "completed"
     assert runtime.close_session(session_id) is True
     assert store.load_session(session_id)["status"] == "closed"  # type: ignore[index]
+    with pytest.raises(KeyError, match="attached Agent session was not found"):
+        claim_attached_agent_turn(
+            store=store,
+            session_id=session_id,
+            host_surface=HOST_SURFACE,
+            host_session_id=HOST_SESSION_ID,
+            claim_id="claim-after-close",
+        )
+
+    replay = complete_attached_agent_turn(
+        store=store,
+        session_id=session_id,
+        turn_id=turn_id,
+        host_surface=HOST_SURFACE,
+        host_session_id=HOST_SESSION_ID,
+        claim_id="close-active-claim",
+        completion_id="close-active-completion",
+        response={"message": "retry payload"},
+    )
+
+    assert replay["created"] is False
+    assert [
+        message["text"]
+        for message in store.messages(session_id)
+        if message["role"] == "agent"
+    ] == ["completed before close"]
+    with pytest.raises(ValueError, match="already completed by another receipt"):
+        complete_attached_agent_turn(
+            store=store,
+            session_id=session_id,
+            turn_id=turn_id,
+            host_surface=HOST_SURFACE,
+            host_session_id=HOST_SESSION_ID,
+            claim_id="close-active-claim",
+            completion_id="different-receipt",
+            response={"message": "conflicting retry"},
+        )
 
 
 def test_attached_close_rejects_pending_queue_and_preserves_claimability(

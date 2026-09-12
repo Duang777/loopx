@@ -181,9 +181,10 @@ def _require_attached_host(
     session_id: str,
     host_surface: str,
     host_session_id: str,
+    allow_closed: bool = False,
 ) -> dict[str, Any]:
     session = store.load_session(session_id)
-    if session is None or session.get("status") == "closed":
+    if session is None or (session.get("status") == "closed" and not allow_closed):
         raise KeyError("attached Agent session was not found")
     if session.get("session_mode") != CHAT_SESSION_MODE_ATTACHED:
         raise ValueError("the selected Session is not an attached host session")
@@ -273,6 +274,7 @@ def complete_attached_agent_turn(
         session_id=session_id,
         host_surface=host_surface,
         host_session_id=host_session_id,
+        allow_closed=True,
     )
     normalized_response = normalize_agent_response(
         response,
