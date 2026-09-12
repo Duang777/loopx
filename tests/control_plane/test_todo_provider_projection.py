@@ -181,3 +181,39 @@ def test_explicit_projection_fences_requested_revision(
         )
 
     assert state_file.read_text(encoding="utf-8") == SOURCE
+
+
+def test_projection_delivery_status_contract_is_strict():
+    assert provider_projection.parse_projection_delivery("delivered") is provider_projection.ProjectionDeliveryStatus.DELIVERED
+    assert provider_projection.projection_delivery_requires_ack("current") is True
+    assert provider_projection.projection_delivery_requires_ack("pending") is False
+    with pytest.raises(ValueError, match="unsupported projection_delivery"):
+        provider_projection.parse_projection_delivery("completed")
+
+
+def test_projection_delivery_composition_fixture_matches_provider_semantics():
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "control_plane" / "projection_delivery_composition_v0.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    for case in fixture["cases"]:
+        status = (
+            provider_projection.parse_projection_delivery(case["readback"]).value
+            if "readback" in case
+            else provider_projection.projection_delivery_for_mutation(case.get("changed", False)).value
+        )
+        assert status == case["expected"], case["name"]
+        assert provider_projection.projection_delivery_requires_ack(status) is case["requires_ack"], case["name"]
+
+
+def test_projection_delivery_e2e_fixture_preserves_causal_states():
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "control_plane" / "projection_delivery_e2e_v1.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    observed = []
+    for transition in fixture["transitions"]:
+        if "readback" in transition:
+            status = provider_projection.parse_projection_delivery(transition["readback"]).value
+        else:
+            status = provider_projection.projection_delivery_for_mutation(transition["changed"]).value
+        observed.append(status)
+        assert status == transition["delivery"], transition["step"]
+        assert provider_projection.projection_delivery_requires_ack(status) is transition["ack"], transition["step"]
+    assert observed == ["pending", "delivered", "current", "not_required", "pending"]

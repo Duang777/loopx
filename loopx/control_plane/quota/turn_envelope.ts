@@ -6,9 +6,11 @@ import {
 } from "../effect_program.ts";
 import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
 import { requireJsonObject } from "../runtime_decode.ts";
+import { projectPendingCapabilityIntent } from "../work_items/pending_capability_intent.ts";
+import { measureTurnEnvelope, TURN_ENVELOPE_BUDGET_BYTES } from "./turn_envelope_budget.ts";
+export { TURN_ENVELOPE_BUDGET_BYTES } from "./turn_envelope_budget.ts";
 
 export const TURN_ENVELOPE_SCHEMA_VERSION = "loopx_turn_envelope_v0";
-export const TURN_ENVELOPE_BUDGET_BYTES = 8_192;
 export const CONTRACT_CAPSULE_SCHEMA_VERSION = "loopx_contract_capsule_v0";
 export const ACTION_SIGNATURE_SCHEMA_VERSION = "loopx_action_signature_v0";
 export const ACTION_SIGNATURE_COVERAGE_V0 = "turn_envelope_action_dimensions_v0";
@@ -176,10 +178,6 @@ function comparePythonUnicode(left: string, right: string): number {
     if (difference !== 0) return difference;
   }
   return leftPoints.length - rightPoints.length;
-}
-
-function compactJson(value: unknown): string {
-  return JSON.stringify(value);
 }
 
 function canonicalHash(value: unknown): string {
@@ -541,7 +539,11 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
   const interaction = object(payload.interaction_contract);
   const agentChannel = object(interaction.agent_channel);
   const cliChannel = object(interaction.cli_channel);
-  const replanPacket = replanActionPacket(payload);
+  const capabilityIntent = payload.effective_action === "governed_capability_intent"
+    ? projectPendingCapabilityIntent(payload.pending_capability_intent) : null;
+  // A governed capability action has already won the live decision. Stale
+  // replan/host-reentry projections must not replace its exact command.
+  const replanPacket = capabilityIntent ? null : replanActionPacket(payload);
   const recommendedAction = replanPacket
     ? "apply replan_action_packet and emit one required semantic outcome"
     : text(turn.observation.recommended_action || payload.recommended_action, 480);
@@ -555,6 +557,7 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
     quiet_noop_allowed: Boolean(agentChannel.quiet_noop_allowed),
     selected_todo: selectedTodo(payload, recommendedAction),
   };
+  if (capabilityIntent) action.capability_intent = capabilityIntent;
   if (turn.observation.action_portfolio !== null) {
     action.action_portfolio = { ...turn.observation.action_portfolio };
   }
@@ -563,7 +566,9 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
   }
   const user = userChannel(interaction, payload);
   const schedulerValue = scheduler(payload, turn);
-  let nextCliActions = [...turn.next_effect.cli_actions];
+  let nextCliActions = capabilityIntent
+    ? [scalarString(capabilityIntent.command, "pending capability intent command")]
+    : [...turn.next_effect.cli_actions];
   if (nextCliActions.length === 0 && Array.isArray(cliChannel.next_cli_actions)) {
     nextCliActions = [...cliChannel.next_cli_actions].map(pythonString);
   }
@@ -722,14 +727,6 @@ function coldPath(
       : "rerun the typed quota_guard from the current host packet",
     todo_detail: `${prefix} --format json todo list --goal-id ${goalId}`,
     status_detail: `${prefix} --format json status --goal-id ${goalId}`,
-    contains: [
-      "quota accounting detail",
-      "goal frontier and route diagnostics",
-      "full todo summaries",
-      "handoff and readiness diagnostics",
-      "promotion, archive, and projection warnings",
-      "scheduler runtime detail",
-    ],
   };
 }
 
@@ -774,27 +771,7 @@ export function buildTurnEnvelope(value: unknown): JsonObject {
     matches: JSON.stringify(sourceSignature) === JSON.stringify(envelopeSignature),
     source_decision_hash: canonicalHash(payload),
   };
-  // Preserve the versioned v0 metric: the historical Python owner counted
-  // Unicode code points even though the public field is named *_json_bytes.
-  const sourceBytes = [...compactJson(payload)].length;
-  envelope.compaction = {
-    source_json_bytes: sourceBytes,
-    envelope_json_bytes: 0,
-    byte_reduction_ratio: 0,
-    budget_bytes: TURN_ENVELOPE_BUDGET_BYTES,
-    within_budget: true,
-  };
-  for (let index = 0; index < 3; index += 1) {
-    const envelopeBytes = [...compactJson(envelope)].length;
-    envelope.compaction = {
-      ...object(envelope.compaction),
-      envelope_json_bytes: envelopeBytes,
-      byte_reduction_ratio: sourceBytes
-        ? Math.round((1 - envelopeBytes / sourceBytes) * 10_000) / 10_000
-        : 0,
-      within_budget: envelopeBytes <= TURN_ENVELOPE_BUDGET_BYTES,
-    };
-  }
+  measureTurnEnvelope(envelope, payload);
   return envelope;
 }
 

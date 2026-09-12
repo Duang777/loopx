@@ -48,6 +48,7 @@ REPAIR_ACTIONS = {
 
 class LoopXTurnRoute(str, Enum):
     READY_FOR_HOST = "ready_for_host"
+    CAPABILITY_ACTION_REQUIRED = "capability_action_required"
     REPAIR_REQUIRED = "repair_required"
     REPLAN_REQUIRED = "replan_required"
     USER_ACTION_REQUIRED = "user_action_required"
@@ -80,9 +81,8 @@ def _typed_route(envelope: Mapping[str, Any]) -> LoopXTurnRoute:
         or source_hash != envelope_hash
     ):
         return LoopXTurnRoute.CONTRACT_ERROR
-    compaction = _mapping(envelope.get("compaction"))
-    if compaction.get("within_budget") is not True:
-        return LoopXTurnRoute.CONTRACT_ERROR
+    # Packet size is a performance warning, not execution authority. Keep the
+    # diagnostics in the envelope; schema/signature/lineage remain hard gates.
 
     action = _mapping(envelope.get("action"))
     user = _mapping(envelope.get("user"))
@@ -94,6 +94,14 @@ def _typed_route(envelope: Mapping[str, Any]) -> LoopXTurnRoute:
     if should_run:
         if not delivery_allowed or not must_attempt:
             return LoopXTurnRoute.BLOCKED
+        if effective_action == "governed_capability_intent":
+            intent = _mapping(action.get("capability_intent"))
+            if (intent.get("schema_version") != "pending_capability_intent_projection_v0"
+                or intent.get("goal_id") != envelope.get("goal_id")
+                or intent.get("agent_id") != envelope.get("agent_id")
+                or not intent.get("command")):
+                return LoopXTurnRoute.CONTRACT_ERROR
+            return LoopXTurnRoute.CAPABILITY_ACTION_REQUIRED
         if effective_action in REPLAN_ACTIONS:
             return LoopXTurnRoute.REPLAN_REQUIRED
         if effective_action in REPAIR_ACTIONS or effective_action.endswith(
@@ -488,4 +496,12 @@ def build_loopx_turn_plan(
             payload["delegation_context"] = context
     if execution_topology:
         payload["subagent_execution_topology"] = execution_topology
+    if route is LoopXTurnRoute.CAPABILITY_ACTION_REQUIRED:
+        payload["capability_action"] = {
+            "status": "required",
+            "intent": _mapping(_mapping(envelope.get("action")).get("capability_intent")),
+            "executed": False,
+            "execution_owner": "capability_adapter",
+            "reason": "Use the capability-owned command and its receipt before planning a host turn.",
+        }
     return payload
