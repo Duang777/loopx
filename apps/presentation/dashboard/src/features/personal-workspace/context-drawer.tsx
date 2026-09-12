@@ -1,3 +1,4 @@
+import { GoalAcceptanceObservationCard } from "./goal-acceptance-observation-card";
 import { AttentionDetailCard } from "./attention-detail-card";
 import { attentionSuccessor, canReviewAttention } from "./attention-details";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -615,6 +616,7 @@ export function ContextDrawer({ agents, attentionHistory = [], onSelectAttention
                 <div><dt>{t("drawer.duration")}</dt><dd>{formatUsageValue(selection.item.usage?.durationMs24h, t("drawer.usageNotMeasured"), formatDurationMs)} / {formatUsageValue(selection.item.usage?.durationMs7d, t("drawer.usageNotMeasured"), formatDurationMs)}</dd></div>
               </dl>
             </section>
+            <GoalAcceptanceObservationCard goal={selection.item} />
             {(() => {
               const notification = goalNotifications.find((row) => row.goalId === selection.item.goalId);
               const connection = larkConnections.find((row) => row.goal_id === selection.item.goalId);

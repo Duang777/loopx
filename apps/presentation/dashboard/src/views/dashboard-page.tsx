@@ -1,3 +1,4 @@
+import type { GoalAcceptanceObservation } from "../data/goal-acceptance-observation";
 import { attentionDetails, sourceAttention } from "../features/personal-workspace/attention-details";
 import type { AttentionDetails } from "../features/personal-workspace/attention-details";
 import { directoryStatusPayload, fetchWorkspaceDirectory, loadWorkspaceGoalSnapshots, type WorkspaceProgress, type WorkspaceLoadError } from "../data/workspace-progressive-status";
@@ -441,6 +442,7 @@ type PersonalRunEvidence = {
 };
 
 type PersonalGoalItem = {
+  acceptanceObservation?: GoalAcceptanceObservation | null;
   loadState?: "loading" | "error";
   loadError?: WorkspaceLoadError;
   activationState: "active" | "stopped";
@@ -1233,6 +1235,7 @@ function buildPersonalHomeModel(
       agentSentence: personalAgentSentence(payload, row, state, t),
       agentTodos: [...goalAgentTodos, ...agentTodoFacts.recentCompleted],
       doneTodoCount: agentTodoFacts.doneTodoCount,
+      acceptanceObservation: goal.acceptance_observation,
       goalId: goal.id,
       latestActivity: row.latestRun?.generated_at ?? "",
       needsYou,
