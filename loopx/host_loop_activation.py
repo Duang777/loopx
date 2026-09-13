@@ -760,8 +760,8 @@ def _codex_app_activation(commands: dict[str, str]) -> dict[str, Any]:
         },
         "activation_steps": [
             "Run the heartbeat-prompt JSON command after project state and todos are written.",
-            "Read task_body from the JSON payload.",
-            "Create or update a Codex App heartbeat automation starting at 3 minutes.",
+            "Require ok=true; save the v2 bootstrap task_body through automation_update.",
+            "New heartbeat: 3 minutes. Existing: preserve schedule and task binding; read back both and prompt.",
             "On later ticks, follow quota should-run scheduler_hint for backoff, reset, and scheduler-ack.",
         ],
         "success_criteria": [
