@@ -180,6 +180,80 @@ def test_concurrent_bind_and_completion_are_duplicate_safe(tmp_path: Path) -> No
     assert len(agent_messages) == 1
 
 
+def test_completion_id_reuse_across_turns_preserves_each_response(
+    tmp_path: Path,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session_id = str(_bind(store)["session"]["session_id"])
+
+    for index, response in enumerate(("first response", "second response"), 1):
+        queued, created = store.create_queued_turn(
+            session_id,
+            client_turn_id=f"completion-scope-{index}",
+            message=f"request {index}",
+            origin="web",
+        )
+        assert created
+        claim_attached_agent_turn(
+            store=store,
+            session_id=session_id,
+            host_surface=HOST_SURFACE,
+            host_session_id=HOST_SESSION_ID,
+            claim_id=f"completion-scope-claim-{index}",
+        )
+        complete_attached_agent_turn(
+            store=store,
+            session_id=session_id,
+            turn_id=str(queued["turn_id"]),
+            host_surface=HOST_SURFACE,
+            host_session_id=HOST_SESSION_ID,
+            claim_id=f"completion-scope-claim-{index}",
+            completion_id="host-local-completion",
+            response={"message": response},
+        )
+
+    agent_messages = [
+        item for item in store.messages(session_id) if item["role"] == "agent"
+    ]
+    assert [item["text"] for item in agent_messages] == [
+        "first response",
+        "second response",
+    ]
+    assert agent_messages[0]["turn_id"] != agent_messages[1]["turn_id"]
+
+
+def test_maximum_length_completion_id_does_not_strand_turn(tmp_path: Path) -> None:
+    store = ChatSessionStore(tmp_path)
+    session_id = str(_bind(store)["session"]["session_id"])
+    queued, _created = store.create_queued_turn(
+        session_id,
+        client_turn_id="maximum-completion-id",
+        message="complete with a valid opaque id",
+        origin="web",
+    )
+    claim_attached_agent_turn(
+        store=store,
+        session_id=session_id,
+        host_surface=HOST_SURFACE,
+        host_session_id=HOST_SESSION_ID,
+        claim_id="maximum-completion-id-claim",
+    )
+
+    completed = complete_attached_agent_turn(
+        store=store,
+        session_id=session_id,
+        turn_id=str(queued["turn_id"]),
+        host_surface=HOST_SURFACE,
+        host_session_id=HOST_SESSION_ID,
+        claim_id="maximum-completion-id-claim",
+        completion_id="c" * 160,
+        response={"message": "durable response"},
+    )
+
+    assert completed["completed"] is True
+    assert store.load_turn(session_id, str(queued["turn_id"]))["status"] == "completed"  # type: ignore[index]
+
+
 def test_attached_host_can_wait_for_queue_wakeup(tmp_path: Path) -> None:
     store = ChatSessionStore(tmp_path)
     session_id = str(_bind(store)["session"]["session_id"])
@@ -562,12 +636,19 @@ def test_attached_completion_replays_closeout_after_restart(
         host_session_id=HOST_SESSION_ID,
         claim_id="attached-recovery-claim",
     )
+    append_message = store.append_message
     append_events = store.append_completed_response_events
+
+    def append_legacy_message(*args: object, **kwargs: object) -> dict[str, object]:
+        if kwargs.get("role") == "agent":
+            kwargs["message_id"] = "attached.attached-recovery-completion"
+        return append_message(*args, **kwargs)  # type: ignore[arg-type]
 
     def crash_after_events(*args: object, **kwargs: object) -> None:
         append_events(*args, **kwargs)  # type: ignore[arg-type]
         raise RuntimeError("crash after attached completion events")
 
+    monkeypatch.setattr(store, "append_message", append_legacy_message)
     monkeypatch.setattr(store, "append_completed_response_events", crash_after_events)
     with pytest.raises(RuntimeError, match="crash after attached completion events"):
         complete_attached_agent_turn(

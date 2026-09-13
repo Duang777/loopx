@@ -1127,14 +1127,27 @@ class ChatSessionStore:
                 field="completion_id",
             )
             completed_at = str(turn.get("completed_at") or utc_now())
-            self.append_message(
-                session_id,
-                role="agent",
-                text=str(response.get("message") or ""),
-                turn_id=turn_id,
-                origin="attached_host",
-                message_id=f"attached.{completion_id}",
+            response_message = str(response.get("message") or "")
+            existing_message = next(
+                (
+                    message
+                    for message in self.messages(session_id)
+                    if message.get("role") == "agent"
+                    and message.get("turn_id") == turn_id
+                ),
+                None,
             )
+            if existing_message is None:
+                self.append_message(
+                    session_id,
+                    role="agent",
+                    text=response_message,
+                    turn_id=turn_id,
+                    origin="attached_host",
+                    message_id=f"attached.{turn_id}.completed",
+                )
+            elif existing_message.get("text") != response_message:
+                raise ValueError("attached completion transcript conflicts with response")
             self.append_completed_response_events(
                 session_id,
                 turn_id,
