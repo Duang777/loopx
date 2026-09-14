@@ -167,9 +167,8 @@ class _TurnEventBuffer:
             try:
                 self.store.flush_events(self.session_id, self.turn_id)
             except Exception:
-                # Pending rows remain queued. The owning Turn retries during close,
-                # where a persistent failure is handled by the normal runtime path.
-                return
+                # Pending rows remain queued; retry after the normal flush interval.
+                continue
 
     def _checkpoint_locked(self, *, force: bool = False) -> None:
         if not self.metadata_dirty:
