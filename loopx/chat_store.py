@@ -12,6 +12,7 @@ import threading
 from typing import Any
 import uuid
 
+from .chat import require_matching_replay, resolve_attached_completion_replay
 from .file_lock import exclusive_file_lock
 
 
@@ -85,13 +86,6 @@ def _session_channel(payload: dict[str, Any]) -> str:
     if channel_id:
         return channel_id
     return f"goal.{payload.get('goal_id')}"
-
-
-def _require_matching_replay(
-    existing: dict[str, Any], *, identity: str, request: dict[str, Any]
-) -> None:
-    if any(existing.get(field) != value for field, value in request.items()):
-        raise ValueError(f"{identity} already belongs to a different request")
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any], *, preserve_mode: bool = False) -> None:
@@ -581,7 +575,7 @@ class ChatSessionStore:
         ):
             existing = _read_json(path)
             if existing.get("schema_version") == CHAT_INGRESS_SCHEMA_VERSION:
-                _require_matching_replay(
+                require_matching_replay(
                     existing,
                     identity="client_ingress_id",
                     request={"mode": _opaque_id(mode, field="mode"), "message": str(message)},
@@ -660,7 +654,7 @@ class ChatSessionStore:
                     )
                     if original is None:
                         raise ValueError("client_turn_id original request is unavailable")
-                    _require_matching_replay(
+                    require_matching_replay(
                         {**existing, "attachments": original.get("attachments") or None},
                         identity="client_turn_id",
                         request={
@@ -746,7 +740,7 @@ class ChatSessionStore:
             ):
                 existing = self.turn_for_client(session_id, client_id)
                 if existing is not None:
-                    _require_matching_replay(
+                    require_matching_replay(
                         existing,
                         identity="client_turn_id",
                         request={
@@ -1127,27 +1121,16 @@ class ChatSessionStore:
                 field="completion_id",
             )
             completed_at = str(turn.get("completed_at") or utc_now())
-            response_message = str(response.get("message") or "")
-            existing_message = next(
-                (
-                    message
-                    for message in self.messages(session_id)
-                    if message.get("role") == "agent"
-                    and message.get("turn_id") == turn_id
-                ),
-                None,
+            message_id = resolve_attached_completion_replay(
+                self.messages(session_id), turn_id=turn_id,
+                completion_id=completion_id,
+                response_message=str(response.get("message") or ""),
             )
-            if existing_message is None:
+            if message_id:
                 self.append_message(
-                    session_id,
-                    role="agent",
-                    text=response_message,
-                    turn_id=turn_id,
-                    origin="attached_host",
-                    message_id=f"attached.{turn_id}.completed",
+                    session_id, role="agent", text=str(response.get("message") or ""),
+                    turn_id=turn_id, origin="attached_host", message_id=message_id,
                 )
-            elif existing_message.get("text") != response_message:
-                raise ValueError("attached completion transcript conflicts with response")
             self.append_completed_response_events(
                 session_id,
                 turn_id,

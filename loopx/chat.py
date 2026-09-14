@@ -31,6 +31,46 @@ class TodoReviewPreviewConflict(ValueError):
         self.receipt = receipt
 
 
+def require_matching_replay(
+    existing: Mapping[str, Any], *, identity: str, request: Mapping[str, Any]
+) -> None:
+    if any(existing.get(field) != value for field, value in request.items()):
+        raise ValueError(f"{identity} already belongs to a different request")
+
+
+def resolve_attached_completion_replay(
+    messages: Iterable[Mapping[str, Any]],
+    *,
+    turn_id: str,
+    completion_id: str,
+    response_message: str,
+) -> str | None:
+    """Return the canonical message id to append, or None for a valid replay."""
+
+    rows = list(messages)
+    turn_rows = [
+        row
+        for row in rows
+        if row.get("role") == "agent" and row.get("turn_id") == turn_id
+    ]
+    if len(turn_rows) > 1:
+        raise ValueError("attached completion transcript identity is ambiguous")
+    current_id = f"attached.{turn_id}.completed"
+    if not turn_rows:
+        if any(row.get("message_id") == current_id for row in rows):
+            raise ValueError("attached completion transcript identity conflicts")
+        return current_id
+    row = turn_rows[0]
+    if row.get("origin") != "attached_host" or row.get("message_id") not in {
+        current_id,
+        f"attached.{completion_id}",
+    }:
+        raise ValueError("attached completion transcript identity conflicts")
+    if row.get("text") != response_message:
+        raise ValueError("attached completion transcript conflicts with response")
+    return None
+
+
 def _stable_digest(payload: dict[str, Any], *, length: int = 24) -> str:
     stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:length]

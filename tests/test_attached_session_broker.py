@@ -681,6 +681,84 @@ def test_attached_completion_replays_closeout_after_restart(
     ] == ["turn.completed"]
 
 
+@pytest.mark.parametrize(
+    "message_specs",
+    [
+        [("reserved attached response", "other_runtime", "other")],
+        [("different runtime response", "other_runtime", "other")],
+        [("reserved attached response", "attached_host", "other")],
+        [
+            ("reserved attached response", "attached_host", "legacy"),
+            ("reserved attached response", "attached_host", "current"),
+        ],
+    ],
+    ids=["equal-wrong-origin", "different-wrong-origin", "wrong-id", "multiple"],
+)
+def test_attached_completion_recovery_rejects_ambiguous_agent_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    message_specs: list[tuple[str, str, str]],
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session_id = str(_bind(store)["session"]["session_id"])
+    turn, _created = store.create_queued_turn(
+        session_id,
+        client_turn_id="ambiguous-completion-transcript",
+        message="preserve attached completion provenance",
+        origin="web",
+    )
+    turn_id = str(turn["turn_id"])
+    claim_attached_agent_turn(
+        store=store,
+        session_id=session_id,
+        host_surface=HOST_SURFACE,
+        host_session_id=HOST_SESSION_ID,
+        claim_id="wrong-origin-claim",
+    )
+    finalize = store.finalize_attached_turn_completion
+
+    def crash_before_closeout(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("crash before attached completion closeout")
+
+    monkeypatch.setattr(store, "finalize_attached_turn_completion", crash_before_closeout)
+    with pytest.raises(RuntimeError, match="crash before attached completion closeout"):
+        complete_attached_agent_turn(
+            store=store,
+            session_id=session_id,
+            turn_id=turn_id,
+            host_surface=HOST_SURFACE,
+            host_session_id=HOST_SESSION_ID,
+            claim_id="wrong-origin-claim",
+            completion_id="wrong-origin-completion",
+            response={"message": "reserved attached response"},
+        )
+    monkeypatch.setattr(store, "finalize_attached_turn_completion", finalize)
+    message_ids = {
+        "other": f"other-runtime-{turn_id}",
+        "legacy": "attached.wrong-origin-completion",
+        "current": f"attached.{turn_id}.completed",
+    }
+    for text, origin, identity in message_specs:
+        store.append_message(
+            session_id,
+            role="agent",
+            text=text,
+            turn_id=turn_id,
+            origin=origin,
+            message_id=message_ids[identity],
+        )
+
+    with pytest.raises(ValueError, match="attached completion transcript identity"):
+        store.finalize_attached_turn_completion(session_id, turn_id)
+
+    assert store.load_turn(session_id, turn_id)["status"] == "completing"  # type: ignore[index]
+    assert store.load_session(session_id)["active_turn_id"] == turn_id  # type: ignore[index]
+    assert not any(
+        event["kind"] == "turn.completed"
+        for event in store.events_after(session_id, turn_id, None)
+    )
+
+
 def test_chat_events_reconcile_writes_from_another_store_instance(tmp_path: Path) -> None:
     server_store = ChatSessionStore(tmp_path)
     session_id = str(_bind(server_store)["session"]["session_id"])
