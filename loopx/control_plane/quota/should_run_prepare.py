@@ -789,18 +789,17 @@ def _prepare_quota_should_run_item(
     # which left the caller no legal way to bind its own quota guard to it.
     # The builder still applies every eligibility predicate, so this widens
     # reachability of the lookup, not what may be selected.
-    explicit_action_selection_items = [
-        *quota_runnable_action_candidates(
-            agent_id=agent_frontier_id or "",
-            agent_todo_summary=agent_todo_summary,
-            capability_gate=capability_gate,
-        ),
-        *agent_todo_planning_source_items,
-    ]
     requested_action_candidate = (
         build_explicit_advancement_next_action(
             agent_identity=agent_identity,
-            agent_todo_items=explicit_action_selection_items,
+            agent_todo_items=[
+                *quota_runnable_action_candidates(
+                    agent_id=agent_frontier_id or "",
+                    agent_todo_summary=agent_todo_summary,
+                    capability_gate=capability_gate,
+                ),
+                *agent_todo_planning_source_items,
+            ],
             available_capabilities=effective_available_capabilities,
             todo_id=requested_action_todo_id,
             selection_binding="pending_action_selection",
