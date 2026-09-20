@@ -190,8 +190,9 @@ def test_live_quota_decision_maps_to_effect_turn(tmp_path: Path) -> None:
     assert turn.next_effect.cli_actions[0].startswith("loopx --runtime-root ")
 
 
+@pytest.mark.parametrize("reads", [False, True])
 def test_managed_turn_projects_prior_unsettled_heartbeat_recovery(
-    tmp_path: Path,
+    tmp_path: Path, reads: bool,
 ) -> None:
     runtime_root = tmp_path / "runtime"
     agent_id = "codex-fixture"
@@ -261,6 +262,7 @@ def test_managed_turn_projects_prior_unsettled_heartbeat_recovery(
         codex_app_current_rrule=None,
         registry_path=tmp_path / "registry.json",
         runtime_root=runtime_root,
+        turn_start_hook_dispatch=_turn_start_dispatch(required=reads),
         route_source="loopx_turn_plan",
         turn_instance_id="managed-current-turn",
         scheduler_execution_context={
@@ -1002,3 +1004,107 @@ def test_prior_closeout_identity_conflict_fails_closed(
                 "execution_mode": "interactive",
             },
         )
+
+
+@pytest.mark.parametrize("status_name", ["active", "paused"])
+@pytest.mark.parametrize("reads", [False, True])
+@pytest.mark.parametrize("intent", ["absent", "pending", "invalid"])
+def test_live_projection_stage_renders_one_complete_packet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    status_name: str, reads: bool, intent: str,
+) -> None:
+    """Coalescing must preserve the full decision and signed envelope input."""
+    from copy import deepcopy
+    from loopx.control_plane.quota import live_decision
+    from loopx.control_plane.capability_hooks import (
+        InteractionProjectionHookRegistration,
+        INTERACTION_PROJECTION_HOOK_RESULT_SCHEMA_VERSION,
+    )
+    from loopx.control_plane.quota.turn_envelope import quota_action_signature_document
+
+    projection = {
+        "schema_version": "pending_capability_intent_projection_v0",
+        "capability_id": "periodic-report",
+        "intent_kind": "periodic_report.trigger_evaluation",
+        "idempotency_key": "periodic-report:fixture",
+        "intent_digest": "sha256:" + "a" * 64,
+        "goal_id": GOAL_ID,
+        "agent_id": "fixture-agent",
+        "state": "pending",
+        "action_kind": "consume_periodic_report_intent",
+        "action_summary": "Generate the exact report and queue configured delivery.",
+        "command": f"loopx periodic-report consume-pending --goal-id {GOAL_ID} --agent-id fixture-agent --execute",
+        "generation_authorized": True,
+        "external_delivery_authorized": True,
+        "agent_read_required": True,
+    }
+    if intent == "invalid":
+        projection["command"] = ""
+    hook = InteractionProjectionHookRegistration(
+        hook_id="periodic_report.pending_intent",
+        capability_id="periodic-report",
+        projection_slots=("pending_capability_intent",),
+        requested_read_scope=("post_writeback_intent_journal",),
+        producer=lambda: {
+            "schema_version": INTERACTION_PROJECTION_HOOK_RESULT_SCHEMA_VERSION,
+            "hook_id": "periodic_report.pending_intent",
+            "capability_id": "periodic-report",
+            "phase": "interaction_projection",
+            "status": "candidate",
+            "projection_slot": "pending_capability_intent",
+            "payload": projection,
+        },
+    )
+    status = _ordinary_status_payload()
+    status["attention_queue"]["items"][0]["status"] = status_name
+    status["run_history"]["goals"][0]["status"] = status_name
+    kwargs = dict(
+        goal_id=GOAL_ID, agent_id=None, available_capabilities=["shell"],
+        include_scheduler_detail=False, codex_app_current_rrule=None,
+        registry_path=tmp_path / "registry.json", runtime_root=tmp_path / "runtime",
+        interaction_projection_hooks=[] if intent == "absent" else [hook],
+        turn_start_hook_dispatch=_turn_start_dispatch(required=reads),
+    )
+    rendered = []
+    render = live_decision.build_protocol_action_packet
+
+    def record_render(payload):
+        rendered.append(deepcopy(payload))
+        return render(payload)
+
+    recover = live_decision.apply_unsettled_host_turn_recovery_if_required
+
+    def check_recovery_input(payload, **recovery_kwargs):
+        assert payload["protocol_action_packet"] == render(payload)
+        return recover(payload, **recovery_kwargs)
+
+    monkeypatch.setattr(
+        live_decision, "apply_unsettled_host_turn_recovery_if_required", check_recovery_input
+    )
+    monkeypatch.setattr(live_decision, "build_protocol_action_packet", record_render)
+    actual = build_live_quota_should_run_decision(deepcopy(status), **kwargs)
+    assert len(rendered) == int(reads or intent == "pending")
+    if rendered:
+        assert actual["protocol_action_packet"] == render(actual)
+    if intent == "pending":
+        assert actual["effective_action"] == "governed_capability_intent"
+        assert actual["interaction_contract"]["cli_channel"]["next_cli_actions"] == [projection["command"]]
+        assert actual["heartbeat_recommendation"]["notify"] == "DONT_NOTIFY"
+    if reads:
+        assert actual["interaction_contract"]["agent_channel"]["required_reads"]
+
+    # Reproduce the previous composition order: eagerly render after each
+    # changed helper, then compare every output field (including summary order).
+    for name in ("_project_turn_start_required_reads", "_apply_pending_capability_intent_precedence"):
+        original = getattr(live_decision, name)
+
+        def eager(payload, *args, _original=original, **helper_kwargs):
+            changed = _original(payload, *args, **helper_kwargs)
+            if changed:
+                payload["protocol_action_packet"] = render(payload)
+            return False
+
+        monkeypatch.setattr(live_decision, name, eager)
+    expected = build_live_quota_should_run_decision(deepcopy(status), **kwargs)
+    assert actual == expected
+    assert quota_action_signature_document(actual) == quota_action_signature_document(expected)

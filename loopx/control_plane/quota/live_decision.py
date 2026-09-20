@@ -184,12 +184,12 @@ def _project_turn_start_required_reads(
     ),
     turn_instance_id: str | None,
     runtime_root: Path,
-) -> None:
-    """Order fresh operator evidence before work without changing work selection."""
+) -> bool:
+    """Order evidence before work; return whether the packet needs rendering."""
 
     projected = _turn_start_required_reads(dispatch)
     if not projected:
-        return
+        return False
     existing = payload.get("required_reads")
     required_reads = (
         [dict(item) for item in existing if isinstance(item, Mapping)]
@@ -227,7 +227,7 @@ def _project_turn_start_required_reads(
         turn_instance_id=turn_instance_id,
         runtime_root=str(runtime_root),
     )
-    payload["protocol_action_packet"] = build_protocol_action_packet(payload)
+    return True
 
 
 def _fresh_operator_inbox_observation_count(
@@ -270,15 +270,15 @@ def _apply_pending_capability_intent_precedence(
         Mapping[str, Any] | SchedulerExecutionContextResolution | None
     ) = None,
     turn_instance_id: str | None = None,
-) -> None:
-    """Wake one governed local capability action ahead of quiet/terminal routes."""
+) -> bool:
+    """Apply intent precedence; return whether the packet needs rendering."""
 
     if not isinstance(projection, Mapping) or projection.get("state") != "pending":
-        return
+        return False
     summary = str(projection.get("action_summary") or "").strip()
     command = str(projection.get("command") or "").strip()
     if not summary or not command:
-        return
+        return False
     payload.update(
         {
             "decision": "run",
@@ -334,7 +334,7 @@ def _apply_pending_capability_intent_precedence(
         scheduler_execution_context=scheduler_execution_context,
         turn_instance_id=turn_instance_id,
     )
-    payload["protocol_action_packet"] = build_protocol_action_packet(payload)
+    return True
 
 
 def bind_scheduler_followup_cli_routes(
@@ -593,7 +593,7 @@ def build_live_quota_should_run_decision(
             turn_start_hook_dispatch, registry=registry_path, runtime_root=runtime_root,
             goal_id=goal_id, agent_id=agent_id,
         )
-    _project_turn_start_required_reads(
+    packet_changed = _project_turn_start_required_reads(
         payload,
         turn_start_hook_dispatch,
         available_capabilities=available_capabilities,
@@ -604,16 +604,21 @@ def build_live_quota_should_run_decision(
     hook_dispatch = dispatch_interaction_projection_hooks(interaction_projection_hooks)
     projections = hook_dispatch["projections"]
     if isinstance(projections, Mapping):
-        _apply_pending_capability_intent_precedence(
+        intent_changed = _apply_pending_capability_intent_precedence(
             payload,
             projections.get("pending_capability_intent"),
             available_capabilities=available_capabilities,
             scheduler_execution_context=resolved_context,
             turn_instance_id=turn_instance_id,
         )
+        packet_changed = packet_changed or intent_changed
         interaction = payload.get("interaction_contract")
         if isinstance(interaction, dict):
             interaction.update(projections)
+    # Neither projection consumes the intermediate packet. Recovery below does
+    # require a complete decision, so finalize this projection stage here.
+    if packet_changed:
+        payload["protocol_action_packet"] = build_protocol_action_packet(payload)
     # A settled receipt owns this host Turn until it ends.  Looking for an older
     # unsettled Turn here can overwrite the settled-skip route with a recovery
     # obligation and then select a successor against the immutable receipt
