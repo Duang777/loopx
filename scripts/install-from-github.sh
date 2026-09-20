@@ -6,6 +6,7 @@ ref="${LOOPX_REF:-stable}"
 archive_url_override="${LOOPX_ARCHIVE_URL:-}"
 archive_url="$archive_url_override"
 python_bin="${LOOPX_PYTHON:-python3}"
+installer_timeout_seconds="${LOOPX_INSTALLER_TIMEOUT_SECONDS:-}"
 export LOOPX_REPO="$repo"
 export LOOPX_REF="$ref"
 
@@ -23,6 +24,11 @@ need "$python_bin"
 if [[ -n "${LOOPX_RESOLVED_SOURCE_GIT_COMMIT:-}" \
   && ! "$LOOPX_RESOLVED_SOURCE_GIT_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
   echo "loopx installer error: LOOPX_RESOLVED_SOURCE_GIT_COMMIT must be a full Git commit SHA" >&2
+  exit 2
+fi
+if [[ -n "$installer_timeout_seconds" \
+  && ! "$installer_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  echo "loopx installer error: LOOPX_INSTALLER_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 fi
 
@@ -112,7 +118,10 @@ extract_dir="$tmp_dir/extract"
 mkdir -p "$extract_dir"
 
 echo "loopx installer: downloading $archive_url" >&2
-curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-max-time 150 \
+curl -fsSL --connect-timeout 10 \
+  --max-time "${installer_timeout_seconds:-120}" \
+  --retry 2 --retry-max-time "${installer_timeout_seconds:-150}" \
+  --continue-at - \
   "$archive_url" -o "$archive_path"
 archive_sha256="$("$python_bin" - "$archive_path" <<'PY'
 from pathlib import Path

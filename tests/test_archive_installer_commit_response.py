@@ -67,10 +67,11 @@ def test_commit_response_uses_file_transport_and_cleans_up(tmp_path, valid, ref_
         + shlex.quote(sys.executable)
         + " -c "
         + shlex.quote(
-            "import os,sys,shutil; "
+            "import json,os,sys,shutil; "
             "args=sys.argv[1:]; "
             "is_api=any('api.github.com' in a for a in args); "
             "open(os.environ['TEST_CALLS'],'a').write('api\\n' if is_api else 'archive\\n'); "
+            "open(os.environ['TEST_ARCHIVE_ARGS'],'w').write(json.dumps(args)) if not is_api else None; "
             "sys.exit(22) if is_api and (os.environ['TEST_REF_KIND']=='sha' or os.environ['TEST_API_MODE']!='public') else None; "
             "source=os.environ['TEST_RESPONSE'] if any('api.github.com' in a for a in args) "
             "else os.environ['TEST_ARCHIVE']; "
@@ -98,8 +99,10 @@ def test_commit_response_uses_file_transport_and_cleans_up(tmp_path, valid, ref_
         TMPDIR=str(scratch),
         LOOPX_PYTHON=sys.executable,
         LOOPX_REF=sha if ref_kind == "sha" else "stable",
+        LOOPX_INSTALLER_TIMEOUT_SECONDS="480",
         TEST_REF_KIND=ref_kind,
         TEST_API_MODE=api_mode,
+        TEST_ARCHIVE_ARGS=str(tmp_path / "archive-args.json"),
         TEST_CALLS=str(tmp_path / "calls"),
         TEST_RESPONSE=str(fixture),
         TEST_ARCHIVE=str(archive),
@@ -130,3 +133,8 @@ def test_commit_response_uses_file_transport_and_cleans_up(tmp_path, valid, ref_
     else:
         assert calls[0] == "api"
         assert ("authenticated" in calls) == (api_mode != "public")
+    if "archive" in calls:
+        archive_args = json.loads((tmp_path / "archive-args.json").read_text())
+        assert archive_args[archive_args.index("--max-time") + 1] == "480"
+        assert archive_args[archive_args.index("--retry-max-time") + 1] == "480"
+        assert archive_args[archive_args.index("--continue-at") + 1] == "-"
