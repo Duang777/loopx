@@ -114,8 +114,8 @@ def register_refresh_state_command(
         choices=DELIVERY_BATCH_SCALE_INPUT_CHOICES,
         help=(
             "Explicit delivery scale for this refresh run; missing scale stays unknown. "
-            "Accepts canonical scales plus "
-            "single_segment/bounded_segment aliases for single_surface."
+            "Choose the canonical scale explicitly; historical single_segment/"
+            "bounded_segment values remain readable but are not valid for new writes."
         ),
     )
     refresh_state_parser.add_argument(

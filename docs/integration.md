@@ -481,10 +481,11 @@ loopx refresh-state \
 ```
 
 Use `--delivery-batch-scale` for `test_only`, `single_surface`,
-`multi_surface`, or `implementation`. For agent-facing `refresh-state` calls,
-`single_segment` and `bounded_segment` are accepted as input aliases for
-`single_surface`; the recorded run still stores the canonical `single_surface`
-value. `--delivery-outcome` is a structured enum, not a classification string:
+`multi_surface`, or `implementation`. New `refresh-state` writes require one of
+those canonical values: historical `single_segment` and `bounded_segment`
+records remain readable as `single_surface`, but the legacy names are rejected
+for new writes because a bounded segment does not prove how many surfaces it
+changed. `--delivery-outcome` is a structured enum, not a classification string:
 
 | Value | Meaning |
 | --- | --- |

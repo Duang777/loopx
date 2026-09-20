@@ -88,13 +88,16 @@ def assert_enum_sets() -> None:
         "single_segment": DeliveryBatchScale.SINGLE_SURFACE,
         "bounded_segment": DeliveryBatchScale.SINGLE_SURFACE,
     }
-    assert set(DELIVERY_BATCH_SCALE_INPUT_CHOICES) == {
-        *DELIVERY_BATCH_SCALE_CHOICES,
-        "single_segment",
-        "bounded_segment",
-    }
+    assert DELIVERY_BATCH_SCALE_INPUT_CHOICES == DELIVERY_BATCH_SCALE_CHOICES
     assert require_delivery_batch_scale("multi_surface") == DeliveryBatchScale.MULTI_SURFACE
-    assert require_delivery_batch_scale("single_segment") == DeliveryBatchScale.SINGLE_SURFACE
+    for alias in DELIVERY_BATCH_SCALE_ALIASES:
+        try:
+            require_delivery_batch_scale(alias)
+        except ValueError as exc:
+            assert "read-only and ambiguous for new writes" in str(exc)
+        else:
+            raise AssertionError(f"legacy delivery scale alias accepted for a new write: {alias}")
+    assert normalize_delivery_batch_scale("single_segment") == DeliveryBatchScale.SINGLE_SURFACE
     assert normalize_delivery_batch_scale("bounded_segment") == DeliveryBatchScale.SINGLE_SURFACE
     assert delivery_batch_scale_value("single_segment") == DeliveryBatchScale.SINGLE_SURFACE.value
     assert normalize_delivery_batch_scale("unknown") is None
@@ -125,19 +128,23 @@ def assert_refresh_state_enforces_enum(registry_path: Path) -> None:
     )
     assert payload["delivery_batch_scale"] == DeliveryBatchScale.IMPLEMENTATION.value, payload
 
-    alias_payload = refresh_state_run(
-        registry_path=registry_path,
-        runtime_root_override=None,
-        goal_id=GOAL_ID,
-        project=None,
-        state_file=None,
-        classification="enum_fixture_alias",
-        recommended_action="Advance one bounded implementation batch.",
-        delivery_batch_scale="bounded_segment",
-        dry_run=True,
-        sync_global=False,
-    )
-    assert alias_payload["delivery_batch_scale"] == DeliveryBatchScale.SINGLE_SURFACE.value, alias_payload
+    try:
+        refresh_state_run(
+            registry_path=registry_path,
+            runtime_root_override=None,
+            goal_id=GOAL_ID,
+            project=None,
+            state_file=None,
+            classification="enum_fixture_alias",
+            recommended_action="Advance one bounded implementation batch.",
+            delivery_batch_scale="bounded_segment",
+            dry_run=True,
+            sync_global=False,
+        )
+    except ValueError as exc:
+        assert "read-only and ambiguous for new writes" in str(exc)
+    else:
+        raise AssertionError("refresh-state accepted an ambiguous legacy delivery scale alias")
 
     try:
         refresh_state_run(
@@ -201,10 +208,9 @@ def assert_refresh_state_enforces_enum(registry_path: Path) -> None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        check=True,
     )
-    alias_payload = json.loads(alias_cli_result.stdout)
-    assert alias_payload["delivery_batch_scale"] == DeliveryBatchScale.SINGLE_SURFACE.value, alias_payload
+    assert alias_cli_result.returncode != 0, alias_cli_result.stdout
+    assert "invalid choice" in alias_cli_result.stderr, alias_cli_result.stderr
 
 
 def projected_delivery_batch_scale(run: dict[str, object]) -> str:
