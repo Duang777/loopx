@@ -48,6 +48,9 @@ _RETAINED_DICTS = {
 }
 _ITEM_FIELDS = (
     "schema_version",
+    "gate_state",
+    "successor_count",
+    "excluded_agents",
     "index",
     "todo_id",
     "role",

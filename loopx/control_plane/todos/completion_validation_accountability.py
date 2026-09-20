@@ -18,9 +18,17 @@ def require_accountable_completion_validation(
     todo_fields: dict[str, Any] | None = None,
     delivery_boundary: str | None = None,
     delivery_outcome: str | None = None,
+    semantic_replan_recorded: bool = False,
 ) -> None:
     """Reject accountable evidence while its exact validation Todo is open."""
 
+    # A qualified semantic replan updates the path for an open Todo; it does
+    # not claim that Todo completed.  Its write-time qualification already
+    # rejects zero-effect replans, so terminal completion validation remains
+    # attached to the later Todo completion instead of circularly fencing the
+    # path change needed to reach it.
+    if semantic_replan_recorded:
+        return
     if (
         delivery_boundary == DELIVERY_BOUNDARY_IN_FLIGHT
         and delivery_outcome == DeliveryOutcome.OUTCOME_PROGRESS.value

@@ -15,6 +15,7 @@ from ..status.active_state_projection import active_state_event_projection_field
 from .active_state_editing import TODO_SECTION_HEADINGS
 from .active_state_todo_parser import parse_active_state_todos
 from .list_projection import compact_explicit_limit_todo_summary
+from .succession_warning import public_todo_summary
 from .contract import (
     build_todo_id,
     normalize_todo_blocks_agent,
@@ -97,6 +98,7 @@ def filtered_todo_summary(
             source_section=source_section,
             role=role,
             item_limit=item_limit,
+            full_selection=not (normalized_status or normalized_todo_id or normalized_agent_id),
         )
         or empty_todo_summary(role=role)
     )
@@ -341,6 +343,7 @@ def todo_summaries_from_fields(
                 role=item_role,
                 item_limit=limit,
             )
+        summary = public_todo_summary(summary)
         summaries[key] = summary
         todos.extend(summary.get("items") or [])
         uncapped_todo_count += int(summary.get("total_count") or 0)

@@ -5,6 +5,7 @@ from typing import Any
 import re
 
 from .agent_registry import normalize_registered_agents
+from .reasoning_effort import REASONING_EFFORTS
 
 DEFAULT_ORCHESTRATION_MODE = "default"
 MULTI_SUBAGENT_ORCHESTRATION_MODE = "multi_subagent"
@@ -19,16 +20,7 @@ EXPLORE_HARNESS_PROFILES = (
 )
 
 
-SUBAGENT_REASONING_EFFORTS = (
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
-)
+SUBAGENT_REASONING_EFFORTS = REASONING_EFFORTS
 
 
 def validate_subagent_model_config(value: Any) -> dict[str, str]:

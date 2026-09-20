@@ -20,6 +20,7 @@ from loopx.capabilities.steward_executor import (
     STEWARD_EXECUTOR_SCHEMA,
     effective_steward_executor_defaults,
     load_effective_steward_executor_defaults,
+    normalize_manager_executor_allocation,
     normalize_steward_executor_machine_defaults,
 )
 
@@ -29,10 +30,14 @@ def _steward(
     endpoint: str = "dsh",
     model: str | None = "deepseek-v4-flash",
     effort: str | None = "high",
+    selection_policy: str = "preferred",
+    eligible_endpoints: list[str] | None = None,
 ) -> dict[str, object]:
     return {
         "schema_version": STEWARD_EXECUTOR_SCHEMA,
+        "selection_policy": selection_policy,
         "executor_endpoint": endpoint,
+        "eligible_endpoints": eligible_endpoints or [],
         "executor_model": model,
         "executor_reasoning_effort": effort,
     }
@@ -109,6 +114,71 @@ def test_the_steward_executor_namespace_fails_closed_on_untyped_values() -> None
         )
 
 
+def test_flexible_selection_requires_a_closed_authorized_pool() -> None:
+    flexible = normalize_steward_executor_machine_defaults(
+        _steward(
+            endpoint="dsh",
+            selection_policy="flexible",
+            eligible_endpoints=["dsh", "codex"],
+        )
+    )
+    assert flexible["eligible_endpoints"] == ["dsh", "codex"]
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        normalize_steward_executor_machine_defaults(
+            _steward(endpoint="dsh", selection_policy="flexible")
+        )
+    with pytest.raises(ValueError, match="must belong"):
+        normalize_steward_executor_machine_defaults(
+            _steward(
+                endpoint="dsh",
+                selection_policy="flexible",
+                eligible_endpoints=["codex"],
+            )
+        )
+    with pytest.raises(ValueError, match="only valid for flexible"):
+        normalize_steward_executor_machine_defaults(
+            _steward(eligible_endpoints=["dsh"])
+        )
+
+
+def test_legacy_preference_configuration_remains_readable() -> None:
+    legacy = {
+        "schema_version": "steward_executor_machine_defaults_v0",
+        "executor_endpoint": "dsh",
+        "executor_model": None,
+        "executor_reasoning_effort": None,
+    }
+    assert normalize_steward_executor_machine_defaults(legacy) == legacy
+    effective = effective_steward_executor_defaults(_document({"steward_executor": legacy}))
+    assert effective["selection_policy"] == "preferred"
+    assert effective["eligible_endpoints"] == []
+
+
+def test_persisted_allocation_uses_the_same_closed_typed_contract() -> None:
+    allocation = {
+        "schema_version": "manager_executor_allocation_v0",
+        "selection_policy": "preferred",
+        "allocation_reason": "product_default",
+        "executor_endpoint": "codex",
+        "executor_endpoint_source": "product_default",
+        "executor_endpoint_default_reason": "steward_channel_default",
+        "configured_endpoint": None,
+        "eligible_endpoints": [],
+        "configuration_revision": "",
+        "available": None,
+        "model": "gpt-6-astra",
+        "model_source": "vendor_default",
+        "reasoning_effort": "high",
+    }
+    assert normalize_manager_executor_allocation(allocation) == allocation
+
+    with pytest.raises(ValueError, match="allocation_reason"):
+        normalize_manager_executor_allocation(
+            {**allocation, "allocation_reason": "model_decided_somehow"}
+        )
+
+
 def test_an_unconfigured_machine_decides_nothing() -> None:
     """Absence resolves to the lower layers, never to a guessed endpoint."""
 
@@ -120,6 +190,8 @@ def test_an_unconfigured_machine_decides_nothing() -> None:
         "executor_endpoint": None,
         "executor_model": None,
         "executor_reasoning_effort": None,
+        "selection_policy": "preferred",
+        "eligible_endpoints": [],
     }
     # A document that configures a sibling capability says nothing about the
     # steward, and neither does an unreadable store.

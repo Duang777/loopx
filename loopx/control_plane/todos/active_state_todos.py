@@ -9,6 +9,8 @@ from ..coordination.local_authority import (
     read_canonical_todos_if_promoted,
 )
 
+from .succession_warning import public_todo_summary
+
 MONITOR_WRITEBACK_CONTRACT_SCHEMA_VERSION = "monitor_writeback_contract_v0"
 
 
@@ -46,7 +48,7 @@ def _redacted_status_todo_fields(fields: dict[str, Any]) -> dict[str, Any]:
         group = redacted.get(key)
         if not isinstance(group, dict):
             continue
-        group_copy = dict(group)
+        group_copy = public_todo_summary(group)
         items: list[Any] = []
         for item in group_copy.get("items") or []:
             if not isinstance(item, dict):

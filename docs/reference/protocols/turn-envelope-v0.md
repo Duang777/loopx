@@ -76,15 +76,25 @@ settlement-identity conflict. The full quota response preserves the TypeScript
 `action_selection_qualification_v0` result and returns
 `quota_action_selection_deferred` or `quota_action_selection_rejected`, including
 the exact current preemption or eligibility reason. An existing identity-less
-receipt is replayed without mutation; a first-call rejection reports
+receipt appends an identity-less `pending_action_selection` revision when an
+otherwise eligible explicit choice is deferred. That revision is not delivery
+or settlement authority: it preserves the explicit choice only so a no-argument
+same-Turn reentry cannot replace it with the current recommendation. An
+ineligible/rejected choice still replays the receipt without mutation; a
+first-call rejection reports
 `heartbeat_receipt.status=not_committed` and writes no receipt event. The agent
 receives `recovery_action=reenter_guard_without_selection` and one executable
 same-Turn guard in the full decision's `cli_channel.next_cli_actions`; the compact
 envelope preserves the recovery in its action and writeback preview. The failed
 selection exposes no settlement plan, spend command, or unadmitted replan action
 packet. Execute that guard without
-a Todo/replan argument before following the resulting binding or portfolio. A receipt already bound to a different Todo or autonomous
-replan obligation remains a hard `heartbeat_receipt_identity_conflict`.
+a Todo/replan argument before following the resulting binding or portfolio. A
+receipt already bound to a different Todo or autonomous replan obligation
+remains a hard `heartbeat_receipt_identity_conflict`. On reentry, an identical
+projected Todo may bind normally. If a hard autonomous replan owns the current
+lane, the replan receives the Turn's settlement identity and the retained Todo
+is reported as `deferred_to_fresh_turn`; a different recommended Todo never
+inherits the retained choice or its authority.
 When a due monitor is visible only as auxiliary context for an advancement lane,
 the typed reason is
 `auxiliary_monitor_not_selectable_in_advancement_lane`. The agent selects a
@@ -97,6 +107,15 @@ the selected Todo, `effective_action=agent_workspace_repair`, and the typed
 worktree recovery instruction. Moving to an independent worktree and rerunning
 the guard with the same Turn id resumes the selected Todo; the wrapper must not
 rewrite this recoverable state as a settlement-identity conflict.
+
+An executed, turn-scoped `quota monitor-poll` is a no-spend closeout only when
+its observed Todo exactly matches the Turn's `settlement_todo_id`. That response
+includes `turn_continuation.next_turn_required=true` and requires a fresh Turn
+before unrelated work. An admitted auxiliary monitor uses its own observed Todo
+while retaining the advancement Todo as `settlement_todo_id`; its continuation
+keeps `current_turn_settled=false` and `next_turn_required=false` so the original
+writeback and spend can finish. A missing exact or typed auxiliary binding never
+claims settlement.
 
 Portfolio v2 preserves v1's selection policy, candidate ordering, and
 settlement rules, and adds an optional `continuation_hint` to each suggested

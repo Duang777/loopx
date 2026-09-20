@@ -87,6 +87,30 @@ export function ChannelHeader({
     && managerChannelBinding.executor_endpoint_default_reason === "steward_channel_default"
     ? "header.managerEndpointStewardDefault"
     : null;
+  const managerSelectionPolicyLabel = managerChannelBinding
+    ? t(managerChannelBinding.selection_policy === "pinned"
+      ? "header.managerSelectionPinned"
+      : managerChannelBinding.selection_policy === "flexible"
+        ? "header.managerSelectionFlexible"
+        : "header.managerSelectionPreferred")
+    : null;
+  const managerAllocationReasonLabel = managerChannelBinding?.allocation_reason
+    ? t(managerChannelBinding.allocation_reason === "user_explicit"
+      ? "header.managerAllocationUser"
+      : managerChannelBinding.allocation_reason === "pinned_configuration"
+        ? "header.managerAllocationPinned"
+        : managerChannelBinding.allocation_reason === "flexible_availability_fallback"
+          ? "header.managerAllocationFallback"
+          : managerChannelBinding.allocation_reason === "flexible_pool_unavailable"
+            ? "header.managerAllocationUnavailable"
+            : managerChannelBinding.allocation_reason === "flexible_primary_available"
+              ? "header.managerAllocationPrimary"
+              : managerChannelBinding.allocation_reason === "product_default"
+                ? "header.managerAllocationProductDefault"
+                : managerChannelBinding.allocation_reason === "service_override"
+                  ? "header.managerAllocationService"
+                  : "header.managerAllocationConfigured")
+    : null;
 
   const runtimeControl = readOnlySourceLabel ? (
           <span className="personal-read-only-source" title={t("header.readOnlySourceDescription", { source: readOnlySourceLabel })}><Eye size={15} />{readOnlySourceLabel}<small>{t("common.readOnly")}</small></span>
@@ -142,6 +166,12 @@ export function ChannelHeader({
               sandbox: managerRuntime.sandbox,
             })}</p>
         ) : null}
+            {managerSelectionPolicyLabel && managerAllocationReasonLabel && managerChannelBinding ? (
+              <p>{t("header.managerAllocation", {
+                policy: managerSelectionPolicyLabel,
+                reason: managerAllocationReasonLabel,
+              })}</p>
+            ) : null}
             {managerExecutionDefaultReason && managerChannelBinding ? (
               <span className="personal-execution-rule-note">
                 {t(managerExecutionDefaultReason, { executor: managerChannelBinding.executor_endpoint })}

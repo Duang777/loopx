@@ -28,7 +28,23 @@ from .capabilities.manager_context.answer_contract import (
     classify_manager_answer_shape,
     manager_answer_contract_instruction,
 )
-from .capabilities.steward_executor import load_effective_steward_executor_defaults
+from .capabilities.steward_executor import (
+    FLEXIBLE_SELECTION_POLICY,
+    MANAGER_ALLOCATION_REASON_CONFIGURED_PREFERENCE,
+    MANAGER_ALLOCATION_REASON_FLEXIBLE_FALLBACK,
+    MANAGER_ALLOCATION_REASON_FLEXIBLE_PRIMARY,
+    MANAGER_ALLOCATION_REASON_FLEXIBLE_UNAVAILABLE,
+    MANAGER_ALLOCATION_REASON_PINNED,
+    MANAGER_ALLOCATION_REASON_PRODUCT_DEFAULT,
+    MANAGER_ALLOCATION_REASON_SERVICE_OVERRIDE,
+    MANAGER_ALLOCATION_REASON_USER_EXPLICIT,
+    MANAGER_EXECUTOR_ALLOCATION_SCHEMA_VERSION,
+    PINNED_SELECTION_POLICY,
+    PREFERRED_SELECTION_POLICY,
+    load_effective_steward_executor_defaults,
+    normalize_manager_executor_allocation,
+)
+from .chat_agent import CodexChatAgentError
 from .chat_store import (
     CHAT_SESSION_MODE_ATTACHED,
     CHAT_SESSION_MODE_MANAGED,
@@ -177,6 +193,7 @@ MANAGER_ENDPOINT_SOURCE_EXPLICIT_CONFIG = "explicit_config"
 # `loopx machine-config describe`/`inspect` read it back, so a machine-local
 # decision cannot hide in a launch file no product surface can show.
 MANAGER_ENDPOINT_SOURCE_MACHINE_CONFIGURATION = "machine_configuration"
+MANAGER_ENDPOINT_SOURCE_SESSION_BINDING = "session_binding"
 # Why the shipped default resolved the way it did. One typed reason, never
 # prose, so a reader can tell a decided default from a discovered one. The
 # steward has exactly one such decision, and it is not conditional on a
@@ -211,7 +228,6 @@ MANAGER_MODEL_SOURCE_MANAGED_PROFILE = "managed_execution_profile"
 MANAGER_REASONING_EFFORT_ENV_VAR = "LOOPX_MANAGER_REASONING_EFFORT"
 MANAGER_REASONING_EFFORT_DEFAULT = "high"
 MANAGER_REASONING_EFFORTS = REASONING_EFFORTS
-
 
 def steward_machine_defaults(controller: Any) -> Mapping[str, Any] | None:
     """Return the machine-configured steward defaults this channel reads.
@@ -284,6 +300,11 @@ def manager_capabilities_projection(controller: Any, store: Any) -> dict[str, An
 
     machine_defaults = steward_machine_defaults(controller)
     credential = operator_credential_resolution(controller)
+    allocation = manager_executor_allocation(
+        controller,
+        machine_defaults=machine_defaults,
+        environ=credential["environ"],
+    )
     return manager_runtime_capability_projection(
         controller,
         manager_model_config(
@@ -294,6 +315,7 @@ def manager_capabilities_projection(controller: Any, store: Any) -> dict[str, An
             machine_defaults=machine_defaults,
             credential_source=credential["source"],
             session=manager_channel_session(store),
+            allocation=allocation,
         ),
     )
 
@@ -331,6 +353,165 @@ def _resolve_manager_endpoint(
         MANAGER_ENDPOINT_SOURCE_PRODUCT_DEFAULT,
         MANAGER_ENDPOINT_DEFAULT_REASON_STEWARD_CHANNEL_DEFAULT,
     )
+
+
+def _manager_selection_policy(
+    machine_defaults: Mapping[str, Any] | None,
+) -> str:
+    selected = _machine_default_text(machine_defaults, "selection_policy")
+    return selected or PREFERRED_SELECTION_POLICY
+
+
+def _manager_eligible_endpoints(
+    machine_defaults: Mapping[str, Any] | None,
+) -> list[str]:
+    if not isinstance(machine_defaults, Mapping):
+        return []
+    raw = machine_defaults.get("eligible_endpoints")
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item)]
+
+
+def _controller_endpoint_availability(controller: Any) -> dict[str, bool]:
+    resolver = getattr(controller, "capabilities", None)
+    if not callable(resolver):
+        return {}
+    try:
+        rows = resolver()
+    except Exception:  # noqa: BLE001 - availability readback must remain advisory.
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row.get("agent_id")): bool(row.get("available"))
+        for row in rows
+        if isinstance(row, Mapping) and str(row.get("agent_id") or "")
+    }
+
+
+def _static_manager_allocation_reason(*, policy: str, endpoint_source: str) -> str:
+    """Explain a configured route before availability-based allocation runs."""
+
+    if policy == PINNED_SELECTION_POLICY:
+        return MANAGER_ALLOCATION_REASON_PINNED
+    if endpoint_source == MANAGER_ENDPOINT_SOURCE_MACHINE_CONFIGURATION:
+        return MANAGER_ALLOCATION_REASON_CONFIGURED_PREFERENCE
+    if endpoint_source == MANAGER_ENDPOINT_SOURCE_PRODUCT_DEFAULT:
+        return MANAGER_ALLOCATION_REASON_PRODUCT_DEFAULT
+    return MANAGER_ALLOCATION_REASON_SERVICE_OVERRIDE
+
+
+def manager_executor_allocation(
+    controller: Any,
+    requested_endpoint: str | None = None,
+    *,
+    machine_defaults: Mapping[str, Any] | None = None,
+    environ: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolve one bounded steward executor choice and explain why it won.
+
+    The machine setting owns the selection policy. ``preferred`` preserves the
+    historical behavior: it supplies a default while an explicit user pick may
+    override it. ``pinned`` rejects a different pick. ``flexible`` permits only
+    the configured pool and may replace an unavailable primary with another
+    observed-available member. This resolver does not infer task semantics from
+    prose; a later Agent decision travels as an explicit pick inside the same
+    policy boundary.
+    """
+
+    defaults = machine_defaults
+    if defaults is None:
+        defaults = steward_machine_defaults(controller)
+    endpoint, endpoint_source, default_reason = _resolve_manager_endpoint(
+        environ, machine_defaults=defaults
+    )
+    policy = _manager_selection_policy(defaults)
+    eligible = _manager_eligible_endpoints(defaults)
+    availability = _controller_endpoint_availability(controller)
+    requested = str(requested_endpoint or "").strip()
+    reason = ""
+
+    if requested:
+        if policy == PINNED_SELECTION_POLICY and requested != endpoint:
+            raise CodexChatAgentError(
+                "The steward executor is pinned to a different endpoint.",
+                error_code="manager_executor_pinned",
+                gate={
+                    "kind": "host_tool_gate",
+                    "summary": f"This machine pins the steward to {endpoint}.",
+                    "next_action": (
+                        "Use the pinned executor or change Steward executor in "
+                        "Machine capabilities."
+                    ),
+                },
+            )
+        if policy == FLEXIBLE_SELECTION_POLICY and requested not in eligible:
+            raise CodexChatAgentError(
+                "The requested steward executor is outside the authorized pool.",
+                error_code="manager_executor_outside_flexible_pool",
+                gate={
+                    "kind": "host_tool_gate",
+                    "summary": "The requested executor is not in this machine's flexible pool.",
+                    "next_action": (
+                        "Choose an eligible executor or update the flexible pool in "
+                        "Machine capabilities."
+                    ),
+                },
+            )
+        endpoint = requested
+        endpoint_source = "explicit_user_intent"
+        default_reason = ""
+        reason = MANAGER_ALLOCATION_REASON_USER_EXPLICIT
+    elif policy == PINNED_SELECTION_POLICY:
+        reason = _static_manager_allocation_reason(
+            policy=policy, endpoint_source=endpoint_source
+        )
+    elif policy == FLEXIBLE_SELECTION_POLICY:
+        candidates = [endpoint, *[item for item in eligible if item != endpoint]]
+        available = [item for item in candidates if availability.get(item) is True]
+        unknown = [item for item in candidates if item not in availability]
+        selected = (available or unknown or candidates)[0]
+        reason = (
+            MANAGER_ALLOCATION_REASON_FLEXIBLE_PRIMARY
+            if selected == endpoint and availability.get(selected) is not False
+            else MANAGER_ALLOCATION_REASON_FLEXIBLE_FALLBACK
+            if availability.get(selected) is not False
+            else MANAGER_ALLOCATION_REASON_FLEXIBLE_UNAVAILABLE
+        )
+        endpoint = selected
+        endpoint_source = "flexible_pool"
+        default_reason = ""
+    else:
+        reason = _static_manager_allocation_reason(
+            policy=policy, endpoint_source=endpoint_source
+        )
+
+    model, model_source = manager_model_resolution(
+        environ, endpoint=endpoint, machine_defaults=defaults
+    )
+    model_config = manager_model_config(
+        environ, endpoint=endpoint, machine_defaults=defaults
+    )
+    return normalize_manager_executor_allocation({
+        "schema_version": MANAGER_EXECUTOR_ALLOCATION_SCHEMA_VERSION,
+        "selection_policy": policy,
+        "allocation_reason": reason,
+        "executor_endpoint": endpoint,
+        "executor_endpoint_source": endpoint_source,
+        "executor_endpoint_default_reason": default_reason,
+        "configured_endpoint": _machine_default_text(defaults, "executor_endpoint") or None,
+        "eligible_endpoints": eligible,
+        "configuration_revision": (
+            str(defaults.get("configuration_revision") or "")
+            if isinstance(defaults, Mapping)
+            else ""
+        ),
+        "available": availability.get(endpoint),
+        "model": model,
+        "model_source": model_source,
+        "reasoning_effort": model_config["reasoning_effort"],
+    })
 
 
 def selected_manager_executor_endpoint(
@@ -479,6 +660,7 @@ def manager_channel_binding(
     *,
     session: Mapping[str, Any] | None = None,
     machine_defaults: Mapping[str, Any] | None = None,
+    allocation: Mapping[str, Any] | None = None,
     credential_source: str | None = None,
     module_probe: Callable[[str], bool] | None = None,
 ) -> dict[str, Any]:
@@ -509,9 +691,27 @@ def manager_channel_binding(
     than as a mode this projection guessed.
     """
 
-    endpoint, endpoint_source, default_reason = _resolve_manager_endpoint(
-        environ, machine_defaults=machine_defaults
+    persisted_allocation = (
+        session.get("manager_executor_allocation")
+        if isinstance(session, Mapping)
+        and isinstance(session.get("manager_executor_allocation"), Mapping)
+        else None
     )
+    selected_allocation = persisted_allocation or allocation
+    if isinstance(selected_allocation, Mapping):
+        endpoint = str(selected_allocation.get("executor_endpoint") or "")
+        endpoint_source = (
+            MANAGER_ENDPOINT_SOURCE_SESSION_BINDING
+            if persisted_allocation is not None
+            else str(selected_allocation.get("executor_endpoint_source") or "")
+        )
+        default_reason = str(
+            selected_allocation.get("executor_endpoint_default_reason") or ""
+        )
+    else:
+        endpoint, endpoint_source, default_reason = _resolve_manager_endpoint(
+            environ, machine_defaults=machine_defaults
+        )
     executor_kind = MANAGER_ENDPOINT_KINDS.get(endpoint, "")
     credential_env = ""
     execution_profile: str | None = None
@@ -529,9 +729,13 @@ def manager_channel_binding(
             runtime_probe = dict(managed["runtime_probe"])
     else:
         available, unavailable_reason = None, None
-    model, model_source = manager_model_resolution(
-        environ, endpoint=endpoint, machine_defaults=machine_defaults
-    )
+    if isinstance(selected_allocation, Mapping) and selected_allocation.get("model"):
+        model = str(selected_allocation["model"])
+        model_source = str(selected_allocation.get("model_source") or "session_binding")
+    else:
+        model, model_source = manager_model_resolution(
+            environ, endpoint=endpoint, machine_defaults=machine_defaults
+        )
     return {
         "schema_version": MANAGER_CHANNEL_BINDING_SCHEMA_VERSION,
         "executor_endpoint": endpoint,
@@ -563,6 +767,34 @@ def manager_channel_binding(
         "runtime_probe": runtime_probe,
         "model": model,
         "model_source": model_source,
+        "selection_policy": (
+            str(selected_allocation.get("selection_policy") or PREFERRED_SELECTION_POLICY)
+            if isinstance(selected_allocation, Mapping)
+            else _manager_selection_policy(machine_defaults)
+        ),
+        "allocation_reason": (
+            str(selected_allocation.get("allocation_reason") or "")
+            if isinstance(selected_allocation, Mapping)
+            else _static_manager_allocation_reason(
+                policy=_manager_selection_policy(machine_defaults),
+                endpoint_source=endpoint_source,
+            )
+        ),
+        "configured_endpoint": (
+            selected_allocation.get("configured_endpoint")
+            if isinstance(selected_allocation, Mapping)
+            else _machine_default_text(machine_defaults, "executor_endpoint") or None
+        ),
+        "eligible_endpoints": (
+            list(selected_allocation.get("eligible_endpoints") or [])
+            if isinstance(selected_allocation, Mapping)
+            else _manager_eligible_endpoints(machine_defaults)
+        ),
+        "allocation_configuration_revision": (
+            str(selected_allocation.get("configuration_revision") or "")
+            if isinstance(selected_allocation, Mapping)
+            else ""
+        ),
         **manager_channel_session_mode_readback(session),
     }
 
@@ -582,7 +814,10 @@ def manager_model_resolution(
     """
 
     configured = _machine_default_text(machine_defaults, "executor_model")
-    if configured:
+    configured_endpoint = _machine_default_text(
+        machine_defaults, "executor_endpoint"
+    )
+    if configured and (not endpoint or not configured_endpoint or endpoint == configured_endpoint):
         return configured, MANAGER_MODEL_SOURCE_MACHINE_CONFIGURATION
     override = env_text(MANAGER_MODEL_ENV_VAR, environ)
     if override:
@@ -616,21 +851,33 @@ def open_manager_session(
     channel behind the readback.
     """
 
-    resolved_endpoint = (
-        str(executor_endpoint_id).strip()
-        if executor_endpoint_id
-        else manager_executor_endpoint_default(
-            machine_defaults=steward_machine_defaults(controller)
+    channel_id = manager_channel(provider=provider, audience=audience)
+    allocation: Mapping[str, Any] | None = None
+    store = getattr(controller, "store", None)
+    if not executor_endpoint_id and mode == "resume_latest" and store is not None:
+        current_session = manager_channel_session(store, channel_id=channel_id)
+        if isinstance(current_session, Mapping) and isinstance(
+            current_session.get("manager_executor_allocation"), Mapping
+        ):
+            allocation = current_session["manager_executor_allocation"]
+    if allocation is None:
+        defaults = steward_machine_defaults(controller)
+        credential = operator_credential_resolution(controller)
+        allocation = manager_executor_allocation(
+            controller,
+            executor_endpoint_id,
+            machine_defaults=defaults,
+            environ=credential["environ"],
         )
-    )
     return controller.open_session(
         goal_id=goal_id,
-        agent_id=resolved_endpoint,
+        agent_id=str(allocation["executor_endpoint"]),
         work_dir=work_dir,
         objective=MANAGER_AGENT_OBJECTIVE,
         mode=mode,
-        channel_id=manager_channel(provider=provider, audience=audience),
+        channel_id=channel_id,
         agent_goal_id=MANAGER_AGENT_GOAL_ID,
+        manager_executor_allocation=allocation,
     )
 
 
@@ -680,7 +927,14 @@ def manager_model_config(
     model, _source = manager_model_resolution(
         environ, endpoint=endpoint, machine_defaults=machine_defaults
     )
-    effort = _machine_default_text(machine_defaults, "executor_reasoning_effort")
+    configured_endpoint = _machine_default_text(
+        machine_defaults, "executor_endpoint"
+    )
+    effort = (
+        _machine_default_text(machine_defaults, "executor_reasoning_effort")
+        if not configured_endpoint or endpoint == configured_endpoint
+        else ""
+    )
     if not effort:
         effort = env_text(MANAGER_REASONING_EFFORT_ENV_VAR, environ)
     if not effort and MANAGER_ENDPOINT_KINDS.get(endpoint) == MANAGER_EXECUTOR_KIND_MANAGED:

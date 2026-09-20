@@ -159,10 +159,11 @@ def capture_todo_archive_dependencies(todos: list[dict[str, Any]], state_text: s
     _, archived, _ = parse_todo_source(state_text)
     # No prose or wide diagnostics cross the selection transport budget.
     capture_fields = ("todo_id", "role", "task_class", "status", "done", "archive_state", "resume_when",
-        "decision_scope", "decision_outcome", "global_gate", "blocks_agent", "bound_agent", "goal_bound")
+        "decision_scope", "decision_outcome", "global_gate", "blocks_agent", "bound_agent", "goal_bound",
+        "successor_todo_ids", "superseded_by", "unblocks_todo_id")
     capture = effect_runtime_result("todo.archive.capture_dependencies", {
-        "schema_version": "todo_archive_dependency_capture_request_v0",
-        "active": [{"todo_id": item["todo_id"], "resume_when": item.get("resume_when")} for item in todos],
+        "schema_version": "todo_archive_dependency_capture_request_v1",
+        "active": [{key: item[key] for key in capture_fields if key in item} for item in todos],
         "archived": [{key: item[key] for key in capture_fields if key in item} for item in archived],
     })
     if not isinstance(capture, dict) or capture.get("schema_version") != "todo_archive_dependency_capture_result_v0":

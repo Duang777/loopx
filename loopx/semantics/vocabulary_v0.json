@@ -502,6 +502,7 @@
         "loopx/control_plane/quota/decision_summary.py::resolve_quota_run_decision",
         "loopx/control_plane/quota/heartbeat_receipt.py::fail_heartbeat_receipt",
         "loopx/control_plane/quota/live_decision.py::_apply_pending_capability_intent_precedence",
+        "loopx/control_plane/work_items/action_portfolio.ts::reconcileRetainedActionSelection",
         "loopx/control_plane/quota/projection_repair.py::build_boundary_projection_repair_hint",
         "loopx/control_plane/quota/projection_repair.py::build_state_projection_gap_repair_hint",
         "loopx/control_plane/quota/settlement_precedence.py::apply_settled_replay_payload_precedence",

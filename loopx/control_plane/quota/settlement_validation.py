@@ -10,6 +10,49 @@ from ..todos.completion_validation_projection import (
 from ..todos.contract import normalize_todo_id
 
 
+def _is_qualified_semantic_replan_writeback(
+    delivery_run: dict[str, Any] | None,
+    *,
+    todo_id: str,
+) -> bool:
+    """Recognize the durable proof that an open Todo changed its path.
+
+    The refresh path writes this acknowledgement only after typed replan
+    qualification.  Spend may trust it only through the exact Turn settlement
+    readback; callers must not pass an unrelated latest run.
+    """
+
+    if not isinstance(delivery_run, dict):
+        return False
+    settlement_identity = delivery_run.get("settlement_identity")
+    if (
+        normalize_todo_id(delivery_run.get("todo_id")) != todo_id
+        or not isinstance(settlement_identity, dict)
+        or normalize_todo_id(settlement_identity.get("todo_id")) != todo_id
+    ):
+        return False
+    ack = delivery_run.get("autonomous_replan_ack")
+    if (
+        not isinstance(ack, dict)
+        or ack.get("schema_version") != "autonomous_replan_ack_v0"
+        or ack.get("recorded") is not True
+    ):
+        return False
+    semantic_delta = ack.get("semantic_delta")
+    if (
+        isinstance(semantic_delta, dict)
+        and semantic_delta.get("schema_version") == "replan_semantic_delta_v0"
+        and semantic_delta.get("accepted") is True
+    ):
+        return True
+    delta_contract = ack.get("delta_contract")
+    return bool(
+        isinstance(delta_contract, dict)
+        and delta_contract.get("schema_version") == "repair_delta_contract_v0"
+        and delta_contract.get("delta_present") is True
+    )
+
+
 def completion_validation_spend_error(
     status_payload: dict[str, Any],
     *,
@@ -17,11 +60,17 @@ def completion_validation_spend_error(
     todo_id: str | None,
     agent_id: str | None,
     selected_todo: dict[str, Any] | None,
+    delivery_run: dict[str, Any] | None = None,
 ) -> str | None:
     """Explain why one requested settlement still lacks validation authority."""
 
     normalized_todo_id = normalize_todo_id(todo_id)
     if not normalized_todo_id:
+        return None
+    if _is_qualified_semantic_replan_writeback(
+        delivery_run,
+        todo_id=normalized_todo_id,
+    ):
         return None
     summaries: list[dict[str, Any]] = []
     if (

@@ -3396,8 +3396,13 @@ def test_selection_added_after_pending_guard_reports_final_boundary(
         added["todo_id"]
     )
     assert rejected["normal_delivery_allowed"] is False
-    assert rejected["heartbeat_receipt"]["status"] == "replayed"
-    assert _heartbeat_receipt_events(runtime, turn_instance_id) == [first_receipt]
+    assert rejected["heartbeat_receipt"]["status"] == "selection_retained"
+    assert rejected["heartbeat_receipt"]["pending_action_selection"]["todo_id"] == (
+        added["todo_id"]
+    )
+    retained_events = _heartbeat_receipt_events(runtime, turn_instance_id)
+    assert retained_events[0] == first_receipt
+    assert len(retained_events) == 2
 
     repeated_rc, repeated = _run_cli(
         registry_path,
@@ -3460,12 +3465,15 @@ def test_pending_action_selection_does_not_preempt_newly_due_monitor(
     assert selected["action_selection_qualification"]["reason"] == (
         "blocking_work_lane"
     )
-    assert selected["heartbeat_receipt"]["status"] == "replayed"
-    assert selected["rollout_event"]["appended"] is False
+    assert selected["heartbeat_receipt"]["status"] == "selection_retained"
+    assert selected["heartbeat_receipt"]["pending_action_selection"]["todo_id"] == (
+        ALTERNATIVE_TODO_ID
+    )
+    assert selected["rollout_event"]["appended"] is True
     events = _heartbeat_receipt_events(runtime, turn_instance_id)
-    assert len(events) == 1
-    assert not events[0]["details"].get("todo_id")
-    assert not events[0]["details"].get("settlement_effect_id")
+    assert len(events) == 2
+    assert all(not event["details"].get("todo_id") for event in events)
+    assert all(not event["details"].get("settlement_effect_id") for event in events)
 
 
 def test_pending_action_selection_reports_autonomous_replan_preemption(
@@ -3514,9 +3522,12 @@ def test_pending_action_selection_reports_autonomous_replan_preemption(
         "reason": "autonomous_replan",
         "delivery_preemptions": ["autonomous_replan", "delivery_not_allowed"],
     }
-    assert selected["heartbeat_receipt"]["status"] == "replayed"
-    assert selected["rollout_event"]["appended"] is False
-    assert _heartbeat_receipt_count(runtime, turn_instance_id) == 1
+    assert selected["heartbeat_receipt"]["status"] == "selection_retained"
+    assert selected["heartbeat_receipt"]["pending_action_selection"]["todo_id"] == (
+        ALTERNATIVE_TODO_ID
+    )
+    assert selected["rollout_event"]["appended"] is True
+    assert _heartbeat_receipt_count(runtime, turn_instance_id) == 2
 
 
 def test_due_monitor_auxiliary_context_has_typed_selection_rejection(
@@ -4017,12 +4028,15 @@ def test_pending_action_selection_does_not_commit_after_new_user_gate(
     assert selected["action_selection_qualification"]["reason"] == (
         "delivery_not_allowed"
     )
-    assert selected["heartbeat_receipt"]["status"] == "replayed"
-    assert selected["rollout_event"]["appended"] is False
+    assert selected["heartbeat_receipt"]["status"] == "selection_retained"
+    assert selected["heartbeat_receipt"]["pending_action_selection"]["todo_id"] == (
+        ALTERNATIVE_TODO_ID
+    )
+    assert selected["rollout_event"]["appended"] is True
     events = _heartbeat_receipt_events(runtime, turn_instance_id)
-    assert len(events) == 1
-    assert not events[0]["details"].get("todo_id")
-    assert not events[0]["details"].get("settlement_effect_id")
+    assert len(events) == 2
+    assert all(not event["details"].get("todo_id") for event in events)
+    assert all(not event["details"].get("settlement_effect_id") for event in events)
 
 
 def test_todoless_autonomous_replan_settles_quota_refresh_spend_chain(
@@ -4330,6 +4344,30 @@ def test_todoless_blocked_replan_settles_read_only_external_evidence_without_wor
         receipt["step_kind"] for receipt in spend["settlement_result"]["receipts"]
     ] == ["validation", "durable_writeback", "quota_spend"]
     assert _spend_run_count(runtime) == 1
+
+    replay_rc, replay = _run_cli(
+        registry_path,
+        runtime,
+        "quota",
+        "should-run",
+        "--codex-app",
+        "--goal-id",
+        GOAL_ID,
+        "--agent-id",
+        AGENT_ID,
+        "--turn-instance-id",
+        turn_instance_id,
+        "--todo-id",
+        SELECTED_REPLAN_TODO_ID,
+        "--scan-path",
+        str(project),
+    )
+
+    assert replay_rc == 0, replay
+    assert replay["effective_action"] == "heartbeat_settled_skip"
+    assert replay["should_run"] is False
+    assert replay.get("selected_todo") is None
+    assert replay.get("unsettled_host_turn_recovery") is None
 
 
 def test_unbound_visible_goal_todoless_replan_reenters_through_guided_turn(

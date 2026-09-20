@@ -7,7 +7,6 @@ from typing import Any, Callable, Optional
 
 from ..goals.goal_vision_wait_projection import attach_active_vision_waits
 from .contract import (
-    TODO_RESUME_KIND_TODO_DONE,
     TODO_STATUS_DONE,
     TODO_STATUS_OPEN,
     TODO_TASK_CLASS_ADVANCEMENT,
@@ -32,7 +31,6 @@ from .contract import (
     normalize_todo_generation,
     normalize_todo_goal_bound,
     normalize_todo_id,
-    normalize_todo_id_list,
     normalize_todo_no_followup,
     normalize_removed_todo_continuation_policy,
     normalize_todo_required_decision_scopes,
@@ -88,9 +86,6 @@ MAX_DEPENDENCY_BLOCKERS = 4
 MAX_COMPLETED_SUCCESSION_WARNING_ITEMS = 5
 MAX_RECENT_COMPLETED_ADVANCEMENT_ITEMS = MAX_TODO_VISIBILITY_LANE_ITEMS
 
-TODO_SOURCE_PROOF_SCHEMA_VERSION = "todo_source_proof_v0"
-TODO_CLOSURE_INTENT_SCHEMA_VERSION = "todo_closure_intent_v0"
-TODO_TERMINAL_CLOSURE_PROOF_SCHEMA_VERSION = "todo_terminal_closure_proof_v0"
 TASK_ORCHESTRATION_AUTHORITY_SCHEMA_VERSION = "task_orchestration_authority_v0"
 TODO_ARCHIVE_STATE_ACTIVE = "active"
 AttentionItemBuilder = Callable[..., dict[str, Any]]
@@ -469,8 +464,10 @@ def canonical_todo_read_record(
 ) -> dict[str, Any]:
     """Copy one already-normalized Todo consumer record without re-deriving it."""
 
+    # Read-policy evaluations are recomputed from a complete source. They must
+    # never enter shadow capture, provider records or the durable source digest.
     record = canonical_record_fields(
-        item,
+        {key: value for key, value in item.items() if key != "succession_evaluation"},
         fields=TODO_CANONICAL_READ_RECORD_FIELDS,
         required_fields=TODO_CANONICAL_REQUIRED_READ_FIELDS,
         label="canonical Todo read record",
@@ -809,77 +806,19 @@ def active_next_action_todo_ids(value: Any) -> set[str]:
     return todo_ids
 
 
-def _normalized_todo_id_list(value: Any) -> list[str]:
-    return normalize_todo_id_list(value)
+def todo_successor_todo_ids(item: dict[str, Any], *, items: list[dict[str, Any]]) -> list[str]:
+    """Compatibility call site for repair-delta; the typed graph owns links."""
+    from .succession_warning import evaluate_succession
 
-
-def todo_successor_todo_ids(
-    item: dict[str, Any],
-    *,
-    items: list[dict[str, Any]],
-) -> list[str]:
-    successor_ids = _normalized_todo_id_list(item.get("successor_todo_ids"))
-    superseded_by = normalize_todo_id(item.get("superseded_by"))
-    if superseded_by and superseded_by not in successor_ids:
-        successor_ids.append(superseded_by)
-
-    source_todo_id = normalize_todo_id(item.get("todo_id"))
-    if not source_todo_id:
-        return successor_ids
-
-    for candidate in items:
-        if not isinstance(candidate, dict):
-            continue
-        candidate_id = normalize_todo_id(candidate.get("todo_id"))
-        if not candidate_id or candidate_id == source_todo_id:
-            continue
-        if todo_item_task_class(candidate) != TODO_TASK_CLASS_ADVANCEMENT:
-            continue
-        resume_when = normalize_todo_resume_when(candidate.get("resume_when")) or ""
-        resume_kind, separator, resume_target = resume_when.partition(":")
-        candidate_unblocks = normalize_todo_id(candidate.get("unblocks_todo_id"))
-        if candidate_unblocks != source_todo_id and not (
-            separator
-            and resume_kind == TODO_RESUME_KIND_TODO_DONE
-            and normalize_todo_id(resume_target) == source_todo_id
-        ):
-            continue
-        if candidate_id not in successor_ids:
-            successor_ids.append(candidate_id)
-    return successor_ids
+    selected = dict(item)
+    evaluation = evaluate_succession([selected], items)[0]
+    return list(evaluation["successor_todo_ids"])
 
 
 def todo_item_is_succession_tracked_completion(item: dict[str, Any]) -> bool:
-    if todo_archive_state(item) != TODO_ARCHIVE_STATE_ACTIVE:
-        return False
-    if not item.get("done"):
-        return False
-    if todo_item_is_deferred(item):
-        return False
-    if todo_item_task_class(item) != TODO_TASK_CLASS_ADVANCEMENT:
-        return False
-    return any(
-        item.get(key) is not None
-        for key in (
-            "action_kind",
-            "task_repository",
-            "continuation_policy",
-            "claimed_by",
-            "completed_at",
-            "updated_at",
-            "required_write_scopes",
-            "required_capabilities",
-            "target_capabilities",
-            "explore_result_node_refs",
-            "decision_scope",
-            "required_decision_scopes",
-            "unblocks_todo_id",
-            "resume_when",
-            "blocks_agent",
-            "excluded_agents",
-            "global_gate",
-        )
-    )
+    from .succession_warning import project_succession
+
+    return project_succession([item])[0]["tracked_completion"] is True
 
 
 def _completed_succession_sort_key(item: dict[str, Any]) -> tuple[str, int]:
@@ -893,25 +832,17 @@ def _completed_succession_sort_key(item: dict[str, Any]) -> tuple[str, int]:
 
 
 def completed_without_successor_items(
-    done_items: list[dict[str, Any]],
-    *,
-    all_items: list[dict[str, Any]],
+    items: list[dict[str, Any]], *, evaluations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    gap_items: list[dict[str, Any]] = []
-    for item in done_items:
-        if not todo_item_is_succession_tracked_completion(item):
-            continue
-        if normalize_todo_no_followup(item.get("no_followup")) is True:
-            continue
-        if todo_successor_todo_ids(item, items=all_items):
+    gap_items = []
+    for item, evaluation in zip(items, evaluations, strict=True):
+        if not evaluation["successor_gap"]:
             continue
         compact = compact_todo_item(item)
         for key in ("note", "evidence", "reason"):
             compact.pop(key, None)
         compact["succession_tracked"] = True
-        compact["recommended_action"] = (
-            "record no_followup=true or add/link a successor todo"
-        )
+        compact["recommended_action"] = "record no_followup=true or add/link a successor todo"
         gap_items.append(compact)
     return sorted(gap_items, key=_completed_succession_sort_key, reverse=True)
 
@@ -1034,6 +965,9 @@ def compact_todo_group(
         available_capabilities=available_capabilities,
         evaluated_at=evaluated_at,
     )
+    from .succession_warning import evaluate_succession
+
+    evaluate_succession(items, resume_source_items)
     return compact_evaluated_todo_group(
         items, source_section=source_section, role=role,
         include_empty_source=include_empty_source, preferred_todo_ids=preferred_todo_ids,
@@ -1054,6 +988,7 @@ def compact_evaluated_todo_group(
     include_task_orchestration_authority: bool = False,
     vision_runs: list[dict[str, Any]] | None = None,
     lineage_items: list[dict[str, Any]] | None = None,
+    full_selection: bool = True,
 ) -> dict[str, Any] | None:
     """Filter/display an already evaluated snapshot, never re-evaluate topology.
 
@@ -1064,17 +999,10 @@ def compact_evaluated_todo_group(
         return None
     projected = _project_summary_lanes(items, preferred_todo_ids)
     lanes = _TodoGroupLanes(**projected["lanes"])
-    source_valid = role in {"user", "agent"} and bool(str(source_section or "").strip())
-    no_followup_items = [
-        item
-        for item in items
-        if todo_done_for_status(item.get("status"))
-        and normalize_todo_no_followup(item.get("no_followup")) is True
-    ]
-    successor_gap_items = completed_without_successor_items(
-        lanes.done_items,
-        all_items=items,
-    )
+    from .succession_warning import project_succession
+
+    succession = project_succession(items, reuse=True)
+    successor_gap_items = completed_without_successor_items(items, evaluations=succession)
     recent_completed_advancement_items = [
         compact_todo_item(item)
         for item in sorted(
@@ -1091,11 +1019,7 @@ def compact_evaluated_todo_group(
     for item in recent_completed_advancement_items:
         for key in ("note", "evidence", "reason"):
             item.pop(key, None)
-    handoff_gates = build_todo_handoff_gate_states(items)
-    route_replan_required = any(
-        item.get("route_continuation_replan_required") is True
-        for item in [*items, *handoff_gates]
-    )
+    handoff_gates = build_todo_handoff_gate_states(items, evaluations=succession)
     watch_only_monitor_items = [
         item
         for item in lanes.monitor_items
@@ -1208,46 +1132,23 @@ def compact_evaluated_todo_group(
         summary["blocker_items"] = [
             compact_todo_item(item) for item in lanes.blocker_items
         ]
-    if not convergent_open_items and not lanes.deferred_items:
-        summary["source_proof"] = {
-            "schema_version": TODO_SOURCE_PROOF_SCHEMA_VERSION,
-            "role": role,
-            "item_count": len(items),
-            "derived": source_valid,
-        }
-    if (
-        source_valid
-        and len(lanes.done_items) + len(watch_only_monitor_items) == len(items)
-        and not convergent_open_items
-        and not successor_gap_items
-        and not route_replan_required
-    ):
-        summary["terminal_closure_proof"] = {
-            "schema_version": TODO_TERMINAL_CLOSURE_PROOF_SCHEMA_VERSION,
-            "role": role,
-            "source_section": source_section,
-            "item_count": len(items),
-            "all_todos_done": not watch_only_monitor_items,
-            "monitor_open_count": len(watch_only_monitor_items),
-            "successor_gap_count": 0,
-            "route_replan_count": 0,
-            "no_followup_count": len(no_followup_items),
-            "derived": True,
-        }
-        if watch_only_monitor_items:
-            summary["terminal_closure_proof"].update(
-                {
-                    "all_convergent_todos_done": True,
-                    "watch_only_monitor_count": len(watch_only_monitor_items),
-                }
-            )
-    if no_followup_items:
-        summary["closure_intent"] = {
-            "schema_version": TODO_CLOSURE_INTENT_SCHEMA_VERSION,
-            "kind": "no_followup",
-            "derived": True,
-            "count": len(no_followup_items),
-        }
+    from ..effect_runtime import effect_runtime_result
+
+    replan_gates = {gate.get("todo_id") for gate in handoff_gates
+        if gate.get("route_continuation_replan_required") is True}
+    closure = effect_runtime_result("todo.succession.closure", {
+        "schema_version": "todo_closure_request_v0", "role": role,
+        "source_section": source_section, "full_selection": full_selection,
+        "rows": [{"status": item.get("status") or ("done" if item.get("done") else "open"),
+            "watch_only": projection_todo_item_is_watch_only_monitor(item),
+            "no_followup": normalize_todo_no_followup(item.get("no_followup")) is True,
+            "successor_gap": evaluation["successor_gap"], "handoff_state": evaluation["handoff_state"],
+            "replan": item.get("route_continuation_replan_required") is True or item.get("todo_id") in replan_gates}
+            for item, evaluation in zip(items, succession, strict=True)],
+    })
+    if not isinstance(closure, dict):
+        raise ValueError("invalid typed Todo closure projection")
+    summary.update(closure)
     if lanes.resume_blocked_items:
         summary["resume_blocked_count"] = len(lanes.resume_blocked_items)
         summary["resume_blocked_items"] = [

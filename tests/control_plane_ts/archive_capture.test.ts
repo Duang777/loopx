@@ -44,3 +44,37 @@ test("duplicate identities cannot be selected by storage order; archived cycles 
   assert.deepEqual(capture(request([{...dependency, resume_when: "todo_done:todo_history"}])).records,
     [{index: 0, role: "agent"}]);
 });
+
+test("capture retains explicit and inferred archived continuations through the same edge index", () => {
+  const active = [{todo_id: "todo_active", successor_todo_ids: ["todo_explicit"], superseded_by: "todo_replaced"}];
+  const archived = [{...dependency, todo_id: "todo_explicit"}, {...dependency, todo_id: "todo_replaced"},
+    {...dependency, todo_id: "todo_inferred", unblocks_todo_id: "todo_active"},
+    {...dependency, todo_id: "todo_transitive", resume_when: "todo_done:todo_inferred"},
+    {...dependency, todo_id: "todo_unrelated"}];
+  assert.deepEqual(capture(request(archived, active)).records,
+    [{index: 1, role: "agent"}, {index: 0, role: "agent"}, {index: 2, role: "agent"}, {index: 3, role: "agent"}]);
+});
+
+test("deferred successor lineage does not become a completed resume prerequisite", () => {
+  const deferred = {...dependency, status: "deferred", done: true};
+  assert.deepEqual(capture(request([deferred], [{todo_id: "todo_active", successor_todo_ids: [dependency.todo_id]}])).records,
+    [{index: 0, role: "agent"}]);
+  assert.deepEqual(capture(request([deferred])).records, [{index: 0, role: "agent"}]);
+  assert.equal(deferred.status, "deferred");
+});
+
+test("retained deferred dependencies remain unsatisfied after capture", async () => {
+  const {evaluateTodoResumeConditions, TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION} =
+    await import("../../loopx/control_plane/todos/resume_condition.ts");
+  const historical = {...dependency, role: "agent", status: "deferred", done: true};
+  const selection = capture(request([historical]));
+  assert.deepEqual(selection.records, [{index: 0, role: "agent"}]);
+  const result = evaluateTodoResumeConditions({schema_version: TODO_RESUME_EVALUATION_REQUEST_SCHEMA_VERSION,
+    items: [{todo_id: "todo_active", role: "agent", status: "open", task_class: "advancement_task", resume_when: "todo_done:todo_history"}],
+    source_items: [historical], rollout_events: [], evaluated_at: "2026-09-20T00:00:00Z"});
+  assert.equal(((result.conditions as Record<string, unknown>[])[0].condition as Record<string, unknown>).satisfied, false);
+});
+
+test("old capture request cannot silently omit the expanded relationship contract", () => {
+  assert.throws(() => capture({...request([]), schema_version: "todo_archive_dependency_capture_request_v0"}), /invalid request/);
+});

@@ -67,35 +67,46 @@ def reconcile_existing_heartbeat_receipt(
             replan_obligation_id=rollout_replan_obligation_id,
         ).effect_id
         if (existing_todo_id or existing_replan_obligation_id) and existing_effect_id:
-            requested_todo_id = normalize_todo_id(args.todo_id)
-            if requested_todo_id and requested_todo_id != existing_todo_id:
-                raise HeartbeatReceiptIdentityConflictError(
-                    "heartbeat receipt settlement identity conflicts with the "
-                    "current selected Todo: explicitly requested Todo differs"
-                )
-            requested_replan_obligation_id = normalize_todo_replan_obligation_id(
-                getattr(args, "replan_obligation_id", None)
+            # A fully settled Turn owns its immutable receipt regardless of a
+            # later explicit CLI choice.  The live decision has already read
+            # the exact settlement and projected ``heartbeat_settled_skip``;
+            # action-selection preflight distinguishes a qualified current
+            # Todo from a conflicting explicit choice before this replay path.
+            settled_replay = (
+                payload.get("effective_action")
+                == EffectiveAction.HEARTBEAT_SETTLED_SKIP.value
             )
-            if (
-                requested_replan_obligation_id
-                and requested_replan_obligation_id != existing_replan_obligation_id
-            ):
-                raise HeartbeatReceiptIdentityConflictError(
-                    "heartbeat receipt settlement identity conflicts with the "
-                    "explicitly requested autonomous replan obligation"
+            if not settled_replay:
+                requested_todo_id = normalize_todo_id(args.todo_id)
+                if requested_todo_id and requested_todo_id != existing_todo_id:
+                    raise HeartbeatReceiptIdentityConflictError(
+                        "heartbeat receipt settlement identity conflicts with the "
+                        "current selected Todo: explicitly requested Todo differs"
+                    )
+                requested_replan_obligation_id = normalize_todo_replan_obligation_id(
+                    getattr(args, "replan_obligation_id", None)
                 )
-            if (
-                existing_todo_id != rollout_todo_id
-                or existing_replan_obligation_id != rollout_replan_obligation_id
-                or existing_effect_id != expected_effect_id
-            ):
-                raise HeartbeatReceiptIdentityConflictError(
-                    "heartbeat receipt settlement identity conflicts with the "
-                    "current settlement binding: receipt="
-                    f"{existing_todo_id or existing_replan_obligation_id}, "
-                    "current="
-                    f"{rollout_todo_id or rollout_replan_obligation_id}"
-                )
+                if (
+                    requested_replan_obligation_id
+                    and requested_replan_obligation_id
+                    != existing_replan_obligation_id
+                ):
+                    raise HeartbeatReceiptIdentityConflictError(
+                        "heartbeat receipt settlement identity conflicts with the "
+                        "explicitly requested autonomous replan obligation"
+                    )
+                if (
+                    existing_todo_id != rollout_todo_id
+                    or existing_replan_obligation_id != rollout_replan_obligation_id
+                    or existing_effect_id != expected_effect_id
+                ):
+                    raise HeartbeatReceiptIdentityConflictError(
+                        "heartbeat receipt settlement identity conflicts with the "
+                        "current settlement binding: receipt="
+                        f"{existing_todo_id or existing_replan_obligation_id}, "
+                        "current="
+                        f"{rollout_todo_id or rollout_replan_obligation_id}"
+                    )
         else:
             rollout_details = quota_rollout_details(
                 payload,
@@ -309,6 +320,12 @@ def quota_rollout_details(
     semantic_replan_obligation_id = replan_obligation_id_from_packet(
         payload.get("replan_action_packet")
     )
+    retained_selection = (
+        payload.get("retained_action_selection")
+        if isinstance(payload.get("retained_action_selection"), Mapping)
+        else {}
+    )
+    retained_disposition = str(retained_selection.get("disposition") or "")
     workspace_causality = build_delivery_workspace_causality(selected_todo)
     interaction = (
         payload.get("interaction_contract")
@@ -357,6 +374,23 @@ def quota_rollout_details(
         "quiet_noop_allowed": bool(agent_channel.get("quiet_noop_allowed")),
         "closeout_required": closeout_required,
     }
+    retained_todo_id = normalize_todo_id(retained_selection.get("retained_todo_id"))
+    if retained_todo_id:
+        retained_bound = retained_disposition == "preserve_retained_todo"
+        details.update(
+            {
+                "pending_action_selection_todo_id": retained_todo_id,
+                "pending_action_selection_state": (
+                    "bound" if retained_bound else "deferred_to_fresh_turn"
+                ),
+                "pending_action_selection_reason": (
+                    "explicit_choice_preserved"
+                    if retained_bound
+                    else "autonomous_replan_preemption"
+                ),
+                "pending_action_selection_settlement_bound": retained_bound,
+            }
+        )
     if workspace_causality:
         details.update(delivery_workspace_causality_event_fields(workspace_causality))
     return details

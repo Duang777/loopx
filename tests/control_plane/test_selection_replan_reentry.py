@@ -30,8 +30,22 @@ def test_deferred_selection_recovers_same_turn_and_settles_once(tmp_path, bindin
         selected_id = TODO_ID
     rc, deferred = _run_cli(registry, runtime, *guard, "--todo-id", selected_id)
     assert rc == 1 and not deferred["should_run"]
-    assert deferred["heartbeat_receipt"]["event_id"] == first["heartbeat_receipt"]["event_id"]
-    assert _heartbeat_receipt_count(runtime, turn) == 1
+    selection_deferred = deferred["action_selection_qualification"]["state"] == "deferred"
+    if selection_deferred:
+        assert deferred["heartbeat_receipt"]["event_id"] != first["heartbeat_receipt"]["event_id"]
+        assert deferred["heartbeat_receipt"]["status"] == "selection_retained"
+        assert deferred["heartbeat_receipt"]["pending_action_selection"] == {
+            "todo_id": selected_id,
+            "state": "deferred",
+            "reason": deferred["action_selection_qualification"]["reason"],
+            "settlement_bound": False,
+        }
+    else:
+        assert deferred["heartbeat_receipt"]["event_id"] == first["heartbeat_receipt"]["event_id"]
+        assert deferred["heartbeat_receipt"]["status"] == "replayed"
+        assert "pending_action_selection" not in deferred["heartbeat_receipt"]
+    expected_before_resume = 2 if selection_deferred else 1
+    assert _heartbeat_receipt_count(runtime, turn) == expected_before_resume
     channel = deferred["interaction_contract"]["cli_channel"]
     assert "settlement_plan" not in channel
     assert "replan_settlement_contract" not in channel
@@ -50,7 +64,7 @@ def test_deferred_selection_recovers_same_turn_and_settles_once(tmp_path, bindin
     [recovery_preview] = envelope["writeback"]["next_cli_actions"]
     assert recovery_preview.startswith("loopx ")
     assert not envelope["writeback"]["spend_after_validation"]
-    assert _heartbeat_receipt_count(runtime, turn) == 1
+    assert _heartbeat_receipt_count(runtime, turn) == expected_before_resume
     argv = shlex.split(command)
     assert argv[argv.index("--turn-instance-id") + 1] == turn
     assert "--todo-id" not in argv and "--replan-obligation-id" not in argv
@@ -63,7 +77,15 @@ def test_deferred_selection_recovers_same_turn_and_settles_once(tmp_path, bindin
     identity = receipt["settlement_identity"]
     assert identity["turn_instance_id"] == turn
     assert ("todo_id" in identity) == (binding == "todo")
-    assert _heartbeat_receipt_count(runtime, turn) == 2
+    if selection_deferred:
+        assert receipt["pending_action_selection"]["todo_id"] == selected_id
+        assert receipt["pending_action_selection"]["settlement_bound"] is (
+            binding == "todo"
+        )
+    else:
+        assert "pending_action_selection" not in receipt
+    expected_after_resume = expected_before_resume + 1
+    assert _heartbeat_receipt_count(runtime, turn) == expected_after_resume
     cli = resumed["interaction_contract"]["cli_channel"]
     assert cli["settlement_plan"]["identity"] == identity
     refresh = next(c for c in cli["next_cli_actions"] if "refresh-state" in c)
@@ -90,5 +112,52 @@ def test_deferred_selection_recovers_same_turn_and_settles_once(tmp_path, bindin
     assert settled["heartbeat_receipt"]["settlement_identity"] == identity
     rc, conflict = _run_cli(registry, runtime, *guard, "--todo-id", "todo_another_selection")
     assert rc == 1 and conflict["ok"] is False
-    assert _heartbeat_receipt_count(runtime, turn) == 2
+    assert _heartbeat_receipt_count(runtime, turn) == expected_after_resume
     assert _spend_run_count(runtime) == 1
+
+
+def test_reentry_never_replaces_retained_selection_with_recommended_todo(tmp_path):
+    project, runtime, registry = _write_fixture(tmp_path)
+    _configure_selectable_alternative(project)
+    turn = "turn-selection-recommendation-drift"
+    guard = ("quota", "should-run", "--codex-app", "--goal-id", GOAL_ID,
+             "--agent-id", AGENT_ID, "--turn-instance-id", turn, "--scan-path", str(project))
+    rc, first = _run_cli(registry, runtime, *guard)
+    assert rc == 0, first
+    assert first["interaction_contract"]["cli_channel"]["selection_required"]
+
+    # The original explicit choice leaves the refreshed frontier while a
+    # different recommended Todo becomes visible under a hard replan.
+    _configure_selected_todo_replan_fixture(project, registry)
+    retained_todo_id = "todo_chain_000000000001"
+    rc, deferred = _run_cli(
+        registry, runtime, *guard, "--todo-id", retained_todo_id
+    )
+    assert rc == 1, deferred
+    assert deferred["action_selection_qualification"]["state"] == "deferred"
+    assert deferred["heartbeat_receipt"]["pending_action_selection"]["todo_id"] == retained_todo_id
+    [command] = deferred["interaction_contract"]["cli_channel"]["next_cli_actions"]
+
+    rc, resumed = _run_generated_cli(command, registry_path=registry)
+    assert rc == 0, resumed
+    assert resumed["decision"] == "autonomous_replan_required"
+    assert resumed.get("selected_todo") is None
+    retained = resumed["retained_action_selection"]
+    assert retained["disposition"] == "bind_autonomous_replan"
+    assert retained["retained_todo_id"] == retained_todo_id
+    assert retained["projected_todo_id"] == SELECTED_REPLAN_TODO_ID
+    identity = resumed["heartbeat_receipt"]["settlement_identity"]
+    assert identity["binding_kind"] == "autonomous_replan"
+    assert "todo_id" not in identity
+    assert resumed["heartbeat_receipt"]["pending_action_selection"] == {
+        "todo_id": retained_todo_id,
+        "state": "deferred_to_fresh_turn",
+        "reason": "autonomous_replan_preemption",
+        "settlement_bound": False,
+    }
+    plan = resumed["interaction_contract"]["cli_channel"]["settlement_plan"]
+    assert plan["identity"] == identity
+    assert all(
+        "--replan-obligation-id" in action and "--todo-id" not in action
+        for action in resumed["interaction_contract"]["cli_channel"]["next_cli_actions"]
+    )

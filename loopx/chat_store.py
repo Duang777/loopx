@@ -14,6 +14,9 @@ import uuid
 from weakref import WeakValueDictionary
 
 from .chat import require_matching_replay, resolve_attached_completion_replay
+from .capabilities.steward_executor.allocation import (
+    normalize_manager_executor_allocation,
+)
 from .chat_event_cache import ChatEventCache
 from .chat_ingress import ChatIngressStore
 from .file_lock import exclusive_file_lock
@@ -298,6 +301,7 @@ class ChatSessionStore(ChatIngressStore):
                     "manager_runtime_sandbox",
                     "manager_runtime_standing_grant",
                     "manager_runtime_tool_classes",
+                    "manager_executor_allocation",
                     "goal_id",
                 }
                 unknown = set(changes) - allowed
@@ -347,6 +351,13 @@ class ChatSessionStore(ChatIngressStore):
                         _opaque_id(item, field="manager_runtime_tool_class")
                         for item in tool_classes
                     ]
+                if "manager_executor_allocation" in changes:
+                    allocation = changes["manager_executor_allocation"]
+                    if not isinstance(allocation, dict):
+                        raise TypeError("manager_executor_allocation must be an object")
+                    changes["manager_executor_allocation"] = (
+                        normalize_manager_executor_allocation(allocation)
+                    )
                 if "codex_home" in changes:
                     home = changes["codex_home"]
                     if (not isinstance(home, str) or not Path(home).is_absolute()
@@ -1406,6 +1417,12 @@ class ChatSessionStore(ChatIngressStore):
                 }
                 if _session_channel(payload).startswith("manager")
                 and payload.get("manager_runtime_profile")
+                else None
+            ),
+            "manager_executor_allocation": (
+                dict(payload["manager_executor_allocation"])
+                if _session_channel(payload).startswith("manager")
+                and isinstance(payload.get("manager_executor_allocation"), dict)
                 else None
             ),
             "resumable": bool(payload.get("upstream_thread_id"))

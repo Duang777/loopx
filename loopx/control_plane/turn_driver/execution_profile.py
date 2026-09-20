@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ...reasoning_effort import REASONING_EFFORTS
 from ..operator_credential import env_text
 
 MANAGED_EXECUTION_PROFILE_SCHEMA_VERSION = "managed_execution_profile_v0"
@@ -29,20 +30,6 @@ MANAGED_EXECUTION_PROFILE_SCHEMA_VERSION = "managed_execution_profile_v0"
 MANAGED_PROVIDER_DEFAULT = "deepseek-official"
 MANAGED_MODEL_DEFAULT = "deepseek-v4-flash"
 MANAGED_REASONING_EFFORT_DEFAULT = "high"
-
-# The provider's reasoning-effort vocabulary. It is shared with the steward
-# channel so a value one managed surface accepts cannot be silently invalid on
-# the other.
-REASONING_EFFORTS = (
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
-)
 
 PROVIDER_ENV_VAR = "LOOPX_TURN_PROVIDER"
 MODEL_ENV_VAR = "LOOPX_TURN_MODEL"

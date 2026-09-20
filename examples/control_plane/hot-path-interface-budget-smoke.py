@@ -388,6 +388,8 @@ def main() -> int:
         assert "presentation_surfaces" not in status_payload, status_payload
         status_items = status_payload["attention_queue"]["items"]
         assert status_items, status_payload
+        # Internal graph evaluations must not expand public status payloads.
+        assert "succession_evaluation" not in json.dumps(status_items)
         assert "task_graph_projection" not in status_items[0], status_items[0]
         route_health = status_payload["runtime_projection_routes"]
         assert route_health["healthy"] is True, route_health

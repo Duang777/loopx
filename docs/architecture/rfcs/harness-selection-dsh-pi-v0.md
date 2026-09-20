@@ -505,12 +505,15 @@ namespace, `steward_executor`
 (`loopx/capabilities/steward_executor/machine_defaults.py`), so a machine's
 steward choice is a first-class operator setting.
 
-The namespace holds exactly three fields and no credential:
+The current namespace keeps the primary endpoint, its model and effort, and a
+closed selection policy. It stores no credential:
 
 ```json
 {
-  "schema_version": "steward_executor_machine_defaults_v0",
+  "schema_version": "steward_executor_machine_defaults_v1",
+  "selection_policy": "preferred",
   "executor_endpoint": "codex",
+  "eligible_endpoints": [],
   "executor_model": null,
   "executor_reasoning_effort": null
 }
@@ -519,10 +522,14 @@ The namespace holds exactly three fields and no credential:
 `executor_endpoint` is required and restricted to the endpoints LoopX ships as
 channel executors; a blank model or reasoning effort means this machine decides
 nothing about that field, so the channel keeps resolving it from the lower
-layers. Unknown fields, an unknown schema version, an unlisted endpoint, and an
-unsupported reasoning effort all fail closed before any effect. An operator who
-needs an adapter the namespace does not list still has
-`LOOPX_MANAGER_ENDPOINT`.
+layers. `preferred` keeps that endpoint as the default while honoring a user's
+explicit executor pick. `pinned` rejects a different explicit pick. `flexible`
+requires a non-empty `eligible_endpoints` pool that contains the primary and
+allows availability fallback only inside that pool. Unknown fields, an unknown
+schema version, an unlisted endpoint, an invalid pool, and an unsupported
+reasoning effort all fail closed before any effect. Stored v0 documents retain
+their former `preferred` behavior. An operator who needs an adapter the
+namespace does not list still has `LOOPX_MANAGER_ENDPOINT`.
 
 Precedence is stated once, in the channel owner
 (`loopx/chat_manager.py`): machine configuration, then the service environment,
@@ -531,7 +538,18 @@ so `loopx machine-config describe` publishes the template and the Dashboard
 edits the same document through the existing revision-locked transaction; the
 channel readback adds `executor_endpoint_source: machine_configuration` plus the
 document's `status` and `configuration_revision`, so a machine decision can be
-told from a service-environment value without reading the store.
+told from a service-environment value without reading the store. The resolved
+endpoint, model, effort, policy, allocation reason, eligible pool and source
+revision are also persisted on the manager Session. A live Session therefore
+keeps the allocation under which it started instead of being reinterpreted
+after a configuration edit or process restart. `loopx chat-endpoint
+inspect-steward` reads the effective configuration and current Session binding
+through the same public projection.
+
+This stage implements the allocation boundary and availability fallback. It
+does not infer semantic task fit from chat prose. A later Agent decision can
+submit an explicit executor pick, but the same pinned or flexible boundary
+still authorizes or rejects it.
 
 What this increment does *not* change: the shipped default stays `codex` on
 every machine, a credential still never selects an endpoint, the managed host
@@ -546,7 +564,7 @@ selection.
 Validation: `tests/capabilities/test_steward_executor_machine_defaults.py`,
 `tests/test_manager_channel_binding.py`, `tests/test_chat_machine_configuration_api.py`,
 `tests/capabilities/test_capability_configuration_ui.py`, and
-`examples/loopx-steward-channel-binding-smoke.py`.
+`apps/presentation/dashboard/src/features/personal-workspace/personal-workspace-contract.test.mjs`.
 
 ### Steward Answer Identity and Runtime Selection (2026-09-16)
 

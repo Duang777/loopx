@@ -951,15 +951,6 @@ def refresh_state_run(
             runtime_root, safe_goal_id, resolved_state_file, require_display=bool(next_action)
         )
         expected_write_state_text = state_text
-        if normalized_delivery_outcome in ACCOUNTABLE_DELIVERY_OUTCOMES:
-            require_accountable_completion_validation(
-                state_text,
-                todo_fields=todo_fields,
-                todo_id=(settlement_identity.todo_id if settlement_identity else None),
-                agent_id=normalized_agent_id or None,
-                delivery_boundary=normalized_delivery_boundary,
-                delivery_outcome=normalized_delivery_outcome,
-            )
         normalized_next_action = normalize_next_action_text(next_action) if next_action else None
         registered_agents = registered_agents_for_goal(registry_goal)
         known_agents = {agent for agent in registered_agents if agent}
@@ -1116,6 +1107,18 @@ def refresh_state_run(
         effective_autonomous_replan_recorded = (
             replan_qualification.autonomous_replan_recorded
         )
+        if normalized_delivery_outcome in ACCOUNTABLE_DELIVERY_OUTCOMES:
+            require_accountable_completion_validation(
+                state_text,
+                todo_fields=todo_fields,
+                todo_id=(settlement_identity.todo_id if settlement_identity else None),
+                agent_id=normalized_agent_id or None,
+                delivery_boundary=normalized_delivery_boundary,
+                delivery_outcome=normalized_delivery_outcome,
+                semantic_replan_recorded=(
+                    effective_autonomous_replan_recorded
+                ),
+            )
         vision_checkpoint = build_vision_checkpoint(
             agent_id=normalized_agent_id or None,
             agent_vision=agent_vision,

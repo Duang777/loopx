@@ -1,3 +1,4 @@
+import {indexInferredSuccessors} from "./succession.ts";
 /** Capture actual archived dependency records, never cached resume conclusions.
  * Missing legacy roles can be reconstructed only from an explicit agent-only
  * task class. User decision authority always requires a recorded user role. */
@@ -8,7 +9,7 @@ import {normalizeTodoResumeWhen, TODO_RESUME_NORMALIZE_REQUEST_SCHEMA_VERSION} f
 import {AGENT_TODO_TASK_CLASSES as AGENT_CLASSES, USER_TODO_TASK_CLASSES as USER_CLASSES} from "./authoring_scope.ts";
 import {isStandingDecisionReceipt} from "./standing_decision.ts";
 
-export const ARCHIVE_CAPTURE_REQUEST_SCHEMA = "todo_archive_dependency_capture_request_v0";
+export const ARCHIVE_CAPTURE_REQUEST_SCHEMA = "todo_archive_dependency_capture_request_v1";
 const fail = (reason: string): never => {throw new EffectRuntimeRequestError(`archive dependency capture: ${reason}`);};
 
 export function captureArchivedTodoDependencies(value: unknown): JsonObject {
@@ -23,6 +24,15 @@ export function captureArchivedTodoDependencies(value: unknown): JsonObject {
     const records = byId.get(item.todo_id) ?? [];
     records.push({item, index}); byId.set(item.todo_id, records);
   }
+  const normalizedResume = (item: JsonObject) => normalizeTodoResumeWhen({
+    schema_version: TODO_RESUME_NORMALIZE_REQUEST_SCHEMA_VERSION, resume_when: item.resume_when ?? null});
+  const inferred = indexInferredSuccessors([...active, ...archived].map(item => {
+    const resume = normalizedResume(item);
+    return {id: typeof item.todo_id === "string" ? item.todo_id : null,
+      advancement: item.task_class === "advancement_task",
+      unblocks: typeof item.unblocks_todo_id === "string" ? item.unblocks_todo_id : null,
+      resumes: resume?.startsWith("todo_done:") ? resume.slice("todo_done:".length) : null};
+  }));
   const activeIds = new Set(active.map(item => item.todo_id));
   const selected = new Map<string, JsonObject>();
   const queue = [...active];
@@ -40,27 +50,35 @@ export function captureArchivedTodoDependencies(value: unknown): JsonObject {
     queue.push(item);
   }
   for (let cursor = 0; cursor < queue.length; cursor++) {
-    const token = normalizeTodoResumeWhen({schema_version: TODO_RESUME_NORMALIZE_REQUEST_SCHEMA_VERSION,
-      resume_when: queue[cursor]!.resume_when ?? null});
-    if (!token || !(token.startsWith("todo_done:") || token.startsWith("monitor_changed:"))) continue;
-    const id = token.slice(token.indexOf(":") + 1), candidates = byId.get(id);
-    if (!candidates) continue; // A genuinely absent target remains an unsatisfied condition.
-    if (candidates.length !== 1 || activeIds.has(id)) fail("duplicate dependency identity");
-    if (selected.has(id)) continue;
-    const {item, index} = candidates[0]!;
-    if (item.archive_state !== "archive" || item.status !== "done" || item.done !== true) {
-      fail("dependency is not an archived completion");
+    const current = queue[cursor]!;
+    const token = normalizedResume(current);
+    const dependency = token && (token.startsWith("todo_done:") || token.startsWith("monitor_changed:"))
+      ? token.slice(token.indexOf(":") + 1) : null;
+    const links = [...new Set([dependency, current.superseded_by,
+      ...(Array.isArray(current.successor_todo_ids) ? current.successor_todo_ids : []),
+      ...(inferred.get(String(current.todo_id)) ?? [])].filter((value): value is string => typeof value === "string"))];
+    for (const id of links) {
+      const candidates = byId.get(id);
+      if (!candidates) continue; // A genuinely absent target remains an unsatisfied condition.
+      if (candidates.length !== 1 || activeIds.has(id)) fail("duplicate dependency identity");
+      const {item, index} = candidates[0]!;
+      // Capture records, not satisfaction. Deferred history is valid evidence
+      // of an unmet todo_done condition; its status must remain deferred.
+      if (item.archive_state !== "archive" || !["done", "deferred"].includes(String(item.status)) || item.done !== true) {
+        fail("dependency is not an archived terminal record");
+      }
+      if (selected.has(id)) continue;
+      const taskClass = String(item.task_class ?? "");
+      const role = item.role ?? (AGENT_CLASSES.has(taskClass) ? "agent" : null);
+      if (!((role === "agent" && AGENT_CLASSES.has(taskClass)) ||
+            (role === "user" && USER_CLASSES.has(taskClass)))) {
+        fail("dependency requires a recorded role and compatible explicit task_class");
+      }
+      // Contradictory user authority on an agent record is not repaired by inference.
+      if (role === "agent" && ["decision_scope", "decision_outcome", "global_gate", "blocks_agent", "bound_agent", "goal_bound"]
+          .some(field => item[field] != null && item[field] !== false)) fail("agent dependency carries user authority");
+      selected.set(id, {index, role}); queue.push(item);
     }
-    const taskClass = String(item.task_class ?? "");
-    const role = item.role ?? (AGENT_CLASSES.has(taskClass) ? "agent" : null);
-    if (!((role === "agent" && AGENT_CLASSES.has(taskClass)) ||
-          (role === "user" && USER_CLASSES.has(taskClass)))) {
-      fail("dependency requires a recorded role and compatible explicit task_class");
-    }
-    // Contradictory user authority on an agent record is not repaired by inference.
-    if (role === "agent" && ["decision_scope", "decision_outcome", "global_gate", "blocks_agent", "bound_agent", "goal_bound"]
-        .some(field => item[field] != null && item[field] !== false)) fail("agent dependency carries user authority");
-    selected.set(id, {index, role}); queue.push(item);
   }
   return {schema_version: "todo_archive_dependency_capture_result_v0", records: [...selected.values()]};
 }

@@ -48,6 +48,8 @@ export type ReceiptBoundReplayPhase =
 
 export interface ReceiptBoundReplaySettlementState {
   binding_kind?: "todo" | "autonomous_replan" | "unbound";
+  /** A validated writeback discharges the binding without Todo completion. */
+  writeback_completes_binding?: boolean;
   completion_receipt_present: boolean;
   durable_writeback_present: boolean;
   quota_spend_present: boolean;
@@ -56,7 +58,8 @@ export interface ReceiptBoundReplaySettlementState {
 export function receiptBoundReplayPhase(
   state: ReceiptBoundReplaySettlementState,
 ): ReceiptBoundReplayPhase {
-  const bindingComplete = state.binding_kind === "autonomous_replan"
+  const bindingComplete = state.binding_kind === "autonomous_replan" ||
+      state.writeback_completes_binding === true
     ? state.durable_writeback_present
     : state.completion_receipt_present;
   if (!bindingComplete) return "open";

@@ -15,6 +15,11 @@ const shippedDefaultBinding = {
   executor_kind: "individual",
   model: "gpt-6-astra",
   model_source: "vendor_default",
+  selection_policy: "preferred",
+  allocation_reason: "product_default",
+  configured_endpoint: null,
+  eligible_endpoints: [],
+  allocation_configuration_revision: "",
   credential_env_var: "",
   operator_credential_configured: false,
   available: null,
@@ -37,6 +42,10 @@ const selectedManagedBinding = {
   executor_endpoint_source: "explicit_config",
   executor_endpoint_default_reason: "",
   executor_kind: "managed",
+  selection_policy: "pinned",
+  allocation_reason: "pinned_configuration",
+  configured_endpoint: "dsh",
+  allocation_configuration_revision: "sha256:managed",
   model: "deepseek-v4-flash",
   model_source: "managed_execution_profile",
   credential_env_var: "DEEPSEEK_API_KEY",
@@ -202,6 +211,10 @@ export const executionChipScenario = {
       if (!defaultNote.includes("出货默认值") || !defaultNote.includes("codex")) {
         throw new Error(`Shipped default did not explain itself: ${defaultNote}`);
       }
+      const defaultDetails = await page.locator(".personal-runtime-details").innerText();
+      if (!defaultDetails.includes("选择：偏好 · 产品默认路径")) {
+        throw new Error(`Shipped allocation did not explain its policy and reason: ${defaultDetails}`);
+      }
       if (defaultNote.includes("operator 凭据")) {
         throw new Error(`The shipped default claimed a credential branch: ${defaultNote}`);
       }
@@ -259,6 +272,11 @@ export const executionChipScenario = {
       }
       if (text.includes("codex")) {
         throw new Error(`The selected managed host must not still report the CLI endpoint: ${text}`);
+      }
+      await managed.page.locator(".personal-runtime-details > summary").click();
+      const allocation = await managed.page.locator(".personal-runtime-details").innerText();
+      if (!allocation.includes("选择：锁定 · 由本机配置锁定")) {
+        throw new Error(`Pinned steward allocation was not readable: ${allocation}`);
       }
       await assertHairlineRow(managed.page);
       await managed.page.screenshot({ animations: "disabled", fullPage: false,

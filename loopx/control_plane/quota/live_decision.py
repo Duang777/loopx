@@ -16,10 +16,16 @@ from ..capability_hooks import (
 from .settlement import (
     read_heartbeat_settlement,
 )
+from .effect_program import ReceiptBoundReplayPhase
 from ..work_items.interaction_contract import (
     build_interaction_contract,
     build_protocol_action_packet,
 )
+from ..work_items.action_portfolio import reconcile_retained_action_selection
+from ..work_items.autonomous_replan_obligation import (
+    replan_obligation_id_from_packet,
+)
+from ..todos.contract import normalize_todo_id
 from ..scheduler.execution_context import (
     SchedulerExecutionContextResolution,
     resolve_scheduler_execution_context,
@@ -31,6 +37,91 @@ from .unsettled_host_turn import (
 
 HostObservationResolver = Callable[..., Mapping[str, Any]]
 BoundedResearchFrontierProjector = Callable[..., Mapping[str, Any] | None]
+
+
+def _apply_retained_action_selection_reentry(
+    payload: dict[str, Any],
+    *,
+    retained_todo_id: str | None,
+    available_capabilities: list[str] | None,
+    scheduler_execution_context: (
+        Mapping[str, Any] | SchedulerExecutionContextResolution | None
+    ),
+    turn_instance_id: str | None,
+    runtime_root: Path,
+) -> None:
+    """Fence a no-argument reentry with its last explicit Todo choice."""
+
+    normalized_retained = normalize_todo_id(retained_todo_id)
+    if normalized_retained is None:
+        return
+    selected = (
+        payload.get("selected_todo")
+        if isinstance(payload.get("selected_todo"), Mapping)
+        else {}
+    )
+    projected_todo_id = normalize_todo_id(selected.get("todo_id"))
+    verdict = reconcile_retained_action_selection(
+        retained_todo_id=normalized_retained,
+        projected_todo_id=projected_todo_id,
+        effective_action=str(payload.get("effective_action") or ""),
+        replan_obligation_id=replan_obligation_id_from_packet(
+            payload.get("replan_action_packet")
+        ),
+    )
+    payload["retained_action_selection"] = verdict
+    disposition = verdict.get("disposition")
+    if disposition == "preserve_retained_todo":
+        return
+    if disposition == "bind_autonomous_replan":
+        payload.pop("selected_todo", None)
+        payload.pop("todo_id", None)
+        payload.pop("agent_lane_next_action", None)
+        payload["deferred_action_selection"] = {
+            "todo_id": normalized_retained,
+            "reason": "autonomous_replan_preemption",
+            "resume": "fresh_turn_after_replan_closeout",
+        }
+    elif disposition == "require_explicit_selection":
+        projection = verdict.get("projection")
+        if not isinstance(projection, Mapping):
+            raise RuntimeError(
+                "TypeScript retained action-selection projection is missing"
+            )
+        decision_patch = projection.get("decision_patch")
+        obligation_patch = projection.get("execution_obligation_patch")
+        clear_fields = projection.get("clear_fields")
+        if (
+            not isinstance(decision_patch, Mapping)
+            or not isinstance(obligation_patch, Mapping)
+            or not isinstance(clear_fields, list)
+            or not all(isinstance(field, str) for field in clear_fields)
+        ):
+            raise RuntimeError(
+                "TypeScript retained action-selection projection is malformed"
+            )
+        payload.update(decision_patch)
+        obligation = (
+            dict(payload.get("execution_obligation") or {})
+            if isinstance(payload.get("execution_obligation"), Mapping)
+            else {}
+        )
+        obligation.update(obligation_patch)
+        payload["execution_obligation"] = obligation
+        for field in clear_fields:
+            payload.pop(field, None)
+    else:
+        raise RuntimeError(
+            "TypeScript retained action-selection disposition is unsupported"
+        )
+    payload["interaction_contract"] = build_interaction_contract(
+        payload,
+        available_capabilities=available_capabilities,
+        scheduler_execution_context=scheduler_execution_context,
+        turn_instance_id=turn_instance_id,
+        runtime_root=str(runtime_root),
+    )
+    payload["protocol_action_packet"] = build_protocol_action_packet(payload)
 
 
 def _fresh_read_covers_all_pending_material(
@@ -392,6 +483,7 @@ def build_live_quota_should_run_decision(
     receipt_bound_todo_id: str | None = None,
     requested_action_todo_id: str | None = None,
     receipt_bound_replan_obligation_id: str | None = None,
+    retained_action_selection_todo_id: str | None = None,
     turn_instance_id: str | None = None,
     interaction_projection_hooks: Sequence[InteractionProjectionHookRegistration]
     | None = None,
@@ -479,6 +571,14 @@ def build_live_quota_should_run_decision(
         turn_instance_id=turn_instance_id,
         runtime_root=runtime_root,
     )
+    _apply_retained_action_selection_reentry(
+        payload,
+        retained_todo_id=retained_action_selection_todo_id,
+        available_capabilities=available_capabilities,
+        scheduler_execution_context=resolved_context,
+        turn_instance_id=turn_instance_id,
+        runtime_root=runtime_root,
+    )
     remembered_runtime = (payload.get("agent_identity") or {}).get(
         "runtime_available_capabilities"
     )
@@ -514,16 +614,21 @@ def build_live_quota_should_run_decision(
         interaction = payload.get("interaction_contract")
         if isinstance(interaction, dict):
             interaction.update(projections)
-    apply_unsettled_host_turn_recovery_if_required(
-        payload,
-        registry_path=registry_path,
-        runtime_root=runtime_root,
-        goal_id=goal_id,
-        agent_id=agent_id,
-        current_turn_instance_id=turn_instance_id,
-        available_capabilities=available_capabilities,
-        scheduler_execution_context=resolved_context,
-    )
+    # A settled receipt owns this host Turn until it ends.  Looking for an older
+    # unsettled Turn here can overwrite the settled-skip route with a recovery
+    # obligation and then select a successor against the immutable receipt
+    # identity.  Leave prior-Turn recovery to the next fresh Turn instead.
+    if receipt_bound_replay_phase is not ReceiptBoundReplayPhase.SETTLED:
+        apply_unsettled_host_turn_recovery_if_required(
+            payload,
+            registry_path=registry_path,
+            runtime_root=runtime_root,
+            goal_id=goal_id,
+            agent_id=agent_id,
+            current_turn_instance_id=turn_instance_id,
+            available_capabilities=available_capabilities,
+            scheduler_execution_context=resolved_context,
+        )
     if hook_dispatch["failures"]:
         payload["capability_hook_dispatch"] = {
             key: value for key, value in hook_dispatch.items() if key != "projections"

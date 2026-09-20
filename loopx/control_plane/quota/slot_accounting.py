@@ -70,6 +70,7 @@ def _todo_binding_error(
     requested_replan_obligation_id: str | None,
     agent_id: str | None,
     settlement_identity: SettlementIdentity | None = None,
+    delivery_run: dict[str, Any] | None = None,
 ) -> str | None:
     selected = (
         before.get("selected_todo")
@@ -93,6 +94,7 @@ def _todo_binding_error(
             todo_id=requested_todo_id,
             agent_id=agent_id,
             selected_todo=selected,
+            delivery_run=delivery_run,
         )
     selected_todo_id = normalize_todo_id(selected.get("todo_id"))
     if requested_todo_id and selected_todo_id and requested_todo_id != selected_todo_id:
@@ -117,6 +119,7 @@ def _todo_binding_error(
         todo_id=requested_todo_id,
         agent_id=agent_id,
         selected_todo=selected,
+        delivery_run=None,
     )
 
 
@@ -644,6 +647,9 @@ def build_quota_slot_preview_for_decision(
         requested_replan_obligation_id=normalized_replan_obligation_id,
         agent_id=safe_requested_agent_id,
         settlement_identity=settlement_identity,
+        delivery_run=(
+            delivery_completion_run if settlement_identity is not None else None
+        ),
     )
     if binding_error:
         return {

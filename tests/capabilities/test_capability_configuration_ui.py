@@ -91,6 +91,12 @@ def test_steward_executor_editor_is_machine_only_and_typed() -> None:
     assert fields["executor_endpoint"]["input_kind"] == "select"
     assert fields["executor_endpoint"]["options"] == ["codex", "dsh"]
     assert fields["executor_endpoint"]["required"] is True
+    assert fields["selection_policy"]["options"] == [
+        "preferred",
+        "pinned",
+        "flexible",
+    ]
+    assert fields["eligible_endpoints"]["input_kind"] == "string_list"
     assert fields["executor_model"]["input_kind"] == "text"
     assert fields["executor_model"]["nullable"] is True
     assert fields["executor_reasoning_effort"]["input_kind"] == "select"
@@ -116,8 +122,10 @@ def test_steward_executor_editor_is_machine_only_and_typed() -> None:
                     "executor_reasoning_effort": "high",
                 },
                 "configuration_template": {
-                    "schema_version": "steward_executor_machine_defaults_v0",
+                    "schema_version": "steward_executor_machine_defaults_v1",
+                    "selection_policy": "preferred",
                     "executor_endpoint": "codex",
+                    "eligible_endpoints": [],
                     "executor_model": None,
                     "executor_reasoning_effort": None,
                 },

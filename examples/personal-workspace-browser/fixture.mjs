@@ -874,8 +874,10 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
       runtime_profile: "restricted",
     };
     const stewardExecutorConfiguration = {
-      schema_version: "steward_executor_machine_defaults_v0",
+      schema_version: "steward_executor_machine_defaults_v1",
+      selection_policy: "preferred",
       executor_endpoint: "codex",
+      eligible_endpoints: [],
       executor_model: null,
       executor_reasoning_effort: null,
     };
@@ -920,8 +922,8 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
           {
             namespace: "steward_executor",
             title: "Steward executor",
-            description: "Executor, model, and reasoning effort the steward channel answers on for this machine.",
-            schema_versions: ["steward_executor_machine_defaults_v0"],
+            description: "Executor, model, reasoning effort, and selection boundary for this machine's steward channel.",
+            schema_versions: ["steward_executor_machine_defaults_v0", "steward_executor_machine_defaults_v1"],
             configuration_template: stewardExecutorConfiguration,
             template_status: "ready",
           },
@@ -971,7 +973,7 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         }, {
           capability_id: "steward_executor",
           display_name: "Steward executor",
-          description: "Executor, model, and reasoning effort the steward channel answers on for this machine.",
+          description: "Executor, model, reasoning effort, and selection boundary for this machine's steward channel.",
           available_scopes: ["machine"],
           machine_namespace: "steward_executor",
           configuration_editor: {
@@ -980,12 +982,25 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
             supported_scopes: ["machine"],
             writable_scopes: ["machine"],
             fields: [{
+              key: "selection_policy",
+              label: "Selection policy",
+              description: "Preferred permits an explicit user choice; pinned rejects another executor; flexible permits fallback only inside the eligible pool.",
+              input_kind: "select",
+              required: true,
+              options: ["preferred", "pinned", "flexible"],
+            }, {
               key: "executor_endpoint",
-              label: "Steward executor",
+              label: "Primary steward executor",
               description: "The executor this machine's steward channel answers on. The choice outranks the Chat service environment.",
               input_kind: "select",
               required: true,
               options: ["codex", "dsh"],
+            }, {
+              key: "eligible_endpoints",
+              label: "Flexible eligible executors",
+              description: "One authorized executor id per line. Required only for flexible selection; include the primary executor.",
+              input_kind: "string_list",
+              required: false,
             }, {
               key: "executor_model",
               label: "Model",
@@ -1472,6 +1487,33 @@ export async function installApi(page, { goalSubagentConfigurationEnabled = true
         const paused = {...current, active_turn_id: null, paused: true, native: {...current.native, status: "paused"}};
         loopxModes.set(sessionId, paused);
         await route.fulfill({json: paused});
+        return;
+      }
+      if (body.operation === "read") {
+        if (body.operation_id === "accepted-synthesis") {
+          await route.fulfill({json: {ok: true, operation_id: body.operation_id, request_id: "request-synthesis",
+            agent_id: "synthesizer", todo_id: "todo_synthesis", status: "accepted", worker_active: false,
+            recovery_required: false, artifacts: [{ref: "synthesis.json", sha256: "e".repeat(64), text: '{"accepted_cash_flow":75}'}],
+            dependencies: [{operation_id: "accepted-analysis", ref: "report.json", sha256: "d".repeat(64),
+              input_ref: "accepted-input.json", relation: "uses", state: current.fixtureAdoptionState ?? "current"}]}});
+        } else if (body.operation_id !== "accepted-analysis") {
+          await route.fulfill({status: 409, json: {ok: false, error: "delegation artifact unavailable"}});
+        } else {
+          await route.fulfill({json: {ok: true, operation_id: body.operation_id, request_id: "request-analysis",
+            agent_id: "local-analyst", todo_id: "todo_analysis", status: "accepted", worker_active: false,
+            recovery_required: false,
+            ...(current.fixtureAdoptionState ? {adoptions: [{requester_agent_id: "lead", consumer_operation_id: "accepted-synthesis",
+              consumer_request_id: "request-synthesis", consumer_agent_id: "synthesizer", consumer_todo_id: "todo_synthesis",
+              source_artifacts: [{ref: "report.json", sha256: "d".repeat(64)}],
+              consumer_artifacts: [{ref: "synthesis.json", sha256: "e".repeat(64)}], state: current.fixtureAdoptionState}]} : {}),
+            artifacts: [{ref: "report.json", sha256: "d".repeat(64),
+              text: '{"cash_flow":75,"note":"<script>window.artifactExecuted=true</script>"}'}]}});
+        }
+        return;
+      }
+      if (body.operation === "message") {
+        current.ingress.push({client_ingress_id: body.operation_id, mode: "loopx_inbox", status: "pending"});
+        await route.fulfill({json: {ok: true, status: "pending", delivery_mode: "inbox"}});
         return;
       }
       if (body.operation === "operations") {

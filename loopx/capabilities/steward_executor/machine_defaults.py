@@ -27,6 +27,7 @@ import importlib
 from pathlib import Path
 from typing import Any
 
+from ...reasoning_effort import REASONING_EFFORTS
 from ..machine_configuration.contract import (
     MACHINE_CONFIGURATION_SCHEMA,
     MachineConfigurationNamespace,
@@ -34,11 +35,22 @@ from ..machine_configuration.contract import (
 )
 
 STEWARD_EXECUTOR_NAMESPACE = "steward_executor"
-STEWARD_EXECUTOR_SCHEMA = "steward_executor_machine_defaults_v0"
+STEWARD_EXECUTOR_SCHEMA_V0 = "steward_executor_machine_defaults_v0"
+STEWARD_EXECUTOR_SCHEMA = "steward_executor_machine_defaults_v1"
 STEWARD_EXECUTOR_EFFECTIVE_SCHEMA = "steward_executor_effective_defaults_v0"
 EXECUTOR_ENDPOINT_FIELD = "executor_endpoint"
 MODEL_FIELD = "executor_model"
 REASONING_EFFORT_FIELD = "executor_reasoning_effort"
+SELECTION_POLICY_FIELD = "selection_policy"
+ELIGIBLE_ENDPOINTS_FIELD = "eligible_endpoints"
+PREFERRED_SELECTION_POLICY = "preferred"
+PINNED_SELECTION_POLICY = "pinned"
+FLEXIBLE_SELECTION_POLICY = "flexible"
+STEWARD_SELECTION_POLICIES = (
+    PREFERRED_SELECTION_POLICY,
+    PINNED_SELECTION_POLICY,
+    FLEXIBLE_SELECTION_POLICY,
+)
 _TEXT_LIMIT = 100
 
 
@@ -58,8 +70,7 @@ def steward_executor_endpoints() -> frozenset[str]:
 def steward_reasoning_efforts() -> tuple[str, ...]:
     """Return the reasoning-effort vocabulary a selected executor accepts."""
 
-    manager = importlib.import_module("loopx.chat_manager")
-    return tuple(manager.MANAGER_REASONING_EFFORTS)
+    return REASONING_EFFORTS
 
 
 def _optional_text(value: Any, *, field: str) -> str | None:
@@ -86,6 +97,13 @@ def normalize_steward_executor_machine_defaults(
 ) -> dict[str, Any]:
     """Normalize one typed steward-executor machine default, fail closed."""
 
+    schema_version = str(raw.get("schema_version") or "").strip()
+    if schema_version not in {STEWARD_EXECUTOR_SCHEMA_V0, STEWARD_EXECUTOR_SCHEMA}:
+        raise ValueError(
+            "steward_executor must use "
+            f"{STEWARD_EXECUTOR_SCHEMA_V0} or {STEWARD_EXECUTOR_SCHEMA}"
+        )
+    v1_fields = {SELECTION_POLICY_FIELD, ELIGIBLE_ENDPOINTS_FIELD}
     unknown = sorted(
         set(raw)
         - {
@@ -93,14 +111,13 @@ def normalize_steward_executor_machine_defaults(
             EXECUTOR_ENDPOINT_FIELD,
             MODEL_FIELD,
             REASONING_EFFORT_FIELD,
+            *(v1_fields if schema_version == STEWARD_EXECUTOR_SCHEMA else set()),
         }
     )
     if unknown:
         raise ValueError(
             "steward_executor contains unsupported fields: " + ", ".join(unknown)
         )
-    if raw.get("schema_version") != STEWARD_EXECUTOR_SCHEMA:
-        raise ValueError(f"steward_executor must use {STEWARD_EXECUTOR_SCHEMA}")
     endpoint = str(raw.get(EXECUTOR_ENDPOINT_FIELD) or "").strip()
     supported = steward_executor_endpoints()
     if endpoint not in supported:
@@ -117,11 +134,52 @@ def normalize_steward_executor_machine_defaults(
             "steward_executor.reasoning_effort must be one of "
             + ", ".join(supported_efforts)
         )
-    return {
-        "schema_version": STEWARD_EXECUTOR_SCHEMA,
+    normalized = {
+        "schema_version": schema_version,
         EXECUTOR_ENDPOINT_FIELD: endpoint,
         MODEL_FIELD: _optional_text(raw.get(MODEL_FIELD), field=MODEL_FIELD),
         REASONING_EFFORT_FIELD: reasoning_effort,
+    }
+    if schema_version == STEWARD_EXECUTOR_SCHEMA_V0:
+        return normalized
+
+    selection_policy = str(raw.get(SELECTION_POLICY_FIELD) or "").strip()
+    if selection_policy not in STEWARD_SELECTION_POLICIES:
+        raise ValueError(
+            "steward_executor.selection_policy must be preferred, pinned, or flexible"
+        )
+    eligible_raw = raw.get(ELIGIBLE_ENDPOINTS_FIELD)
+    if not isinstance(eligible_raw, list):
+        raise TypeError("steward_executor.eligible_endpoints must be a list")
+    eligible_endpoints = [str(item).strip() for item in eligible_raw]
+    if any(not item for item in eligible_endpoints):
+        raise ValueError("steward_executor.eligible_endpoints must not contain blanks")
+    if len(set(eligible_endpoints)) != len(eligible_endpoints):
+        raise ValueError("steward_executor.eligible_endpoints must not contain duplicates")
+    unsupported = sorted(set(eligible_endpoints) - supported)
+    if unsupported:
+        raise ValueError(
+            "steward_executor.eligible_endpoints contains unsupported endpoints: "
+            + ", ".join(unsupported)
+        )
+    if selection_policy == FLEXIBLE_SELECTION_POLICY:
+        if not eligible_endpoints:
+            raise ValueError(
+                "steward_executor.eligible_endpoints must not be empty for flexible selection"
+            )
+        if endpoint not in eligible_endpoints:
+            raise ValueError(
+                "steward_executor.executor_endpoint must belong to eligible_endpoints "
+                "for flexible selection"
+            )
+    elif eligible_endpoints:
+        raise ValueError(
+            "steward_executor.eligible_endpoints is only valid for flexible selection"
+        )
+    return {
+        **normalized,
+        SELECTION_POLICY_FIELD: selection_policy,
+        ELIGIBLE_ENDPOINTS_FIELD: eligible_endpoints,
     }
 
 
@@ -130,17 +188,20 @@ def steward_executor_machine_configuration_namespace() -> (
 ):
     return MachineConfigurationNamespace(
         namespace=STEWARD_EXECUTOR_NAMESPACE,
-        schema_versions=frozenset({STEWARD_EXECUTOR_SCHEMA}),
+        schema_versions=frozenset(
+            {STEWARD_EXECUTOR_SCHEMA_V0, STEWARD_EXECUTOR_SCHEMA}
+        ),
         normalize=normalize_steward_executor_machine_defaults,
         project_public=lambda value: dict(value),
         apply_public_update=lambda _current, update: dict(update),
         title="Steward executor",
         description=(
-            "Selects the executor, model, and reasoning effort the steward channel "
-            "runs on this machine, ahead of the Chat service environment and the "
-            "shipped default. It selects a provider-billed runtime; it grants no "
-            "authority and stores no credential. A blank model or reasoning effort "
-            "keeps the lower layer's value."
+            "Selects the executor, model, reasoning effort, and selection policy "
+            "the steward channel runs on this machine, ahead of the Chat service "
+            "environment and the shipped default. Preferred permits an explicit "
+            "user override, pinned rejects a different route, and flexible limits "
+            "automatic fallback to an authorized pool. It selects a provider-billed "
+            "runtime; it grants no authority and stores no credential."
         ),
         documentation={
             "path": "docs/architecture/rfcs/harness-selection-dsh-pi-v0.md",
@@ -151,7 +212,9 @@ def steward_executor_machine_configuration_namespace() -> (
         },
         default_configuration={
             "schema_version": STEWARD_EXECUTOR_SCHEMA,
+            SELECTION_POLICY_FIELD: PREFERRED_SELECTION_POLICY,
             EXECUTOR_ENDPOINT_FIELD: "codex",
+            ELIGIBLE_ENDPOINTS_FIELD: [],
             MODEL_FIELD: None,
             REASONING_EFFORT_FIELD: None,
         },
@@ -166,6 +229,8 @@ def _projection(
     executor_endpoint: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    selection_policy: str = PREFERRED_SELECTION_POLICY,
+    eligible_endpoints: list[str] | None = None,
     repair: str = "",
 ) -> dict[str, Any]:
     return {
@@ -176,6 +241,8 @@ def _projection(
         EXECUTOR_ENDPOINT_FIELD: executor_endpoint,
         MODEL_FIELD: model,
         REASONING_EFFORT_FIELD: reasoning_effort,
+        SELECTION_POLICY_FIELD: selection_policy,
+        ELIGIBLE_ENDPOINTS_FIELD: list(eligible_endpoints or []),
         **({"repair": repair} if repair else {}),
     }
 
@@ -224,6 +291,10 @@ def effective_steward_executor_defaults(
         executor_endpoint=str(normalized[EXECUTOR_ENDPOINT_FIELD]),
         model=normalized[MODEL_FIELD],
         reasoning_effort=normalized[REASONING_EFFORT_FIELD],
+        selection_policy=str(
+            normalized.get(SELECTION_POLICY_FIELD) or PREFERRED_SELECTION_POLICY
+        ),
+        eligible_endpoints=list(normalized.get(ELIGIBLE_ENDPOINTS_FIELD) or []),
     )
 
 

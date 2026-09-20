@@ -595,6 +595,18 @@ def test_same_turn_material_monitor_poll_is_no_spend_closeout_before_successor(
     )
     successor_id = poll["successor_todo_ids"][0]
     assert poll["after"]["selected_todo"]["todo_id"] == admitted["todo_id"]
+    assert poll["turn_continuation"] == {
+        "schema_version": "quota_turn_continuation_v0",
+        "settlement_binding_matches_observation": True,
+        "current_turn_settled": True,
+        "same_turn_independent_settlement_allowed": False,
+        "next_turn_required": True,
+        "next_action": (
+            "rerun quota should-run with a fresh --turn-instance-id before "
+            "independent work"
+        ),
+        "reason": "the committed monitor-poll is this Turn's single settlement identity",
+    }
 
     # The production CLI must not confuse an observation row with a committed
     # closeout. Keep the exact guard and Todo fixed while corrupting only the

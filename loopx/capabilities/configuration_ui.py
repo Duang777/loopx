@@ -151,8 +151,20 @@ def capability_configuration_editor(
             "writable_scopes": ["machine"],
             "fields": [
                 _field(
+                    "selection_policy",
+                    "Selection policy",
+                    "select",
+                    options=["preferred", "pinned", "flexible"],
+                    required=True,
+                    description=(
+                        "Preferred supplies a default and permits an explicit user "
+                        "choice. Pinned rejects another executor. Flexible permits "
+                        "automatic fallback only inside the eligible pool."
+                    ),
+                ),
+                _field(
                     "executor_endpoint",
-                    "Steward executor",
+                    "Primary steward executor",
                     "select",
                     options=steward_endpoints,
                     required=True,
@@ -160,6 +172,15 @@ def capability_configuration_editor(
                         "The executor this machine's steward channel answers on: the "
                         "interactive CLI login, or the operator-billed managed host. "
                         "The choice outranks the Chat service environment."
+                    ),
+                ),
+                _field(
+                    "eligible_endpoints",
+                    "Flexible eligible executors",
+                    "string_list",
+                    description=(
+                        "One authorized executor id per line. Required only for "
+                        "flexible selection; include the primary executor."
                     ),
                 ),
                 _field(

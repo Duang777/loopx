@@ -24,6 +24,7 @@ from loopx.chat_manager import (
     MANAGER_ENDPOINT_SOURCE_EXPLICIT_CONFIG,
     MANAGER_ENDPOINT_SOURCE_MACHINE_CONFIGURATION,
     MANAGER_ENDPOINT_SOURCE_PRODUCT_DEFAULT,
+    MANAGER_ENDPOINT_SOURCE_SESSION_BINDING,
     MANAGER_MODEL_SOURCE_MANAGED_PROFILE,
     MANAGER_MODEL_SOURCE_ENV_OVERRIDE,
     MANAGER_MODEL_SOURCE_MACHINE_CONFIGURATION,
@@ -428,8 +429,161 @@ def test_open_manager_session_resolves_the_endpoint_only_when_unset(tmp_path):
     assert calls[-1]["mode"] == "new"
 
 
+def test_pinned_steward_rejects_a_different_explicit_executor(tmp_path):
+    class Controller:
+        def steward_executor_defaults(self):
+            return {
+                "status": "ready",
+                "configuration_revision": "sha256:pinned",
+                "selection_policy": "pinned",
+                "executor_endpoint": "codex",
+                "eligible_endpoints": [],
+                "executor_model": None,
+                "executor_reasoning_effort": None,
+            }
+
+        def capabilities(self):
+            return [
+                {"agent_id": "codex", "available": True},
+                {"agent_id": "dsh", "available": True},
+            ]
+
+    with pytest.raises(CodexChatAgentError) as raised:
+        open_manager_session(
+            controller=Controller(),
+            goal_id="g",
+            work_dir=tmp_path,
+            executor_endpoint_id="dsh",
+        )
+    assert raised.value.error_code == "manager_executor_pinned"
+
+
+def test_flexible_steward_falls_back_only_inside_the_authorized_pool(tmp_path):
+    calls: list[dict[str, object]] = []
+
+    class Controller:
+        def steward_executor_defaults(self):
+            return {
+                "status": "ready",
+                "configuration_revision": "sha256:flexible",
+                "selection_policy": "flexible",
+                "executor_endpoint": "dsh",
+                "eligible_endpoints": ["dsh", "codex"],
+                "executor_model": "managed-primary-model",
+                "executor_reasoning_effort": "max",
+            }
+
+        def capabilities(self):
+            return [
+                {"agent_id": "dsh", "available": False},
+                {"agent_id": "codex", "available": True},
+            ]
+
+        def open_session(self, **kwargs):
+            calls.append(kwargs)
+            return {"session_id": "fixture"}, False
+
+    open_manager_session(controller=Controller(), goal_id="g", work_dir=tmp_path)
+
+    assert calls[-1]["agent_id"] == "codex"
+    allocation = calls[-1]["manager_executor_allocation"]
+    assert allocation["allocation_reason"] == "flexible_availability_fallback"
+    assert allocation["eligible_endpoints"] == ["dsh", "codex"]
+    assert allocation["model"] == "gpt-6-astra"
+    assert allocation["reasoning_effort"] == "high"
+
+    with pytest.raises(CodexChatAgentError) as raised:
+        open_manager_session(
+            controller=Controller(),
+            goal_id="g",
+            work_dir=tmp_path,
+            executor_endpoint_id="claude-code",
+        )
+    assert raised.value.error_code == "manager_executor_outside_flexible_pool"
+
+
+def test_active_steward_session_keeps_its_allocation_after_configuration_changes(
+    tmp_path,
+):
+    store = ChatSessionStore(tmp_path / "runtime")
+    session = store.create_session(
+        goal_id="loopx-manager",
+        agent_id="codex",
+        adapter_kind="codex",
+        upstream_thread_id="fixture-session",
+        channel_id="manager",
+    )
+    store.update_session(
+        session["session_id"],
+        manager_executor_allocation={
+            "schema_version": "manager_executor_allocation_v0",
+            "selection_policy": "preferred",
+            "allocation_reason": "user_explicit",
+            "executor_endpoint": "codex",
+            "executor_endpoint_source": "explicit_user_intent",
+            "executor_endpoint_default_reason": "",
+            "configured_endpoint": "codex",
+            "eligible_endpoints": [],
+            "configuration_revision": "sha256:before",
+            "available": True,
+            "model": "gpt-fixture",
+            "model_source": "machine_configuration",
+            "reasoning_effort": "high",
+        },
+    )
+
+    binding = manager_channel_binding(
+        {"DEEPSEEK_API_KEY": "fixture"},
+        machine_defaults={
+            "status": "ready",
+            "configuration_revision": "sha256:after",
+            "selection_policy": "pinned",
+            "executor_endpoint": "dsh",
+            "eligible_endpoints": [],
+            "executor_model": "deepseek-v4-flash",
+            "executor_reasoning_effort": "high",
+        },
+        session=manager_channel_session(store),
+    )
+
+    assert binding["executor_endpoint"] == "codex"
+    assert binding["executor_endpoint_source"] == MANAGER_ENDPOINT_SOURCE_SESSION_BINDING
+    assert binding["model"] == "gpt-fixture"
+    assert binding["allocation_reason"] == "user_explicit"
+    assert binding["allocation_configuration_revision"] == "sha256:before"
+
+    calls: list[dict[str, object]] = []
+
+    class Controller:
+        def __init__(self):
+            self.store = store
+
+        def steward_executor_defaults(self):
+            return {
+                "status": "ready",
+                "configuration_revision": "sha256:after",
+                "selection_policy": "pinned",
+                "executor_endpoint": "dsh",
+                "eligible_endpoints": [],
+                "executor_model": "deepseek-v4-flash",
+                "executor_reasoning_effort": "high",
+            }
+
+        def open_session(self, **kwargs):
+            calls.append(kwargs)
+            return dict(session), True
+
+    open_manager_session(controller=Controller(), goal_id="g", work_dir=tmp_path)
+
+    assert calls[-1]["agent_id"] == "codex"
+    assert calls[-1]["manager_executor_allocation"]["model"] == "gpt-fixture"
+    assert calls[-1]["manager_executor_allocation"]["configuration_revision"] == (
+        "sha256:before"
+    )
+
+
 def test_chat_entry_point_never_lets_a_client_default_pick_the_steward_executor(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     """The Codex App Chat server is an entry point, not the channel's owner.
 
@@ -444,6 +598,17 @@ def test_chat_entry_point_never_lets_a_client_default_pick_the_steward_executor(
     class Controller:
         def close(self) -> None:
             return None
+
+        def steward_executor_defaults(self):
+            return {
+                "status": "ready",
+                "configuration_revision": "sha256:fixture",
+                "selection_policy": "preferred",
+                "executor_endpoint": MANAGER_ENDPOINT_MANAGED,
+                "eligible_endpoints": [],
+                "executor_model": None,
+                "executor_reasoning_effort": None,
+            }
 
         def open_session(self, **kwargs):
             calls.append(kwargs)
@@ -489,10 +654,6 @@ def test_chat_entry_point_never_lets_a_client_default_pick_the_steward_executor(
     server.selected_goal_id = ""
     server.chat_store = store
     server.runtime_controller = Controller()
-    monkeypatch.setattr(
-        "loopx.chat_manager.manager_executor_endpoint_default",
-        lambda environ=None, *, machine_defaults=None: MANAGER_ENDPOINT_MANAGED,
-    )
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     origin = f"http://127.0.0.1:{server.server_port}"

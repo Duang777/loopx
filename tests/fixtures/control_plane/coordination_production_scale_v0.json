@@ -51,6 +51,19 @@
     "conflict_write_scopes": ["lease-admission/shared/**"]
   },
   "semantic_cases": {
+    "user_completion": {
+      "scope_key": "publish_artifact",
+      "other_blocker_id": "todo_zz_remaining_user_decision"
+    },
+    "succession": {
+      "inferred_source": "todo_succession_inferred_source",
+      "archived_target": "todo_succession_archived_target",
+      "missing_source": "todo_succession_missing_source",
+      "self_source": "todo_succession_self_source",
+      "handoff_source": "todo_succession_handoff_source",
+      "explicit_target": "todo_succession_explicit_target",
+      "closed_source": "todo_succession_closed_source"
+    },
     "title_only_monitor": {
       "todo_id": "todo_fixture_title_monitor",
       "role": "agent",

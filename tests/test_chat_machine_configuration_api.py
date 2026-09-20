@@ -582,11 +582,13 @@ def test_the_steward_executor_namespace_is_editable_and_read_back(
     assert [
         field["key"] for field in capability["configuration_editor"]["fields"]
     ] == [
+        "selection_policy",
         "executor_endpoint",
+        "eligible_endpoints",
         "executor_model",
         "executor_reasoning_effort",
     ]
-    assert capability["configuration_editor"]["fields"][0]["options"] == [
+    assert capability["configuration_editor"]["fields"][1]["options"] == [
         "codex",
         "dsh",
     ]

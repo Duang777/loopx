@@ -104,9 +104,13 @@ provider is prepended when it is not the shipped one.
 The steward channel resolves one machine configuration, then one service
 environment value, then one shipped default. The `steward_executor` machine
 configuration (`loopx/capabilities/steward_executor/machine_defaults.py`) selects
-the executor for its machine and is the setting the Dashboard edits and
+the primary executor for its machine and is the setting the Dashboard edits and
 `loopx machine-config describe`/`inspect` read back; it accepts only the
-endpoints LoopX ships as channel executors and stores no credential.
+endpoints LoopX ships as channel executors and stores no credential. Its
+`selection_policy` is `preferred`, `pinned`, or `flexible`: preferred honors an
+explicit user pick, pinned rejects substitution, and flexible permits fallback
+only within its closed `eligible_endpoints` pool. Stored v0 configurations map
+to preferred behavior.
 `LOOPX_MANAGER_ENDPOINT` bootstraps a machine or names an unlisted adapter;
 without either the channel runs the interactive CLI endpoint (`codex`) on every
 machine, and the managed host (`dsh`) is reached by selecting it. The channel
@@ -158,18 +162,28 @@ execution profile when the endpoint is managed, whether an operator credential i
 configured, and `available`/`unavailable_reason` when LoopX can prove the selected
 endpoint cannot serve this channel. `available` is `null` when the projection
 makes no claim. A frontend can show which executor and model the steward channel
-resolved, and why, without re-deriving the rule.
+resolved, the selection policy, the allocation reason, and the eligible pool
+without re-deriving the rule. `loopx chat-endpoint inspect-steward` exposes the
+same effective binding for CLI readback.
 
 The Chat server that opens a steward Session is an entry point, not a second
 owner: it resolves the executor through the same channel decision this payload
 reports. A session request that carries no executor pick lands on the resolved
 endpoint and reports it back as the session's `executor_endpoint_id`, so a client
 that ships with its own silent executor default cannot re-point the channel
-behind its own readback. A caller that does make an explicit pick keeps it, and a
-Goal-scoped session keeps the Goal channel's own default. The steward channel is
-one conversation across whatever executor it currently resolves, so a client
+behind its own readback. An explicit pick is accepted only when the configured
+policy permits it. The chosen endpoint, model, effort, policy, reason, pool and
+configuration revision are persisted with the manager Session; restart and
+later machine-configuration edits do not silently reinterpret that Session.
+A Goal-scoped session keeps the Goal channel's own default. The steward channel
+is one conversation across whatever executor it currently resolves, so a client
 reading that conversation asks for the channel instead of filtering it by an
 executor the client assumed.
+
+The flexible policy in this version reacts to endpoint availability. It does
+not classify the user's prose or claim semantic task-fit routing. An Agent may
+later choose an executor by passing an explicit pick, and that pick remains
+subject to the same pinned or flexible boundary.
 
 The Personal Workspace manager header renders that binding as one compact chip
 (`executor · executor kind · model`). The chip is display-only: it reads the

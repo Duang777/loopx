@@ -235,6 +235,16 @@ test("receipt-bound replay settlement follows its binding and full chain", () =>
   );
   assert.equal(
     receiptBoundReplayPhase({
+      binding_kind: "todo",
+      writeback_completes_binding: true,
+      completion_receipt_present: false,
+      durable_writeback_present: true,
+      quota_spend_present: true,
+    }),
+    "settled",
+  );
+  assert.equal(
+    receiptBoundReplayPhase({
       completion_receipt_present: true,
       durable_writeback_present: true,
       quota_spend_present: false,

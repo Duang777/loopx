@@ -269,6 +269,15 @@ test("commit owns the repairable run artifacts and exact-effect replay", async (
   const written = await evaluateQuotaMonitorPollCommit(params);
   assert.equal(written.status, "written");
   assert.equal(written.payload.appended, true);
+  assert.deepEqual(written.payload.turn_continuation, {
+    schema_version: "quota_turn_continuation_v0",
+    settlement_binding_matches_observation: null,
+    current_turn_settled: false,
+    same_turn_independent_settlement_allowed: false,
+    next_turn_required: false,
+    next_action: "obtain a typed settlement binding before claiming this Turn settled",
+    reason: "the committed monitor-poll has no exact Todo settlement binding",
+  });
   const jsonPath = String(written.payload.json_path);
   const markdownPath = String(written.payload.markdown_path);
   const indexPath = String(written.payload.index_path);

@@ -34,6 +34,13 @@ advancement work remains active.
   remains selected. A material observation may create its independently routed
   successor through the existing monitor contract, but it still does not
   replace the Turn's settlement identity.
+- An executed turn-scoped poll returns `turn_continuation`. An exact match
+  between `settlement_todo_id` and the observed `todo_id` closes the no-spend
+  monitor Turn and requires a fresh `--turn-instance-id`. A different admitted
+  monitor Todo is auxiliary: it records the observation but leaves the original
+  advancement Turn open for its durable writeback and single spend. Without an
+  exact or typed auxiliary binding the response fails closed from claiming the
+  Turn settled.
 
 ### Acceptance
 
@@ -184,6 +191,12 @@ using a complete read-only snapshot with disposable File/SQLite/PostgreSQL arms.
   替换为本 Turn 的结算 Todo；多个辅助回执也绝不改变既有结算身份。
 - 辅助观察无变化后，原 advancement Todo 继续保持选中；若观察发生重大变化，
   可按既有 monitor 契约创建独立路由的 successor，但仍不替换本 Turn 的结算身份。
+- 执行成功的 turn-scoped poll 会返回 `turn_continuation`。仅当
+  `settlement_todo_id` 与被观察的 `todo_id` 精确一致时，才完成该 monitor Turn 的
+  不计费结算，并要求后续使用新的 `--turn-instance-id`。不同但已准入的 monitor
+  Todo 属于辅助观察：只写观察回执，原 advancement Turn 仍需完成 durable
+  writeback 与唯一一次 spend。既非精确匹配、也无 typed auxiliary binding 时，响应
+  必须失败关闭，不能宣称 Turn 已结算。
 
 ### 验收
 

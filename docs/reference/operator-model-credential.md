@@ -106,9 +106,10 @@ through `/api/chat/operator-credential`.
 Two surfaces answer on this machine, and they are selected separately.
 
 - **The steward channel** is the conversation a person talks to: the Dashboard
-  manager channel and the bound Lark/Feishu manager group. Its executor is one
-  machine-level choice, `steward_executor.executor_endpoint`, holding a shipped
-  channel endpoint (`codex`, or `dsh` for the managed host).
+  manager channel and the bound Lark/Feishu manager group. Its machine setting
+  names a primary `steward_executor.executor_endpoint` (`codex`, or `dsh` for
+  the managed host) and a `preferred`, `pinned`, or `flexible` selection policy.
+  Flexible selection is confined to the configured eligible endpoint pool.
 - **A managed Turn or managed agent** is bounded work that runs without a person
   in the loop. Its host resolves from the operator credential: with one stored,
   the shipped default is the managed host `dsh`, and without one it is the
@@ -129,6 +130,9 @@ loopx machine-config describe
 # Read the stored document and the effective steward resolution.
 loopx machine-config inspect
 
+# Read the effective steward binding and the current Session allocation.
+loopx chat-endpoint inspect-steward
+
 # Preview an exact change, then apply it with the plan revision it returned.
 loopx machine-config preview
 loopx machine-config apply
@@ -146,7 +150,10 @@ the host from the name it resolved: `/api/chat/capabilities` reports the
 steward's `executor_endpoint`, its `executor_endpoint_source`
 (`machine_configuration`, `explicit_config` or `product_default`), the
 `execution_profile` (`deepseek-v4-flash@high` on the shipped managed profile),
-`available`, and the bound Session's `session_mode` and `session_status`.
+`available`, the selection policy and allocation reason, and the bound
+Session's `session_mode` and `session_status`. The Session persists its chosen
+endpoint, model, effort, policy, pool and source revision, so later configuration
+edits apply through a new allocation rather than rewriting an active conversation.
 A connection record stores the resolved endpoint as an observation, so it cannot
 outrank the machine setting.
 

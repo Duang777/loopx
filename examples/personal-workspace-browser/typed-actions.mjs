@@ -1251,9 +1251,11 @@ export const typedActionsScenario = {
       const stewardFields = page.locator(".personal-capability-fields");
       // The selects carry their option text inside the same label, so they are
       // matched by prefix rather than by an exact label string.
+      await stewardFields.getByLabel(/^选择策略/u).selectOption("preferred");
       await stewardFields.getByLabel(/^模型/u).waitFor({ state: "visible" });
       await stewardFields.getByLabel(/^推理档位/u).waitFor({ state: "visible" });
-      await stewardFields.getByLabel(/^管家执行器/u).selectOption("dsh");
+      await stewardFields.getByLabel(/^首选管家执行器/u).selectOption("dsh");
+      await stewardFields.getByLabel(/^灵活池可用执行器/u).waitFor({ state: "visible" });
       await stewardFields.getByLabel(/^模型/u).fill("deepseek-v4-flash");
       await stewardFields.getByLabel(/^推理档位/u).selectOption("high");
       await page.screenshot({ path: resolve(outputDir, "machine-steward-executor-zh-cn.png"), fullPage: false, animations: "disabled" });
@@ -1262,6 +1264,9 @@ export const typedActionsScenario = {
         (item) => item.phase === "preview" && item.namespace === "steward_executor",
       );
       if (stewardPreview?.namespace_configuration?.executor_endpoint !== "dsh"
+        || stewardPreview?.namespace_configuration?.selection_policy !== "preferred"
+        || !Array.isArray(stewardPreview?.namespace_configuration?.eligible_endpoints)
+        || stewardPreview.namespace_configuration.eligible_endpoints.length !== 0
         || stewardPreview?.namespace_configuration?.executor_model !== "deepseek-v4-flash"
         || stewardPreview?.namespace_configuration?.executor_reasoning_effort !== "high") {
         throw new Error(`The steward executor form did not preview the selected executor: ${JSON.stringify(stewardPreview)}`);

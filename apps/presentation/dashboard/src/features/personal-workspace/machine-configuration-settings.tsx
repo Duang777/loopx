@@ -44,11 +44,19 @@ function completeMachineConfiguration(
   current: Record<string, unknown> | undefined,
   draft: Record<string, unknown>,
 ) {
-  return {
+  const complete = {
     ...configurationObject(capability.default),
     ...configurationObject(current),
     ...draft,
   };
+  // The guided steward editor owns the v1 selection-policy fields. Opening an
+  // installed v0 preference in that form is an explicit migration preview;
+  // JSON mode can still submit the legacy shape unchanged when needed.
+  if (capability.capability_id === "steward_executor"
+    && (Object.hasOwn(draft, "selection_policy") || Object.hasOwn(draft, "eligible_endpoints"))) {
+    complete.schema_version = configurationObject(capability.default).schema_version;
+  }
+  return complete;
 }
 
 function validGuidedDraft(capability: CapabilityDescriptor, value: Record<string, unknown>) {
@@ -60,6 +68,18 @@ function validGuidedDraft(capability: CapabilityDescriptor, value: Record<string
     return Boolean(String(value.profile_preset ?? "").trim()
       && String(value.route_ref ?? "").trim()
       && String(value.timezone ?? "").trim());
+  }
+  if (capability.capability_id === "steward_executor") {
+    const policy = String(value.selection_policy ?? "preferred");
+    const primary = String(value.executor_endpoint ?? "");
+    const eligible = Array.isArray(value.eligible_endpoints)
+      ? value.eligible_endpoints.map((item) => String(item))
+      : [];
+    if (policy === "flexible") {
+      return eligible.length > 0 && eligible.includes(primary)
+        && new Set(eligible).size === eligible.length;
+    }
+    return eligible.length === 0;
   }
   return true;
 }

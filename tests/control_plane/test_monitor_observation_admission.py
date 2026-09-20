@@ -88,6 +88,24 @@ def test_receipt_bound_advancement_allows_one_auxiliary_due_monitor_receipt(
     assert poll["before"]["selected_todo"]["todo_id"] == TODO_ID
     assert poll["after"]["selected_todo"]["todo_id"] == TODO_ID
     assert poll["material_change"] is False
+    assert poll["turn_continuation"] == {
+        "schema_version": "quota_turn_continuation_v0",
+        "settlement_binding_matches_observation": False,
+        "current_turn_settled": False,
+        "same_turn_independent_settlement_allowed": False,
+        "next_turn_required": False,
+        "next_action": "continue the original advancement settlement in this Turn",
+        "reason": (
+            "the committed monitor-poll is an auxiliary observation and does not "
+            "settle the advancement Turn"
+        ),
+    }
+    assert (
+        poll["after"]["interaction_contract"]["cli_channel"][
+            "spend_after_validation"
+        ]
+        is True
+    )
     assert poll_replay_rc == 0, poll_replay
     assert poll_replay["replayed"] is True
     assert _classification_count(runtime, "quota_monitor_poll") == 1

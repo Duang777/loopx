@@ -754,6 +754,10 @@ export async function readQuotaSettlement(value: unknown): Promise<JsonObject> {
   const workspaceCausality: DeliveryWorkspaceCausality | null =
     normalizeDeliveryWorkspaceCausality(nestedCausality, identity.todo_id) ??
     normalizeDeliveryWorkspaceCausality(flatCausality, identity.todo_id);
+  const semanticReplanGuard = projectSemanticReplanGuard(receiptDetails);
+  const todoBoundReplan = identity.binding_kind === "todo" &&
+    semanticReplanGuard.scope === "turn_guard" &&
+    semanticReplanGuard.selected_obligation_id !== null;
 
   const recovery = request.refresh_retry === null ? null : refreshRecovery(
     request.refresh_retry, writebackRun, writeback.failure === null,
@@ -775,7 +779,7 @@ export async function readQuotaSettlement(value: unknown): Promise<JsonObject> {
     terminal_closeout: bundle(terminalCloseout),
     terminal_settlement: bundle(terminalSettlement),
     workspace_causality: workspaceCausality,
-    semantic_replan_guard: projectSemanticReplanGuard(receiptDetails),
+    semantic_replan_guard: semanticReplanGuard,
     writeback_run: writebackRun,
     refresh_recovery: recovery,
     external_delivery: request.refresh_retry === null ? null : refreshExternalDelivery(
@@ -795,6 +799,7 @@ export async function readQuotaSettlement(value: unknown): Promise<JsonObject> {
     }),
     replay_phase: receiptBoundReplayPhase({
       binding_kind: identity.binding_kind,
+      writeback_completes_binding: todoBoundReplan,
       completion_receipt_present: completionEvent !== null,
       durable_writeback_present: writeback.failure === null,
       quota_spend_present: spend.failure === null,

@@ -12,7 +12,7 @@ from ...rollout_event_log import (
     load_rollout_events,
     rollout_event_log_path,
 )
-from ..todos.contract import normalize_todo_replan_obligation_id
+from ..todos.contract import normalize_todo_id, normalize_todo_replan_obligation_id
 from .effect_program import SettlementBindingKind, SettlementIdentity
 from .error_codes import HeartbeatReceiptIdentityConflictError
 from .settlement_workspace_causality import (
@@ -116,6 +116,19 @@ def heartbeat_receipt_semantic_replan_obligation_id(
     )
 
 
+def heartbeat_receipt_pending_action_todo_id(
+    event: Mapping[str, object] | None,
+) -> str | None:
+    """Return an explicit Todo choice retained before settlement binding."""
+
+    if not isinstance(event, Mapping):
+        return None
+    details = event.get("details")
+    if not isinstance(details, Mapping):
+        return None
+    return normalize_todo_id(details.get("pending_action_selection_todo_id"))
+
+
 def _effective_heartbeat_receipt(
     events: list[dict[str, object]],
 ) -> dict[str, object] | None:
@@ -213,6 +226,91 @@ def ensure_turn_heartbeat_settlement_receipt(
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(receipt, sort_keys=True, ensure_ascii=False) + "\n")
         return receipt
+
+
+def retain_pending_heartbeat_action_selection(
+    runtime_root: Path,
+    *,
+    goal_id: str,
+    agent_id: str,
+    turn_instance_id: str,
+    todo_id: str,
+    reason: str,
+) -> tuple[dict[str, object], bool]:
+    """Append an identity-less revision retaining one explicit Todo choice.
+
+    The choice is not settlement authority.  It only fences a later no-argument
+    reentry from silently replacing the agent's explicit selection with a new
+    recommendation.  A later explicit selection may replace it until the Turn
+    acquires its single settlement identity.
+    """
+
+    normalized_todo_id = normalize_todo_id(todo_id)
+    if normalized_todo_id is None:
+        raise HeartbeatReceiptIdentityConflictError(
+            "pending heartbeat action selection requires a legal Todo id"
+        )
+    normalized_reason = str(reason or "current_delivery_gate").strip()
+    log_path = rollout_event_log_path(runtime_root, goal_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive_file_lock(log_path):
+        events = load_rollout_events(log_path)
+        matching = _heartbeat_receipt_events(
+            events,
+            goal_id=goal_id,
+            agent_id=agent_id,
+            turn_instance_id=turn_instance_id,
+        )
+        effective = _effective_heartbeat_receipt(matching)
+        if effective is None:
+            raise ValueError(
+                "identity-less heartbeat receipt is missing; rerun the original guard"
+            )
+        if _receipt_settlement_identity(effective) is not None:
+            raise HeartbeatReceiptIdentityConflictError(
+                "a settled heartbeat Turn cannot retain a different pending selection"
+            )
+        details_value = effective.get("details")
+        details = (
+            dict(details_value) if isinstance(details_value, Mapping) else {}
+        )
+        if (
+            normalize_todo_id(details.get("pending_action_selection_todo_id"))
+            == normalized_todo_id
+            and str(details.get("pending_action_selection_reason") or "").strip()
+            == normalized_reason
+        ):
+            return effective, False
+        details.update(
+            {
+                "pending_action_selection_todo_id": normalized_todo_id,
+                "pending_action_selection_state": "deferred",
+                "pending_action_selection_reason": normalized_reason,
+                "settlement_effect_id": "",
+                "todo_id": "",
+                "replan_obligation_id": "",
+            }
+        )
+        source_event_id = str(effective.get("event_id") or "").strip() or None
+        retained = build_rollout_event(
+            goal_id=goal_id,
+            event_kind="quota_should_run",
+            agent_id=agent_id,
+            run_id=turn_instance_id,
+            status="action_selection_deferred",
+            summary=(
+                "heartbeat explicit action selection retained without settlement "
+                f"binding for turn={turn_instance_id}"
+            ),
+            source_event_id=source_event_id,
+            caused_by=source_event_id,
+            details=details,
+        )
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(retained, sort_keys=True, ensure_ascii=False) + "\n"
+            )
+        return retained, True
 
 
 def upgrade_identityless_heartbeat_receipt(
@@ -410,6 +508,21 @@ def heartbeat_receipt_view(
         receipt["semantic_replan_obligation_id"] = (
             semantic_replan_obligation_id
         )
+    pending_action_todo_id = heartbeat_receipt_pending_action_todo_id(event)
+    if pending_action_todo_id:
+        receipt["pending_action_selection"] = {
+            "todo_id": pending_action_todo_id,
+            "state": str(
+                details.get("pending_action_selection_state") or "deferred"
+            ),
+            "reason": str(
+                details.get("pending_action_selection_reason")
+                or "current_delivery_gate"
+            ),
+            "settlement_bound": (
+                details.get("pending_action_selection_settlement_bound") is True
+            ),
+        }
     return receipt
 
 

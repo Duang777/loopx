@@ -1463,6 +1463,46 @@ function payloadFor(
   if (request.turn_instance_id) {
     payload.turn_instance_id = request.turn_instance_id;
     payload.replayed = options.replayed;
+    if (request.execute) {
+      const settlementTodoId = optionalString(
+        event.settlement_todo_id,
+        "monitor_event.settlement_todo_id",
+      )?.trim() ?? null;
+      const observedTodoId = optionalString(
+        event.todo_id,
+        "monitor_event.todo_id",
+      )?.trim() ?? null;
+      const exactSettlement = settlementTodoId !== null &&
+        observedTodoId === settlementTodoId;
+      const auxiliaryObservation = settlementTodoId !== null &&
+        observedTodoId !== null && observedTodoId !== settlementTodoId;
+      payload.turn_continuation = exactSettlement
+        ? {
+          schema_version: "quota_turn_continuation_v0",
+          settlement_binding_matches_observation: true,
+          current_turn_settled: true,
+          same_turn_independent_settlement_allowed: false,
+          next_turn_required: true,
+          next_action:
+            "rerun quota should-run with a fresh --turn-instance-id before independent work",
+          reason: "the committed monitor-poll is this Turn's single settlement identity",
+        }
+        : {
+          schema_version: "quota_turn_continuation_v0",
+          settlement_binding_matches_observation: auxiliaryObservation
+            ? false
+            : null,
+          current_turn_settled: false,
+          same_turn_independent_settlement_allowed: false,
+          next_turn_required: false,
+          next_action: auxiliaryObservation
+            ? "continue the original advancement settlement in this Turn"
+            : "obtain a typed settlement binding before claiming this Turn settled",
+          reason: auxiliaryObservation
+            ? "the committed monitor-poll is an auxiliary observation and does not settle the advancement Turn"
+            : "the committed monitor-poll has no exact Todo settlement binding",
+        };
+    }
   }
   if (request.status_reload_warning) {
     payload.status_reload_warning = request.status_reload_warning;
