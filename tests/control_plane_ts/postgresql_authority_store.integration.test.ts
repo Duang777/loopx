@@ -1,3 +1,6 @@
+import {executeCoordinationTodoUpdate} from "../../loopx/control_plane/coordination/todo_update.ts";
+import {canonicalAuthoritySha256} from "../../loopx/control_plane/coordination/authority_store_codec.ts";
+import {TODO_DOMAIN_READ_RECORD_SCHEMA, TODO_DOMAIN_RECORD_CONTRACT} from "../../loopx/control_plane/coordination/coordination_state_contract.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -131,6 +134,40 @@ if (database && installed) {
         goal_id: goalId,
       }),
     };
+  });
+
+  test("PostgreSQL Todo priority edit survives reopen, replay and conflicting intent", async t => {
+    await installed;
+    const options = {tenant_id: `tenant-${randomUUID()}`, goal_id: `goal-${randomUUID()}`};
+    t.after(() => cleanScope(options.tenant_id, options.goal_id));
+    const store = new PostgreSqlAuthorityStore(database, options);
+    const todos = [{schema_version: "todo_domain_record_v0", todo_id: "todo_priority", role: "agent",
+      status: "open", done: false, archive_state: "active", text: "[P2] Existing work",
+      title: "Existing work", priority: "P2", task_class: "advancement_task"}];
+    await store.commitAuthority({operation_id: "seed-priority", expected_provider_revision: null,
+      events: [], receipts: [], next_projection: {goal_id: options.goal_id, todos, leases: [],
+        todo_read_model: {schema_version: TODO_DOMAIN_READ_RECORD_SCHEMA, todo_count: 1,
+          records_sha256: canonicalAuthoritySha256(todos), contract_fields: [...TODO_DOMAIN_RECORD_CONTRACT.fields]}}});
+    const request = {goal_id: options.goal_id, todo_id: "todo_priority", expected_role: "agent",
+      actor_agent_id: null, registered_agents: [], operation_id: "edit-priority",
+      patch: {text: "Renamed work"}, clear_fields: [], planning_intent: {priority: "P4"},
+      dry_run: false, now: new Date("2030-01-01T00:00:00Z")};
+    const result = await executeCoordinationTodoUpdate(store, request);
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    const reopened = new PostgreSqlAuthorityStore(database, options);
+    assert.equal((await executeCoordinationTodoUpdate(reopened, request)).status, "replayed");
+    const before = await reopened.loadAuthority();
+    assert.equal(before.status, "loaded");
+    if (before.status !== "loaded") return;
+    assert.equal((before.head.todos as {priority: string}[])[0]!.priority, "P4");
+    assert.equal((await executeCoordinationTodoUpdate(reopened, {...request,
+      planning_intent: {priority: "P0"}})).status, "failed");
+    assert.deepEqual(await reopened.loadAuthority(), before);
+    assert.equal((await executeCoordinationTodoUpdate(reopened, {...request,
+      operation_id: "clear-priority", patch: {}, planning_intent: {clear_priority: true}})).status, "applied");
+    const cleared = await reopened.loadAuthority();
+    assert.equal(cleared.status, "loaded");
+    if (cleared.status === "loaded") assert.equal((cleared.head.todos as {priority?: string}[])[0]!.priority, undefined);
   });
 
   test("PostgreSQL scan binds head and rows to one snapshot during concurrent commit", async t => {

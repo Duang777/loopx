@@ -140,7 +140,7 @@ export function GoalTasksView({
     .filter((todo) => todo.goalId === goal.goalId)
     .map((todo) => ({ ...todo, goalTitle: goal.title }));
   const priorityRank = (todo: WorkspaceGoal["agentTodos"][number]) =>
-    todo.priority === "P0" ? 0 : todo.priority === "P1" ? 1 : todo.priority === "P2" ? 2 : 3;
+    todo.priority === "P0" ? 0 : todo.priority === "P1" ? 1 : todo.priority === "P2" ? 2 : todo.priority === "P3" ? 3 : todo.priority === "P4" ? 4 : 50;
   const agentLanes = useMemo(() => {
     const lanes = new Map((goal.agentLanes ?? []).map((lane) => [lane.agentId, lane]));
     for (const todo of goal.agentTodos) {

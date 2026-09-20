@@ -1,5 +1,6 @@
 /** Bounded native planning edits. Compose the public rule owner in-process;
  * this plan never grants authority, reads storage, or emits a lease effect. */
+import {normalizeTodoPriority} from "./priority.ts";
 import type { JsonObject } from "../effect_program.ts";
 import { requireJsonObject } from "../runtime_decode.ts";
 import { AuthorityStoreProtocolError } from "../coordination/authority_store_codec.ts";
@@ -19,9 +20,9 @@ import { normalizeMonitorConfiguration, type MonitorPollObservation } from "./mo
 
 const STRINGS = new Set(["status", "evidence", "reason", "task_class", "continuation_policy",
   "resume_when", "unblocks_todo_id", "bound_agent", "blocks_agent"]);
-const BOOLEANS = new Set(["clear_resume_when", "no_followup", "goal_bound", "clear_blocks_agent",
+const BOOLEANS = new Set(["clear_priority", "clear_resume_when", "no_followup", "goal_bound", "clear_blocks_agent",
   "global_gate", "clear_global_gate"]);
-const FIELDS = new Set([...STRINGS, ...BOOLEANS, "successor_todo_ids", "monitor_metadata",
+const FIELDS = new Set(["priority", ...STRINGS, ...BOOLEANS, "successor_todo_ids", "monitor_metadata",
   ...TODO_WORK_REQUIREMENT_FIELDS, ...TODO_OWNERSHIP_INTENT_FIELDS, ...TODO_DECISION_METADATA_FIELDS]);
 
 /** A separate intent namespace preserves the shipped text/note patch and its
@@ -35,6 +36,10 @@ export function normalizeNativePlanningIntent(value: unknown): JsonObject {
     if (!FIELDS.has(field)) throw new AuthorityStoreProtocolError(`Todo planning update does not own ${field}`);
     if ((TODO_WORK_REQUIREMENT_FIELDS as readonly string[]).includes(field)) continue;
     if ((TODO_OWNERSHIP_INTENT_FIELDS as readonly string[]).includes(field)) continue;
+    if (field === "priority") {
+      intent.priority = normalizeTodoPriority(value);
+      continue;
+    }
     if (field === "monitor_metadata") {
       if (value != null) intent[field] = normalizeMonitorConfiguration(value);
       continue;

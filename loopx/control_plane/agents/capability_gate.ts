@@ -1,4 +1,5 @@
 /** Read policy only: requirements are not enablement, credentials or write authority. */
+import {readTodoPriority} from "../todos/priority.ts";
 import type {JsonObject} from "../effect_program.ts";
 import {requireJsonObject, requireStringArray, requireInteger, requireNonEmptyString, requireBoolean, optionalNonEmptyString} from "../runtime_decode.ts";
 
@@ -32,7 +33,8 @@ function list(value: unknown): unknown[] {
   return value;
 }
 const values = (rows: readonly JsonObject[], key: string) => unique(rows.flatMap(row => row[key] as string[] ?? []));
-const priority = (row: JsonObject): string => /^(P[0-2])/.exec(String(row.priority ?? "").trim().toUpperCase())?.[1] ?? "P1";
+// A repair suggestion keeps its historical P1 fallback; declared P3/P4 remain intact.
+const priority = (row: JsonObject): string => readTodoPriority(row) ?? "P1";
 
 function bindings(blocked: readonly JsonObject[]): Binding[] {
   const result = new Map<string, Binding>();

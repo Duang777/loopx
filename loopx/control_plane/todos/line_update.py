@@ -7,6 +7,7 @@ from ..effect_runtime import EffectRuntimeRejected, effect_runtime_result
 from .authoring_scope import todo_authoring_facts
 from .external_wait_contract import TodoExternalWaitAuthoringError, build_monitor_advancement_authoring_contract
 from .update_source import todo_update_snapshot
+from .todo_semantics import todo_priority_label
 
 from .active_state_editing import (
     TODO_SECTION_HEADINGS,
@@ -169,6 +170,7 @@ def _field_update_plan(
                     "role": block.get("role"),
                     **{key: block.get(key)
                     for key in (
+                        "text",
                         "todo_id",
                         "status",
                         "claimed_by",
@@ -219,6 +221,8 @@ def apply_todo_update_to_lines(
     *,
     todo_id: str,
     text: str | None = None,
+    priority: str | None = None,
+    clear_priority: bool = False,
     status: str | None = None,
     role: str | None = None,
     note: str | None = None,
@@ -286,6 +290,9 @@ def apply_todo_update_to_lines(
         public_context = {**public_context, "items": todo_update_snapshot(lines)
                           if resume_when or block.get("resume_when") else []}
     raw_intent = {
+            "text": text,
+            "priority": priority,
+            "clear_priority": clear_priority,
             "status": status,
             "note": note,
             "evidence": evidence,
@@ -345,6 +352,9 @@ def apply_todo_update_to_lines(
     normalized_status = plan["normalized_status"]
     target_status = plan["target_status"]
     updates = plan["metadata_updates"]
+    text = updates.pop("text", text)
+    updated_priority = updates.pop("priority", todo_priority_label(block))
+    updates.pop("title", None)
     status_changed = (
         set_todo_marker(lines, block, normalized_status) if normalized_status else False
     )
@@ -372,6 +382,7 @@ def apply_todo_update_to_lines(
         "status": target_status,
         "status_changed": status_changed,
         "text_changed": text_changed,
+        "priority": updated_priority,
         "metadata_updated": metadata_updated,
         "changed": status_changed or text_changed or metadata_updated,
         "claimed_by": normalize_todo_claimed_by(effective_metadata.get("claimed_by")),

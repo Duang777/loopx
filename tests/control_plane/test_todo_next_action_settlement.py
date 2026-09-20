@@ -34,7 +34,7 @@ def test_agent_todo_snapshot_uses_structured_prefix_priority() -> None:
         ]
     )
 
-    assert [snapshot["priority"] for snapshot in snapshots] == ["P2-REVIEW", None]
+    assert [snapshot["priority"] for snapshot in snapshots] == ["P2", None]
     assert [todo_priority_rank(snapshot["priority"]) for snapshot in snapshots] == [
         2,
         TODO_MISSING_PRIORITY_RANK,

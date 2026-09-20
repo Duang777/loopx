@@ -30,13 +30,11 @@ from .contract import (
 )
 
 
-TODO_MISSING_PRIORITY_RANK = 50
+_PRIORITY_CONTRACT = COORDINATION_STATE_CONTRACT["todo_priority"]
+TODO_MISSING_PRIORITY_RANK = int(_PRIORITY_CONTRACT["missing_rank"])
 TODO_MISSING_INDEX = 999999
-TODO_PRIORITY_PREFIX_PATTERN = re.compile(
-    r"^\s*\[(P[0-4][^\]]*)\]\s*(.+)$",
-    re.IGNORECASE,
-)
-TODO_PRIORITY_LABEL_PATTERN = re.compile(r"\bP([0-4])\b", re.IGNORECASE)
+TODO_PRIORITY_PREFIX_PATTERN = re.compile(_PRIORITY_CONTRACT["legacy_prefix_pattern"], re.IGNORECASE)
+TODO_PRIORITY_LABEL_PATTERN = re.compile(_PRIORITY_CONTRACT["legacy_label_pattern"], re.IGNORECASE)
 TODO_PRESENTATION_METADATA_SCHEMA = "loopx_todo_presentation_metadata_v0"
 TODO_LEGACY_ITEM_SCHEMA = str(
     COORDINATION_STATE_CONTRACT["todo_read_record"]["item_schema_version"]
@@ -65,36 +63,20 @@ def todo_priority_label(
     *,
     text_mode: str = "label",
 ) -> str | None:
-    priority = item.get("priority")
-    if isinstance(priority, str) and priority.strip():
-        return priority.strip().upper()
-    text = " ".join(
-        str(value or "")
-        for value in (item.get("title"), item.get("text"))
-        if str(value or "").strip()
-    )
-    if text_mode == "prefix":
-        priority, _ = todo_priority_parts(text)
-        return priority
-    match = TODO_PRIORITY_LABEL_PATTERN.search(text.upper())
-    if not match:
-        return None
-    return f"P{match.group(1)}"
+    # Read compatibility codec only. Vocabulary/grammar/rank are generated
+    # from the shared contract; mutations are planned by todos/priority.ts.
+    # text_mode remains an import/API compatibility argument, not another rule.
+    if "priority" in item:
+        value = item["priority"]
+    else:
+        value, _ = todo_priority_parts(str(item.get("text") or item.get("title") or ""))
+    match = TODO_PRIORITY_LABEL_PATTERN.match(value.strip()) if isinstance(value, str) else None
+    return match.group(1).upper() if match else None
 
 
 def todo_priority_rank(value: Any, *, text_mode: str = "label") -> int:
-    if isinstance(value, dict):
-        priority = todo_priority_label(value, text_mode=text_mode)
-    elif isinstance(value, str):
-        priority = value.strip().upper()
-    else:
-        priority = None
-    if not priority:
-        return TODO_MISSING_PRIORITY_RANK
-    match = re.match(r"P([0-4])", priority)
-    if not match:
-        return TODO_MISSING_PRIORITY_RANK
-    return int(match.group(1))
+    priority = todo_priority_label(value if isinstance(value, dict) else {"priority": value}, text_mode=text_mode)
+    return int(_PRIORITY_CONTRACT["values"].index(priority)) if priority else TODO_MISSING_PRIORITY_RANK
 
 
 def todo_index_rank(item: dict[str, Any]) -> int:

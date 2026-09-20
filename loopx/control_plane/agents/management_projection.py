@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..todos.todo_semantics import todo_priority_rank
+
 from typing import Any, Iterable
 
 from ..runtime.public_safety import public_safe_compact_text
@@ -39,14 +41,6 @@ _TODO_GROUP_LIST_KEYS = tuple(
     )
 )
 
-_PRIORITY_RANK = {
-    "P0": 0,
-    "P0-LOCAL": 0,
-    "P0-USER": 0,
-    "P0-DECISION": 0,
-    "P1": 1,
-    "P2": 2,
-}
 
 
 def _compact(value: Any, *, limit: int = 220) -> str | None:
@@ -88,8 +82,6 @@ def _is_done(todo: dict[str, Any]) -> bool:
     return bool(todo.get("done")) or _todo_status(todo) in {"done", "archive", "archived"}
 
 
-def _priority_rank(todo: dict[str, Any]) -> int:
-    return _PRIORITY_RANK.get(str(todo.get("priority") or "").strip().upper(), 9)
 
 
 def _index_rank(todo: dict[str, Any]) -> int:
@@ -101,7 +93,7 @@ def _index_rank(todo: dict[str, Any]) -> int:
 
 def _todo_sort_key(todo: dict[str, Any]) -> tuple[int, int, int, str]:
     done_rank = 1 if _is_done(todo) else 0
-    return (done_rank, _priority_rank(todo), _index_rank(todo), str(todo.get("todo_id") or ""))
+    return (done_rank, todo_priority_rank(todo), _index_rank(todo), str(todo.get("todo_id") or ""))
 
 
 def _is_monitor_todo(todo: dict[str, Any]) -> bool:
@@ -144,7 +136,7 @@ def _current_todo_sort_key(todo: dict[str, Any]) -> tuple[int, int, int, int, in
         runnable_advancement_rank,
         selected_rank,
         _current_todo_execution_rank(todo),
-        _priority_rank(todo),
+        todo_priority_rank(todo),
         _index_rank(todo),
         str(todo.get("todo_id") or ""),
     )

@@ -27,6 +27,45 @@ continue it; when it needs to fan out, split, supersede, or create successor
 work, it writes the new task through the LoopX todo lifecycle and lets the board
 sync catch up.
 
+## Priority intent
+
+Priority is an explicit scheduling field, with `P0` highest and `P4` lowest.
+Create or edit it independently of the task description:
+
+```bash
+loopx todo add --goal-id <goal-id> --role agent --priority P1 --text '<agent action>'
+loopx todo update --goal-id <goal-id> --todo-id <todo-id> --priority P3
+loopx todo update --goal-id <goal-id> --todo-id <todo-id> --clear-priority
+```
+
+Pass the registered `--agent-id` on updates when the Goal has multiple Agents.
+The existing authoring, ownership, lease and review requirements still apply.
+Chat `todo.create` accepts `priority`; reviewed `todo.update` edits accept
+`priority` or `clear_priority`. The task management panel uses that reviewed
+update path for its priority selector. Priority never grants eligibility,
+capabilities, a claim or quota; missing priority is allowed and sorts after P4.
+The generated agent authoring hint shows an explicit P1 example, not a global
+default or a prerequisite for same-turn binding.
+
+Omitting priority from an ordinary text edit preserves the current priority.
+Use `--clear-priority` to remove it. Legacy `--text '[P2] Task'` remains supported;
+a supplied prefix edits priority for old callers. An explicit parameter and a
+conflicting prefix are rejected before writing, as are simultaneous set/clear
+instructions. Words such as `P0` inside ordinary prose have no scheduling meaning.
+Historical decorated prefixes such as `[P2-review]` read as P2; an edit renders
+the normalized `[P2]` prefix. P3/P4 participate in ordering and repair suggestions
+without being silently promoted to P1. Existing repair-suggestion and historical
+event-replay defaults retain their own contracts; they do not impose a default
+on new unprioritized Todos.
+
+`todos/priority.ts` owns authoring intent and ordering. The generated coordination
+contract supplies its vocabulary and legacy grammar to Python read adapters.
+Markdown keeps the compatible `[Pn] description` display; native authority records
+also carry canonical priority/title. File, SQLite and PostgreSQL updates use the
+existing admitted head, CAS and operation receipt. A retry retains the original
+intent identity and returns its historical result; changing priority under the
+same operation ID is a conflict. No provider promotion or receipt rewrite occurs.
+
 ## Write Contract
 
 For a caller-owned runtime that already registered its Goal/Agent, generate the

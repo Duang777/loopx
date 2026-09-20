@@ -1,3 +1,4 @@
+import {planTodoPriority, TODO_PRIORITIES} from "../todos/priority.ts";
 /** Team-plan admission and assignment transaction. A committed assignment is
  * neither receiver adoption nor a lease, quota grant, or execution receipt. */
 import {EffectRuntimeRequestError} from "../effect_runtime_errors.ts";
@@ -10,7 +11,7 @@ import {TODO_DOMAIN_ITEM_SCHEMA, TODO_DOMAIN_READ_RECORD_SCHEMA} from "../coordi
 export const TEAM_PLAN_SCHEMA = "steward_team_plan_preview_v0";
 export const TEAM_PLAN_KIND = "steward_team_plan_preview";
 export const TEAM_TRANSACTION_SCHEMA = "steward_team_plan_transaction_v0";
-const priorities = new Set(["P0", "P1", "P2", "P3"]);
+const priorities: ReadonlySet<string> = new Set(TODO_PRIORITIES);
 const declaredGaps = new Set(["agent_not_registered", "capability_not_granted", "audience_not_authorized"]);
 const hostGaps = new Set([...declaredGaps, "action_kind_not_supported"]);
 function text(value: unknown, label: string): string {
@@ -21,7 +22,9 @@ function todo(value: unknown): JsonObject {
   const item = requireJsonObject(value, "first_todo");
   if (!priorities.has(String(item.priority))) throw new EffectRuntimeRequestError("first_todo priority is invalid");
   if (item.task_class !== "advancement_task") throw new EffectRuntimeRequestError("a lane's first bounded Todo must be an advancement_task");
-  return {text: text(item.text, "first_todo text"), priority: item.priority,
+  const title = text(item.text, "first_todo text");
+  planTodoPriority({}, {text: title, priority: item.priority});
+  return {text: title, priority: item.priority,
     task_class: item.task_class, action_kind: text(item.action_kind, "first_todo action_kind")};
 }
 
@@ -154,17 +157,12 @@ export function planTeamTransaction(value: unknown): JsonObject {
     const rawText = String(first.text).replace(/^\s*[-*]\s+\[[ xX-]\]\s*/u, "");
     const record: JsonObject = {schema_version: TODO_DOMAIN_ITEM_SCHEMA, todo_id: id, role: "agent",
       status: "open", done: false, archive_state: "active", task_class: "advancement_task",
-      action_kind: first.action_kind, text: /^\[P[0-4]\]\s+/iu.test(rawText) ? rawText : `[${first.priority}] ${rawText}`};
+      action_kind: first.action_kind, ...planTodoPriority({}, {text: rawText, priority: first.priority})};
     // An initial assignment reserves a lane; it does not impersonate the
     // receiver as author and does not create an adoption or execution lease.
     // Only an owner-originated confirmation can assign another registered peer.
     if (actor && actor !== lane.agent_id) throw new EffectRuntimeRequestError("assigning another Agent requires owner confirmation");
     record.claimed_by = lane.agent_id;
-    // Native records retain the same priority/title facts as the Markdown
-    // reader; projection validates these rather than manufacturing authority.
-    const label = /^\[(P[0-4])\]\s+(.+)$/iu.exec(String(record.text))!;
-    record.priority = label[1]!.toUpperCase();
-    record.title = label[2]!;
     const planned = planCoordinationTodoCreate({goal_id: String(identity.goal_id), operation_id: String(identity.operation_id),
       actor_agent_id: actor, registered_agents: registered, dry_run: false, now, todo: record},
     current, request.read_model_schema ?? TODO_DOMAIN_READ_RECORD_SCHEMA, "operation_lane");

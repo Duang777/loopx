@@ -1637,6 +1637,16 @@ export const typedActionsScenario = {
       await taskRow.click();
       taskManagement = page.locator("details.personal-task-management");
       await taskManagement.locator("summary").click();
+      await page.getByLabel("优先级", {exact: true}).selectOption("P4");
+      await page.screenshot({path: resolve(outputDir, "todo-priority-edit.png"), fullPage: false, animations: "disabled"});
+      await taskManagement.locator("label", {has: page.getByLabel("优先级", {exact: true})}).getByRole("button").click();
+      await page.getByText("确认执行").waitFor({state: "visible"});
+      const priorityEdit = api.actionPreviews.findLast(preview => preview.action_kind === "todo.update" && preview.normalized_parameters.priority === "P4");
+      if (!priorityEdit || priorityEdit.normalized_parameters.text !== undefined) throw new Error("Priority edit must be structured, without a text rewrite");
+      await page.getByRole("button", {name: "关闭", exact: true}).click();
+      await taskRow.click();
+      taskManagement = page.locator("details.personal-task-management");
+      await taskManagement.locator("summary").click();
       await page.getByLabel("Todo 暂缓恢复条件").fill("pr_merged:huangruiteng/loopx#3399");
       await page.screenshot({ path: resolve(outputDir, "todo-defer-resume-condition.png"), fullPage: false, animations: "disabled" });
       await taskManagement.locator(".personal-inline-resume-when").getByRole("button", { name: "检查暂缓" }).click();

@@ -78,6 +78,7 @@ def create_canonical_todo_if_promoted(
             action_kind=provider_metadata.get("action_kind"),
         ),
         **provider_metadata,
+        **{key: metadata[key] for key in ("priority", "title") if key in metadata and metadata.get("priority") is not None},
         **({"claimed_by": claimed_by} if claimed_by else {}),
     }
     with authority_registry_source(registry_path) as registry_source:

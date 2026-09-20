@@ -207,6 +207,18 @@ export const COORDINATION_STATE_CONTRACT = deepFreeze({
       "archive_state"
     ]
   },
+  "todo_priority": {
+    "values": [
+      "P0",
+      "P1",
+      "P2",
+      "P3",
+      "P4"
+    ],
+    "legacy_prefix_pattern": "^\\s*\\[(P[0-4](?:[-\\s][^\\]]*)?)\\]\\s*(.+)$",
+    "legacy_label_pattern": "^(P[0-4])(?:$|[-\\s])",
+    "missing_rank": 50
+  },
   "todo_projection_metadata": {
     "fields": [
       "source_section",

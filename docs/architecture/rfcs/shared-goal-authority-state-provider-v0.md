@@ -2759,6 +2759,15 @@ The typed TypeScript `projection_delivery` union also owns the distinction
 between mutation intent (`pending`/`not_required`) and provider readback
 (`delivered`/`current`); unknown states fail closed before acknowledgement.
 
+Priority intent now follows the same admitted create/update transaction on File,
+SQLite and PostgreSQL. Explicit set/clear, omission and conflicting legacy text
+are resolved by `todos/priority.ts`; Python reads share the generated grammar.
+Markdown remains compatible display, while native records retain matching
+priority/title. CLI and reviewed Chat edits preserve CAS and historical retry
+identity. Real backend readback and a disposable clone of a long-lived local
+Goal qualify this bounded change. See the [caller contract](../../project-agent-todo-contract.md#priority-intent).
+This does not change provider defaults or close the remaining promotion gates.
+
 Presentation is canonical at the projection layer, not in the domain record.
 `source_section` and `index` are the v0 wire shape's display coordinates, while
 native records derive the same display section from role/archive state and use

@@ -1,3 +1,4 @@
+import {evaluateTodoPriority} from "./todos/priority.ts";
 import {evaluateUserCompletion} from "./todos/user_completion.ts";
 import {projectTodoSuccession, projectTodoClosure} from "./todos/succession.ts";
 import {projectTodoSummaryLanes, projectLegacyTodoWorkCounts} from "./todos/summary_lanes.ts";
@@ -410,6 +411,7 @@ export function createEffectRuntimeHandlers(
     ["todo.completion_state.require_metadata", requireTodoCompletionMetadataValue],
     ["todo.completion_state.continuation_for_write", selectTodoCompletionContinuation],
     ["todo.field_update.plan", planTodoFieldUpdate],
+    ["todo.priority.plan", evaluateTodoPriority],
     ["todo.public_update.plan", planPublicTodoUpdate],
     ["todo.standing_decision.project", evaluateStandingDecisionProjection],
     ["todo.summary_lanes.project", projectTodoSummaryLanes],

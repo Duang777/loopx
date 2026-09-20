@@ -2188,6 +2188,13 @@ Python 生产 caller 直接从 `todos/todo_semantics.py` 导入；`todos/project
 mutation intent（`pending`/`not_required`）与 provider readback（`delivered`/`current`）；
 未知状态在 acknowledgement 之前 fail closed。
 
+优先级意图现接入 File、SQLite、PostgreSQL 既有的准入 create/update 事务。
+显式设置/清除、参数缺省及与旧文字前缀的冲突由 `todos/priority.ts` 处理，Python
+读取共享生成的语法。Markdown 保留兼容展示，native record 保存一致的 priority/title。
+CLI 与经过审阅的 Chat 编辑保留 CAS 和历史重试身份。真实后端回读及长期本地 Goal 的
+一次性隔离副本验证这条边界，见[调用合同](../../project-agent-todo-contract.md#priority-intent)。
+这不改变 provider 默认，也不关闭其余 promotion 门禁。
+
 展示语义属于 projection 层，而不是 domain record。`source_section` 与 `index` 是 v0
 wire shape 的展示坐标；native record 根据 role/archive state 推导相同的展示 section，
 并以时间戳和 Todo identity 做确定性回退，不制造假的持久 index。因此即使 wire shape

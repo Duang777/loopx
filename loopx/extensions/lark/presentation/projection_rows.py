@@ -249,11 +249,9 @@ def _projection_lifecycle_events(projection: dict[str, Any]) -> list[dict[str, A
 
 
 def _projection_item_priority(item: dict[str, Any], text: str) -> str:
-    for value in (item.get("priority"), text):
-        match = re.search(r"\b(P[0-3])(?:\b|-)", str(value or "").upper())
-        if match:
-            return match.group(1)
-    return "P2"
+    from ....control_plane.todos.todo_semantics import todo_priority_label
+
+    return todo_priority_label({**item, "text": text}) or "P2"
 
 
 def _projection_todo_candidates(summary: Any) -> list[dict[str, Any]]:

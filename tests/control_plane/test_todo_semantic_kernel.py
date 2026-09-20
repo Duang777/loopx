@@ -90,3 +90,16 @@ def test_fixture_display_cases_match_the_python_presentation_owner() -> None:
     native = todo_presentation_metadata(cases["native_display"])
     assert native["display_section"] == "Completed Work Archive"
     assert native["display_order"] is None
+
+
+def test_complex_fixture_priority_contract_is_shared_with_typescript() -> None:
+    from loopx.control_plane.todos.todo_semantics import todo_priority_label, todo_priority_rank
+
+    for case in json.loads(FIXTURE.read_text())["priority_cases"]:
+        assert todo_priority_label(case["item"]) == case["priority"]
+        assert todo_priority_rank(case["item"]) == case["rank"]
+
+
+def test_invalid_priority_like_prefix_is_literal_text():
+    from loopx.control_plane.todos.todo_semantics import todo_priority_parts
+    assert todo_priority_parts("[P1parser] Literal text") == (None, "[P1parser] Literal text")

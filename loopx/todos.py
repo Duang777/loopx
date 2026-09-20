@@ -101,7 +101,8 @@ from .control_plane.todos.successor_derivation import (
     successor_add_kwargs,
 )
 from .control_plane.todos.todo_index import MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL
-from .control_plane.todos.text import normalize_new_todo
+from .control_plane.todos.text import normalize_new_todo, plan_todo_priority
+from .control_plane.todos.todo_semantics import todo_priority_label
 from .control_plane.todos.unblock_resume import (
     apply_completed_user_todo_lifecycle,
     completion_decision_target,
@@ -604,6 +605,7 @@ def add_todo_to_lines(
         "role": role,
         "section": section,
         "todo": todo_text,
+        "priority": todo_priority_label({"text": todo_text}),
         "todo_id": todo_id,
         "status": normalize_todo_status(effective_metadata.get("status")) or normalized_status,
         "task_class": effective_metadata.get("task_class") or task_class,
@@ -668,6 +670,7 @@ def add_goal_todo(
     runtime_root_arg: str | None = None,
     role: str,
     text: str,
+    priority: str | None = None,
     status: str | None = None,
     note: str | None = None,
     task_class: str | None = None,
@@ -742,7 +745,8 @@ def add_goal_todo(
         raise ValueError("todo status must be one of: open, done, blocked, deferred")
     if normalized_status == TODO_STATUS_DONE:
         raise ValueError("todo add cannot create completed work; add it open and use `loopx todo complete`")
-    todo_text = normalize_new_todo(text)
+    priority_plan = plan_todo_priority({}, {"text": text, **({"priority": priority} if priority is not None else {})})
+    todo_text = str(priority_plan["text"])
     if validation_command and validation_command_json:
         raise ValueError(
             "--validation-command and --validation-command-json are mutually "
@@ -821,6 +825,8 @@ def add_goal_todo(
         actor_agent_id=effective_agent_id or effective_claimed_by,
         claimed_by=effective_claimed_by,
         metadata={
+            "priority": priority_plan["priority"],
+            "title": priority_plan["title"],
             "task_class": task_class,
             "action_kind": action_kind,
             "task_domain": task_domain,
@@ -1013,6 +1019,8 @@ def update_goal_todo(
     runtime_root_arg: str | None = None,
     todo_id: str,
     text: str | None = None,
+    priority: str | None = None,
+    clear_priority: bool = False,
     status: str | None = None,
     role: str | None = None,
     note: str | None = None,
@@ -1057,6 +1065,8 @@ def update_goal_todo(
     state_file: Path | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    if priority is not None and clear_priority:
+        raise ValueError("provide either priority or clear_priority, not both")
     shadow_runtime_root = effective_runtime_root(registry_path, runtime_root_arg)
     if claim_only and any(value is not None for value in (
         update_operation_id, update_expected_provider_revision, update_expected_registry_sha256,
@@ -1092,7 +1102,7 @@ def update_goal_todo(
         )
     if promoted_claim:
         unsupported_claim_values = (
-            text, status, note, evidence, reason, task_class, action_kind,
+            text, priority, clear_priority or None, status, note, evidence, reason, task_class, action_kind,
             task_domain, task_repository, continuation_policy,
             required_write_scopes, required_capabilities, target_capabilities,
             explore_result_node_refs, decision_scope, required_decision_scopes,
@@ -1154,6 +1164,10 @@ def update_goal_todo(
         clear_resume_when=clear_resume_when, no_followup=no_followup,
         clear_claim=clear_claim,
     )
+    if priority is not None:
+        planning_intent["priority"] = priority
+    if clear_priority:
+        planning_intent["clear_priority"] = True
     monitor_intent = todo_monitor_metadata.monitor_metadata_intent(monitor_metadata)
     if not claim_only and canonical_update_is_supported(
         text=text, note=note, intent=planning_intent,
@@ -1342,6 +1356,8 @@ def update_goal_todo(
             lines,
             todo_id=todo_id,
             text=text,
+            priority=priority,
+            clear_priority=clear_priority,
             status=status,
             role=role,
             note=note,

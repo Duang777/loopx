@@ -133,3 +133,10 @@ test("reentry decoder rejects malformed selection and requirement facts", () => 
   assert.throws(() => reentry({gate: {repair_missing: "network"}}), /repair_missing/);
   assert.throws(() => reentry({gate: {blocked_candidates: [{required_capabilities: "network"}]}}), /required_capabilities/);
 });
+
+
+test("repair binding preserves declared P3 and P4 instead of promoting them to P1", () => {
+  const binding = (project([row("low", ["network"], [], 4), row("higher", ["network"], [], 3)])!
+    .resolution_bindings as JsonObject[])[0]!;
+  assert.equal(binding.priority, "P3"); assert.equal(binding.primary_blocked_todo_id, "higher");
+});

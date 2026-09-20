@@ -6,7 +6,6 @@ from ..coordination.shadow_management import require_shadow_primary_write_allowe
 from ..coordination.local_authority_shadow_adapter import effective_runtime_root
 
 import hashlib
-import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -47,8 +46,8 @@ from .successor_derivation import (
     build_successor_intents,
     derive_successor_proposals,
 )
+from .todo_semantics import todo_priority_parts
 from .text import (
-    TODO_PRIORITY_PREFIX_PATTERN,
     normalize_new_todo,
     todo_priority_prefix,
 )
@@ -312,7 +311,7 @@ def _append_event_projected_successor(
         index=index,
         text=todo_text,
     )
-    title = re.sub(TODO_PRIORITY_PREFIX_PATTERN, "", todo_text).strip()
+    _priority, title = todo_priority_parts(todo_text)
     payload: dict[str, Any] = {
         "role": role,
         "priority": todo_priority_prefix(todo_text) or "P2",

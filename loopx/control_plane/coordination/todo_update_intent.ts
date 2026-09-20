@@ -1,5 +1,6 @@
 /** Canonical edit decoding and materialization shared by ordinary updates and
  * User completion. Admission, validation effects and commits stay with callers. */
+import {planTodoPriority} from "../todos/priority.ts";
 import type {JsonObject} from "../effect_program.ts";
 import {AuthorityStoreProtocolError, canonicalAuthorityObject, canonicalAuthorityBytes,
   requireAuthorityStoreId} from "./authority_store_codec.ts";
@@ -153,6 +154,15 @@ export function prepareUpdatedTodo(
       else next[field] = value;
     }
     next.done = next.status === "done" || next.status === "deferred";
+  }
+  // Derive text/title/priority together from the original record and caller intent.
+  // This runs within the same admitted head/CAS and never rewrites receipt intent.
+  const priorityUpdate = planTodoPriority(todo, {
+    ...input.planning_intent, ...(Object.hasOwn(input.patch, "text") ? {text: input.patch.text} : {}),
+  });
+  Object.assign(next, priorityUpdate);
+  if (priorityUpdate.priority === null) {
+    delete next.priority; delete next.title; clearFields.add("priority"); clearFields.add("title");
   }
   if (kind === "user_completion" && (todo.status !== "done" || Object.hasOwn(input.planning_intent ?? {}, "task_class"))) {
     planTodoAuthoringScope({schema_version: TODO_AUTHORING_SCOPE_REQUEST_SCHEMA, command: "class", role: "user", todo: next,

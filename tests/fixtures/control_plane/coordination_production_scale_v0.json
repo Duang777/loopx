@@ -50,6 +50,46 @@
     "conflict_todo_id": "todo_zz_acquire_scope",
     "conflict_write_scopes": ["lease-admission/shared/**"]
   },
+  "priority_cases": [
+    {
+      "item": {
+        "priority": "P4",
+        "text": "[P0] Stale display"
+      },
+      "priority": "P4",
+      "rank": 4
+    },
+    {
+      "item": {
+        "text": "Investigate P0 parser behavior"
+      },
+      "priority": null,
+      "rank": 50
+    },
+    {
+      "item": {
+        "text": "[P2-review] Review the parser"
+      },
+      "priority": "P2",
+      "rank": 2
+    },
+    {
+      "item": {
+        "priority": null,
+        "text": "[P0] Stale display"
+      },
+      "priority": null,
+      "rank": 50
+    },
+    {
+      "item": {
+        "priority": "P1junk",
+        "text": "Invalid historical label"
+      },
+      "priority": null,
+      "rank": 50
+    }
+  ],
   "semantic_cases": {
     "user_completion": {
       "scope_key": "publish_artifact",

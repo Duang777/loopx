@@ -1,3 +1,4 @@
+import {todoPriorityRank as priorityRank} from "../todos/priority.ts";
 import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
 import {
   optionalNonEmptyString,
@@ -32,11 +33,6 @@ function compactText(value: unknown, limit: number): { text: string; truncated: 
     text: normalized.slice(0, limit),
     truncated: normalized.length > limit,
   };
-}
-
-function priorityRank(value: unknown): number {
-  const match = /^P(\d+)/i.exec(typeof value === "string" ? value : "");
-  return match ? Number(match[1]) : 1_000;
 }
 
 function connectedDistances(

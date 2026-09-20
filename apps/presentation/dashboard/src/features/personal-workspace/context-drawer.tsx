@@ -138,6 +138,7 @@ export function ContextDrawer({ agents, attentionHistory = [], onSelectAttention
   const lastAuthoritativeSubagentConfigurationRef = useRef<WorkspaceGoalSubagentConfiguration | null>(null);
   const verifiedSubagentBaselineRef = useRef<WorkspaceGoalSubagentConfiguration | null>(null);
   const [todoAgentId, setTodoAgentId] = useState(agents.find((agent) => agent.available)?.agentId ?? "codex");
+  const [todoPriority, setTodoPriority] = useState("");
   const [todoResumeWhen, setTodoResumeWhen] = useState("");
   const closeRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -605,6 +606,21 @@ export function ContextDrawer({ agents, attentionHistory = [], onSelectAttention
                       idempotencyKey: `workspace-todo-${selection.item.todoId}-reassign-${todoAgentId}-${Date.now().toString(36)}`,
                       normalizedParameters: { agent_id: todoAgentId, goal_id: selection.item.goalId, operation: "reassign", todo_id: selection.item.todoId },
                       summary: t("drawer.reassignSummary", { task: selection.item.text }),
+                    })} type="button">{t("timeline.review")}</button>
+                  </label>
+                  <label className="personal-inline-agent-select">{t("drawer.taskPriority")}
+                    <select aria-label={t("drawer.taskPriority")} value={todoPriority} onChange={(event) => setTodoPriority(event.target.value)}>
+                      <option value="">{t("drawer.taskPriorityChoose")}</option>
+                      {["P0", "P1", "P2", "P3", "P4"].map((priority) => <option key={priority} value={priority}>{priority}</option>)}
+                      <option value="clear">{t("drawer.taskPriorityClear")}</option>
+                    </select>
+                    <button className="personal-secondary-action" disabled={!todoPriority} onClick={() => void callbacks.onPreviewAction?.({
+                      actionKind: "todo.update",
+                      context: {goal_id: selection.item.goalId, kind: "todo", todo_id: selection.item.todoId},
+                      idempotencyKey: `workspace-todo-${selection.item.todoId}-priority-${todoPriority}-${Date.now().toString(36)}`,
+                      normalizedParameters: {goal_id: selection.item.goalId, todo_id: selection.item.todoId, operation: "edit",
+                        ...(todoPriority === "clear" ? {clear_priority: true} : {priority: todoPriority})},
+                      summary: `${t("drawer.taskPriority")}: ${todoPriority === "clear" ? t("drawer.taskPriorityClear") : todoPriority}`,
                     })} type="button">{t("timeline.review")}</button>
                   </label>
                   <strong>{t("drawer.taskDeferUntil")}</strong>

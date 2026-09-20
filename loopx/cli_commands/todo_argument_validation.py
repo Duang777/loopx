@@ -8,6 +8,8 @@ from ..control_plane.todos.contract import TODO_CONTINUATION_POLICY_VALUES
 TODO_OPTION_FIELDS = (
     ("--role", "role"),
     ("--text", "text"),
+    ("--priority", "priority"),
+    ("--clear-priority", "clear_priority"),
     ("--todo-id", "todo_id"),
     ("--claim-operation-id", "claim_operation_id"),
     ("--update-operation-id", "update_operation_id"),
@@ -81,7 +83,7 @@ TODO_OPTION_FIELDS = (
 )
 
 _TODO_UPDATE_MUTABLE_FIELDS = (
-    "text", "status", "note", "evidence", "reason", "task_class",
+    "text", "priority", "clear_priority", "status", "note", "evidence", "reason", "task_class",
     "action_kind", "task_domain", "task_repository", "continuation_policy", "required_write_scopes",
     "required_capabilities", "target_capabilities", "capability_gap_status",
     "explore_result_node_refs", "clear_explore_result_node_refs", "decision_scope",
@@ -128,7 +130,7 @@ _TODO_ADD_INITIAL_RULES = (
 _TODO_ADD_UNSUPPORTED_FIELDS = (
     "next_claimed_by", "next_task_repository", "next_required_capabilities",
     "next_continuation_policy", "next_excluded_agents", "clear_excluded_agents",
-    "clear_blocks_agent", "self_merged", "no_follow_up",
+    "clear_blocks_agent", "self_merged", "no_follow_up", "clear_priority",
 )
 _TODO_OPTION_FLAGS = {field: flag for flag, field in TODO_OPTION_FIELDS}
 

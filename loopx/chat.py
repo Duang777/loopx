@@ -541,6 +541,7 @@ def _add_review_todo(
     registry_path: Path,
     goal_id: str,
     text: str,
+    priority: str | None = None,
     dry_run: bool,
 ) -> dict[str, Any]:
     return add_goal_todo(
@@ -548,6 +549,7 @@ def _add_review_todo(
         goal_id=goal_id,
         role="agent",
         text=_normalize_todo_text(text),
+        priority=priority,
         task_class="advancement_task",
         action_kind=CHAT_TODO_ACTION_KIND,
         dry_run=dry_run,
@@ -559,11 +561,13 @@ def build_todo_review_preview(
     registry_path: Path,
     goal_id: str,
     text: str,
+    priority: str | None = None,
 ) -> dict[str, Any]:
     payload = _add_review_todo(
         registry_path=registry_path,
         goal_id=goal_id,
         text=text,
+        priority=priority,
         dry_run=True,
     )
     compact = _compact_todo_payload(payload, applied=False)
@@ -576,12 +580,14 @@ def apply_todo_review_preview(
     registry_path: Path,
     goal_id: str,
     text: str,
+    priority: str | None = None,
     preview_id: str,
 ) -> dict[str, Any]:
     current_preview = _add_review_todo(
         registry_path=registry_path,
         goal_id=goal_id,
         text=text,
+        priority=priority,
         dry_run=True,
     )
     if not preview_id or preview_id != _todo_preview_fingerprint(current_preview):
@@ -596,6 +602,7 @@ def apply_todo_review_preview(
         registry_path=registry_path,
         goal_id=goal_id,
         text=text,
+        priority=priority,
         dry_run=False,
     )
     compact = _compact_todo_payload(applied, applied=True)

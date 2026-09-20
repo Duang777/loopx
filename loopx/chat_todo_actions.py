@@ -45,6 +45,9 @@ class ChatTodoActionMixin:
             goal_id=goal_id,
             todo_id=str(parameters["todo_id"]),
             text=parameters.get("text"),
+            priority=parameters.get("priority"),
+            clear_priority=(parameters.get("clear_priority", False) or
+                            ("priority" in parameters and parameters["priority"] is None)),
             status=status,
             **({"role": "user", "no_followup": bool(parameters.get("no_followup", True))}
                if operation == "complete" else {}),

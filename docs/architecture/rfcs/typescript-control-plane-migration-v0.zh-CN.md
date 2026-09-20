@@ -37,10 +37,18 @@ fixture 覆盖。这是一个已完成的交付阶段，不代表 Markdown 晋�
 lifecycle writer 已全部迁移。
 
 同一阶段也删除了该边界周围重复的 Python read policy。task-class 解析、识别 title
-的 actionable 判断、依赖就绪、Agent eligibility、priority 排序和 canonical Todo
-read record 现在只有一个 Python 语义 owner，而 TypeScript 仍是事务 owner。旧
+的 actionable 判断、依赖就绪、Agent eligibility 和 canonical Todo read record
+只有一个 Python 语义 owner，TypeScript 仍是事务 owner。优先级写入意图与排序现共用
+`todos/priority.ts`；Python 兼容读取使用生成的词表和旧格式语法，不再独立维护模式。旧
 projection 模块只保留 import-only 兼容 facade。这样继续遵守 replacement-first：
 兼容路径仍可用，但不能静默形成第二份语义实现。
+
+优先级意图这一批将 CLI add/update/clear、经过审阅的 Chat 编辑和 Dashboard 选择器
+接入既有 typed Todo 事务。仅改文字保留优先级，冲突声明在写入前拒绝。P3/P4 排序、
+历史装饰标签和 successor 继承使用同一 owner。见
+[调用合同](../../project-agent-todo-contract.md#priority-intent)。真实 CLI File/SQLite
+回读、隔离 PostgreSQL 和共享复杂 fixture 验证这条边界。本批删除重复的优先级知识，
+不代表其余 T1/T3 caller、Python 兼容 IO 或 D1–D3 默认切换门禁已经完成。
 
 Native update 通过 `todos/public_update.ts` 组合非终态 planning intent，在同一份
 完整 canonical head 上校验权限并 CAS。独立 intent 命名空间保留 text/note 限制

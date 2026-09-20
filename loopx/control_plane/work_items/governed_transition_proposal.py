@@ -17,6 +17,7 @@ from ...todos import (
     list_goal_todos,
     update_goal_todo,
 )
+from ..coordination.coordination_state_contract_generated import COORDINATION_STATE_CONTRACT
 from ..runtime.public_safety import validate_public_safe_value
 from ..todos.contract import (
     TODO_STATUS_DONE,
@@ -612,7 +613,7 @@ def settle_governed_transition_proposals(
 
 STEWARD_TEAM_PLAN_PREVIEW_SCHEMA_VERSION = "steward_team_plan_preview_v0"
 STEWARD_TEAM_PLAN_LANE_LIMIT = 8
-STEWARD_TEAM_PLAN_PRIORITIES = ("P0", "P1", "P2", "P3")
+STEWARD_TEAM_PLAN_PRIORITIES = tuple(COORDINATION_STATE_CONTRACT["todo_priority"]["values"])
 _GOAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$")
 # The reasons a plan may declare for a lane it cannot staff itself.
 STEWARD_TEAM_PLAN_GAP_REASONS = (

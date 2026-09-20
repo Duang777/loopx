@@ -172,7 +172,7 @@ PROTOCOL_BINDINGS = {
 }
 EXPECTED_TOP_LEVEL_KEYS = {
     "schema_version", "todo_read_record", "todo_domain_record",
-    "todo_projection_metadata", "compatibility", *PROTOCOL_BINDINGS,
+    "todo_projection_metadata", "todo_priority", "compatibility", *PROTOCOL_BINDINGS,
 }
 
 
@@ -194,6 +194,15 @@ def load_contract() -> dict[str, Any]:
         raise ValueError("coordination contract has unexpected top-level fields")
     if raw.get("schema_version") != "loopx_coordination_state_contract_v0":
         raise ValueError("coordination contract schema mismatch")
+    priority = raw.get("todo_priority")
+    if not isinstance(priority, dict) or set(priority) != {"values", "legacy_prefix_pattern", "legacy_label_pattern", "missing_rank"}:
+        raise ValueError("Todo priority contract has unexpected fields")
+    _string_list(priority["values"], label="todo_priority.values")
+    for pattern in ("legacy_prefix_pattern", "legacy_label_pattern"):
+        if not isinstance(priority[pattern], str) or not priority[pattern]:
+            raise ValueError("Todo priority pattern must be a non-empty string")
+    if not isinstance(priority["missing_rank"], int) or isinstance(priority["missing_rank"], bool):
+        raise ValueError("Todo missing priority rank must be an integer")
     todo = raw.get("todo_read_record")
     if not isinstance(todo, dict) or set(todo) != EXPECTED_TODO_KEYS:
         raise ValueError("Todo record contract has unexpected fields")

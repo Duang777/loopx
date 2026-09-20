@@ -1161,6 +1161,7 @@ class ChatActionService(
                 registry_path=self.registry_path,
                 goal_id=normalized["goal_id"],
                 text=normalized["text"],
+                priority=normalized.get("priority"),
             )
             fingerprint = str(canonical_preview["preview_id"])
             evidence = ["Canonical LoopX Todo dry-run validated the proposal."]
@@ -1397,6 +1398,7 @@ class ChatActionService(
                     registry_path=self.registry_path,
                     goal_id=str(parameters["goal_id"]),
                     text=str(parameters["text"]),
+                    priority=parameters.get("priority"),
                 )
                 current_fingerprint = str(current["preview_id"])
                 if current_fingerprint != proposal.get("expected_state_fingerprint"):
@@ -1410,6 +1412,7 @@ class ChatActionService(
                     registry_path=self.registry_path,
                     goal_id=str(parameters["goal_id"]),
                     text=str(parameters["text"]),
+                    priority=parameters.get("priority"),
                     preview_id=current_fingerprint,
                 )
                 canonical_receipt = applied["receipt"]

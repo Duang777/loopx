@@ -134,3 +134,13 @@ test("preview stays inert and rejects unenforced policy claims", () => {
     assert.throws(() => previewTeamPlan({...input, plan: {...input.plan as JsonObject, enforcement}}), /cannot enforce/u);
   }
 });
+
+
+test("team preview accepts P4 and rejects conflicting legacy priority before confirmation", () => {
+  const input = request();
+  const first = ((input.plan as JsonObject).lanes as JsonObject[])[0]!.first_todo as JsonObject;
+  first.priority = "P4";
+  assert.doesNotThrow(() => previewTeamPlan(input));
+  first.text = "[P0] Conflicting declaration";
+  assert.throws(() => previewTeamPlan(input), /conflict/);
+});

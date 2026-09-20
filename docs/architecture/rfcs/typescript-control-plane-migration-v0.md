@@ -58,11 +58,22 @@ remaining lifecycle writers have migrated.
 
 The same stage also removes duplicated Python read policy around that boundary.
 Task-class resolution, title-aware actionability, dependency readiness, agent
-eligibility, priority ordering, and canonical Todo read records now have one
-Python semantic owner while TypeScript remains the transaction owner. The old
+eligibility and canonical Todo read records have one Python semantic owner
+while TypeScript remains the transaction owner. Priority authoring and ordering
+now share `todos/priority.ts`; Python compatibility readers consume its generated
+vocabulary and legacy grammar instead of maintaining independent patterns. The old
 projection module is an import-only compatibility facade. This keeps the
 replacement-first rule intact: compatibility remains available, but it cannot
 silently become a second semantic implementation.
+
+The priority-intent slice connects CLI add/update/clear, reviewed Chat edits and
+the Dashboard selector to the existing typed Todo transaction. Text-only edits
+preserve priority; conflicting declarations fail before writes. P3/P4 ordering,
+legacy decorated labels and successor inheritance share the same owner. See the
+[caller contract](../../project-agent-todo-contract.md#priority-intent). Real CLI
+File/SQLite readback, isolated PostgreSQL and the shared complex fixture qualify
+this boundary. It retires duplicate priority knowledge, not the remaining T1/T3
+callers, Python compatibility IO or the D1–D3 default-cutover gates.
 
 Native update now composes `todos/public_update.ts` for a bounded nonterminal
 planning intent (status, evidence/reason, resume/clear and successor links),

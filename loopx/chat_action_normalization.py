@@ -218,6 +218,7 @@ class ChatActionNormalizationMixin:
                 allowed={
                     "goal_id",
                     "text",
+                    "priority",
                     "agent_id",
                     "endpoint_id",
                     "start_execution",
@@ -229,6 +230,8 @@ class ChatActionNormalizationMixin:
                 "goal_id": goal_id,
                 "text": _text(values.get("text"), field="text", limit=400),
             }
+            if "priority" in values:
+                result["priority"] = values["priority"]
             if values.get("endpoint_id"):
                 endpoint_id = _opaque(values.get("endpoint_id"), field="endpoint_id")
                 result["endpoint_id"] = endpoint_id
@@ -261,6 +264,8 @@ class ChatActionNormalizationMixin:
                     "goal_id",
                     "todo_id",
                     "text",
+                    "priority",
+                    "clear_priority",
                     "status",
                     "note",
                     "agent_id",
@@ -301,6 +306,8 @@ class ChatActionNormalizationMixin:
                 result["status"] = status
             if values.get("note"):
                 result["note"] = _text(values["note"], field="note", limit=600)
+            if "priority" in values:
+                result["priority"] = values["priority"]
             if values.get("endpoint_id"):
                 endpoint_id = _opaque(values["endpoint_id"], field="endpoint_id")
                 result["endpoint_id"] = endpoint_id
@@ -322,6 +329,12 @@ class ChatActionNormalizationMixin:
                 if not isinstance(values["no_followup"], bool):
                     raise ValueError("no_followup must be true or false")
                 result["no_followup"] = values["no_followup"]
+            if "clear_priority" in values:
+                if not isinstance(values["clear_priority"], bool):
+                    raise ValueError("clear_priority must be true or false")
+                result["clear_priority"] = values["clear_priority"]
+            if operation != "edit" and ("priority" in result or result.get("clear_priority")):
+                raise ValueError("priority changes require todo.update operation=edit")
             required_by_operation = {
                 "reassign": "agent_id",
                 "defer": "resume_when",
@@ -333,7 +346,7 @@ class ChatActionNormalizationMixin:
             if operation == "block" and not result.get("note"):
                 raise ValueError("todo.update block requires note")
             if operation == "edit" and len(result) == 3:
-                raise ValueError("todo.update requires text, status, or note")
+                raise ValueError("todo.update requires text, priority, status, or note")
             return result
         if action_kind == "run.correct":
             values = self._allowed_parameters(
