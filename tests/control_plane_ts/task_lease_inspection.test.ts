@@ -15,11 +15,13 @@ import {PostgreSqlAuthorityStore, installPostgreSqlAuthorityStoreSchema} from ".
 import {selectLocalSqliteAuthority, type LocalAuthorityProviderDependencies} from "../../loopx/control_plane/coordination/local_authority_provider.ts";
 import {engageLegacyCoordinationWriterFence, legacyCoordinationWriterFencePath} from "../../loopx/control_plane/coordination/legacy_writer_fence.ts";
 import {canonicalAuthoritySha256} from "../../loopx/control_plane/coordination/authority_store_codec.ts";
+import {sqliteRuntimeIdentity} from "../../loopx/control_plane/coordination/sqlite_runtime.ts";
 import {inspectTaskLease, TASK_LEASE_INSPECT_REQUEST} from "../../loopx/control_plane/work_items/task_lease_inspection.ts";
 import {authorityProjectionFixture} from "./authority_projection_fixture.ts";
 import {productionScaleLeaseLifecycleFixture} from "./production_scale_coordination_fixture.ts";
 
 const NOW = new Date("2026-09-13T10:05:00Z");
+const sqliteQualified = sqliteRuntimeIdentity().sqlite_authority_qualified === true;
 const pool = process.env.LOOPX_TEST_POSTGRES_URL ? new Pool({connectionString: process.env.LOOPX_TEST_POSTGRES_URL}) : null;
 const database = pool ? {connect: async () => {
   const client = await pool.connect();
@@ -107,7 +109,8 @@ async function fixture(t: test.TestContext, provider: Provider, schema: "native"
 
 for (const provider of ["legacy", "file", "sqlite", "postgresql"] as const) {
   for (const schema of provider === "legacy" ? ["legacy"] as const : ["legacy", "native"] as const) {
-    test(`${provider} ${schema} full mixed head reports effective ownership without writes`, {skip: provider === "postgresql" && !pool}, async t => {
+    const skip = (provider === "postgresql" && !pool) || (provider === "sqlite" && !sqliteQualified);
+    test(`${provider} ${schema} full mixed head reports effective ownership without writes`, {skip}, async t => {
       const {request, store, authorityProvider, cases, root, goal} = await fixture(t, provider, schema);
       const before = await store?.loadAuthority();
       const directory = join(root, "goals", goal, "task-leases");
