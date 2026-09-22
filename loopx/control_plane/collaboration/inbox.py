@@ -72,14 +72,36 @@ def normalize_request(value: Any) -> dict | None:
         raise ValueError(str(exc)) from exc
 
 
-def pending(runtime_root: Path, goal_id: str, agent_id: str) -> dict:
+def pending(
+    runtime_root: Path, goal_id: str, agent_id: str, *, cursor: str | None = None
+) -> dict:
+    scope = _hash(["pending_requests_v1", str(runtime_root.resolve()), goal_id, agent_id])
+    after = ""
+    if cursor is not None:
+        if not isinstance(cursor, str) or not re.fullmatch(
+            r"1:[a-f0-9]{64}:[a-f0-9]{64}", cursor
+        ):
+            raise ValueError("invalid pending request cursor")
+        _, cursor_scope, after = cursor.split(":")
+        if cursor_scope != scope:
+            raise ValueError("pending request cursor scope mismatch")
     folder = (
         _root(runtime_root)
         / "entries"
         / _hash(dict(goal_id=goal_id, agent_id=agent_id))
     )
+    try:
+        paths = sorted(folder.iterdir())
+    except FileNotFoundError:
+        paths = []
     items = []
-    for path in sorted(folder.glob("*.json")):
+    for path in paths:
+        if path.suffix != ".json":
+            continue
+        if not re.fullmatch(r"[a-f0-9]{64}", path.stem):
+            raise ValueError("invalid context request filename")
+        if path.stem <= after:
+            continue
         decided = (_root(runtime_root) / "decisions" / path.name).exists()
         if decided and not needs_conclusion(runtime_root, path.stem):
             continue
@@ -88,6 +110,7 @@ def pending(runtime_root: Path, goal_id: str, agent_id: str) -> dict:
             item.get("schema_version") != ENTRY_SCHEMA
             or item.get("goal_id") != goal_id
             or item.get("agent_id") != agent_id
+            or item.get("request_id") != path.stem
         ):
             raise ValueError("context inbox scope mismatch")
         if decided:
@@ -107,7 +130,12 @@ def pending(runtime_root: Path, goal_id: str, agent_id: str) -> dict:
         **({"peer_returns": peer_returns} if peer_returns["items"] else {}),
         "items": items[:20],
         "has_more": len(items) > 20,
-        "instruction": REQUEST_TRIAGE_INSTRUCTION,
+        "next_cursor": f"1:{scope}:{items[19]['request_id']}" if len(items) > 20 else None,
+        "instruction": (
+            REQUEST_TRIAGE_INSTRUCTION
+            + " Follow next_cursor to read later pending requests. Restart without a cursor "
+            "to discover new requests before it. The end of a page sequence is not work completion."
+        ),
     }
 
 

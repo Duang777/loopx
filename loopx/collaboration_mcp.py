@@ -66,9 +66,13 @@ def register_collaboration_tools(server: FastMCP, root: Path, registry: Path, go
         _goal(registry, goal_id, agent_id)
 
     @server.tool()
-    def read_context() -> dict:
-        """Read pending requests, material version checks and unconsumed peer results."""
-        return read_inbox(root, registry, goal_id, agent_id, workspace=workspace)
+    def read_context(cursor: str | None = None) -> dict:
+        """Read pending requests, material version checks and unconsumed peer results.
+
+        Follow next_cursor for later requests. Omit cursor to start a fresh scan.
+        Pages are live; reading all pages does not complete outstanding work.
+        """
+        return read_inbox(root, registry, goal_id, agent_id, workspace=workspace, cursor=cursor)
 
     @server.tool()
     def assess_request(

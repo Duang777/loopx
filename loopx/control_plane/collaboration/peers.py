@@ -344,13 +344,12 @@ def input_readiness(registry, goal_id, brief, *, workspace=None):
     return result
 
 
-def read_inbox(root, registry, goal_id, agent_id, *, workspace=None):
+def read_inbox(root, registry, goal_id, agent_id, *, workspace=None, cursor=None):
     from .inbox import pending
     from .inbox import record_read
 
     _goal(registry, goal_id, agent_id)
-    result = pending(root, goal_id, agent_id)
-    record_read(root, result["items"])
+    result = pending(root, goal_id, agent_id, cursor=cursor)
     for item in result["items"]:
         if item.get("brief"):
             item["input_readiness"] = input_readiness(
@@ -366,6 +365,7 @@ def read_inbox(root, registry, goal_id, agent_id, *, workspace=None):
         "Finish the original request with return_result, including evidence and remaining gaps. "
         "Adoption, file hashes and returned opinions are not independent acceptance or Todo completion."
     )
+    record_read(root, result["items"])
     return result
 
 

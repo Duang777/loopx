@@ -49,12 +49,16 @@ def register_manager_inbox(subparsers, add_format):
     parser.add_argument("--evidence-id", action="append", default=[])
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=8)
+    parser.add_argument("--cursor", help="For read: continue with the previous page's next_cursor.")
     parser.add_argument("--decision", choices=("adopt", "defer", "reject", "no_change"))
     parser.add_argument("--reason")
 
 
 def handle_manager_inbox(args, registry_path, runtime_root):
     try:
+        cursor = getattr(args, "cursor", None)
+        if cursor is not None and args.manager_inbox_action != "read":
+            raise ValueError("--cursor is only supported for read")
         if args.manager_inbox_action == "configure-ssh-read-scope":
             from ..capabilities.manager_context.ssh_evidence import configure
             result = configure(runtime_root, channel=args.channel_id or "", host=args.ssh_host,
@@ -92,7 +96,8 @@ def handle_manager_inbox(args, registry_path, runtime_root):
             result = consume_return(runtime_root, args.goal_id, args.agent_id, args.request_id)
         elif args.manager_inbox_action == "read":
             from ..control_plane.collaboration.peers import read_inbox
-            result = read_inbox(runtime_root, registry_path, args.goal_id, args.agent_id, workspace=Path.cwd())
+            result = read_inbox(runtime_root, registry_path, args.goal_id, args.agent_id,
+                                workspace=Path.cwd(), cursor=cursor)
             result["followthrough"] = (
                 "After reading and deciding, associate Core work with manager-inbox link. Then use manager-inbox report --phase conclusion --reply-text to return this request's concrete result, replan decision, or explicit blocker/defer reason to its original audience automatically. Use optional --phase decision only for meaningful interim news during longer work. Adoption/linking alone is not a completed exchange. Do not wait for the owner to ask again. Write audience-ready text, not private deliberation."
             )
