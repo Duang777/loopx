@@ -36,8 +36,16 @@ def test_corrupt_management_holds_before_any_primary_write(tmp_path: Path, raw: 
     assert path.read_bytes() == before
 
 
-def test_python_reads_typescript_binding_and_rejects_cross_root_replay(tmp_path: Path) -> None:
+def test_python_reads_typescript_binding_across_root_alias_and_rejects_cross_root_replay(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "runtime"
+    root.mkdir()
+    alias = tmp_path / "runtime-alias"
+    try:
+        alias.symlink_to(root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
     script = """
 import {bootstrapManagedShadow} from './loopx/control_plane/coordination/shadow_management.ts';
 const root = process.argv[1];
@@ -46,14 +54,15 @@ const result = await bootstrapManagedShadow(request,{withPrimaryLocks:async fn=>
 process.stdout.write(JSON.stringify(result));
 """
     result = subprocess.run(
-        ["node", "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e", script, str(root)],
+        ["node", "--no-warnings", "--experimental-strip-types", "--input-type=module", "-e", script, str(alias)],
         check=True, capture_output=True, text=True,
     )
     applied = json.loads(result.stdout)
     assert applied["status"] == "applied"
-    binding = require_shadow_primary_write_allowed(root, "goal-a")
+    binding = require_shadow_primary_write_allowed(alias, "goal-a")
     assert binding is not None
     assert binding["capture_lineage_id"] == applied["capture_lineage_id"]
+    assert require_shadow_primary_write_allowed(root, "goal-a") == binding
     other = tmp_path / "other-root"
     destination = shadow_management_state_path(other, "goal-a")
     destination.parent.mkdir(parents=True)

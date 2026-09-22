@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile, writeFile, rename, unlink } from "node:fs/promises";
+import { readFile, writeFile, rename, symlink, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -11,6 +11,7 @@ import {
   readLocalAuthorityShadow,
 } from "../../loopx/control_plane/coordination/local_authority_shadow.ts";
 import { outboxEntryIdentity, beginLeaseOutboxEntry } from "../../loopx/control_plane/coordination/local_authority_shadow_outbox.ts";
+import { requireShadowCaptureBinding } from "../../loopx/control_plane/coordination/shadow_management.ts";
 import * as schemas from "../../loopx/control_plane/coordination/coordination_state_contract.generated.ts";
 import { fixture, pendingEntry, settleFiles, todo, sha } from "./shadow_file_fixture.ts";
 
@@ -144,6 +145,22 @@ test("a lease writer with a missing cursor obtains its next sequence from proved
   assert.equal(capture.failure, null);
   assert.equal(capture.seq, 2);
   await assert.rejects(readFile(join(directory, "drain-cursor.json")), { code: "ENOENT" });
+});
+
+test("a lease writer uses the active binding digest through a runtime-root alias", async (t) => {
+  const f = await fixture(t);
+  const alias = `${f.root}-alias`;
+  t.after(() => unlink(alias));
+  await symlink(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  const planned = { schema_version: "task_lease_v0", goal_id: "goal-a", todo_id: "todo_one",
+    owner: "agent-a", version: 1, lease_epoch: 1, status: "active", updated_at: "2026-09-06T00:00:00Z" };
+  const capture = await beginLeaseOutboxEntry({ runtime_root: alias, goal_id: "goal-a",
+    lease_directory: join(alias, "goals", "goal-a", "task-leases"), write_class: "task_lease_acquire",
+    operation_id: null, previous_lease: null, planned_lease: planned, active_todo_ids: null });
+  assert.equal(capture.failure, null);
+  const prepared = JSON.parse(await readFile(join(alias, "authority-shadow", "outbox", "goal-a", "leases",
+    `0000000001-${capture.entry_id}.prepared.json`), "utf8"));
+  assert.equal(prepared.source_root_digest, (await requireShadowCaptureBinding(alias, "goal-a")).source_root_digest);
 });
 
 test("lease capture omits a lease whose Todo left the current graph", async (t) => {

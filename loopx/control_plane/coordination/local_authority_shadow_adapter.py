@@ -489,6 +489,7 @@ class _PartitionDrainer:
         self._lock_timeout = lock_timeout_seconds
         self._directory = outbox.partition_directory(runtime_root, goal_id, partition)
         self._lineage: str | None = capture_lineage_id
+        self._source_root_digest: str | None = None
         self.last_delivered_digest: str | None = None
 
     def _lock(self) -> Any:
@@ -512,6 +513,7 @@ class _PartitionDrainer:
                 "stale_generation", "drain belongs to an earlier lineage"
             )
         self._lineage = lineage
+        self._source_root_digest = str(binding["source_root_digest"])
         return binding
 
     def _proof(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -570,8 +572,7 @@ class _PartitionDrainer:
                 type(seq) is not int
                 or seq != len(history) + 1
                 or receipt.get("capture_lineage_id") != self._lineage
-                or receipt.get("source_root_digest")
-                != outbox.runtime_root_digest(self._runtime_root)
+                or receipt.get("source_root_digest") != self._source_root_digest
                 or receipt.get("entry_id") != transaction.get("operation_id")
             ):
                 raise outbox.OutboxError(

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import type { JsonObject } from "../effect_program.ts";
 import { durableWriteJson } from "../effect_runtime_io.ts";
@@ -295,7 +295,7 @@ export async function beginLeaseOutboxEntry(
     }));
     const bytesDigest = leaseRecordDigest(input.planned_lease);
     const seq = await nextSeq(directory, input.runtime_root, input.goal_id, binding.capture_lineage_id);
-    const sourceRootDigest = sha256Digest(resolve(input.runtime_root));
+    const sourceRootDigest = binding.source_root_digest;
     const entryId = outboxEntryIdentity(input.goal_id, LEASE_PARTITION, seq, bytesDigest,
       binding.capture_lineage_id, sourceRootDigest);
     const entry: JsonObject = {

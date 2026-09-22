@@ -226,6 +226,32 @@ def test_capture_records_prepared_then_committed_and_skips_prose_only_writes(tmp
     assert [entry.seq for entry in outbox.list_entries(_todo_dir(runtime_root))] == [1, 2]
 
 
+def test_capture_and_drain_use_the_active_binding_digest_through_a_root_alias(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    registry, state, runtime_root = _fixture(alias)
+
+    capture = _record_change(
+        registry, state, runtime_root, "Capture through the runtime alias."
+    )
+    binding = require_shadow_primary_write_allowed(runtime_root, GOAL_ID)
+    assert binding is not None
+    [entry] = outbox.list_entries(_todo_dir(runtime_root))
+    assert entry.prepared["source_root_digest"] == binding["source_root_digest"]
+
+    drained = _drain(registry, runtime_root)
+    assert drained.outcome == "drained"
+    assert drained.delivered == 1
+    assert capture.outcome.entry_id == drained.entries[0]["entry_id"]
+
+
 def test_disabled_capture_creates_nothing(tmp_path: Path) -> None:
     registry, state, runtime_root = _fixture(tmp_path, bootstrap=False)
     capture = _capture(registry, state, runtime_root, original_text="", enabled=False)

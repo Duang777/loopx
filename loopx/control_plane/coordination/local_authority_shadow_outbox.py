@@ -869,7 +869,9 @@ class TodoPartitionCapture:
                 binding_view.get("reason_code") or "bootstrap_required"
             )
             return
-        self._lineage_id = str(binding_view["binding"]["capture_lineage_id"])
+        binding = binding_view["binding"]
+        self._lineage_id = str(binding["capture_lineage_id"])
+        source_root_digest = str(binding["source_root_digest"])
         if event_id is not None:
             self.outcome.skipped_reason = "event_log_writer_not_bound"
             return
@@ -892,7 +894,7 @@ class TodoPartitionCapture:
                 seq=seq,
                 source_ref=source_ref,
                 capture_lineage_id=self._lineage_id,
-                source_root_digest=runtime_root_digest(self._runtime_root),
+                source_root_digest=source_root_digest,
             )
             record = _entry_record(
                 goal_id=self._goal_id,
@@ -912,7 +914,7 @@ class TodoPartitionCapture:
                     "lease": None,
                     "event_id": event_id,
                 },
-                source_root_digest=runtime_root_digest(self._runtime_root),
+                source_root_digest=source_root_digest,
                 capture_lineage_id=self._lineage_id,
                 projection=projection,
                 digest=digest,

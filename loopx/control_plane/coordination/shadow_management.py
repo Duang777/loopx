@@ -58,6 +58,17 @@ def _text(value: object) -> bool:
     return isinstance(value, str) and bool(value) and value.strip() == value
 
 
+def _source_root_digests(runtime_root: Path) -> set[str]:
+    roots = {
+        os.path.abspath(str(runtime_root)),
+        os.path.realpath(str(runtime_root)),
+    }
+    return {
+        "sha256:" + hashlib.sha256(root.encode()).hexdigest()
+        for root in roots
+    }
+
+
 def _binding(value: object, root_digest: str) -> bool:
     return (
         isinstance(value, dict) and set(value) == _BINDING_KEYS
@@ -79,13 +90,14 @@ def read_shadow_management_state(runtime_root: Path, goal_id: str) -> dict[str, 
         raise ShadowManagementError("shadow_management_state_invalid") from exc
     except OSError as exc:
         raise ShadowManagementError("shadow_management_state_unavailable") from exc
-    root_digest = "sha256:" + hashlib.sha256(os.path.abspath(str(runtime_root)).encode()).hexdigest()
+    root_digests = _source_root_digests(runtime_root)
     try:
         state = json.loads(raw)
         if not isinstance(state, dict) or set(state) != _STATE_KEYS:
             raise ValueError("journal fields differ")
+        root_digest = state["source_root_digest"]
         if (state["schema_version"] != SHADOW_MANAGEMENT_STATE_SCHEMA
-                or state["goal_id"] != goal_id or state["source_root_digest"] != root_digest):
+                or state["goal_id"] != goal_id or root_digest not in root_digests):
             raise ValueError("journal scope differs")
         status = state["status"]
         if status not in {"bootstrapping", "active", "rolling_back", "inactive"}:
