@@ -8,13 +8,21 @@ import {join} from "node:path";
 import test from "node:test";
 import {FileAuthorityStore} from "../../loopx/control_plane/coordination/file_authority_store.ts";
 import {SqliteAuthorityStore} from "../../loopx/control_plane/coordination/sqlite_authority_store.ts";
+import {sqliteAuthorityRuntime} from "../../loopx/control_plane/coordination/sqlite_runtime.ts";
 import {exportAuthorityArchive, verifyAuthorityArchive, restoreAuthorityArchive} from
   "../../loopx/control_plane/coordination/authority_archive.ts";
+
+function sqliteSkipReason(): string | undefined {
+  try { sqliteAuthorityRuntime(); return undefined; }
+  catch { return "requires a WAL-fixed SQLite runtime with finalized statements"; }
+}
+const sqliteSkip = sqliteSkipReason();
 
 // Expectations come from the retained-journal contract: exact historical state,
 // operation identities and receipts survive; physical revision tokens do not.
 for (const sourceKind of ["file", "sqlite"] as const) {
-  test(`${sourceKind}: complete archive roundtrip preserves every transaction`, async () => {
+  test(`${sourceKind}: complete archive roundtrip preserves every transaction`,
+    {skip: sourceKind === "sqlite" ? sqliteSkip : undefined}, async () => {
     const root = await mkdtemp(join(tmpdir(), "authority-archive-"));
     try {
       const source = sourceKind === "file" ? new FileAuthorityStore(join(root, "source"), "goal")
@@ -33,6 +41,7 @@ for (const sourceKind of ["file", "sqlite"] as const) {
       assert.equal(result.commits, "7");
       assert.deepEqual(await verifyAuthorityArchive(archive), result);
       for (const kind of ["file", "sqlite"] as const) {
+        if (kind === "sqlite" && sqliteSkip !== undefined) continue;
         const target = kind === "file" ? new FileAuthorityStore(join(root, kind), "goal")
           : new SqliteAuthorityStore(join(root, kind), "goal");
         const restored = await restoreAuthorityArchive(archive, target, result.archive_sha256);
@@ -95,7 +104,7 @@ async function seed(store: AuthorityStore, count = 3) {
   return previous;
 }
 
-test("capture pins its original prefix while real source receives later commits", async () => {
+test("capture pins its original prefix while real source receives later commits", {skip: sqliteSkip}, async () => {
   const root = await mkdtemp(join(tmpdir(), "authority-archive-"));
   try {
     const source = new SqliteAuthorityStore(join(root, "source"), "goal");
@@ -148,7 +157,8 @@ for (const fault of ["gap", "missing-page", "identity", "changed-head"] as const
 }
 
 for (const kind of ["file", "sqlite"] as const) {
-  test(`${kind}: interrupted restore resumes the exact retained prefix; lost ack recovers`, async () => {
+  test(`${kind}: interrupted restore resumes the exact retained prefix; lost ack recovers`,
+    {skip: kind === "sqlite" ? sqliteSkip : undefined}, async () => {
     const root = await mkdtemp(join(tmpdir(), "authority-archive-"));
     try {
       const source = new FileAuthorityStore(join(root, "source"), "goal");
@@ -180,7 +190,7 @@ for (const kind of ["file", "sqlite"] as const) {
   });
 }
 
-test("restore rejects occupied divergent or longer target and changed reviewed digest", async () => {
+test("restore rejects occupied divergent or longer target and changed reviewed digest", {skip: sqliteSkip}, async () => {
   const root = await mkdtemp(join(tmpdir(), "authority-archive-"));
   try {
     const source = new SqliteAuthorityStore(join(root, "source"), "goal");
@@ -233,7 +243,8 @@ for (const corruption of ["order", "duplicate", "head", "goal", "unknown-field",
 }
 
 for (const schema of ["native", "legacy"] as const) {
-  test(`${schema}: mixed complete graph retains archived records, leases, ordering and unknown metadata`, async () => {
+  test(`${schema}: mixed complete graph retains archived records, leases, ordering and unknown metadata`,
+    {skip: sqliteSkip}, async () => {
     const root = await mkdtemp(join(tmpdir(), "authority-archive-"));
     try {
       const source = new SqliteAuthorityStore(join(root, "source"), "goal");
@@ -263,7 +274,8 @@ for (const schema of ["native", "legacy"] as const) {
   });
 }
 
-test("SQLite retained history crosses checkpoint windows and preserves an old same-key receipt", async () => {
+test("SQLite retained history crosses checkpoint windows and preserves an old same-key receipt",
+  {skip: sqliteSkip}, async () => {
   const root = await mkdtemp(join(tmpdir(), "authority-archive-history-"));
   try {
     const source = new SqliteAuthorityStore(join(root, "source"), "goal");
@@ -282,7 +294,7 @@ test("SQLite retained history crosses checkpoint windows and preserves an old sa
   } finally { await rm(root, {recursive: true, force: true}); }
 });
 
-test("a changed archive during the second pass cannot claim a verified recovery", async () => {
+test("a changed archive during the second pass cannot claim a verified recovery", {skip: sqliteSkip}, async () => {
   const root = await mkdtemp(join(tmpdir(), "authority-archive-change-"));
   try {
     const source = new FileAuthorityStore(join(root, "source"), "goal");
