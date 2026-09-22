@@ -32,6 +32,55 @@ The unpromoted scan retains its older materialized-state scope: it does not
 claim to include event-only Todos. Its quiescence decision and the canonical
 transaction now share one typed policy. No default mode changes.
 
+## Preserve claims during authority promotion
+
+The reviewed whole-Goal authority cutover has a narrower migration option for
+an active Goal that cannot satisfy the ordinary quiescence rule:
+
+```bash
+# Keep legacy or soft_claim while changing only the storage authority.
+loopx coordination-shadow promote --goal-id example-goal \
+  --minimum-operations 3 --require-event-kind todo_claim \
+  --handoff-mode-migration preserve
+
+# Move legacy/soft_claim directly to hard_lease in the same reviewed cutover.
+loopx coordination-shadow promote --goal-id example-goal \
+  --minimum-operations 3 --require-event-kind todo_claim \
+  --handoff-mode-migration hard_lease
+
+# Apply only the exact plan returned by preview.
+loopx coordination-shadow promote --goal-id example-goal \
+  --minimum-operations 3 --require-event-kind todo_claim \
+  --handoff-mode-migration hard_lease --execute
+```
+
+This is not a general mode-change bypass. The only explicit choices are
+`preserve` and `hard_lease`; omitting the option retains the older requirement
+that the qualified source already be `hard_lease`. The TypeScript promotion
+transaction preserves every Todo, claim, lease record, receipt and validation
+field. It validates live claim owners against the Goal agent registry and
+retains an active lease only when its owner, Todo scopes, expiry, version and
+epoch are safe. It never invents a lease for a preserved claim. After a direct
+move to `hard_lease`, the same claim owner must acquire a fresh lease through
+the ordinary atomic claim-and-lease path before protected work; another owner
+remains rejected.
+
+Preview reports the source revision/digest, target digest, preserved claims,
+lease dispositions and conflicts. The target digest, selected migration and
+registered-agent set enter the promotion-plan identity. Therefore an
+interrupted cutover can recover only the same reviewed intent. The durable
+legacy-writer fence blocks late old-session writes after cutover; a zero active
+lease count alone is never treated as proof that no old Turn exists.
+
+The CLI is the only mutation surface for this reviewed administrative action.
+Managed Turns invoke that same CLI contract. Dashboard delegation preflight and
+Lark/Chat remain read-only here: they already project `promotion_required` or
+the promoted canonical authority and direct an operator to the reviewed
+preview. The migration choice is one-shot operation intent, not Goal
+configuration, so adding it to the capability editor would create a second
+source of truth. After apply, all ordinary Todo/lease actions and receipts on
+those surfaces read the same promoted projection.
+
 ## Recover a canonical request
 
 Choose an operation ID before a canonical set if a lost response must be retried:
@@ -72,6 +121,28 @@ provider 失败明确报错，不回退旧文件。现有 Todo-section 投影不
 恰好等于观察时间视为已过期；非法有效期或未知 lease schema 不能作为空闲证据。
 并发修改使 CAS 冲突，不能在旧检查结果上继续切换。原 Todo、lease 和摘要不变。
 未晋升路径仍仅扫描物化状态，不宣称覆盖 event-only Todo；两条路径共用 TS 切换规则。
+
+对于无法清空活跃 claim 的 Goal，整 Goal authority 晋升提供一个更窄的显式迁移入口：
+`--handoff-mode-migration preserve` 只切换存储权威并保留 `legacy`／`soft_claim`；
+`--handoff-mode-migration hard_lease` 在同一受评审事务中直接迁到 `hard_lease`。
+未传该参数时，继续沿用“源端已经是 `hard_lease`”的旧门禁。它不是通用 mode 绕过，
+也不开放降级。
+
+TypeScript 事务会原样保存 Todo、claim、lease record、receipt 与验证字段；校验活跃
+claim owner 是否仍在 Goal agent registry 中，并且只有 owner、Todo scope、expiry、
+version 与 epoch 都安全时才保留活跃 lease。迁到 `hard_lease` 不会为 claim 伪造
+lease：原 owner 下一次受保护写入前，必须走正常的原子 claim+lease 路径取得新 lease，
+异主仍被拒绝。preview 会给出源 revision/digest、目标 digest、保留 claim、lease
+处置与冲突；这些内容进入 promotion-plan identity，所以中断后只能恢复完全相同的
+评审意图。持久 legacy-writer fence 负责拦截旧 Turn 的迟到写入，不能用“当前 0 条
+active lease”推断没有在途 Turn。
+
+该受评审管理动作只有 CLI 一个写入口，managed Turn 也调用同一 CLI contract。
+Dashboard 的 delegation preflight 与 Lark／Chat 在这里保持只读：它们已经投影
+`promotion_required` 或晋升后的 canonical authority，并把 operator 引导到受评审
+preview。migration choice 是单次 operation intent，不是 Goal 配置；把它再放进
+capability editor 会制造第二个 truth source。apply 之后，各入口的普通 Todo／lease
+动作与回执统一读取同一份 promoted projection。
 
 需支持丢响应恢复时，在首次 canonical set 前指定 `--operation-id`，重试沿用同一
 目标 mode 和 ID。不同 mode 复用 ID 会被拒绝；即使最初 mode 未变，也记录耐久回执。

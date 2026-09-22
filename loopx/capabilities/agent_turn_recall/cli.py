@@ -193,7 +193,8 @@ def handle_agent_turn_recall_command(
             payload: dict[str, Any] = {
                 "ok": True,
                 "schema_version": AGENT_TURN_RECALL_SCHEMA_VERSION,
-                "status": "disabled",
+                "status": str(experiment_status.get("status") or "not_available"),
+                "reason_code": experiment_status.get("reason_code"),
                 "goal_id": args.goal_id,
                 "agent_id": args.agent_id,
                 "experiment": experiment_status,

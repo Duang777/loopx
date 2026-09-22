@@ -59,8 +59,12 @@ Use the JSON form for the first pass so the response contract and per-PR blank
 templates enter the model context:
 
 ```bash
-loopx --format json pr-review --state all [--repo owner/repo] [--since ISO]
+loopx --format json pr-review [--repo owner/repo] [--since ISO]
 ```
+
+The ordinary queue defaults to open PRs. Use `--state merged` or `--state all`
+explicitly only for a lifecycle or post-merge audit; named exact targets remain
+lifecycle-neutral when `--state` is omitted.
 
 When the user explicitly names one or a few PRs, resolve each current head and
 request only those exact heads. This direct path is complete for the named
@@ -844,10 +848,10 @@ A first implementation is acceptable when:
 - `loopx pr-review` returns `loopx_pr_review_command_response_v0`;
 - default live reads use the caller's current `gh` repository, while
   `--repo owner/repo` can review another GitHub project;
-- `--state all` includes merged PRs in the same packet, applies `--limit` per
+- omitted `--state` and explicit `--state open` keep the ordinary queue
+  open-only; `--state all` includes merged PRs in the same packet, applies `--limit` per
   lifecycle group, and keeps `review_groups.merged` non-empty when merged PRs
-  exist in the requested window; `--state open` preserves the old open-only
-  review queue;
+  exist in the requested window;
 - `pull_requests` remains the full bounded inventory while every
   `review_sequence` contains only rows with a non-null `review_action_kind`;
   valid concluded exact heads are never recommended for duplicate work and

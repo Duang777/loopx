@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
 
@@ -97,7 +97,7 @@ def register_pr_review_command(
 ) -> None:
     parser = subparsers.add_parser(
         "pr-review",
-        help="Build a public-safe /loopx-pr-review queue for the current project's open and merged pull requests.",
+        help="Build a public-safe /loopx-pr-review queue for the current project's pull requests.",
     )
     add_subcommand_format(parser)
     parser.add_argument("--goal-id", help="Use this Goal PR review configuration; otherwise use machine defaults.")
@@ -130,8 +130,11 @@ def register_pr_review_command(
     parser.add_argument(
         "--state",
         choices=("open", "merged", "all"),
-        default="all",
-        help="PR lifecycle state to include. Defaults to all so merged PRs remain reviewable.",
+        default=None,
+        help=(
+            "PR lifecycle state to include. Ordinary queues default to open; "
+            "use merged/all explicitly for lifecycle or post-merge audits."
+        ),
     )
     parser.add_argument(
         "--review-priority",
@@ -209,6 +212,16 @@ def register_pr_review_command(
     )
 
 
+def _resolve_pr_review_state_filter(
+    raw_state: object,
+    *,
+    target_exact_heads: Sequence[str],
+) -> str:
+    if raw_state is None and target_exact_heads:
+        return "all"
+    return normalize_pr_state_filter(raw_state)
+
+
 def handle_pr_review_command(
     args: argparse.Namespace,
     *,
@@ -222,6 +235,10 @@ def handle_pr_review_command(
     checkpoint_path: Path | None = None
     resolved_review_priority = DEFAULT_REVIEW_PRIORITY
     target_exact_heads = list(getattr(args, "target_exact_head", []) or [])
+    resolved_state_filter = _resolve_pr_review_state_filter(
+        getattr(args, "state", None),
+        target_exact_heads=target_exact_heads,
+    )
     try:
         machine_configuration = (read_machine_configuration(runtime_root, registry=build_builtin_machine_configuration_registry()) if runtime_root is not None else None)
         goal = None
@@ -433,7 +450,7 @@ def handle_pr_review_command(
                 source_scan = scan_github_pull_requests(
                     repo=repository,
                     limit=max(1, args.limit) + 1,
-                    state_filter=normalize_pr_state_filter(args.state),
+                    state_filter=resolved_state_filter,
                     since=args.since,
                     **({"wait_for_ci": False} if not wait_for_ci else {}),
                 )
@@ -454,7 +471,7 @@ def handle_pr_review_command(
             repository=repository,
             limit=max(1, args.limit),
             source=source,
-            state_filter=normalize_pr_state_filter(args.state),
+            state_filter=resolved_state_filter,
             since=args.since,
             source_scan=source_scan,
             reviewer_login=reviewer_login,
@@ -517,7 +534,7 @@ def handle_pr_review_command(
                 "cli_command": "loopx pr-review [--repo owner/repo] [--target-exact-head NUMBER@HEAD_OID] [--state open|merged|all] [--review-priority other-developers-first|owner-first] [--since ISO]",
                 "repository": args.repo,
                 "limit": max(1, args.limit),
-                "state_filter": normalize_pr_state_filter(args.state),
+                "state_filter": resolved_state_filter,
                 "since": args.since,
                 "review_priority": resolved_review_priority.value,
                 "fresh_audit_exact_heads": list(args.fresh_audit_exact_head),

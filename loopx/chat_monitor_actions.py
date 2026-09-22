@@ -26,7 +26,7 @@ class ChatMonitorActionMixin:
                 goal_id=goal_id,
                 todo_id=str(parameters["todo_id"]),
                 evidence="Owner stopped the continuous monitor from typed Chat action.",
-                completion_turn_key=operation_id,
+                **self._reviewed_terminal_options(basis, operation_id),
                 no_followup=True,
                 claimed_by=str(parameters["agent_id"]),
                 agent_id=str(parameters["agent_id"]),

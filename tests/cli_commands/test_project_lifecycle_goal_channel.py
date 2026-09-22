@@ -378,7 +378,14 @@ def test_refresh_state_dispatches_and_replays_post_writeback_sidecar(
         project_lifecycle_refresh_state,
         "read_heartbeat_settlement",
         lambda *args, **kwargs: SimpleNamespace(
-            delivery=SimpleNamespace(failure=None)
+            identity=SimpleNamespace(value=None),
+            delivery=SimpleNamespace(failure=None),
+            progress={
+                "schema_version": "quota_settlement_progress_v0",
+                "state": "settled",
+                "next_step": None,
+                "quota_spend_source": "heartbeat",
+            },
         ),
     )
     monkeypatch.setattr(

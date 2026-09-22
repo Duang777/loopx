@@ -40,6 +40,13 @@ def append_agent_reward_memory_markdown(
         f"runtime_scope={markdown_scalar(config_runtime_route.get('runtime_scope') or '')} "
         f"exact_readback={config_runtime_route.get('exact_readback_verified')}"
     )
+    repair = agent_reward_memory.get("repair")
+    if isinstance(repair, Mapping) and repair.get("preview_command"):
+        lines.append(
+            "    - reward_memory_repair: "
+            + markdown_scalar(repair["preview_command"])
+            + " (template: bind <invoked-registry> to the exact invoked registry; inspect changes before apply)"
+        )
     host_coverage = agent_reward_memory.get("host_coverage")
     if not isinstance(host_coverage, list):
         return

@@ -74,7 +74,9 @@ def _fixture(
     return project, state, registry
 
 
-def _use_provider(state, registry, provider, monkeypatch):
+def _use_provider(state, registry, provider, monkeypatch, *, handoff_mode="soft_claim"):
+    if handoff_mode == "hard_lease":
+        state.write_text("---\nhandoff_mode: hard_lease\n---\n" + state.read_text())
     if provider == "legacy":
         return
     from tests.control_plane.canonical_authority_fixture import initialize_canonical_authority, isolate_sqlite_runtime
@@ -82,7 +84,7 @@ def _use_provider(state, registry, provider, monkeypatch):
     isolate_sqlite_runtime(registry.parent, monkeypatch)
     todos = list_goal_todos(registry_path=registry, goal_id=GOAL_ID)["todos"]
     initialize_canonical_authority(registry.parent, GOAL_ID,
-        build_todo_runtime_shadow_projection(goal_id=GOAL_ID, todos=todos, leases=[], handoff_mode="soft_claim"),
+        build_todo_runtime_shadow_projection(goal_id=GOAL_ID, todos=todos, leases=[], handoff_mode=handoff_mode),
         state_path=state, provider=provider)
     state.unlink()
 
@@ -126,11 +128,12 @@ def _packet(
 
 
 @pytest.mark.parametrize("provider", ["legacy", "file", "sqlite"])
+@pytest.mark.parametrize("handoff_mode", ["soft_claim", "hard_lease"])
 def test_grouped_monitor_materialization_is_one_per_bucket_and_retires_empty_bucket(
-    tmp_path: Path, monkeypatch, provider,
+    tmp_path: Path, monkeypatch, provider, handoff_mode,
 ) -> None:
     project, state, registry = _fixture(tmp_path)
-    _use_provider(state, registry, provider, monkeypatch)
+    _use_provider(state, registry, provider, monkeypatch, handoff_mode=handoff_mode)
     ledger = tmp_path / "pr-lifecycle.jsonl"
     first = _packet(101)
     second = _packet(102)

@@ -22,7 +22,7 @@ function todoRecord(overrides: Record<string, unknown> = {}) {
 export async function qualifiedShadow(root: string, handoffMode = "soft_claim", operationCount = 1) {
   const baseline = fileProjection([todoRecord()], [], handoffMode);
   const statePath = join(root, "ACTIVE_GOAL_STATE.md");
-  await writeFile(statePath, "---\ngoal_id: goal-a\nhandoff_mode: soft_claim\n---\n\n## Agent Todo\n\n");
+  await writeFile(statePath, `---\ngoal_id: goal-a\nhandoff_mode: ${handoffMode}\n---\n\n## Agent Todo\n\n`);
   const store = new FileAuthorityStore(join(root, "authority-shadow", "file-v0"), "goal-a");
   const f = {root, statePath, baseline, store};
   const bootstrapped = await bootstrapCoordinationRuntimeShadow({

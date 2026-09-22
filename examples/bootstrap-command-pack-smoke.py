@@ -710,7 +710,8 @@ def test_skill_slash_fallback_contract() -> None:
     assert "Do not handle `/loopx-pr-review` from this broader project skill" in normalized
     assert "do not route it to `loopx-pr-merge` unless" in normalized
     assert "loopx --format json pr-review --state all" not in skill_text
-    assert "loopx --format json pr-review --state all" in pr_review_skill_text
+    assert "keeps ordinary queue discovery open-only" in pr_review_skill_text
+    assert "explicit `--state merged|all`" in pr_review_skill_text
     assert "Save the full first JSON packet before printing a compact projection" in pr_review_normalized
     assert "agent_response_contract" in pr_review_skill_text
     assert "pull_requests[review_action_kind!=null].review_template" in pr_review_skill_text

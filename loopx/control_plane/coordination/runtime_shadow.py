@@ -636,6 +636,8 @@ def review_local_coordination_authority_promotion(
     source_snapshot: Mapping[str, Any],
     minimum_operations: int,
     required_event_kinds: list[str],
+    handoff_mode_migration: str | None = None,
+    registered_agents: list[str] | None = None,
     execute: bool,
     runtime_invoker: RuntimeInvoker = effect_runtime_result,
 ) -> dict[str, object]:
@@ -660,6 +662,14 @@ def review_local_coordination_authority_promotion(
         "source_snapshot": dict(source_snapshot),
         "minimum_operations": minimum_operations,
         "required_event_kinds": list(required_event_kinds),
+        **(
+            {
+                "handoff_mode_migration": handoff_mode_migration,
+                "registered_agents": list(registered_agents or []),
+            }
+            if handoff_mode_migration is not None
+            else {}
+        ),
         "execute": execute,
     }
     try:

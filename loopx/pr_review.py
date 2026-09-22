@@ -193,8 +193,8 @@ def _include_pr_in_window(pr: dict[str, Any], *, since: object | None) -> bool:
 
 
 def normalize_pr_state_filter(value: object) -> str:
-    state = str(value or "all").strip().lower()
-    return state if state in {"open", "merged", "all"} else "all"
+    state = str(value or "open").strip().lower()
+    return state if state in {"open", "merged", "all"} else "open"
 
 
 def fetch_github_pull_requests(
@@ -202,7 +202,7 @@ def fetch_github_pull_requests(
     repo: str | None,
     limit: int,
     cwd: Path | None = None,
-    state_filter: str = "all",
+    state_filter: str = "open",
     since: str | None = None,
 ) -> list[dict[str, Any]]:
     scan = scan_github_pull_requests(
@@ -220,7 +220,7 @@ def scan_github_pull_requests(
     repo: str | None,
     limit: int,
     cwd: Path | None = None,
-    state_filter: str = "all",
+    state_filter: str = "open",
     since: str | None = None,
     wait_for_ci: bool = True,
 ) -> dict[str, Any]:
@@ -1022,7 +1022,7 @@ def build_pr_review_packet(
     repository: str | None,
     limit: int,
     source: str,
-    state_filter: str = "all",
+    state_filter: str = "open",
     since: str | None = None,
     source_scan: Mapping[str, Any] | None = None,
     reviewer_login: str | None = None,
@@ -1347,7 +1347,7 @@ def render_pr_review_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- command: `{request.get('command')}`",
         f"- repository: `{request.get('repository') or 'current gh repository'}`",
-        f"- state_filter: `{request.get('state_filter') or 'all'}`",
+        f"- state_filter: `{request.get('state_filter') or 'open'}`",
         f"- since: `{request.get('since') or 'not set'}`",
         f"- headline: {summary.get('headline')}",
         f"- complete: `{completeness.get('complete')}`; truncated=`{completeness.get('truncated')}`; recommended_limit=`{completeness.get('recommended_limit')}`",

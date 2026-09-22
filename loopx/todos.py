@@ -131,6 +131,7 @@ from .control_plane.todos.provider_create import create_canonical_todo_if_promot
 from .control_plane.todos.path_resolution import resolve_todo_state_path
 from .control_plane.todos.provider_terminal_lifecycle import provider_first_terminal_lifecycle
 from .control_plane.todos.handoff_mode import (
+    goal_handoff_mode,
     enter_added_todo_ownership_handoff_gate,
     enter_todo_ownership_handoff_gate,
     resolve_todo_completion_handoff,
@@ -1248,7 +1249,7 @@ def update_goal_todo(
     if (update_operation_id is not None or update_expected_provider_revision is not None
         or update_expected_registry_sha256 is not None) or (not claim_only and (
         task_lease_idempotency_key is not None or task_lease_expected_version is not None
-    )):
+    ) and not (monitor_intent["observation"] is not None and status is None)):
         raise ValueError("update operation id and lease proof require a supported promoted update; no legacy write attempted")
     resolved_project, resolved_state_file = resolve_todo_state_path(
         registry_path=registry_path,
@@ -1364,6 +1365,18 @@ def update_goal_todo(
             authority_reason=authority_reason,
             requested_claimed_by=effective_claimed_by,
         )
+        if monitor_intent["observation"] is not None and task_lease_idempotency_key is not None:
+            # Explicit observation proof uses the existing native held fence
+            # under the Markdown writer lock. Closing this guard does not retire
+            # execution; the acquiring caller owns release after observation.
+            handoff_gate_stack.enter_context(hold_task_lease_mutation_fence(
+                registry_path=registry_path, runtime_root=shadow_runtime_root,
+                goal_id=goal_id, todo_id=todo_id, todo=authority_todo, actor_agent_id=effective_agent_id,
+                idempotency_key=task_lease_idempotency_key,
+                expected_version=task_lease_expected_version,
+                require_active_when_key_supplied=True,
+                handoff={"handoff_mode": goal_handoff_mode(original)},
+            ))
         handoff_gate = enter_todo_ownership_handoff_gate(
             handoff_gate_stack,
             state_text=original,
@@ -1509,6 +1522,7 @@ def complete_goal_todo(
     evidence: str | None = None,
     completion_turn_key: str | None = None,
     completion_identity_source: str | None = None,
+    terminal_review_basis: Mapping[str, Any] | None = None,
     completion_delivery_workspace: Mapping[str, Any] | None = None,
     completion_validation_workspace_path: Path | None = None,
     task_lease_idempotency_key: str | None = None,

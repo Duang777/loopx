@@ -1447,6 +1447,7 @@ Continue provider-first delivery.
         state_path=state_file,
     )
     runtime_calls: list[str] = []
+    terminal_phases: list[str] = []
     archive_operation_ids: list[str] = []
     original_effect_runtime_result = provider_terminal_lifecycle.effect_runtime_result
     original_authority_runtime_result = local_authority_module.effect_runtime_result
@@ -1455,7 +1456,10 @@ Continue provider-first delivery.
         runtime_calls.append(method)
         if method == "coordination.local_authority.todo_archive":
             archive_operation_ids.append(str(params["operation_id"]))
-        return original_effect_runtime_result(method, params)
+        result = original_effect_runtime_result(method, params)
+        if method == "coordination.local_authority.todo_terminal":
+            terminal_phases.append(str(result["status"]))
+        return result
 
     def count_authority_runtime_call(
         method: str, params: dict[str, object]
@@ -1496,8 +1500,11 @@ Continue provider-first delivery.
     assert completed["validation_receipt"]["command_label"] == (
         "provider terminal integration"
     )
+    # The extra bounded crossing admits/replays before resolving private argv.
+    assert terminal_phases == ["resolve_validation", "execute_validation", "applied"]
     assert runtime_calls == [
         "coordination.local_authority.todo_list",
+        "coordination.local_authority.todo_terminal",
         "coordination.local_authority.todo_terminal",
         "coordination.local_authority.todo_terminal",
         "coordination.local_authority.todo_list",

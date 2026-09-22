@@ -89,7 +89,13 @@ import {
   normalizeIdempotencyKey,
   normalizeTtl,
 } from "../work_items/task_lease_acquire.ts";
-import { compactPythonWhitespace } from "./todo_agents.ts";
+import {compactPythonWhitespace, normalizeRegisteredTodoAgents} from "./todo_agents.ts";
+import {
+  normalizePromotionHandoffModeMigration,
+  planPromotionHandoffMigration,
+  publicPromotionHandoffMigrationPlan,
+  type PromotionHandoffModeMigration,
+} from "./promotion_handoff_migration.ts";
 
 export const LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA =
   "loopx_local_coordination_todo_claim_request_v0";
@@ -100,6 +106,7 @@ export const LOCAL_COORDINATION_TODO_CREATE_WITNESSED_REQUEST_SCHEMA = "loopx_lo
 export const LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA =
   "loopx_local_coordination_todo_terminal_lifecycle_request_v0";
 export const LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_WITNESSED_REQUEST_SCHEMA = "loopx_local_coordination_todo_terminal_lifecycle_request_v1";
+export const LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_SOURCE_BOUND_REQUEST_SCHEMA = "loopx_local_coordination_todo_terminal_lifecycle_request_v2";
 export const LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA =
   "loopx_local_coordination_todo_archive_request_v0";
 export const LOCAL_COORDINATION_TODO_ARCHIVE_ACK_REQUEST_SCHEMA =
@@ -141,7 +148,8 @@ export async function reviewLocalCoordinationAuthorityPromotion(
     const input = decodeRuntimeShadowRequest(
       value,
       LOCAL_COORDINATION_PROMOTION_REVIEW_REQUEST_SCHEMA,
-      ["operation_id", "minimum_operations", "required_event_kinds", "execute"],
+      ["operation_id", "minimum_operations", "required_event_kinds", "execute",
+        "handoff_mode_migration", "registered_agents"],
     );
     const operationId = requireAuthorityStoreId(input.operation_id, "operation id");
     const minimumOperations = requiredPositiveSafeInteger(
@@ -153,6 +161,16 @@ export async function reviewLocalCoordinationAuthorityPromotion(
       "required_event_kinds",
     );
     if (typeof input.execute !== "boolean") throw new Error("execute must be a JSON boolean");
+    const handoffModeMigration = normalizePromotionHandoffModeMigration(
+      input.handoff_mode_migration,
+    );
+    const explicitHandoffMigration = input.handoff_mode_migration !== undefined;
+    if (explicitHandoffMigration && !Array.isArray(input.registered_agents)) {
+      throw new Error("registered_agents must be supplied for an explicit handoff-mode migration");
+    }
+    const registeredAgents = input.registered_agents === undefined || input.registered_agents === null
+      ? []
+      : normalizeRegisteredTodoAgents(input.registered_agents as string[]);
     const statePath = await realpath(String(input.source_snapshot.state_path));
     const shadow = dependencies.createShadowStore?.(
       shadowDirectory(input.runtime_root),
@@ -186,13 +204,22 @@ export async function reviewLocalCoordinationAuthorityPromotion(
             legacy_fallback_used: false,
           };
         }
-        if (head.handoff_mode !== "hard_lease") return {
+        const migration = planPromotionHandoffMigration(
+          head,
+          input.goal_id,
+          handoffModeMigration,
+          registeredAgents,
+          new Date(),
+        );
+        const publicMigration = publicPromotionHandoffMigrationPlan(migration);
+        if (!migration.ready) return {
           schema_version: schema,
           status: "not_ready",
           executed: false,
-          reason_code: "local_authority_promotion_requires_hard_lease",
-          reason: "v0 whole-Goal coordination-authority promotion requires an already-qualified hard_lease Goal",
+          reason_code: migration.reason_code ?? "handoff_mode_migration_conflict",
+          reason: migration.reason ?? "handoff-mode migration is not ready",
           qualification: publicQualification,
+          handoff_mode_migration: publicMigration,
           legacy_writer_fenced: false,
           legacy_fallback_used: false,
         };
@@ -209,6 +236,11 @@ export async function reviewLocalCoordinationAuthorityPromotion(
           expected_shadow_projection_sha256: projectionSha256,
           minimum_operations: minimumOperations,
           required_event_kinds: requiredEventKinds,
+          ...(explicitHandoffMigration ? {
+            handoff_mode_migration: handoffModeMigration,
+            registered_agents: registeredAgents,
+            expected_target_projection_sha256: migration.target_projection_sha256,
+          } : {}),
         });
         const fence = canonicalAuthorityObject({
           schema_version: LEGACY_COORDINATION_WRITER_FENCE_SCHEMA,
@@ -229,6 +261,11 @@ export async function reviewLocalCoordinationAuthorityPromotion(
           expected_shadow_projection_sha256: projectionSha256,
           minimum_operations: minimumOperations,
           required_event_kinds: requiredEventKinds,
+          ...(explicitHandoffMigration ? {
+            handoff_mode_migration: handoffModeMigration,
+            registered_agents: registeredAgents,
+            expected_target_projection_sha256: migration.target_projection_sha256,
+          } : {}),
           writer_fence: fence,
         };
         fenceEvidence.current = {runtimeRoot: input.runtime_root, goalId: input.goal_id, fence};
@@ -295,6 +332,7 @@ export async function reviewLocalCoordinationAuthorityPromotion(
           expected_shadow_projection_sha256: projectionSha256,
           minimum_operations: minimumOperations,
           required_event_kinds: [...requiredEventKinds].sort(authorityUnicodeCompare),
+          handoff_mode_migration: publicMigration,
           writer_fence: fence,
           rollback_identity: {
             provider: "file_v0",
@@ -339,8 +377,9 @@ export async function reviewLocalCoordinationAuthorityPromotion(
             ...identity,
             schema_version: "loopx_local_coordination_promotion_event_v0",
             mode_transition: `legacy_canonical_to_${canonicalAuthority}`,
+            handoff_mode_transition: `${migration.previous_mode}_to_${migration.target_mode}`,
           }],
-          next_projection: head,
+          next_projection: migration.target_projection,
           receipts: [identity],
         });
         const readback = await promotionReadback(canonical, request);
@@ -529,6 +568,9 @@ interface LocalCoordinationPromotionRequest {
   expected_shadow_projection_sha256: string;
   minimum_operations: number;
   required_event_kinds: string[];
+  handoff_mode_migration?: PromotionHandoffModeMigration;
+  registered_agents?: string[];
+  expected_target_projection_sha256?: string;
   writer_fence: JsonObject;
 }
 
@@ -540,13 +582,15 @@ export interface LocalCoordinationPromotionPlanInput {
   expected_shadow_projection_sha256: string;
   minimum_operations: number;
   required_event_kinds: string[];
+  handoff_mode_migration?: PromotionHandoffModeMigration;
+  registered_agents?: string[];
+  expected_target_projection_sha256?: string;
 }
 
 export function localCoordinationPromotionPlanSha256(
   value: LocalCoordinationPromotionPlanInput,
 ): string {
-  const plan = canonicalAuthorityObject({
-    schema_version: "loopx_local_coordination_promotion_plan_v0",
+  const base = {
     goal_id: requireAuthorityStoreId(value.goal_id, "goal id"),
     operation_id: requireAuthorityStoreId(value.operation_id, "operation id"),
     canonical_authority: requireAuthorityStoreId(
@@ -569,6 +613,20 @@ export function localCoordinationPromotionPlanSha256(
       value.required_event_kinds,
       "required_event_kinds",
     ).sort(authorityUnicodeCompare),
+  };
+  const explicitMigration = value.handoff_mode_migration !== undefined;
+  const plan = canonicalAuthorityObject(explicitMigration ? {
+    schema_version: "loopx_local_coordination_promotion_plan_v1",
+    ...base,
+    handoff_mode_migration: normalizePromotionHandoffModeMigration(value.handoff_mode_migration),
+    registered_agents: normalizeRegisteredTodoAgents(value.registered_agents ?? []),
+    expected_target_projection_sha256: requireAuthorityStoreId(
+      value.expected_target_projection_sha256,
+      "expected target projection sha256",
+    ),
+  } : {
+    schema_version: "loopx_local_coordination_promotion_plan_v0",
+    ...base,
   }, "local coordination promotion plan");
   return canonicalAuthoritySha256(plan);
 }
@@ -579,6 +637,10 @@ function decodePromotionRequest(value: unknown): LocalCoordinationPromotionReque
     throw new Error("local coordination promotion request schema mismatch");
   }
   const fence = decodeLegacyCoordinationWriterFence(input.writer_fence);
+  const explicitMigration = input.handoff_mode_migration !== undefined;
+  if (explicitMigration && !Array.isArray(input.registered_agents)) {
+    throw new Error("registered_agents must accompany handoff_mode_migration");
+  }
   return {
     runtime_root: runtimeRoot(input.runtime_root),
     goal_id: requireAuthorityStoreId(input.goal_id, "goal id"),
@@ -603,6 +665,14 @@ function decodePromotionRequest(value: unknown): LocalCoordinationPromotionReque
       input.required_event_kinds,
       "required_event_kinds",
     ),
+    ...(explicitMigration ? {
+      handoff_mode_migration: normalizePromotionHandoffModeMigration(input.handoff_mode_migration),
+      registered_agents: normalizeRegisteredTodoAgents(input.registered_agents as string[]),
+      expected_target_projection_sha256: requireAuthorityStoreId(
+        input.expected_target_projection_sha256,
+        "expected target projection sha256",
+      ),
+    } : {}),
     writer_fence: fence,
   };
 }
@@ -617,7 +687,15 @@ function promotionIdentity(request: LocalCoordinationPromotionRequest): JsonObje
     writer_fence_id: request.writer_fence.fence_id,
     source_version: request.writer_fence.source_version,
     promotion_plan_sha256: localCoordinationPromotionPlanSha256(request),
+    ...(request.handoff_mode_migration === undefined ? {} : {
+      handoff_mode_migration: request.handoff_mode_migration,
+      target_projection_sha256: request.expected_target_projection_sha256,
+    }),
   }, "local coordination promotion identity");
+}
+
+function promotionTargetProjectionSha256(request: LocalCoordinationPromotionRequest): string {
+  return request.expected_target_projection_sha256 ?? request.expected_shadow_projection_sha256;
 }
 
 function matchingReceipt(
@@ -650,7 +728,7 @@ async function promotionReadback(
     promotion === undefined ||
     promotion.cursor !== "1" ||
     promotion.operation_id !== request.operation_id ||
-    canonicalAuthoritySha256(promotion.projection) !== request.expected_shadow_projection_sha256
+    canonicalAuthoritySha256(promotion.projection) !== promotionTargetProjectionSha256(request)
   ) {
     return { matched: false, reason_code: "local_authority_promotion_lineage_mismatch" };
   }
@@ -675,10 +753,14 @@ function promotionResult(
     cursor: readback.cursor,
     source_shadow_provider_revision: request.expected_shadow_provider_revision,
     source_projection_sha256: request.expected_shadow_projection_sha256,
+    target_projection_sha256: promotionTargetProjectionSha256(request),
     writer_fence_id: request.writer_fence.fence_id,
     source_version: request.writer_fence.source_version,
     promotion_plan_sha256: localCoordinationPromotionPlanSha256(request),
     canonical_authority: canonicalAuthority,
+    ...(request.handoff_mode_migration === undefined ? {} : {
+      handoff_mode_migration: request.handoff_mode_migration,
+    }),
     legacy_writer_fenced: true,
     legacy_fallback_used: false,
   };
@@ -833,7 +915,6 @@ export async function promoteLocalCoordinationAuthority(
       legacy_fallback_used: false,
     };
     indexCoordinationProjection(shadowHead.head, request.goal_id);
-
     const qualification = await qualifyCoordinationRuntimeShadow({
       schema_version: COORDINATION_RUNTIME_SHADOW_QUALIFY_REQUEST_SCHEMA,
       runtime_root: request.runtime_root,
@@ -854,6 +935,33 @@ export async function promoteLocalCoordinationAuthority(
       legacy_fallback_used: false,
     };
 
+    const migration = planPromotionHandoffMigration(
+      shadowHead.head,
+      request.goal_id,
+      request.handoff_mode_migration,
+      request.registered_agents ?? [],
+      new Date(),
+    );
+    if (!migration.ready) return {
+      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+      status: "failed",
+      reason_code: migration.reason_code ?? "handoff_mode_migration_conflict",
+      reason: migration.reason ?? "handoff-mode migration is not ready",
+      handoff_mode_migration: publicPromotionHandoffMigrationPlan(migration),
+      legacy_writer_fenced: true,
+      legacy_fallback_used: false,
+    };
+    if (migration.target_projection_sha256 !== promotionTargetProjectionSha256(request)) return {
+      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+      status: "failed",
+      reason_code: "local_authority_promotion_target_projection_mismatch",
+      reason: "handoff-mode migration target differs from the reviewed promotion plan",
+      observed_target_projection_sha256: migration.target_projection_sha256,
+      expected_target_projection_sha256: promotionTargetProjectionSha256(request),
+      legacy_writer_fenced: true,
+      legacy_fallback_used: false,
+    };
+
     return await withCanonicalWriter(request.runtime_root, request.goal_id, false, async () => {
       const finalShadowHead = await shadow.loadAuthority();
       if (
@@ -869,6 +977,24 @@ export async function promoteLocalCoordinationAuthority(
         legacy_fallback_used: false,
       };
 
+      const finalMigration = planPromotionHandoffMigration(
+        finalShadowHead.head,
+        request.goal_id,
+        request.handoff_mode_migration,
+        request.registered_agents ?? [],
+        new Date(),
+      );
+      if (!finalMigration.ready ||
+          finalMigration.target_projection_sha256 !== promotionTargetProjectionSha256(request)) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: finalMigration.reason_code ?? "local_authority_promotion_target_projection_mismatch",
+        reason: finalMigration.reason ?? "handoff-mode migration changed during qualification",
+        handoff_mode_migration: publicPromotionHandoffMigrationPlan(finalMigration),
+        legacy_writer_fenced: true,
+        legacy_fallback_used: false,
+      };
+
       const identity = promotionIdentity(request);
       const committed = await canonical.commitAuthority({
         expected_provider_revision: null,
@@ -877,8 +1003,9 @@ export async function promoteLocalCoordinationAuthority(
           ...identity,
           schema_version: "loopx_local_coordination_promotion_event_v0",
           mode_transition: `legacy_canonical_to_${canonicalAuthority}`,
+          handoff_mode_transition: `${finalMigration.previous_mode}_to_${finalMigration.target_mode}`,
         }],
-        next_projection: finalShadowHead.head,
+        next_projection: finalMigration.target_projection,
         receipts: [identity],
       });
       if (committed.status === "applied") {
@@ -1179,11 +1306,17 @@ export async function terminalLifecycleLocalCoordinationTodo(
   try {
     const input = requireJsonObject(value, "local coordination Todo terminal request");
     if (input.schema_version !== LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA &&
-        input.schema_version !== LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_WITNESSED_REQUEST_SCHEMA) {
+        input.schema_version !== LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_WITNESSED_REQUEST_SCHEMA &&
+        input.schema_version !== LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_SOURCE_BOUND_REQUEST_SCHEMA) {
       throw new TypeError("local coordination Todo terminal request schema mismatch");
     }
+    const sourceBound = input.schema_version === LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_SOURCE_BOUND_REQUEST_SCHEMA;
+    if (!sourceBound && ["review_basis", "validation_source_provider_revision", "validation_declaration_sha256"].some(key => Object.hasOwn(input, key))) {
+      throw new TypeError("terminal source binding requires request v2");
+    }
+    const reviewBasis = input.review_basis == null ? undefined : requireJsonObject(input.review_basis, "terminal review basis");
     const authoritySourcesCurrent = registryAuthoritySourceCheck(input,
-      input.schema_version === LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_WITNESSED_REQUEST_SCHEMA);
+      input.schema_version !== LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_REQUEST_SCHEMA, reviewBasis?.registry_sha256);
     if (!Array.isArray(input.registered_agents) || !Array.isArray(input.lifecycle_grants) ||
         !Array.isArray(input.successor_intents) ||
         !Array.isArray(input.linked_successor_todo_ids)) {
@@ -1211,6 +1344,15 @@ export async function terminalLifecycleLocalCoordinationTodo(
       sourceAuthority = sourceAuthorityFor(store);
       providerEvidence.source_authority = sourceAuthority;
       return {...await executeCoordinationTodoTerminalLifecycle(store, {
+        ...(sourceBound ? {validation_source_provider_revision: input.validation_source_provider_revision == null
+          ? null : requireAuthorityStoreId(input.validation_source_provider_revision, "validation source provider revision"),
+          validation_declaration_sha256: input.validation_declaration_sha256 == null
+            ? null : requireAuthorityStoreId(input.validation_declaration_sha256, "validation declaration digest")} : {}),
+        ...(reviewBasis === undefined ? {} : {review_basis: {
+          ...reviewBasis,
+          provider_revision: requireAuthorityStoreId(reviewBasis.provider_revision, "review provider revision"),
+          registry_sha256: requireAuthorityStoreId(reviewBasis.registry_sha256, "review registry digest"),
+        }}),
         goal_id: goalId,
         todo_id: requireAuthorityStoreId(input.todo_id, "todo id"),
         expected_role: input.role === null || input.role === undefined

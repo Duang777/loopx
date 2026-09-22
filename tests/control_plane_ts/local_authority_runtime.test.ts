@@ -414,6 +414,230 @@ test("reviewed promotion rejects a non-hard-lease Goal without fencing writers",
   assert.equal((await loadLegacyCoordinationWriterFence(root, "goal-a")).status, "missing");
 });
 
+test("reviewed promotion preserves soft_claim when keep-mode is explicit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-reviewed-promotion-keep-mode-"));
+  const shadow = await qualifiedShadow(root, "soft_claim");
+  const sourceProjection: JsonObject = {
+    ...shadow.projection,
+    partitions: {todos: null, leases: null},
+  };
+  delete sourceProjection.capture_lineage_id;
+  delete sourceProjection.capture_profile;
+  delete sourceProjection.source_root_digest;
+  const statePath = join(root, "ACTIVE_GOAL_STATE.md");
+  const source = await sourceRequest({
+    root,
+    statePath,
+    store: new FileAuthorityStore(join(root, "authority-shadow", "file-v0"), "goal-a"),
+    baseline: sourceProjection,
+  }, sourceProjection);
+  const request = {
+    ...source,
+    schema_version: LOCAL_COORDINATION_PROMOTION_REVIEW_REQUEST_SCHEMA,
+    operation_id: "promote:goal-a:keep-soft-claim",
+    minimum_operations: 1,
+    required_event_kinds: ["todo_claim"],
+    handoff_mode_migration: "preserve",
+    registered_agents: ["agent-a", "agent-b"],
+    execute: false,
+  };
+
+  const preview = await reviewLocalCoordinationAuthorityPromotion(request);
+  assert.equal(preview.status, "preview_ready", JSON.stringify(preview));
+  const migration = (preview.plan as JsonObject).handoff_mode_migration as JsonObject;
+  assert.equal(migration.changed, false);
+  assert.equal(migration.target_mode, "soft_claim");
+
+  const applied = await reviewLocalCoordinationAuthorityPromotion({...request, execute: true});
+  assert.equal(applied.status, "applied", JSON.stringify(applied));
+  const canonical = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+  const loaded = await canonical.loadAuthority();
+  assert.equal(loaded.status, "loaded");
+  if (loaded.status !== "loaded") throw new Error("keep-mode canonical authority missing");
+  assert.equal(loaded.head.handoff_mode, "soft_claim");
+  assert.equal((loaded.head.todos as JsonObject[])[0]?.claimed_by, "agent-a");
+  assert.deepEqual(loaded.head.leases, []);
+});
+
+test("reviewed promotion explicitly migrates claimed legacy work to hard_lease", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-reviewed-promotion-claimed-mode-"));
+  const shadow = await qualifiedShadow(root, "legacy");
+  const sourceProjection: JsonObject = {
+    ...shadow.projection,
+    partitions: {todos: null, leases: null},
+  };
+  delete sourceProjection.capture_lineage_id;
+  delete sourceProjection.capture_profile;
+  delete sourceProjection.source_root_digest;
+  const statePath = join(root, "ACTIVE_GOAL_STATE.md");
+  const source = await sourceRequest({
+    root,
+    statePath,
+    store: new FileAuthorityStore(join(root, "authority-shadow", "file-v0"), "goal-a"),
+    baseline: sourceProjection,
+  }, sourceProjection);
+  const request = {
+    ...source,
+    schema_version: LOCAL_COORDINATION_PROMOTION_REVIEW_REQUEST_SCHEMA,
+    operation_id: "promote:goal-a:claimed-mode",
+    minimum_operations: 1,
+    required_event_kinds: ["todo_claim"],
+    handoff_mode_migration: "hard_lease",
+    registered_agents: ["agent-a", "agent-b"],
+    execute: false,
+  };
+
+  const preview = await reviewLocalCoordinationAuthorityPromotion(request);
+  assert.equal(preview.status, "preview_ready", JSON.stringify(preview));
+  const previewPlan = preview.plan as JsonObject;
+  const previewMigration = previewPlan.handoff_mode_migration as JsonObject;
+  assert.equal(previewMigration.previous_mode, "legacy");
+  assert.equal(previewMigration.target_mode, "hard_lease");
+  assert.equal(previewMigration.preserved_claim_count, 1);
+
+  const applied = await reviewLocalCoordinationAuthorityPromotion({...request, execute: true});
+  assert.equal(applied.status, "applied", JSON.stringify(applied));
+  const replayedPromotion = await reviewLocalCoordinationAuthorityPromotion({...request, execute: true});
+  assert.equal(replayedPromotion.status, "replayed", JSON.stringify(replayedPromotion));
+  const lateLegacyWrite = await checkLegacyCoordinationWriteAllowed({
+    schema_version: LEGACY_COORDINATION_WRITE_CHECK_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+  });
+  assert.equal(lateLegacyWrite.status, "blocked");
+  assert.equal(lateLegacyWrite.reason_code, "legacy_coordination_writer_fenced");
+  const canonical = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a");
+  const loaded = await canonical.loadAuthority();
+  assert.equal(loaded.status, "loaded");
+  if (loaded.status !== "loaded") throw new Error("canonical promotion missing");
+  assert.equal(loaded.head.handoff_mode, "hard_lease");
+  assert.equal((loaded.head.todos as JsonObject[])[0]?.claimed_by, "agent-a");
+  assert.deepEqual(loaded.head.leases, []);
+
+  const withoutLease = await claimLocalCoordinationTodo({
+    schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+    role: "agent",
+    claimed_by: "agent-a",
+    actor_agent_id: "agent-a",
+    registered_agents: ["agent-a", "agent-b"],
+    operation_id: "todo-claim:goal-a:claimed-mode:no-lease",
+    observed_at: "2026-09-21T12:00:00Z",
+    dry_run: false,
+  });
+  assert.equal(withoutLease.status, "failed");
+  assert.equal(withoutLease.reason_code, "handoff_mode_requires_lease");
+
+  const withLease = await claimLocalCoordinationTodo({
+    schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+    role: "agent",
+    claimed_by: "agent-a",
+    actor_agent_id: "agent-a",
+    registered_agents: ["agent-a", "agent-b"],
+    operation_id: "todo-claim:goal-a:claimed-mode:lease",
+    observed_at: "2026-09-21T12:00:00Z",
+    lease_request: {
+      idempotency_key: "turn:claimed-mode",
+      expected_version: null,
+      ttl_seconds: 2700,
+    },
+    dry_run: false,
+  });
+  assert.equal(withLease.status, "applied", JSON.stringify(withLease));
+  assert.equal(withLease.todo_changed, false);
+  assert.equal(withLease.lease_changed, true);
+
+  const foreignOwner = await claimLocalCoordinationTodo({
+    schema_version: LOCAL_COORDINATION_TODO_CLAIM_REQUEST_SCHEMA,
+    runtime_root: root,
+    goal_id: "goal-a",
+    todo_id: "todo_a",
+    role: "agent",
+    claimed_by: "agent-b",
+    actor_agent_id: "agent-b",
+    registered_agents: ["agent-a", "agent-b"],
+    operation_id: "todo-claim:goal-a:claimed-mode:foreign",
+    observed_at: "2026-09-21T12:00:01Z",
+    lease_request: {
+      idempotency_key: "turn:foreign-owner",
+      expected_version: null,
+      ttl_seconds: 2700,
+    },
+    dry_run: false,
+  });
+  assert.equal(foreignOwner.status, "failed");
+  assert.equal(foreignOwner.reason_code, "claim_owner_mismatch");
+});
+
+test("claim-preserving migration recovers only the exact reviewed strategy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "loopx-reviewed-promotion-mode-recovery-"));
+  const shadow = await qualifiedShadow(root, "legacy", 2);
+  const sourceProjection: JsonObject = {
+    ...shadow.projection,
+    partitions: {todos: null, leases: null},
+  };
+  delete sourceProjection.capture_lineage_id;
+  delete sourceProjection.capture_profile;
+  delete sourceProjection.source_root_digest;
+  const statePath = join(root, "ACTIVE_GOAL_STATE.md");
+  const source = await sourceRequest({
+    root,
+    statePath,
+    store: new FileAuthorityStore(join(root, "authority-shadow", "file-v0"), "goal-a"),
+    baseline: sourceProjection,
+  }, sourceProjection);
+  const request = {
+    ...source,
+    schema_version: LOCAL_COORDINATION_PROMOTION_REVIEW_REQUEST_SCHEMA,
+    operation_id: "promote:goal-a:claimed-mode-recovery",
+    minimum_operations: 2,
+    required_event_kinds: ["todo_claim"],
+    handoff_mode_migration: "hard_lease",
+    registered_agents: ["agent-a", "agent-b"],
+    execute: true,
+  };
+  class InterruptOnceStore extends FileAuthorityStore {
+    private interrupt = true;
+    override async commitAuthority(commit: AuthorityStoreCommit) {
+      if (this.interrupt) {
+        this.interrupt = false;
+        throw new Error("synthetic interruption after claim-preserving fence");
+      }
+      return await super.commitAuthority(commit);
+    }
+  }
+  const canonical = new InterruptOnceStore(join(root, "authority", "file-v0"), "goal-a");
+  const dependencies = {createCanonicalStore: () => canonical};
+
+  const interrupted = await reviewLocalCoordinationAuthorityPromotion(request, dependencies);
+  assert.equal(interrupted.status, "failed", JSON.stringify(interrupted));
+  assert.equal(interrupted.legacy_writer_fenced, true);
+  assert.equal((await canonical.loadAuthority()).status, "missing");
+
+  for (const changedPlan of [
+    {...request, handoff_mode_migration: "preserve"},
+    {...request, registered_agents: ["agent-a", "agent-c"]},
+  ]) {
+    const rejected = await reviewLocalCoordinationAuthorityPromotion(changedPlan, dependencies);
+    assert.equal(rejected.status, "failed", JSON.stringify(rejected));
+    assert.equal(rejected.reason_code, "local_authority_writer_fence_conflict");
+    assert.equal((await canonical.loadAuthority()).status, "missing");
+  }
+
+  const recovered = await reviewLocalCoordinationAuthorityPromotion(request, dependencies);
+  assert.equal(recovered.status, "recovered", JSON.stringify(recovered));
+  const loaded = await canonical.loadAuthority();
+  assert.equal(loaded.status, "loaded");
+  if (loaded.status !== "loaded") throw new Error("recovered canonical authority missing");
+  assert.equal(loaded.head.handoff_mode, "hard_lease");
+  assert.equal((loaded.head.todos as JsonObject[])[0]?.claimed_by, "agent-a");
+});
+
 test("new bootstrap and provider list fail closed without exact Todo consumer semantics", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-semantic-fence-"));
   const incomplete = { goal_id: "goal-a", todos: [{ todo_id: "todo_a", role: "agent", status: "open" }], leases: [] };

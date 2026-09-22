@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {updateLocalCoordinationTodo} from "../../loopx/control_plane/coordination/local_authority_runtime.ts";
+import {terminalLifecycleLocalCoordinationTodo, updateLocalCoordinationTodo} from "../../loopx/control_plane/coordination/local_authority_runtime.ts";
 import {executeCoordinationTodoUpdate} from "../../loopx/control_plane/coordination/todo_update.ts";
 import type {AuthorityStore} from "../../loopx/control_plane/coordination/authority_store.ts";
 
@@ -28,3 +28,17 @@ test("malformed completion facts fail before any provider read", async () => {
     assert.equal(result.reason_code, "invalid_coordination_todo_update");
   }
 });
+
+for (const version of [0, 1]) {
+  for (const field of ["review_basis", "validation_source_provider_revision", "validation_declaration_sha256"]) {
+    test(`terminal v${version} rejects ${field} instead of dropping its obligation`, async () => {
+      let opened = false;
+      const result = await terminalLifecycleLocalCoordinationTodo({
+        schema_version: `loopx_local_coordination_todo_terminal_lifecycle_request_v${version}`, [field]: null,
+      }, {createStore: () => {opened = true; throw new Error("must not open provider");}});
+      assert.equal(result.status, "failed");
+      assert.match(String(result.reason), /source binding requires request v2/);
+      assert.equal(opened, false);
+    });
+  }
+}

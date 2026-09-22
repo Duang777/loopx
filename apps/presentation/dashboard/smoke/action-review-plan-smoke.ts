@@ -66,6 +66,24 @@ check(isStaleActionFailure({ error_code: "action_conflict" }), "Typed conflicts 
 check(isStaleActionFailure({ proposal: { status: "stale" } }), "Typed stale proposal survives error wrapping");
 check(!isStaleActionFailure({ error_code: "canonical_action_failed", error: "conflict with unrelated external service" }), "Error wording cannot classify source state");
 
+for (const [action_kind, operation] of [["todo.update", "complete"], ["monitor.update", "stop"]] as const) {
+  for (const status of ["applying", "failed"] as const) {
+    const terminal = typedActionProposalSchema.parse({...proposal, action_kind, status,
+      normalized_parameters: {goal_id: "sample-goal", todo_id: "todo_work", operation},
+      canonical_update_basis: {schema_version: "loopx_chat_canonical_terminal_basis_v0",
+        provider_revision: "revision-1", registry_sha256: "a".repeat(64), source_authority: "file_v0"},
+      failure: {error_code: "canonical_update_projection_pending", message: "Display pending", retry_safe: true}});
+    const plan = compileActionReviewPlan(terminal);
+    check(plan.canApply && plan.retryOriginal === true, "Terminal recovery retries the original proposal");
+    check(plan.reason === "canonical_update_projection_pending", "Pending display is distinct from failed business mutation");
+    check(compileActionReviewPlan({...terminal, status: "stale"}).canApply === false, "A stale terminal preview must be regenerated");
+    check(compileActionReviewPlan({...terminal, normalized_parameters: {...terminal.normalized_parameters, operation: "edit"}}).canApply === false,
+      "A terminal review basis cannot enable retries of unrelated operations");
+    check(compileActionReviewPlan({...terminal, status: "applied", receipt: {projection_verified: true}}).interaction === "completed",
+      "Only current display readback completes terminal presentation");
+  }
+}
+
 const operationProposal = typedActionProposalSchema.parse({
   ...proposal,
   proposal_id: "operation-1",

@@ -283,6 +283,7 @@ def canonical_todo_summary_fields(
     todos: list[dict[str, Any]],
     *,
     rollout_events: list[dict[str, Any]] | None = None,
+    available_capabilities: Any = None,
     goal_acceptance_contract: dict[str, Any] | None = None,
     goal_acceptance_work_guards: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -340,6 +341,7 @@ def canonical_todo_summary_fields(
             include_empty_source=True,
             resume_source_items=todos,
             rollout_events=rollout_events,
+            available_capabilities=available_capabilities,
             item_limit=None,
         )
         if summary:

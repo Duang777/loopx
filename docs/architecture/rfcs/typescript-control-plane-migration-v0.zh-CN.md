@@ -21,6 +21,12 @@
 
 ## 当前实现检查点
 
+终结审核与验证已收敛到既有 TS terminal owner：Agent 完成、Monitor 停止复用 Chat
+先恢复 canonical 回执再确认显示的路径；v2 把验证 continuation 绑定来源 revision，
+准入/回放之后才请求私有声明。删除 Python 的终结操作审核分流和提前解析声明编排。
+这闭合 T1/T2/L2 的一组真实终结 caller，剩余 leased metadata、executor fence 和 T4
+仍未完成。[语义、调用次数与回滚](../../reference/canonical-terminal-review.zh-CN.md)。
+
 Canonical create/claim/update/Monitor poll/terminal 事务现共用
 `coordination/authority_source.ts`；Python adapter 经 `authority_registry_source`
 在注册/grant 投影前后校验来源。外部验证结束后保留原 witness，在新 effect/提交前
@@ -588,8 +594,17 @@ delivery pending；这不代表全部 T2 命令或整 Goal promotion 已完成�
   raw patch 权限或轮询引擎。完成后的新观察即使 hash 相同也推进新一代；历史重放
   不会重开当前任务。无变化的分组也能恢复显示，包括带优先级前缀的 native 文本。
   见[观察更新与再激活](../../reference/protocols/quota-monitor-observation-receipt-v0.md#observation-updates-and-reactivation)。
-  保留 execution lease／hard-lease 模式的再激活、其他 lifecycle caller、旧持久化／
-  capture 和整 Goal 资格仍是独立边界。
+  再激活已由既有 TS owner 原子退役旧 execution；分组对账的完整桶集合决策现由
+  `capabilities/issue_fix_monitor_reconciliation.ts` 负责，Python 保留 ledger IO、
+  公开 writer 调用和展示交付。hard-lease 观察／结束先领取自己的有限期 execution，
+  领取后重新核对计划，只释放本次执行。观察提交后进程退出，原样重试可清理残留
+  lease，不重复 Todo 业务写入；再激活本身仍不授予执行权。
+  缺失／损坏 ledger、重复活动 target、旧的空组观察现在明确拒绝；成员 hash 保留
+  Python 原有 Unicode 排序及 ASCII 转义合同。显式 runtime-root 贯穿读取和写回。
+  这是 issue-fix 调用链闭合，不是所有桶的一笔原子事务：后续桶失败不回滚之前已
+  提交的桶。无变化重试可以清理自己的中断 execution 并恢复展示。Python 适配器仍
+  有真实调用方，不能直接删除。其他 lifecycle caller、跨外部 effect 的围栏、旧持久化／
+  capture 和整 Goal 资格仍独立。见[操作合同](../../../loopx/capabilities/issue_fix/README.zh-CN.md#pr-lifecycle-monitor)。
 - 保持 unchanged poll/reschedule、generation fence、material-change successor
   去重和可归属 settlement。Monitor 不是 delivery 执行任务；独立 advancement Todo
   不能被 monitor 自身替代。
@@ -598,6 +613,15 @@ delivery pending；这不代表全部 T2 命令或整 Goal promotion 已完成�
   不形成交付。必要命令 effect 尚不支持时暂停整 Goal promotion，不能回退 Markdown 写入。
 
 **T3 — 闭合剩余 structured consumer，删除各自旧读路径。**
+
+Periodic-report 的阶段判断、实时编辑输入回退与审批重试现共用 canonical-first
+Todo 来源；frontier 和报告事实复用同一完整已求值快照。展示缺失、过期或损坏不再
+隐藏／复活工作。`capabilities/periodic_report_progress.ts` 拥有报告选择及拒绝重试
+排序，删除 Python 对应循环；时间按带偏移的实际时刻比较并保留微秒，canonical
+归档拒绝记录仍有效，显式 runtime-root 同时约束 intent 和 Todo IO。已冻结的编辑
+请求沿用原始依据，不因重试刷新。见[操作边界](../../../loopx/capabilities/periodic_report/README.md#todo-authority-and-report-retries)。
+这闭合一组 T3/L5 消费者，不代表 D1 永久展示新鲜度、D2 耐久性、D3 整 Goal
+资格或默认 provider 已完成；条件性的 5–8 个后续完整交付批次估算保持不变。
 
 Todo 摘要 lane 与裁剪前工作计数现共用 `todos/summary_lanes.ts`，删除 Python 的
 lane 分类和隐藏任务推断循环。quota 在作用域筛选后重新计数，不完整来源状态贯穿

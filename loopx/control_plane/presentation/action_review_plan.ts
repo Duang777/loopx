@@ -381,7 +381,11 @@ export function compileActionReviewPlan(proposalValue: unknown): ActionReviewPla
     && textValue(basis.provider_revision) !== null && textValue(basis.registry_sha256) !== null
     && ((proposal.action_kind === "todo.update")
       || (proposal.action_kind === "monitor.update" && ["pause", "resume", "edit"].includes(String(parameters?.operation))));
-  if (isCanonicalUpdate && (proposal.status === "applying" || proposal.status === "failed")) {
+  const isCanonicalTerminal = basis?.schema_version === "loopx_chat_canonical_terminal_basis_v0"
+    && textValue(basis.provider_revision) !== null && textValue(basis.registry_sha256) !== null
+    && ((proposal.action_kind === "todo.update" && parameters?.operation === "complete")
+      || (proposal.action_kind === "monitor.update" && parameters?.operation === "stop"));
+  if ((isCanonicalUpdate || isCanonicalTerminal) && (proposal.status === "applying" || proposal.status === "failed")) {
     const failure = objectValue(proposal.failure);
     return {...finish({interaction: "review", canApply: true,
       reason: failure?.error_code === "canonical_update_projection_pending"

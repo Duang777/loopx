@@ -15,12 +15,12 @@ from ...control_plane.capability_hooks import (
     POST_WRITEBACK_HOOK_RECEIPT_SCHEMA_VERSION,
     InteractionProjectionHookRegistration,
 )
-from ...control_plane.todos.active_state_todo_parser import parse_active_state_todos
+from ...control_plane.effect_runtime import effect_runtime_result
+from .todo_source import read_report_todo_source
 from ...registry import (
     atomic_write_json,
     find_registry_goal,
     read_json,
-    resolve_state_file,
 )
 from ...todos import add_goal_todo
 from ...file_lock import LockAcquisitionPolicy, exclusive_file_lock
@@ -177,57 +177,45 @@ def _editorial_response_path(
     )
 
 
-def _decision_scope_text(value: object) -> str:
-    if isinstance(value, Mapping):
-        return ":".join(
-            str(value.get(field) or "")
-            for field in ("kind", "granularity", "scope_key")
-        )
-    return str(value or "")
-
-
 def _superseding_approval_revision(
     *,
     registry_path: Path,
     goal_id: str,
     agent_id: str,
     receipt: Mapping[str, Any],
+    runtime_root: Path | None = None,
 ) -> str | None:
     approval_scope = str(receipt.get("approval_scope") or "")
     if receipt.get("status") != "approval_pending" or not approval_scope:
         return None
-    registry = read_json(registry_path)
-    goal = find_registry_goal(registry, goal_id)
-    if not isinstance(goal, Mapping):
-        return None
-    repo = Path(str(goal.get("repo") or "")).expanduser()
-    state_path = resolve_state_file(repo, str(goal.get("state_file") or ""))
-    if state_path is None or not state_path.is_file():
-        return None
-    parsed = parse_active_state_todos(
-        state_path.read_text(encoding="utf-8"),
-        goal=dict(goal),
-        state_path=state_path,
-        item_limit=None,
+    _, items = read_report_todo_source(
+        registry_path=registry_path, goal_id=goal_id, runtime_root=runtime_root
     )
-    user_summary = parsed.get("user_todos")
-    items = user_summary.get("items") if isinstance(user_summary, Mapping) else []
-    superseding = [
-        item
-        for item in items or []
-        if isinstance(item, Mapping)
-        and item.get("status") == "done"
-        and item.get("action_kind")
-        in {"approve_periodic_report_payload", "cancel_periodic_report_payload"}
-        and item.get("decision_outcome") in {"reject", "cancel"}
-        and _decision_scope_text(item.get("decision_scope")) == approval_scope
-        and str(item.get("bound_agent") or item.get("blocks_agent") or "") == agent_id
-    ]
-    if not superseding:
-        return None
-    latest = max(superseding, key=lambda item: str(item.get("updated_at") or ""))
-    revision = f"{latest.get('todo_id')}:{latest.get('updated_at')}"
-    return hashlib.sha256(revision.encode("utf-8")).hexdigest()[:16]
+    keys = (
+        "todo_id",
+        "status",
+        "action_kind",
+        "decision_outcome",
+        "decision_scope",
+        "bound_agent",
+        "blocks_agent",
+        "updated_at",
+    )
+    result = effect_runtime_result(
+        "capabilities.periodic_report.approval_retry.select",
+        {
+            "schema_version": "periodic_report_approval_retry_request_v0",
+            "agent_id": agent_id,
+            "approval_scope": approval_scope,
+            "items": [{key: item.get(key) for key in keys} for item in items],
+        },
+    )
+    if (
+        not isinstance(result, dict)
+        or result.get("schema_version") != "periodic_report_approval_retry_result_v0"
+    ):
+        raise ValueError("periodic-report approval retry selection result mismatch")
+    return result["revision"]
 
 
 def _load_consumption_receipt(
@@ -292,7 +280,7 @@ def _next_attempt_revision(
     candidate_revisions: list[str] = []
     for receipt in receipts:
         revision = _superseding_approval_revision(
-            registry_path=registry_path,
+            runtime_root=runtime_root, registry_path=registry_path,
             goal_id=goal_id,
             agent_id=agent_id,
             receipt=receipt,
@@ -540,7 +528,7 @@ def _progress_facts(
     from ...rollout_event_log import load_rollout_events, rollout_event_log_path
 
     snapshot = build_project_progress_snapshot(
-        registry_path=registry_path,
+        runtime_root=runtime_root, registry_path=registry_path,
         goal_id=goal_id,
         agent_id=agent_id,
         completed_at=completed_at,

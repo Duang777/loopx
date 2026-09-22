@@ -198,6 +198,8 @@ def _reward_memory_enablement_projection(
     status: Mapping[str, Any],
 ) -> dict[str, Any]:
     fields = (
+        "reason_code",
+        "repair",
         "isolation_mode",
         "enablement_receipt_status",
         "actor_binding_verified",

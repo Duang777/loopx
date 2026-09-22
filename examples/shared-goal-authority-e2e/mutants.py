@@ -275,7 +275,8 @@ CASES.extend([
     Case("fence_unshared_state_lock", ((COORDINATION + "legacy_writer_fence.ts", replacement(
         "withFileMutationLock(statePath, () =>",
         'withFileMutationLock(statePath + ".mutant-unshared", () =>')),),
-         WRITER_TEST + "test_real_writer_commits_before_a_later_fence_is_published[True]"),
+         "tests/control_plane_ts/shadow_native_writer_boundary.test.ts",
+         "^fence engagement waits for an existing state writer before publication$"),
     Case("remove_bound_state_path", ((COORDINATION + "legacy_writer_fence.py", replacement(
         "if bound_source.resolve(strict=False) != state_file.resolve(strict=False):",
         "if False:")),),

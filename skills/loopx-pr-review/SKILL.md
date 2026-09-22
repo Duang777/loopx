@@ -17,7 +17,7 @@ state or time window. Route approval, merge, self-merge, and admin bypass to
 `loopx-pr-merge` (optional repo-kept workflow, not installed by default) after
 the evidence review is complete; it never replaces this skill's exact-head gate.
 
-For named PRs, resolve heads and run repeatable `--target-exact-head NUMBER@HEAD_OID`; run `loopx --format json pr-review --state all` only for queue intent, never to expand explicit targets into historical inventory.
+For named PRs, resolve heads and run repeatable `--target-exact-head NUMBER@HEAD_OID`. An omitted `--state` keeps ordinary queue discovery open-only while exact targets remain lifecycle-neutral; use explicit `--state merged|all` only for deliberate history or post-merge audit.
 
 Translate only explicit filters:
 

@@ -91,6 +91,12 @@
     }
   ],
   "semantic_cases": {
+    "terminal_source": {
+      "observed_at": "2026-09-21T00:00:00Z",
+      "after_expiry": "2028-01-01T00:00:00Z",
+      "changed_source_rejection": "provider_revision_mismatch",
+      "missing_source_rejection": "completion_validation_source_required"
+    },
     "user_completion": {
       "scope_key": "publish_artifact",
       "other_blocker_id": "todo_zz_remaining_user_decision"

@@ -1,3 +1,5 @@
+import {selectPeriodicReportProgress, selectPeriodicReportApprovalRetry} from "./capabilities/periodic_report_progress.ts";
+import {planIssueFixMonitorReconciliation} from "./capabilities/issue_fix_monitor_reconciliation.ts";
 import {inspectTaskLease} from "./work_items/task_lease_inspection.ts";
 import {evaluateTodoPriority} from "./todos/priority.ts";
 import {evaluateUserCompletion} from "./todos/user_completion.ts";
@@ -423,6 +425,8 @@ export function createEffectRuntimeHandlers(
     ["todo.public_update.plan", planPublicTodoUpdate],
     ["todo.standing_decision.project", evaluateStandingDecisionProjection],
     ["todo.summary_lanes.project", projectTodoSummaryLanes],
+    ["capabilities.periodic_report.progress.select", selectPeriodicReportProgress],
+    ["capabilities.periodic_report.approval_retry.select", selectPeriodicReportApprovalRetry],
     ["todo.succession.project", projectTodoSuccession],
     ["todo.succession.closure", projectTodoClosure],
     ["todo.work_counts.project", projectLegacyTodoWorkCounts],
@@ -559,6 +563,7 @@ export function createEffectRuntimeHandlers(
       compileActionReviewPlan(params.proposal)],
     ["scheduler.monitor_successor.plan", planMonitorSuccessor],
     ["scheduler.monitor_target.select", selectMonitorTodoRequest],
+    ["capabilities.issue_fix.monitor_reconciliation.plan", planIssueFixMonitorReconciliation],
     ["coordination.local_authority_shadow.record", recordLocalAuthorityShadow],
     ["coordination.runtime_shadow.commit_entry", commitLocalAuthorityShadowEntry],
     ["coordination.runtime_shadow.outbox_read", readLocalAuthorityShadow],

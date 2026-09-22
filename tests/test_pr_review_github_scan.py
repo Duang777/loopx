@@ -23,6 +23,51 @@ HEAD_1 = "a" * 40
 HEAD_2 = "b" * 40
 
 
+def test_state_filter_defaults_open_but_exact_targets_are_lifecycle_neutral() -> None:
+    assert pr_review_module.normalize_pr_state_filter(None) == "open"
+    assert pr_review_module.normalize_pr_state_filter("unknown") == "open"
+    assert (
+        pr_review_cli_module._resolve_pr_review_state_filter(
+            None, target_exact_heads=[]
+        )
+        == "open"
+    )
+    assert (
+        pr_review_cli_module._resolve_pr_review_state_filter(
+            None, target_exact_heads=[f"1@{HEAD_1}"]
+        )
+        == "all"
+    )
+    assert (
+        pr_review_cli_module._resolve_pr_review_state_filter(
+            "open", target_exact_heads=[f"1@{HEAD_1}"]
+        )
+        == "open"
+    )
+
+
+def test_live_scan_omitted_state_queries_only_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run_gh_json(args: list[str], *, cwd: Path | None = None) -> object:
+        del cwd
+        calls.append(args)
+        return []
+
+    monkeypatch.setattr(pr_review_module, "_run_gh_json", fake_run_gh_json)
+
+    scan = pr_review_module.scan_github_pull_requests(
+        repo="owner/repo",
+        limit=10,
+    )
+
+    assert [item["state"] for item in scan["states"]] == ["open"]
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--state") + 1] == "open"
+
+
 def _rows() -> list[dict[str, object]]:
     return [
         {

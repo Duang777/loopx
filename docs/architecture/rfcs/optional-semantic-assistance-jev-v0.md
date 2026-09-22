@@ -375,6 +375,7 @@ Record any future accepting decision with its actual public link and exact scope
 | E3 | TypeSafe API/confidence/model-limitations pages linked in section 5.3 | Interface and documented limitations; not independent model quality, data terms or a live trial |
 | E4 | PR #4749 and its linked maintainer review | Public request and request-changes rationale; no accepted research/adoption decision |
 | E5 | A/B/C and F01–F12 | Proposed experiments/obligations; unexecuted for this feature |
+| E6 | [Jev external evidence supplement v0 (Chinese)](../../research/agent-workflow-audits/jev-external-evidence-supplement-v0.zh-CN.md) | Third-party quality and implementation evidence as of 2026-09-21; no change to Q1-Q7 or research/adoption status |
 
 ## Appendix D: Deferred mechanisms and rejected shortcuts
 

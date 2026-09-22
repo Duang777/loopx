@@ -22,6 +22,14 @@ Retain T0 caller/parity inventory, T1/T2 transaction/effect convergence, T3 comp
 
 ## Current implementation checkpoint
 
+Terminal review and validation now converge in the existing TS terminal owner.
+Agent completion and Monitor stop reuse Chat's canonical receipt-first recovery
+and display acknowledgement; v2 binds validation continuation to its source
+revision and resolves private declarations only after admission/replay. Python's
+separate terminal review selection and eager declaration sequencing are removed.
+This closes a T1/T2/L2 terminal caller family, not the remaining leased metadata,
+executor fences or T4 retirement. [Semantics, crossings and rollback](../../reference/canonical-terminal-review.md).
+
 Linked User completion now has one typed owner, `todos/user_completion.ts`.
 The terminal transaction commits exact-target scope consumption, reject/cancel
 outcomes and conditional resume with its own completion/receipt; the Markdown
@@ -775,8 +783,24 @@ all T2 commands or authorize whole-Goal promotion.
   must be acquired explicitly. `todo_monitor_cycle.ts` owns shared update/poll
   admission, removing their duplicate actor/lease branches and correcting their
   soft-claim disagreement. No new Python transition owner or RPC is introduced.
-  Other lifecycle callers, executor acquisition for grouped reconciliation,
-  legacy persistence/capture and whole-Goal qualification remain separate.
+  Grouped reconciliation now plans the complete bucket set in
+  `capabilities/issue_fix_monitor_reconciliation.ts`; Python retains ledger IO,
+  public writer calls and display delivery. The caller acquires its own bounded
+  execution for hard-lease observations/stops, rechecks the plan after acquisition,
+  and releases only that attempt. Retry after an observation commit can clean up
+  a surviving lease without repeating the business mutation. Reactivation remains
+  a non-execution transition through the existing TS owner.
+  Missing/malformed ledger evidence, duplicate active targets and older empty
+  observations now reject instead of silently dropping or completing a target.
+  Membership hashes preserve the original Python Unicode/ASCII encoding contract.
+  Explicit runtime-root routing reaches every affected writer and readback.
+  This is a complete issue-fix caller closure, not an atomic transaction over all
+  buckets: earlier committed buckets survive a later failure. Unchanged retries
+  may release their own interrupted execution and drain display. The remaining
+  Python adapter is a real caller, not a removable compatibility wrapper.
+  See the [operator contract](../../../loopx/capabilities/issue_fix/README.md#pr-lifecycle-monitor).
+  Other lifecycle callers, external-effect execution fences, legacy
+  persistence/capture and whole-Goal qualification remain separate.
 - Preserve unchanged polling/reschedule behavior, generation fences,
   material-change successor deduplication and accountable settlement.
   A monitor remains non-executable delivery context; its independent
@@ -788,6 +812,18 @@ all T2 commands or authorize whole-Goal promotion.
   never fall back to a Markdown business write.
 
 **T3 — close remaining structured consumers, then remove their old reads.**
+
+Periodic-report staging, live editorial fallback and approval retry now share
+one canonical-first Todo source. Frontier and progress selection reuse the same
+complete evaluated snapshot; missing/stale display cannot invent or hide work.
+`capabilities/periodic_report_progress.ts` owns report selection and rejection
+retry ordering, retiring Python selection/sorting loops. Offset-aware instants
+retain microseconds, canonical archived rejection records remain effective, and
+explicit runtime-root applies to both intent and Todo IO. Frozen editorial
+requests retain their original basis. See [operation and boundaries](../../../loopx/capabilities/periodic_report/README.md#todo-authority-and-report-retries).
+This closes that T3/L5 consumer family, not D1 permanent display freshness,
+D2 durability, D3 whole-Goal qualification or default-provider selection. The
+conditional 5–8 remaining delivery-package estimate is unchanged.
 
 Todo summary lanes and pre-limit work counts now share `todos/summary_lanes.ts`.
 Python's lane classification and hidden-work inference loops are removed; quota

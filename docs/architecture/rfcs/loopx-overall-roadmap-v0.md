@@ -486,6 +486,11 @@ a parallel team-orchestration program.
 
 ### R5: TS Convergence and Local Persistence
 
+L2/L5 terminal checkpoint: Agent completion and Monitor stop now use source-bound
+TS validation and canonical receipt/display recovery. Real-provider mixed-graph
+counterexamples cover concurrent changes and lost responses. [Scope and remaining
+boundaries](../../reference/canonical-terminal-review.md); this does not settle R5 or D1–D3.
+
 L3 checkpoint: standalone acquisition/takeover, atomic claim admission and maintenance share typed lease facts/rules and provider opening. Exact acquisition retry verifies current execution proof; real CLI completion can recover missing Markdown display. Full-state scope conflicts, process interruption and File/SQLite/PostgreSQL read-only rehearsal are covered. [Remaining executor and integration boundaries](../../reference/canonical-lease-renew.md); R5, D2/D3 and default qualification remain open.
 
 - **Owner:** TS T0–T4 and shared-authority D1–D3; retain their numbering and gates.

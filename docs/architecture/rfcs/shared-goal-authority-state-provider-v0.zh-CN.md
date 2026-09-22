@@ -28,6 +28,11 @@
 
 ## 当前实现检查点
 
+终结 caller 现将审核与验证绑定 canonical 来源，历史回执恢复不再依赖私有 argv。
+Agent 完成和 Monitor 停止复用普通编辑的当前 head 显示确认。
+[调用与恢复合同](../../reference/canonical-terminal-review.zh-CN.md)。此批推进 L2/L5，
+未闭合 executor-held fence、D1–D3 或默认 onboarding，下文有条件的 5–8 批估算不变。
+
 本地 registry witness 现经同一 TS owner 覆盖 canonical create/claim/update、
 Monitor poll 与 terminal mutation；File、SQLite、service-injected PostgreSQL
 执行相同来源检查并保留历史回执。
@@ -1441,6 +1446,14 @@ loopx coordination-shadow promote --goal-id <goal-id> \
 loopx coordination-shadow promote --goal-id <goal-id> \
   --minimum-operations 3 \
   --require-event-kind todo_claim --execute
+loopx coordination-shadow promote --goal-id <goal-id> \
+  --minimum-operations 3 \
+  --require-event-kind todo_claim \
+  --handoff-mode-migration preserve
+loopx coordination-shadow promote --goal-id <goal-id> \
+  --minimum-operations 3 \
+  --require-event-kind todo_claim \
+  --handoff-mode-migration hard_lease --execute
 loopx coordination-shadow rollback --goal-id <goal-id> \
   --provider-revision <revision-from-inspect> --execute
 ```
@@ -1454,9 +1467,15 @@ operation 数与规范化后的必需
 event kind；持久 fence、event 与 receipt 都携带同一 digest，因此 fence 已落盘而 canonical
 尚未提交的中断只能由完全相同的受评审 plan 恢复。apply 会在同一段 maintenance 与 legacy source 锁生命周期内重新
 验证 source snapshot、资格化精确 shadow lineage、engage 持久 writer fence、提交
-canonical head，并读回 promotion receipt。v0 会拒绝尚未资格化为 `hard_lease` 的 Goal，
-且绝不会把 handoff mode 变化藏在 promotion 副作用中。写入成功后会立即通过 typed parity inspection
-读回。除非目标开启精确的 goal-level `file_v0` shadow opt-in，否则该命令不可执行。
+canonical head，并读回 promotion receipt。未传迁移参数时，v0 继续拒绝尚未资格化为
+`hard_lease` 的 Goal。显式 `preserve` 可以只切换 authority 并保留 `legacy`／
+`soft_claim` policy；显式 `hard_lease` 可以在同一受评审 cutover 中执行唯一获支持的
+policy 升级，并保留 claim 与安全的 lease record。它不会伪造 lease：保留 claim 的
+owner 必须在下一次受保护写入前走普通原子路径取得 lease。preview 会展示保留 claim、
+lease 处置、冲突与精确目标 digest；mode 意图、registered-agent 集合和目标 digest 都
+进入 promotion-plan identity。其他 mode 变化仍受普通静止规则约束。写入成功后会立即
+通过 typed parity inspection 读回。除非目标开启精确的 goal-level `file_v0` shadow
+opt-in，否则该命令不可执行。
 
 promotion 前 rollback 带精确 revision fence，且不删除数据。TypeScript 会把命中的
 file-shadow lineage 移入持久 quarantine archive；精确重试复用 archive receipt，revision
@@ -1854,8 +1873,11 @@ decision authority，并且 caller-visible parity 与 rollback 能在同一有�
    reader。对应 PR 必须提供字段 inventory、producer/reader/writer 与静态引用调研、
    历史和外部兼容性结论、migration/rollback，以及行为等价证明；maintainer 必须在 RFC
    decision log 或 PR review 中对点名字段显式批准。没有发现 consumer 不等于批准删除。*
-9. v0 promotion 是否只覆盖 `hard_lease` goal？*拟议答案：是。`legacy` 或
-   `soft_claim` goal 先按附录 B 的静止规则切换模式；promotion 从不隐式改变模式。*
+9. v0 promotion 是否只覆盖 `hard_lease` goal？*已决议：向后兼容的默认路径仍要求
+   源端已资格化为 `hard_lease`。受评审的 operator 可以显式选择 `preserve`，在不改变
+   policy 的情况下 canonicalize `legacy`／`soft_claim` Goal；也可以显式选择
+   `hard_lease`，在 fenced cutover 内完成唯一获支持的 claim-preserving 升级。该路径
+   不伪造 lease；其他 mode 变化继续使用附录 B 的静止规则。*
 10. provider-first read flip 后，Markdown 与 lease 文件成为投影，kernel 禁止回退。
     哪些数据进入 head，兼容视图如何渲染？*拟议答案：canonical Todo/lease manifest
     中的每个字段都持久化在 head，包括 monitor、dependency、resume、decision、

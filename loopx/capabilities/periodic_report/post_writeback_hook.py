@@ -14,7 +14,7 @@ from ...control_plane.capability_hooks import (
 from ...control_plane.goals.goal_frontier import (
     build_goal_frontier_projection_from_summaries,
 )
-from ...control_plane.todos.active_state_todo_parser import parse_active_state_todos
+from .todo_source import read_report_todo_source
 from ...control_plane.todos.quota_summary import summarize_user_todos_for_quota
 from ...control_plane.todos.todo_index import MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL
 from ...history import collect_history, load_registry
@@ -24,7 +24,7 @@ from ...rollout_event_log import load_rollout_events, rollout_event_log_path
 from .stage_completion import STAGE_COMPLETION_RECEIPT_SCHEMA
 from .stage_completion import derive_periodic_report_stage_completion_from_runs
 from .presets import build_periodic_report_preset_activation
-from .project_progress_snapshot import build_project_progress_snapshot_from_state
+from .project_progress_snapshot import build_project_progress_snapshot_from_fields
 from .incremental import read_periodic_report_goal_publication_cursors
 from .machine_defaults import resolve_goal_periodic_report_subscription
 from .machine_store import read_periodic_report_machine_defaults
@@ -144,18 +144,10 @@ def periodic_report_post_writeback_hooks_for_goal(
 
 def _frontier_projection(
     *,
-    state_text: str,
-    goal: Mapping[str, Any],
-    state_path: Path,
+    todos: Mapping[str, Any],
     goal_id: str,
     agent_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    todos = parse_active_state_todos(
-        state_text,
-        goal=dict(goal),
-        state_path=state_path,
-        item_limit=None,
-    )
     raw_user_summary = (
         dict(todos.get("user_todos"))
         if isinstance(todos.get("user_todos"), Mapping)
@@ -197,29 +189,31 @@ def build_periodic_report_post_writeback_projection(
     """Reduce private runtime state to one bounded public-safe stage receipt."""
 
     normalized_agent_id = str(agent_id or "").strip()
+    if not normalized_agent_id:
+        return {}
+    available_capabilities = payload.get("available_capabilities")
+    if available_capabilities is None and isinstance(payload.get("turn"), Mapping):
+        available_capabilities = payload["turn"].get("available_capabilities")
+    events = load_rollout_events(
+        rollout_event_log_path(runtime_root, goal_id),
+        limit=MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL,
+    )
     state = payload.get("state")
-    state_path_value = (
+    state_path = (
         state.get("path") if isinstance(state, Mapping) else None
     ) or payload.get("state_file")
-    state_path = Path(str(state_path_value or "")).expanduser()
-    if not normalized_agent_id or not state_path.is_file():
-        return {}
-    registry = load_registry(registry_path)
-    goal = next(
-        (
-            item
-            for item in registry_goals(registry)
-            if str(item.get("id") or "").strip() == str(goal_id or "").strip()
-        ),
-        {},
-    )
-    state_text = state_path.read_text(encoding="utf-8")
-    projection, _user_summary, _agent_summary = _frontier_projection(
-        state_text=state_text,
-        goal=goal,
-        state_path=state_path,
+    fields, _ = read_report_todo_source(
+        registry_path=registry_path,
+        runtime_root=runtime_root,
         goal_id=goal_id,
-        agent_id=normalized_agent_id,
+        state_path=Path(state_path)
+        if isinstance(state_path, str) and state_path
+        else None,
+        rollout_events=events,
+        available_capabilities=available_capabilities,
+    )
+    projection, _user_summary, _agent_summary = _frontier_projection(
+        todos=fields, goal_id=goal_id, agent_id=normalized_agent_id
     )
     history = collect_history(
         registry_path=registry_path,
@@ -289,23 +283,13 @@ def build_periodic_report_post_writeback_projection(
     publication_cursor = next(
         (c for c in goal_cursors if c["agent_id"] == normalized_agent_id), None
     )
-    available_capabilities = payload.get("available_capabilities")
-    if available_capabilities is None and isinstance(payload.get("turn"), Mapping):
-        available_capabilities = payload["turn"].get("available_capabilities")
-    project_progress = build_project_progress_snapshot_from_state(
-        state_text=state_text,
-        goal=goal,
-        state_path=state_path,
+    project_progress = build_project_progress_snapshot_from_fields(
+        fields=fields,
         goal_id=goal_id,
         agent_id=normalized_agent_id,
         completed_at=str(receipt["completed_at"]),
         publication_cursor=publication_cursor,
         goal_cursors=goal_cursors,
-        available_capabilities=available_capabilities,
-        rollout_events=load_rollout_events(
-            rollout_event_log_path(runtime_root, goal_id),
-            limit=MAX_TODO_INDEX_ROLLOUT_EVENTS_PER_GOAL,
-        ),
     )
     if publication_cursor is not None and project_progress is None:
         return {}

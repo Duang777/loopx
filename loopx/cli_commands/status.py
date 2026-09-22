@@ -610,6 +610,8 @@ def _agent_reward_memory_projection(
         "configured_for_agent",
         "experiment_status",
         "experiment_available",
+        "reason_code",
+        "repair",
         "config_schema_version",
         "automatic_ingest",
         "automatic_recall",

@@ -103,15 +103,16 @@ export const typedActionsScenario = {
     const operationUi = await openWorkspacePage(browser, url, {
       apiOptions: {
         initialActionProposals: [
-          ...["edit", "complete"].map(operation => ({
+          ...["edit", "complete", "agent-complete", "monitor-stop"].map(operation => ({
             schema_version: "loopx_chat_action_proposal_v1",
-            proposal_id: `reviewed-${operation}-recovery`, action_kind: "todo.update",
+            proposal_id: `reviewed-${operation}-recovery`, action_kind: operation === "monitor-stop" ? "monitor.update" : "todo.update",
             summary: `Recover a committed Todo ${operation}`, status: "failed",
-            normalized_parameters: {goal_id: "product-release", todo_id: "todo_reviewed", operation, note: "Reviewed observation"},
+            normalized_parameters: {goal_id: "product-release", todo_id: "todo_reviewed", operation: operation === "agent-complete" ? "complete" : operation === "monitor-stop" ? "stop" : operation, note: "Reviewed observation"},
             context: {kind: "goal", goal_id: "product-release"},
             expected_state_fingerprint: "reviewed-basis", permission_classification: "durable_write",
             validation_evidence: ["Canonical dry-run validated the edit."], available_transitions: ["apply", "cancel"],
-            canonical_update_basis: {schema_version: "loopx_chat_canonical_update_basis_v0",
+            canonical_update_basis: {schema_version: ["agent-complete", "monitor-stop"].includes(operation)
+              ? "loopx_chat_canonical_terminal_basis_v0" : "loopx_chat_canonical_update_basis_v0",
               provider_revision: "reviewed-revision", registry_sha256: "a".repeat(64), source_authority: "sqlite_v0"},
             failure: {error_code: "canonical_update_projection_pending"}, receipt: null, stale: null,
             created_at: "2026-09-14T01:00:00Z", updated_at: "2026-09-14T01:00:01Z",
@@ -149,10 +150,10 @@ export const typedActionsScenario = {
 
       // A loaded failure must remain discoverable and retry its original id,
       // rather than being hidden or regenerated into a second business edit.
-      for (const operation of ["edit", "complete"]) {
+      for (const operation of ["edit", "complete", "agent-complete", "monitor-stop"]) {
         await page.locator(".personal-proposal-row", {hasText: `Recover a committed Todo ${operation}`}).click();
         const recovery = page.locator('.personal-context-drawer[data-context-kind="proposal"]');
-        await recovery.getByText("编辑已提交，展示尚未同步。重试此操作以恢复当前视图。", {exact: true}).waitFor({state: "visible"});
+        await recovery.getByText("操作已提交，展示尚未同步。重试此操作以恢复当前视图。", {exact: true}).waitFor({state: "visible"});
         const previewsBeforeRecovery = operationUi.api.actionPreviews.length;
         await recovery.getByRole("button", {name: "重试原操作", exact: true}).click();
         await recovery.getByText("已应用，LoopX 状态将刷新。", {exact: true}).waitFor({state: "visible"});

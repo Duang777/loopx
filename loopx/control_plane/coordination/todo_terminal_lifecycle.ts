@@ -75,6 +75,11 @@ type TodoRole = typeof TODO_ROLES[number];
 type CompletionIdentitySource = typeof COMPLETION_IDENTITY_SOURCES[number];
 
 export interface CoordinationTodoTerminalLifecycleInput {
+  readonly review_basis?: {readonly provider_revision: string; readonly registry_sha256: string};
+  /** Presence selects source-bound validation; null means no effect issued yet. */
+  readonly validation_source_provider_revision?: string | null;
+  /** The public commitment permits historical recovery without private argv. */
+  readonly validation_declaration_sha256?: string | null;
   readonly user_update?: TodoCompletionEdit;
   readonly goal_id: string;
   readonly todo_id: string;
@@ -273,6 +278,25 @@ function validateSuccessorSemantics(
 function normalizeTerminalInput(
   raw: CoordinationTodoTerminalLifecycleInput,
 ): CoordinationTodoTerminalLifecycleInput {
+  if (raw.review_basis !== undefined) {
+    const basis = canonicalAuthorityObject(raw.review_basis, "terminal review basis");
+    if (Object.keys(basis).some(key => !["provider_revision", "registry_sha256"].includes(key)) ||
+        typeof basis.registry_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(basis.registry_sha256)) {
+      throw new AuthorityStoreProtocolError("terminal review requires an exact provider revision and registry SHA-256");
+    }
+    requireAuthorityStoreId(basis.provider_revision, "review provider revision");
+  }
+  if (raw.validation_source_provider_revision != null) {
+    requireAuthorityStoreId(raw.validation_source_provider_revision, "validation source provider revision");
+  }
+  if (raw.validation_declaration_sha256 != null &&
+      !/^[a-f0-9]{64}$/u.test(raw.validation_declaration_sha256)) {
+    throw new AuthorityStoreProtocolError("validation declaration commitment must be a SHA-256 digest");
+  }
+  if (raw.validation_declaration != null && raw.validation_declaration_sha256 != null &&
+      canonicalAuthoritySha256(raw.validation_declaration) !== raw.validation_declaration_sha256) {
+    throw new AuthorityStoreProtocolError("validation declaration differs from its commitment");
+  }
   if (raw.user_update !== undefined && raw.command !== "complete") {
     throw new AuthorityStoreProtocolError("User completion update requires complete");
   }
@@ -284,6 +308,7 @@ function normalizeTerminalInput(
     canonicalAuthorityObject(intent, `successor_intents[${index}]`));
   return {
     ...raw,
+    ...(raw.review_basis === undefined ? {} : {review_basis: {...raw.review_basis}}),
     goal_id: requireAuthorityStoreId(raw.goal_id, "goal id"),
     todo_id: requireAuthorityStoreId(raw.todo_id, "todo id"),
     operation_id: requireAuthorityStoreId(raw.operation_id, "operation id"),
@@ -378,6 +403,10 @@ function terminalRequestSha(input: CoordinationTodoTerminalLifecycleInput): stri
     todo_id: input.todo_id,
     expected_role: input.expected_role,
     command: input.command,
+    // Older receipts deliberately retain their original fingerprint. A reviewed
+    // command binds both its approved snapshot and its complete prose intent.
+    ...(input.review_basis === undefined ? {} : {review_basis: input.review_basis,
+      note: input.note, evidence: input.evidence, reason: input.reason}),
     ...(input.user_update === undefined ? {} : {user_update: {
       patch: input.user_update.patch, clear_fields: input.user_update.clear_fields,
       planning_intent: input.user_update.planning_intent ?? {},
@@ -397,8 +426,9 @@ function terminalRequestSha(input: CoordinationTodoTerminalLifecycleInput): stri
     successor_intents: input.successor_intents,
     clear_claim: input.clear_claim,
     completion_policy_request: completionPolicyIdentity,
-    validation_declaration_sha256: input.user_update !== undefined || input.validation_declaration === null
-      ? null : canonicalAuthoritySha256(input.validation_declaration),
+    validation_declaration_sha256: input.user_update !== undefined ? null :
+      input.validation_declaration_sha256 ?? (input.validation_declaration === null
+        ? null : canonicalAuthoritySha256(input.validation_declaration)),
     dry_run: input.dry_run,
   });
 }
@@ -758,13 +788,8 @@ export async function executeCoordinationTodoTerminalLifecycle(
     }
   }
   const requestSha = terminalRequestSha(input);
-  // Unlike `todo_claim`, this replay needs no post-replay acceptance re-check.
-  // A claim receipt grants work going forward, so replaying one after its
-  // binding changed would resume work acceptance now holds. A terminal receipt
-  // only reports a transition that already committed: it cannot exist for work
-  // that never closed, a closed Todo cannot be reopened
-  // (`unsupported_todo_update_target`), and a replay returns `changed: false`.
-  // Re-checking here would add a load per replay and protect nothing.
+  // Terminal recovery reports history, not present execution authority. It
+  // precedes review/validation freshness even if a Monitor has since reopened.
   const replay = await terminalReceipt(input, requestSha).read(store);
   if (replay !== null) return replay;
 
@@ -778,15 +803,15 @@ export async function executeCoordinationTodoTerminalLifecycle(
       changed: false,
     };
   }
-  if (update !== undefined) {
-    const basis = input.user_update?.validation_source_provider_revision;
-    if ((update.expected_provider_revision !== undefined && update.expected_provider_revision !== head.provider_revision) ||
-        (basis != null && basis !== head.provider_revision)) {
-      return terminalFailure("provider_revision_mismatch", "Todo changed during completion review or validation; reread and retry");
-    }
-    if ((input.validation_receipt !== null || input.goal_acceptance_validation_receipts != null) && basis == null) {
-      return terminalFailure("completion_validation_source_required", "Completion validation requires its issued provider revision");
-    }
+  const reviewedRevision = input.review_basis?.provider_revision ?? update?.expected_provider_revision;
+  const validationRevision = input.user_update?.validation_source_provider_revision ?? input.validation_source_provider_revision;
+  if ((reviewedRevision !== undefined && reviewedRevision !== head.provider_revision) ||
+      (validationRevision != null && validationRevision !== head.provider_revision)) {
+    return terminalFailure("provider_revision_mismatch", "Todo changed during completion review or validation; reread and retry");
+  }
+  if ((update !== undefined || input.validation_source_provider_revision !== undefined) &&
+      (input.validation_receipt !== null || input.goal_acceptance_validation_receipts != null) && validationRevision == null) {
+    return terminalFailure("completion_validation_source_required", "Completion validation requires its issued provider revision");
   }
   let projection: ReturnType<typeof indexCoordinationProjection>;
   let readModel: JsonObject;
@@ -945,6 +970,15 @@ export async function executeCoordinationTodoTerminalLifecycle(
         );
       }
       if (input.validation_declaration === null) {
+        if (input.validation_source_provider_revision !== undefined &&
+            input.validation_declaration_sha256 === validationSha256 && input.validation_receipt === null) {
+          if (!await authoritySourcesCurrent()) return terminalFailure(AUTHORITY_SOURCE_CHANGED.code,
+            AUTHORITY_SOURCE_CHANGED.reason, {}, "decision_rejection");
+          return {schema_version: COORDINATION_TODO_TERMINAL_LIFECYCLE_RESULT_SCHEMA,
+            status: "resolve_validation", changed: false, todo_id: input.todo_id, command: input.command,
+            validation_declaration_sha256: validationSha256,
+            provider_revision: head.provider_revision, cursor: head.cursor};
+        }
         return terminalFailure(
           "completion_validation_declaration_unavailable",
           "private completion validation declaration is unavailable",

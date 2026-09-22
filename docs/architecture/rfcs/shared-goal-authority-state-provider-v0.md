@@ -31,6 +31,13 @@
 
 ## Current implementation checkpoint
 
+The terminal caller family now binds review and validation to the canonical
+source and recovers historical receipts independently of private argv. Agent
+completion and Monitor stop share current-head display acknowledgement with
+ordinary edits. [Caller and recovery contract](../../reference/canonical-terminal-review.md).
+This advances L2/L5 without closing executor-held fences, D1–D3 or default
+onboarding; the conditional 5–8-package estimate below remains unchanged.
+
 The local registry witness now spans canonical create/claim/update/Monitor poll
 and terminal mutations through one TS owner. File, SQLite and service-injected
 PostgreSQL execute the same source checks and preserve historical receipts.
@@ -1805,6 +1812,14 @@ loopx coordination-shadow promote --goal-id <goal-id> \
 loopx coordination-shadow promote --goal-id <goal-id> \
   --minimum-operations 3 \
   --require-event-kind todo_claim --execute
+loopx coordination-shadow promote --goal-id <goal-id> \
+  --minimum-operations 3 \
+  --require-event-kind todo_claim \
+  --handoff-mode-migration preserve
+loopx coordination-shadow promote --goal-id <goal-id> \
+  --minimum-operations 3 \
+  --require-event-kind todo_claim \
+  --handoff-mode-migration hard_lease --execute
 loopx coordination-shadow rollback --goal-id <goal-id> \
   --provider-revision <revision-from-inspect> --execute
 ```
@@ -1823,10 +1838,18 @@ interruption. Apply holds the shared
 maintenance and legacy source locks while it revalidates the source snapshot,
 qualifies the exact shadow lineage, engages the durable writer fence, commits
 the canonical head, and reads back the promotion receipt. v0 rejects a Goal
-whose already-qualified mode is not `hard_lease`; promotion never changes that
-mode as a side effect. A successful write is immediately read back through
-the typed parity inspection. The command remains unavailable unless the exact
-goal-level `file_v0` shadow opt-in is active.
+whose already-qualified mode is not `hard_lease` when the migration option is
+omitted. An explicit `preserve` plan canonicalizes a `legacy` or `soft_claim`
+Goal without changing its ownership policy. An explicit `hard_lease` plan may
+combine the authority cutover with the one supported policy upgrade while
+preserving claims and safe lease records. It never synthesizes leases: a
+preserved claim owner acquires a lease through the ordinary atomic path before
+its next protected write. Preview exposes preserved claims, lease dispositions,
+conflicts, and the exact target digest; the mode intent, registered-agent set,
+and target digest are part of the promotion-plan identity. Other mode
+transitions remain subject to the ordinary quiescence rule. A successful write
+is immediately read back through the typed parity inspection. The command
+remains unavailable unless the exact goal-level `file_v0` shadow opt-in is active.
 
 Pre-promotion rollback is revision-fenced and non-destructive. TypeScript moves
 the exact active file-shadow lineage into a durable quarantine archive; exact
@@ -2332,9 +2355,13 @@ remain reviewable in the same bounded slice.
    preserved. The maintainer must approve the named removal explicitly in the
    RFC decision log or PR review; absence of a discovered consumer is not
    approval.*
-9. Does v0 promotion cover only `hard_lease` goals? *Proposed answer: yes. A
-   `legacy` or `soft_claim` goal first switches mode under the Appendix B
-   quiescence rule; promotion never changes the mode implicitly.*
+9. Does v0 promotion cover only `hard_lease` goals? *Resolved answer: the
+   backward-compatible default still requires a qualified `hard_lease` source.
+   A reviewed operator may explicitly choose `preserve` to canonicalize a
+   `legacy` or `soft_claim` Goal without changing its policy, or `hard_lease` to
+   perform the one supported claim-preserving upgrade inside the fenced
+   cutover. No lease is invented, and every other mode change still uses the
+   Appendix B quiescence rule.*
 10. After the provider-first read flip, Markdown and lease files are
     projections and the kernel forbids fallback to them. Which data belongs in
     the head, and how are compatibility views rendered? *Proposed answer:
@@ -3036,6 +3063,18 @@ source paths, authorize monitor writeback, or change provider/promotion holds.
 
 **D1 — qualify permanent projection delivery; may overlap T1/T2.**
 
+Periodic-report staging, live editorial fallback and approval retry now share
+one canonical-first Todo source. Frontier and progress selection reuse the same
+complete evaluated snapshot; missing/stale display cannot invent or hide work.
+`capabilities/periodic_report_progress.ts` owns report selection and rejection
+retry ordering, retiring Python selection/sorting loops. Offset-aware instants
+retain microseconds, canonical archived rejection records remain effective, and
+explicit runtime-root applies to both intent and Todo IO. Frozen editorial
+requests retain their original basis. See [operation and boundaries](../../../loopx/capabilities/periodic_report/README.md#todo-authority-and-report-retries).
+This closes that T3/L5 consumer family, not D1 permanent display freshness,
+D2 durability, D3 whole-Goal qualification or default-provider selection. The
+conditional 5–8 remaining delivery-package estimate is unchanged.
+
 Summary/work-lane counts now remain independent of display limits and retain incomplete-source knowledge through Agent scoping; canonical list acceptance holds match status. This closes one L5 read consumer, not permanent projection freshness or D1–D3. See [count semantics](../../reference/todo-work-counts.md).
 
 The Goal Channel ownership observation consumes one complete provider revision before bounding display. It never repairs Markdown or revives old local leases; provider failures and truncation stay visible. This is a T3 read closure with shared TS interpretation, not D1/D2 qualification or D3 cutover. See [coordination observation](../../reference/coordination-observation.md).
@@ -3172,7 +3211,7 @@ or moving a helper is not by itself a package exit.
 | A / L1: Monitor configuration (this slice) | Existing `todo update` config enters the TS planner/CAS/receipt; delete Python's duplicate intent field catalog. Separate authoring from observed hashes, times and generations. | Ordinary CLI/API, clear/omission, active lease proof, no-op/replay, failed display delivery, complete fixture and real providers. This does not complete delegated Chat or leased polling. |
 | A / L2: Complete public mutation admission | User completion updates share the TS edit/terminal transaction and reviewed Chat recovery; linked decision consumption/reject/cancel/resume now commit with the source, replacing Python followthrough rules. Continue the actual CLI/Turn/Chat inventory for remaining effect-owned decisions, delegated owner actions and Monitor lifecycle transitions; [caller contract](../../reference/canonical-todo-completion-update.md). | Build on merged T1 owners, not a generic raw patch. Prove permission rejection and exact caller response; remove replaced Python admission and name every remaining unsupported command. |
 | A / L3: Canonical lease lifecycle | Standalone acquire/takeover, atomic claim lease admission and maintenance reuse TS facts/decision/materialization and one provider opening fence. Explicit claimed-work transfer now commits source-authorized Todo ownership and the new lease generation together; canonical request types exclude legacy held-fence fields. Acquire success verifies current execution proof; canonical completion can recover missing display. | Full-head scope conflict, archived/ineffective holders, exact create-CAS retry, stale execution, process loss and real CLI/four-arm rehearsal are covered. [Operation and remaining callers](../../reference/canonical-lease-renew.md). Executor-held external-effect fences remain explicit work; D1–D3/default holds remain. |
-| B / L4: Leased Monitor poll and settlement | Current execution proof now binds CLI intent, observation/generation/independent-successor CAS and historical business receipt. Quota pending admission is frozen before the business write; recovery preserves that decision after lease retirement. | Existing L3 lease lifecycle, real File/SQLite/PostgreSQL, mixed fixtures, process death between business/quota commits, competing renewal and unchanged polling. [Operation and snapshot rehearsal](../../reference/protocols/quota-monitor-observation-receipt-v0.md). Ordinary polls leave leases unchanged and spend no quota; separate authorities stay separate. The retained grouped-Monitor observation/reactivation caller now uses Todo update v4 and the shared Monitor planner, with unchanged-group display recovery. Canonical reactivation now atomically retires retained execution and reopens the observation cycle, sharing typed admission with polling; a fresh execution still needs explicit acquisition. Executor acquisition for grouped reconciliation, wider L2 admission and D1–D3/default remain open. |
+| B / L4: Leased Monitor poll and settlement | Current execution proof now binds CLI intent, observation/generation/independent-successor CAS and historical business receipt. Quota pending admission is frozen before the business write; recovery preserves that decision after lease retirement. | Existing L3 lease lifecycle, real File/SQLite/PostgreSQL, mixed fixtures, process death between business/quota commits, competing renewal and unchanged polling. [Operation and snapshot rehearsal](../../reference/protocols/quota-monitor-observation-receipt-v0.md). Ordinary polls leave leases unchanged and spend no quota; separate authorities stay separate. The retained grouped-Monitor observation/reactivation caller now uses Todo update v4 and the shared Monitor planner, with unchanged-group display recovery. Canonical reactivation now atomically retires retained execution and reopens the observation cycle, sharing typed admission with polling; a fresh execution still needs explicit acquisition. Grouped reconciliation now acquires/revalidates/releases its own bounded execution, recovers interrupted cleanup, and plans the complete bucket set in TS; missing evidence and ambiguous/stale targets reject. This closes that retained caller across legacy/File/SQLite; native/imported mixed fixtures exercise the same effects on real PostgreSQL. Wider L2 admission, external-effect fences and D1–D3/default remain open. |
 | B / L5: Consumer and display closure | Reconcile #4316, audit Turn/quota/Dashboard/Chat source reads, and finish D1 freshness/recovery through the existing projection outbox. | CLI, Lark/Chat and packaged frontend read back their affected interactions; absent/stale display, empty canonical state, pending projection and data beyond UI limits. Delete post-promotion legacy fallbacks with each consumer. |
 | A–C / L6: Local durability qualification | Continue contributor-owned #4224/#4328 on the selected SQLite profile; reuse File/NoKV references and complete 7.2's ledger. | Capacity, real process/crash/restore/upgrade, retained receipts/scans, consumer lag, supported runtimes/OS and the separately authorized >=10-day synthetic soak. Missing measurements remain holds. |
 | A–C / L7: Capture continuity | Reconcile the merged #4315 archive/lease-membership repair; qualify its ladder row/mutant and sustained mixed-writer/event-source matrix rather than reimplementing the closed defect. | Real CLI/File capture, history retained, partial drain unqualified, crash/replay and a new lease after archive/rebootstrap. Keep the legacy migration window provable; T4 cannot be used to skip this row. |
@@ -3194,7 +3233,7 @@ PRs**, conditional on the caller audit finding no additional missing effects:
 | L7 capture plus L8 integrated migration | 1–2 | Mixed-writer continuity, fenced whole-Goal rehearsal, export/rollback and cohort evidence. |
 | L9 default and bounded retirement | 1 | New-Goal onboarding/settings/install choose the qualified profile; remove final obsolete callers. |
 
-The retained-Monitor cycle slice removes a concrete L4 hold, not an entire
+The retained-Monitor cycle and grouped executor closure remove concrete L4 holds, not an entire
 remaining package: the **5–8 PR planning range remains conditional**, rather than
 subtracting one for a lifecycle fix. Actual remaining executor/caller coverage,
 L5 consumers, contributor-owned D2, integrated migration and default onboarding

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -787,6 +788,55 @@ def resolve_reward_memory_surface_config(
     }
 
 
+def _enablement_repair(
+    *, goal_id: str, agent_ids: Sequence[str], agent_id: str
+) -> dict[str, Any]:
+    """Reuse the configuration owner without publishing its private pointer.
+
+    This is a recovery plan, never authorization to trust a changed binding.
+    Retain every enabled Agent when requalifying a shared corpus.
+    """
+    argv = [
+        "loopx", "--registry", "<invoked-registry>",
+        "configure-goal", "--goal-id", goal_id,
+    ]
+    for enabled_agent in agent_ids:
+        argv.extend(["--reward-memory-agent", enabled_agent])
+    return {
+        "schema_version": "reward_memory_enablement_repair_v0",
+        "kind": "requalify_existing_binding",
+        "owner": "configure-goal",
+        "registry_context": "reuse_invoked_registry",
+        "commands_are_templates": True,
+        "required_bindings": {"<invoked-registry>": "invoked_registry_path"},
+        "automatic_apply": False,
+        "instruction": (
+            "Bind <invoked-registry> to the exact registry used for this invocation "
+            "before executing any command; never substitute the default registry. "
+            "Inspect the local configuration change and its existing authorization; "
+            "preview, then apply through configure-goal within that authorization. "
+            "Apply performs provider write/readback and synchronizes the binding. "
+            "Do not copy the new digest into an old receipt. Keep ordinary work running."
+        ),
+        "preview_command": shlex.join(argv),
+        "apply_command": shlex.join([*argv, "--execute"]),
+        "verify_command": shlex.join(
+            [
+                "loopx",
+                "--registry",
+                "<invoked-registry>",
+                "reward-memory",
+                "experiment-status",
+                "--goal-id",
+                goal_id,
+                "--agent-id",
+                agent_id,
+            ]
+        ),
+        "success_status": "available",
+    }
+
+
 def resolve_reward_memory_experiment(
     *, registry_path: Path, goal_id: str, agent_id: str
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -807,6 +857,24 @@ def resolve_reward_memory_experiment(
     )
     if goal is None:
         raise ValueError(f"goal_id not found in registry: {goal_id}")
+    return resolve_goal_reward_memory_experiment(
+        goal=goal,
+        agent_id=normalized_agent,
+        registry_role=str(registry.get("registry_role") or "project-local"),
+    )
+
+
+def resolve_goal_reward_memory_experiment(
+    *, goal: Mapping[str, Any], agent_id: str, registry_role: str = "project-local"
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Resolve an already loaded Goal with the same checks as runtime admission.
+
+    Configuration summaries reuse this read-only owner; no provider is contacted.
+    """
+    goal_id = str(goal.get("id") or "")
+    normalized_agent = normalize_todo_claimed_by(agent_id)
+    if not normalized_agent:
+        raise ValueError("agent_id must be a public-safe registered agent id")
     registered_agents = normalize_registered_agents(
         (goal.get("coordination") or {}).get("registered_agents")
         if isinstance(goal.get("coordination"), Mapping)
@@ -815,7 +883,7 @@ def resolve_reward_memory_experiment(
     if normalized_agent not in registered_agents:
         raise ValueError(f"agent_id is not registered for goal {goal_id}")
     policy = reward_memory_goal_policy(goal)
-    registry_role = str(registry.get("registry_role") or "project-local").strip()
+    registry_role = str(registry_role or "project-local").strip()
     config_runtime_route = {
         "schema_version": "reward_memory_config_runtime_route_v0",
         "registry_source": "invoked_registry",
@@ -892,6 +960,11 @@ def resolve_reward_memory_experiment(
             "status": "enablement_stale",
             "available": False,
             "reason_code": "config_digest_missing_or_drifted",
+            "repair": _enablement_repair(
+                goal_id=goal_id,
+                agent_ids=policy["enabled_agents"],
+                agent_id=normalized_agent,
+            ),
             "isolation_mode": isolation["isolation_mode"],
             "actor_binding_verified": isolation["actor_binding_verified"],
             "writability_verified": False,
@@ -918,6 +991,11 @@ def resolve_reward_memory_experiment(
             "status": "enablement_unverified",
             "available": False,
             "reason_code": "provider_write_preflight_missing_or_unverified",
+            "repair": _enablement_repair(
+                goal_id=goal_id,
+                agent_ids=policy["enabled_agents"],
+                agent_id=normalized_agent,
+            ),
             "isolation_mode": isolation["isolation_mode"],
             "actor_binding_verified": isolation["actor_binding_verified"],
             "writability_verified": False,

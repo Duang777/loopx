@@ -21,7 +21,8 @@ class ChatTodoActionMixin:
     ) -> dict[str, Any]:
         goal_id = str(parameters["goal_id"])
         operation = str(parameters.get("operation") or "edit")
-        if operation == "complete" and basis is None:
+        if operation == "complete" and (basis is None or
+                basis.get("schema_version") == "loopx_chat_canonical_terminal_basis_v0"):
             return complete_goal_todo(
                 registry_path=self.registry_path,
                 goal_id=goal_id,
@@ -32,6 +33,7 @@ class ChatTodoActionMixin:
                 agent_id=parameters.get("agent_id"),
                 authority_reason="owner-confirmed typed Chat action",
                 dry_run=dry_run,
+                **self._reviewed_terminal_options(basis, operation_id),
             )
         status = parameters.get("status")
         if operation == "complete":
@@ -64,6 +66,18 @@ class ChatTodoActionMixin:
         )
 
     @staticmethod
+    def _reviewed_terminal_options(
+        basis: dict[str, Any] | None, operation_id: str | None,
+    ) -> dict[str, Any]:
+        if basis is None:
+            return {}
+        if basis.get("schema_version") != "loopx_chat_canonical_terminal_basis_v0":
+            raise ValueError("unsupported canonical terminal review basis; regenerate preview")
+        return {"completion_turn_key": operation_id, "terminal_review_basis": {
+            "provider_revision": basis["provider_revision"], "registry_sha256": basis["registry_sha256"],
+        }}
+
+    @staticmethod
     def _reviewed_update_options(
         basis: dict[str, Any] | None, operation_id: str | None,
     ) -> dict[str, Any]:
@@ -78,7 +92,7 @@ class ChatTodoActionMixin:
         }
 
     def _canonical_update_basis(
-        self, goal_id: str, *, user_completion_todo_id: str | None = None,
+        self, goal_id: str, *, completion_todo_id: str | None = None,
     ) -> dict[str, Any] | None:
         registry_sha256 = self._registry_fingerprint()
         authority = read_canonical_todos_if_promoted(
@@ -89,15 +103,14 @@ class ChatTodoActionMixin:
             raise ValueError("Todo authority registration changed while reading; retry")
         if authority is None:
             return None
-        # Select the User completion transport from this same preview revision.
-        # The TS transaction rechecks role and authority; this is not admission.
-        if user_completion_todo_id is not None and not any(
-            todo.get("todo_id") == user_completion_todo_id and todo.get("role") == "user"
-            for todo in authority["todos"]
-        ):
-            return None
+        # User updates retain their combined edit/completion contract. Agent
+        # completion and Monitor stop bind the dedicated terminal transaction.
+        terminal = completion_todo_id is not None and not any(
+            todo.get("todo_id") == completion_todo_id and todo.get("role") == "user"
+            for todo in authority["todos"])
         return {
-            "schema_version": "loopx_chat_canonical_update_basis_v0",
+            "schema_version": ("loopx_chat_canonical_terminal_basis_v0" if terminal else
+                               "loopx_chat_canonical_update_basis_v0"),
             "provider_revision": authority["provider_revision"],
             "source_authority": authority["source_authority"],
             "registry_sha256": registry_sha256,
@@ -119,7 +132,7 @@ class ChatTodoActionMixin:
         try:
             result = run(parameters, dry_run=False, basis=basis, operation_id=operation_id)
         except LocalCoordinationAuthorityUnavailable as error:
-            if (parameters.get("operation") == "complete" and error.code == "authority_source_changed"
+            if (parameters.get("operation") in {"complete", "stop"} and error.code == "authority_source_changed"
                     and error.payload.get("completion_validation_executed") is True):
                 self.store.mark_failed(
                     proposal_id, error_code="canonical_update_validation_source_changed",
@@ -162,7 +175,7 @@ class ChatTodoActionMixin:
             )
             return {"proposal": failed, "turn": None}
         operation = parameters.get("operation", "edit")
-        outcome = ({"pause": "monitor_paused", "resume": "monitor_resumed", "edit": "monitor_updated"}[operation]
+        outcome = ({"pause": "monitor_paused", "resume": "monitor_resumed", "edit": "monitor_updated", "stop": "monitor_stopped"}[operation]
                    if proposal["action_kind"] == "monitor.update" else
                    "todo_completed" if operation == "complete" else
                    "todo_updated" if original.get("changed") else "todo_unchanged")
@@ -172,7 +185,7 @@ class ChatTodoActionMixin:
                 "outcome": outcome, "projection_verified": True,
                 "projection_delivery": result["projection_delivery"],
                 "operation_id": operation_id,
-                "canonical_status": result["status"],
+                "canonical_status": result.get("provider_status", result["status"]),
                 "resource_ids": {"goal_id": str(parameters["goal_id"]), "todo_id": todo_id},
             })
         return {"proposal": stored, "turn": None}

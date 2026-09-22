@@ -1054,6 +1054,35 @@ private material remain explicit gates. Each material transition must yield a
 `runnable_successor`, concrete blocker, or structured no-follow-up; unchanged
 polls remain quiet and do not spend delivery quota.
 
+With `--execute-transition`, one Monitor represents each nonempty repository/state
+bucket. Membership changes advance its observation generation; an empty bucket
+ends it, and a newer nonempty observation reopens the same unarchived Todo. New
+Monitors use explicit `priority=P2`; their text is not a priority argument.
+
+In `hard_lease` mode the reconciler acquires a 60-second execution lease for
+observation/stop and releases that exact execution afterward. It never borrows
+another attempt merely because the Agent ID matches. An identical retry can
+recover its own active acquisition; after a committed observation it cleans up
+its remaining lease without repeating that business write. Expired or released
+attempts require fresh acquisition. Reactivation itself grants no execution.
+The existing `--runtime-root` override applies to reads, leases, writes and
+projection recovery. No new provider or capability is enabled.
+
+Missing ledger files, malformed bucket declarations, duplicate current targets,
+and older empty observations are errors, not evidence that all work has ended.
+Restore the ledger or resolve the duplicate before retrying; do not switch to
+legacy state. Buckets commit independently, so after a later failure read back
+`loopx todo list --goal-id GOAL` using the same registry/runtime root, then retry
+the original observation. `write_performed` describes Todo business writes;
+lease cleanup and current display delivery may still happen on an unchanged
+retry. Pending display is recoverable with `loopx todo project-markdown` and
+never rolls back a successful business commit.
+
+Omit `--execute-transition` to inspect without reconciling Todos. To roll back
+this implementation, retain canonical state, writer fences and receipts; restore
+compatible code instead of reviving old Markdown authority. This does not grant
+publication, merge, additional capabilities or access to private material.
+
 Pass `--issue-ref` when persisting PR lifecycle state. This explicit public-safe
 link lets the outcome read model join the PR to its issue without guessing from
 branch names, titles, or text.

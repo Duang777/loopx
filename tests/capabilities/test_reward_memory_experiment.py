@@ -1423,3 +1423,225 @@ def test_issue_fix_before_send_recall_applies_structured_policy_and_fails_open(
     assert unavailable["before_send_gate"]["status"] == "fail_open"
     assert unavailable["decision"]["delivery_policy"] is None
     assert unavailable["provider_failure_is_user_gate"] is False
+
+
+@pytest.mark.parametrize("failure", ["drift", "missing_receipt"])
+def test_enablement_repair_preserves_scope_and_cli_reason(
+    tmp_path: Path, capsys, failure: str
+) -> None:
+    registry_path, event_path, _ = _experiment(tmp_path)
+    custom_registry = tmp_path / "custom registry" / "explicit.json"
+    custom_registry.parent.mkdir()
+    custom_registry.write_bytes(registry_path.read_bytes())
+    registry_path = custom_registry
+    registry = json.loads(registry_path.read_text())
+    policy = registry["goals"][0]["control_plane"]["reward_memory"]
+    policy["enabled_agents"] = ["pilot", "meta"]
+    if failure == "drift":
+        config = tmp_path / "project/.loopx/config/reward-memory/experiment.json"
+        config.write_text(config.read_text() + "\n")
+    else:
+        policy["enablement_receipts"] = {
+            "pilot": {"config_digest": policy["config_digest"]}
+        }
+    registry_path.write_text(json.dumps(registry))
+    before = registry_path.read_bytes()
+    status, config = resolve_reward_memory_experiment(
+        registry_path=registry_path, goal_id="reward-memory-goal", agent_id="pilot"
+    )
+    expected = "enablement_stale" if failure == "drift" else "enablement_unverified"
+    assert status["status"] == expected
+    assert config is None
+    repair = status["repair"]
+    assert repair["preview_command"] == (
+        "loopx --registry '<invoked-registry>' configure-goal --goal-id reward-memory-goal "
+        "--reward-memory-agent pilot --reward-memory-agent meta"
+    )
+    assert repair["apply_command"] == repair["preview_command"] + " --execute"
+    assert repair["automatic_apply"] is False
+    assert repair["registry_context"] == "reuse_invoked_registry"
+    assert repair["commands_are_templates"] is True
+    assert repair["required_bindings"] == {"<invoked-registry>": "invoked_registry_path"}
+    import shlex
+
+    for key in ("preview_command", "apply_command", "verify_command"):
+        argv = shlex.split(repair[key])
+        assert argv[1:3] == ["--registry", "<invoked-registry>"]
+        argv[2] = str(registry_path)
+        assert shlex.split(shlex.join(argv))[2] == str(registry_path)
+    assert policy["config_path"] not in json.dumps(repair)
+    assert "viking://" not in json.dumps(repair)
+    code, payload = _run(
+        capsys,
+        registry_path,
+        "agent-turn-recall",
+        "--goal-id",
+        "reward-memory-goal",
+        "--agent-id",
+        "pilot",
+        "--turn-instance-id",
+        "repair-probe",
+        "--quota-decision-json",
+        str(event_path),
+        "--execute",
+    )
+    assert code == 0
+    assert payload["status"] == expected
+    assert payload["reason_code"] == status["reason_code"]
+    assert payload["experiment"]["repair"] == repair
+    assert payload["provider_call_count"] == 0
+    assert payload["external_writes_performed"] is False
+    assert registry_path.read_bytes() == before
+    verify_argv = shlex.split(repair["verify_command"])
+    verify_argv[2] = str(registry_path)
+    assert main(["--format", "json", *verify_argv[1:]]) == 0
+    verified = json.loads(capsys.readouterr().out)
+    assert verified["status"] == expected
+    assert registry_path.read_bytes() == before
+
+
+def test_enablement_repair_not_offered_when_disabled(tmp_path: Path) -> None:
+    registry_path, _, _ = _experiment(tmp_path)
+    registry = json.loads(registry_path.read_text())
+    registry["goals"][0]["control_plane"]["reward_memory"]["enabled"] = False
+    registry_path.write_text(json.dumps(registry))
+    status, config = resolve_reward_memory_experiment(
+        registry_path=registry_path, goal_id="reward-memory-goal", agent_id="pilot"
+    )
+    assert status["status"] == "disabled"
+    assert "repair" not in status
+    assert config is None
+
+
+def test_enablement_repair_reaches_shared_status_projection() -> None:
+    from loopx.control_plane.quota.goal_boundary import goal_boundary
+    from loopx.cli_commands.status import _agent_reward_memory_projection
+    from loopx.presentation.renderers.reward_memory_markdown import (
+        append_agent_reward_memory_markdown,
+    )
+
+    repair = {
+        "preview_command": "loopx configure-goal --goal-id goal --reward-memory-agent pilot"
+    }
+    status = {
+        "goal_id": "goal",
+        "agent_id": "pilot",
+        "status": "enablement_stale",
+        "available": False,
+        "reason_code": "config_digest_missing_or_drifted",
+        "repair": repair,
+    }
+    boundary = goal_boundary(
+        {
+            "id": "goal",
+            "control_plane": {
+                "reward_memory": {
+                    "enabled": True,
+                    "experimental": True,
+                    "enabled_agents": ["pilot"],
+                    "config_path": ".loopx/config/private.json",
+                }
+            },
+        },
+        agent_id="pilot",
+        reward_memory_experiment_status=status,
+    )
+    assert boundary is not None
+    capability = boundary["capabilities"]["reward_memory"]
+    assert capability["repair"] == repair
+    projection = _agent_reward_memory_projection(
+        {"goal_boundary": boundary}, agent_id="pilot"
+    )
+    assert projection["repair"] == repair
+    lines = []
+    append_agent_reward_memory_markdown(lines, {"agent_reward_memory": projection}, {})
+    assert any(repair["preview_command"] in line for line in lines)
+
+
+def test_catalog_distinguishes_cached_receipt_from_live_config(tmp_path: Path) -> None:
+    from loopx.capabilities.reward_memory.configuration import (
+        reward_memory_goal_configuration_summary,
+    )
+
+    registry_path, _, _ = _experiment(tmp_path)
+    goal = json.loads(registry_path.read_text())["goals"][0]
+    goal["control_plane"]["reward_memory"]["automation"] = {
+        "automatic_recall": True,
+        "automatic_ingest": True,
+    }
+    config = Path(goal["repo"]) / goal["control_plane"]["reward_memory"]["config_path"]
+    original = config.read_bytes()
+    assert (
+        reward_memory_goal_configuration_summary(goal)["effective_available"] is True
+    )
+    config.write_bytes(original + b"\n")
+    drifted = reward_memory_goal_configuration_summary(goal)
+    assert drifted["enabled"] is True
+    assert drifted["binding_status"] == "drifted"
+    assert drifted["recorded_verified_agents"] == ["pilot"]
+    assert drifted["enablement_verified_agents"] == []
+    assert drifted["effective_available"] is False
+    assert drifted["automatic_recall"] is False
+    assert drifted["automatic_ingest"] is False
+    assert drifted["desired_automation"]["automatic_recall"] is True
+    assert str(config) not in json.dumps(drifted)
+    from loopx.configuration_catalog import build_goal_configuration_catalog
+
+    catalog = build_goal_configuration_catalog(
+        goal_id=goal["id"],
+        settings={},
+        feature_summary={"reward_memory": drifted},
+        default_multi_subagent_max_children=4,
+        explore_harness_profiles=[],
+    )
+    current = next(
+        f["current"] for f in catalog["features"] if f["feature_id"] == "reward_memory"
+    )
+    assert current["binding_status"] == "drifted"
+    assert current["effective_available"] is False
+    assert current["desired_automation"]["automatic_recall"] is True
+    assert current["automatic_recall"] is False
+    config.write_bytes(original)
+    restored = reward_memory_goal_configuration_summary(goal)
+    assert restored["binding_status"] == "verified"
+    assert restored["effective_available"] is True
+    assert restored["automatic_recall"] is True
+    config.unlink()
+    assert (
+        reward_memory_goal_configuration_summary(goal)["binding_status"]
+        == "unavailable"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("goal_id", "another-goal"),
+        ("agent_id", "meta"),
+        ("provider_id", "different-provider"),
+        ("isolation_mode", "invalid"),
+    ],
+)
+def test_catalog_availability_uses_runtime_receipt_checks(
+    tmp_path: Path, field: str, invalid: str
+) -> None:
+    from loopx.capabilities.reward_memory.configuration import (
+        reward_memory_goal_configuration_summary,
+    )
+
+    registry_path, _, _ = _experiment(tmp_path)
+    registry = json.loads(registry_path.read_text())
+    goal = registry["goals"][0]
+    policy = goal["control_plane"]["reward_memory"]
+    policy["automation"] = {"automatic_recall": True, "automatic_ingest": True}
+    policy["enablement_receipts"]["pilot"][field] = invalid
+    registry_path.write_text(json.dumps(registry))
+    status, _ = resolve_reward_memory_experiment(
+        registry_path=registry_path, goal_id=goal["id"], agent_id="pilot"
+    )
+    summary = reward_memory_goal_configuration_summary(goal)
+    assert status["status"] == "enablement_unverified"
+    assert summary["binding_status"] == "verified"
+    assert summary["effective_available"] is False
+    assert summary["enablement_verified_agents"] == []
+    assert summary["automatic_recall"] is False

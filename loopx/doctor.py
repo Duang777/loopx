@@ -43,7 +43,8 @@ REQUIRED_INSTALLED_SKILL_PHRASES = {
         "--delivery-outcome <ACTUAL_DELIVERY_OUTCOME>",
     ),
     "loopx-pr-review": (
-        "loopx --format json pr-review --state all",
+        "keeps ordinary queue discovery open-only",
+        "explicit `--state merged|all`",
         "thin host adapter",
         "agent_response_contract.review_execution_contract",
         "pull_requests[review_action_kind!=null].review_plan",

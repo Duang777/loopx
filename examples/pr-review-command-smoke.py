@@ -64,7 +64,8 @@ def main() -> int:
     skill_text = " ".join(skill_source.split())
     for phrase in (
         "This skill is a thin host adapter",
-        "loopx --format json pr-review --state all",
+        "keeps ordinary queue discovery open-only",
+        "explicit `--state merged|all`",
         "agent_response_contract.review_execution_contract",
         "pull_requests[review_action_kind!=null].review_plan",
         "pull_requests[review_action_kind!=null].review_template",
@@ -222,7 +223,8 @@ def main() -> int:
 
     payload = json.loads(
         run_cli(
-            "--format", "json", "pr-review", "--fixture", str(FIXTURE), "--limit", "5"
+            "--format", "json", "pr-review", "--fixture", str(FIXTURE),
+            "--state", "all", "--limit", "5"
         ).stdout
     )
     assert payload["schema_version"] == "loopx_pr_review_command_response_v0", payload
@@ -254,7 +256,15 @@ def main() -> int:
     assert payload["summary"]["total_pr_count"] == 4, payload["summary"]
     assert payload["summary"]["open_pr_count"] == 3, payload["summary"]
     assert payload["summary"]["merged_pr_count"] == 1, payload["summary"]
-    target = payload["pull_requests"][0]
+    default_open = json.loads(
+        run_cli(
+            "--format", "json", "pr-review", "--fixture", str(FIXTURE), "--limit", "5"
+        ).stdout
+    )
+    assert default_open["request"]["state_filter"] == "open", default_open["request"]
+    assert default_open["summary"]["total_pr_count"] == 3, default_open["summary"]
+    assert default_open["summary"]["merged_pr_count"] == 0, default_open["summary"]
+    target = next(item for item in payload["pull_requests"] if item["number"] == 770)
     exact_target = f"{target['number']}@{target['head_oid']}"
     targeted = json.loads(
         run_cli(
@@ -263,6 +273,7 @@ def main() -> int:
         ).stdout
     )
     assert targeted["request"]["target_exact_heads"] == [exact_target], targeted
+    assert targeted["request"]["state_filter"] == "all", targeted["request"]
     assert targeted["result_completeness"]["complete"] is True, targeted
     assert targeted["result_completeness"]["limit_scope"] == "exact_targets", targeted
     assert [item["number"] for item in targeted["pull_requests"]] == [target["number"]]
@@ -1152,7 +1163,8 @@ def main() -> int:
 
     group_limited = json.loads(
         run_cli(
-            "--format", "json", "pr-review", "--fixture", str(FIXTURE), "--limit", "1"
+            "--format", "json", "pr-review", "--fixture", str(FIXTURE),
+            "--state", "all", "--limit", "1"
         ).stdout
     )
     assert group_limited["summary"]["total_pr_count"] == 2, group_limited["summary"]
@@ -1192,6 +1204,8 @@ def main() -> int:
             "pr-review",
             "--fixture",
             str(FIXTURE),
+            "--state",
+            "all",
             "--since",
             "2026-06-27T12:20:00Z",
             "--limit",
@@ -1206,7 +1220,14 @@ def main() -> int:
         "review_sequence"
     ]
 
-    markdown = run_cli("pr-review", "--fixture", str(FIXTURE), "--limit", "1").stdout
+    default_markdown = run_cli(
+        "pr-review", "--fixture", str(FIXTURE), "--limit", "1"
+    ).stdout
+    assert "state_filter: `open`" in default_markdown, default_markdown
+    assert "#770" not in default_markdown, default_markdown
+    markdown = run_cli(
+        "pr-review", "--fixture", str(FIXTURE), "--state", "all", "--limit", "1"
+    ).stdout
     assert "# Project PR Review Queue" in markdown, markdown
     assert "current gh repository" not in markdown, markdown
     assert "state_filter: `all`" in markdown, markdown

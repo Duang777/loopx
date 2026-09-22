@@ -418,7 +418,8 @@ def main() -> int:
         pr_review_skill = codex_home / "skills" / "loopx-pr-review" / "SKILL.md"
         pr_review_text = " ".join(pr_review_skill.read_text(encoding="utf-8").split())
         for phrase in (
-            "loopx --format json pr-review --state all",
+            "keeps ordinary queue discovery open-only",
+            "explicit `--state merged|all`",
             "thin host adapter",
             "agent_response_contract.review_execution_contract",
             "review_groups",

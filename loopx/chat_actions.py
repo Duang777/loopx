@@ -1186,15 +1186,9 @@ class ChatActionService(
             ]
             permission = "durable_write"
         elif action_kind in {"todo.update", "monitor.update"}:
-            reviewed_edit = (
-                action_kind == "todo.update" and normalized.get("operation") != "complete"
-            ) or (
-                action_kind == "monitor.update" and normalized.get("operation") not in {"stop", "run_now"}
-            )
-            canonical_update_basis = self._canonical_update_basis(normalized["goal_id"]) if reviewed_edit else None
-            if action_kind == "todo.update" and normalized.get("operation") == "complete":
+            if normalized.get("operation") != "run_now":
                 canonical_update_basis = self._canonical_update_basis(normalized["goal_id"],
-                    user_completion_todo_id=normalized["todo_id"])
+                    completion_todo_id=normalized["todo_id"] if normalized.get("operation") in {"complete", "stop"} else None)
             if action_kind == "todo.update" or normalized.get("operation") != "run_now":
                 run = self._run_todo_update if action_kind == "todo.update" else self._run_monitor_update
                 canonical_preview = run(normalized, dry_run=True, basis=canonical_update_basis)

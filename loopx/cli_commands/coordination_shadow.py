@@ -6,6 +6,8 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+from ..agent_registry import registered_agent_ids_for_goal
+
 # The projection builder and lease loader are reached through this module by
 # tests that seed and read the shadow through the command surface; keep them
 # importable here even when the command does not call them directly.
@@ -107,6 +109,15 @@ def register_coordination_shadow_command(
                 action="append",
                 default=[],
                 help="Required verified outbox write class; repeat for multiple classes.",
+            )
+            action.add_argument(
+                "--handoff-mode-migration",
+                choices=("preserve", "hard_lease"),
+                help=(
+                    "Explicitly preserve the source handoff mode or migrate it to hard_lease "
+                    "inside the reviewed authority cutover. Omit to retain the v0 requirement "
+                    "that the source already uses hard_lease."
+                ),
             )
         if name == "read-candidate":
             action.add_argument(
@@ -329,12 +340,21 @@ def handle_coordination_shadow_command(
                 and read_candidate.get("decision_read_from_shadow") is False
             )
         if args.coordination_shadow_command == "promote":
+            registered_agents = registered_agent_ids_for_goal(goal)
             operation_digest = _projection_version(
                 {
                     "goal_id": args.goal_id,
                     "projection": projection,
                     "minimum_operations": args.minimum_operations,
                     "required_event_kinds": args.require_event_kind,
+                    **(
+                        {
+                            "handoff_mode_migration": args.handoff_mode_migration,
+                            "registered_agents": registered_agents,
+                        }
+                        if args.handoff_mode_migration is not None
+                        else {}
+                    ),
                 }
             )
             promotion = review_local_coordination_authority_promotion(
@@ -346,6 +366,12 @@ def handle_coordination_shadow_command(
                 source_snapshot=source_snapshot,
                 minimum_operations=args.minimum_operations,
                 required_event_kinds=args.require_event_kind,
+                handoff_mode_migration=args.handoff_mode_migration,
+                registered_agents=(
+                    registered_agents
+                    if args.handoff_mode_migration is not None
+                    else None
+                ),
                 execute=bool(args.execute),
             )
             payload["executed"] = bool(args.execute)

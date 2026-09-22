@@ -415,6 +415,10 @@ steer；传输成功不关闭请求。复用现有 R2/R3 后继，不另开平�
 
 ### R5：TS 收敛与本地持久化
 
+L2/L5 终结检查点：Agent 完成、Monitor 停止现使用绑定来源的 TS 验证与 canonical
+回执/显示恢复；真实 provider 的混合图反例覆盖并发变化和响应丢失。
+[范围及剩余边界](../../reference/canonical-terminal-review.zh-CN.md)，不据此结清 R5 或 D1–D3。
+
 L3 检查点：独立领取/接管、原子 claim 准入与维护共用 typed lease facts/rules 和 provider opening；原领取重试校验当前执行 proof，真实 CLI 完成可恢复缺失 Markdown 展示。覆盖完整 scope 冲突、进程中断及 File/SQLite/PostgreSQL 只读演练。[剩余 executor 与集成边界](../../reference/canonical-lease-renew.md)；R5、D2/D3 和默认化资格仍未完成。
 
 - **Owner：** TS RFC T0–T4、shared-authority D1–D3；保留两套编号及原门禁。

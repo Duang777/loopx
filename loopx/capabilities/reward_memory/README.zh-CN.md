@@ -612,3 +612,23 @@ publish、production 或跨项目 authority。
 可选的[外发指导召回](OUTBOUND.zh-CN.md)会在真正绑定 Goal/Agent 的 Lark
 inbox send/reply 边界召回已经审阅过的偏好。它把指导交给 Agent 审视，但不会
 授予发送权限。
+
+## 配置变更后的恢复
+
+直接修改忽略路径中的配置会使旧启用回执失效。`enablement_stale` 和
+`enablement_unverified` 现在返回共享 `repair` 计划：沿用本次 registry 和完整
+Agent 名单，通过 `configure-goal` 检查变更、预览、在既有授权内应用，再读回
+`available`。命令明确标为模板，执行前必须将 `<invoked-registry>` 绑定为本次调用的
+确切 registry，不能省略后悄悄采用默认值。模板不公开 registry 路径、配置指针或
+provider scope，配置指针沿用原值；应用时重新
+执行 provider 写入及精确读回，并同步源/全局绑定。不能把新摘要填进旧回执；
+明确停用时不生成重新启用建议。
+
+Turn recall、quota、Agent status/Markdown 传递同一计划；显式召回 CLI 保留
+真实故障类型，不再把所有不可用情况标成 disabled。现有 capability editor
+可保留原指针/Agent 名单执行同一预览和应用流程，无须新增配置权威。恢复计划
+不自动接受配置变化、不增加 provider 权限。恢复后仍须用合格经验验证真实写入、
+精确读回和业务召回，才能宣称该经验可用。
+
+配置目录现在核对当前文件摘要并复用运行时准入校验，将期望自动化和历史验证回执与当前绑定状态、
+可用性和有效自动化分开；现有设置页直接显示这些共享字段，避免缓存回执误报正常。

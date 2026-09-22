@@ -25,6 +25,7 @@ from .capabilities.periodic_report import goal_configuration as periodic_report_
 from .capabilities.reward_memory.configuration import (
     apply_reward_memory_goal_configuration,
     plan_reward_memory_goal_configuration,
+    reward_memory_goal_configuration_summary,
     reward_memory_preflight_markdown_lines,
 )
 from .configuration_catalog import (
@@ -49,9 +50,6 @@ from .control_plane.agents.work_mode import normalize_agent_work_modes
 from .control_plane.coordination import runtime_shadow as shadow
 from .control_plane.coordination.configuration import normalize_goal_write_scope
 from .control_plane.operator_inbox_binding import local_private_config_digest
-from .control_plane.reward_memory import (
-    reward_memory_goal_policy_summary,
-)
 from .control_plane.todos.contract import normalize_todo_claimed_by
 from .control_plane.todos.mutation_authority import (
     normalize_todo_lifecycle_authority,
@@ -254,7 +252,7 @@ def _settings_summary(goal: dict[str, Any]) -> dict[str, Any]:
         "issue_fix_reviewer_notification": _reviewer_notification_config_summary(goal),
         "lark_event_inbox": _lark_event_inbox_config_summary(goal),
         "lark_kanban_heartbeat_sync": _lark_kanban_heartbeat_config_summary(goal),
-        "reward_memory": reward_memory_goal_policy_summary(goal),
+        "reward_memory": reward_memory_goal_configuration_summary(goal),
         "pull_request_review": pr_review_config.configuration_summary(goal),
         "change_quality_qualification": change_quality_goal_policy_summary(goal),
         "explore_graph": compact_explore_graph_policy(goal.get("explore_graph")),
@@ -1257,7 +1255,7 @@ def configure_goal(
         "coordination_runtime_shadow": deepcopy(after["coordination_runtime_shadow"]),
         "lark_event_inbox": _lark_event_inbox_config_summary(goal),
         "lark_kanban_heartbeat_sync": _lark_kanban_heartbeat_config_summary(goal),
-        "reward_memory": reward_memory_goal_policy_summary(goal),
+        "reward_memory": reward_memory_goal_configuration_summary(goal),
         "pull_request_review": pr_review_config.configuration_summary(goal),
         "change_quality_qualification": change_quality_goal_policy_summary(goal),
         "default": "off",

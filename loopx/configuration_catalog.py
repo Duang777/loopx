@@ -600,6 +600,15 @@ def build_goal_configuration_catalog(
                 "availability": "experimental_opt_in",
                 "default": {"enabled": False},
                 "current": {
+                    "binding_status": reward_memory.get("binding_status"),
+                    "effective_available": reward_memory.get("effective_available")
+                    is True,
+                    "desired_automation": dict(
+                        reward_memory.get("desired_automation") or {}
+                    ),
+                    "recorded_verified_agents": list(
+                        reward_memory.get("recorded_verified_agents") or []
+                    ),
                     "enabled": reward_memory.get("enabled") is True,
                     "experimental": reward_memory.get("experimental") is True,
                     "config_pointer_registered": reward_memory.get(

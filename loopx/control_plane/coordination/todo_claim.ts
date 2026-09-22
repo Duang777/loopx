@@ -25,8 +25,8 @@ import {
   normalizeAgent,
   normalizeIdempotencyKey,
   normalizeTtl,
-  normalizeWriteScopes,
 } from "../work_items/task_lease_acquire.ts";
+import {coordinationTodoWriteScopes} from "./todo_write_scopes.ts";
 
 export const COORDINATION_TODO_CLAIM_RESULT_SCHEMA =
   "loopx_coordination_todo_claim_result_v0";
@@ -300,23 +300,6 @@ function normalizeLeaseRequest(value: unknown): CoordinationTodoClaimLeaseReques
   };
 }
 
-function claimWriteScopes(todo: JsonObject): string[] {
-  const requiredWriteScopes = todo.required_write_scopes ?? [];
-  if (!Array.isArray(requiredWriteScopes) ||
-      requiredWriteScopes.some((scope) => typeof scope !== "string")) {
-    throw new AuthorityStoreProtocolError(
-      "todo.required_write_scopes must be an array of strings",
-    );
-  }
-  const writeScopes = normalizeWriteScopes(requiredWriteScopes);
-  if (writeScopes.length !== requiredWriteScopes.length) {
-    throw new AuthorityStoreProtocolError(
-      "todo.required_write_scopes contains an invalid or duplicate scope",
-    );
-  }
-  return writeScopes;
-}
-
 function activeLeaseForOwner(
   lease: JsonObject | undefined,
   owner: string,
@@ -509,7 +492,7 @@ export async function executeCoordinationTodoClaim(
     const currentLease = projection.leases.get(input.todo_id);
     if (handoffMode === "hard_lease" && leaseRequest !== null) {
       // Validate required scopes before planning; a caller cannot omit a required conflict.
-      const writeScopes = claimWriteScopes(todo);
+      const writeScopes = coordinationTodoWriteScopes(todo);
       const facts = canonicalTaskLeaseAcquireFacts(projection, input.goal_id, input.todo_id, input.registered_agents, input.now);
       const decision = evaluateTaskLeaseAcquireDecision({handoff_mode: handoffMode,
         registered_agents: [...input.registered_agents], ...facts,

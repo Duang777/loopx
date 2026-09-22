@@ -631,3 +631,22 @@ export function productionScaleConsumerScopeFixture(goalId: string, schema: Auth
     [...fixture.projection.todos as Record<string, unknown>[], ...extra],
     fixture.projection.leases as Record<string, unknown>[], schema, {handoff_mode: "legacy"})};
 }
+
+/** Capability-owned bucket inside a full mixed graph, including a historical
+ * same-target row that must never shadow the current Monitor. */
+export function productionScaleGroupedMonitorFixture(goalId: string,
+  schema: AuthorityProjectionSchema = "native") {
+  const fixture = productionScaleCoordinationFixture(goalId, schema);
+  const targetKey = "github-pr-state-example--repo-checks-pending";
+  const monitor = {schema_version: "todo_domain_record_v0", todo_id: "todo_grouped_monitor",
+    role: "agent", status: "open", done: false, archive_state: "active", text: "Watch the pending PR bucket",
+    task_class: "continuous_monitor", action_kind: "issue_fix_pr_state_checks_pending", target_key: targetKey,
+    claimed_by: "agent-a", cadence: "30m", watch_only: "true", last_checked_at: "2026-09-01T00:00:00Z",
+    result_hash: "previous-membership", material_change_generation: 4, required_write_scopes: []};
+  const projection = authorityProjectionFixture(goalId, [...fixture.projection.todos as Record<string, unknown>[],
+    monitor, {...monitor, todo_id: "todo_grouped_history", status: "done", done: true, archive_state: "archive"}],
+    fixture.projection.leases as Record<string, unknown>[], schema,
+    {source_authority: "synthetic_production_scale_fixture", handoff_mode: "hard_lease"});
+  return {projection, target: monitor.todo_id, targetKey, actor: "agent-a", registered_agents: fixture.registered_agents,
+    now: new Date("2026-09-01T01:00:00Z")};
+}

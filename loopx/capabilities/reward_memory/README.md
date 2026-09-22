@@ -53,6 +53,32 @@ OpenViking is the first provider used by the Issue Fix pilot, but it is not a
 global LoopX feature flag or mandatory dependency; another provider can
 satisfy the same binding contract.
 
+### Recovering a changed binding
+
+Editing the ignored config invalidates its old enablement receipt. `enablement_stale`
+and `enablement_unverified` now return a shared `repair` plan: reuse the invoked
+registry and existing Agent allowlist with `configure-goal`, inspect the config
+change, preview, apply within existing authorization, then verify `available`.
+Commands are explicitly marked templates with a required `<invoked-registry>`
+binding. Bind it to the exact invocation registry before execution; an omitted
+registry must never silently select a default. The private registry path, config
+pointer and provider scopes are not published. The config pointer is retained. Apply re-runs provider write/exact-readback and
+synchronizes the source/global binding. Never repair drift by copying a digest
+into an old receipt. Disabled capabilities offer no re-enable plan.
+
+The configuration catalog checks the live config digest and reuses runtime
+admission validation rather than presenting a cached receipt as current verification. It separates `desired_automation` and
+`recorded_verified_agents` from `binding_status`, `effective_available` and
+effective automation. The existing settings summary renders these same fields.
+
+The same plan is carried through Turn recall, quota and agent status/Markdown;
+the explicit recall CLI preserves the actual failure instead of labelling every
+unavailable configuration `disabled`. The existing capability editor can preview
+and reapply the retained pointer/Agent list through the same owner. No automatic
+configuration acceptance or new provider permissions are introduced. Recovery of
+enablement must still be followed by a real qualified experience write, exact
+readback and destination recall before claiming useful memory is available.
+
 ### OpenViking v0.4.19 identity boundary
 
 LoopX currently assumes one Agent belongs to exactly one Goal, while a Goal may

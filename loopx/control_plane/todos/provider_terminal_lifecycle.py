@@ -40,7 +40,7 @@ from .path_resolution import resolve_todo_state_path
 from .provider_projection import projection_delivery_requires_ack, settle_canonical_todo_projection
 from .successor_derivation import build_successor_intents
 
-_TERMINAL_REQUEST_SCHEMA = "loopx_local_coordination_todo_terminal_lifecycle_request_v1"
+_TERMINAL_REQUEST_SCHEMA = "loopx_local_coordination_todo_terminal_lifecycle_request_v2"
 _ARCHIVE_REQUEST_SCHEMA = "loopx_local_coordination_todo_archive_request_v0"
 _ARCHIVE_ACK_REQUEST_SCHEMA = "loopx_local_coordination_todo_archive_ack_request_v0"
 _ACCEPTED = {"applied", "recovered", "replayed", "no_change", "planned"}
@@ -123,6 +123,7 @@ def _route_terminal_call(command: str, call: Mapping[str, Any]) -> dict[str, Any
         completion_identity_source=(
             call.get("completion_identity_source") if complete else None
         ),
+        review_basis=call.get("terminal_review_basis"),
         completion_delivery_workspace=(
             call.get("completion_delivery_workspace") if complete else None
         ),
@@ -175,6 +176,8 @@ def provider_first_terminal_lifecycle(command: str) -> Callable[[TodoMutation], 
             bound = call_signature.bind(*args, **kwargs)
             bound.apply_defaults()
             result = _route_terminal_call(command, bound.arguments)
+            if result is None and bound.arguments.get("terminal_review_basis") is not None:
+                raise ValueError("Reviewed canonical completion cannot fall back to legacy authority; regenerate preview")
             return result if result is not None else legacy(*args, **kwargs)
 
         return routed
@@ -271,6 +274,7 @@ def terminal_canonical_todo_if_promoted(
     next_excluded_agents: list[str] | None,
     self_merged: bool,
     dry_run: bool,
+    review_basis: Mapping[str, Any] | None = None,
     project: Path | None = None,
     state_file: Path | None = None,
 ) -> dict[str, Any] | None:
@@ -335,24 +339,10 @@ def terminal_canonical_todo_if_promoted(
             if command == "complete"
             else None
         )
-        validation_declaration = None
-        if command == "complete" and target.get("completion_validation_required") is True:
-            if state_file is None:
-                raise ValueError(
-                    "canonical Todo completion validation requires its private state projection"
-                )
-            validation_declaration = resolve_private_completion_validation_declaration(
-                canonical_todo=target,
-                state_file=state_file,
-                runtime_root=runtime_root,
-                registry_path=registry_path,
-                goal_id=goal_id,
-                todo_id=todo_id,
-                role=role,
-                persist_if_resolved=not dry_run,
-            )
         request = {
             "schema_version": _TERMINAL_REQUEST_SCHEMA,
+            **({"review_basis": dict(review_basis)} if review_basis is not None else {}),
+            "validation_source_provider_revision": None,
             "runtime_root": str(runtime_root.expanduser().resolve(strict=False)),
             "goal_id": goal_id,
             "todo_id": todo_id,
@@ -377,7 +367,8 @@ def terminal_canonical_todo_if_promoted(
             "evidence": evidence,
             "reason": reason,
             "clear_claim": clear_claim,
-            "validation_declaration": validation_declaration,
+            "validation_declaration": None,
+            "validation_declaration_sha256": target.get("completion_validation_sha256") if command == "complete" else None,
             "validation_receipt": None,
             "completion_policy_request": completion_policy_request,
             "dry_run": dry_run,
@@ -392,12 +383,29 @@ def terminal_canonical_todo_if_promoted(
     result = effect_runtime_result(
         "coordination.local_authority.todo_terminal", request
     )
+    if isinstance(result, Mapping) and result.get("status") == "resolve_validation":
+        # Admission and receipt recovery precede host-local declaration IO.
+        # Resolving private argv grants no authority to run it; re-enter the
+        # same transaction and original source witness before executing effects.
+        if state_file is None:
+            raise ValueError("canonical Todo completion validation requires its private state projection")
+        request["validation_source_provider_revision"] = result["provider_revision"]
+        request["validation_declaration"] = resolve_private_completion_validation_declaration(
+            canonical_todo=target, state_file=state_file, runtime_root=runtime_root,
+            registry_path=registry_path, goal_id=goal_id, todo_id=todo_id, role=role,
+            persist_if_resolved=not dry_run,
+        )
+        result = effect_runtime_result("coordination.local_authority.todo_terminal", request)
+    completion_validation_executed = False
     if isinstance(result, Mapping) and result.get("status") == "execute_validation":
+        request["validation_source_provider_revision"] = result["provider_revision"]
         request.update(execute_completion_validation_effects(
             result, registry_path=registry_path, goal_id=goal_id,
             delivery_workspace=completion_delivery_workspace,
             validation_workspace_path=completion_validation_workspace_path,
         ))
+        completion_validation_executed = True
+        request["observed_at"] = now_local()
         result = effect_runtime_result(
             "coordination.local_authority.todo_terminal", request
         )
@@ -413,6 +421,8 @@ def terminal_canonical_todo_if_promoted(
     if validation_failure is not None:
         return validation_failure
     payload = dict(result)
+    if completion_validation_executed:
+        payload["completion_validation_executed"] = True
     if (
         payload.get("status") == "failed"
         and payload.get("failure_kind") == "decision_rejection"
