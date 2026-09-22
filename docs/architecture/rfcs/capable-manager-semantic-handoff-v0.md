@@ -81,6 +81,14 @@ transfer or shared-intent mutation. This is a bounded R3 slice, not M2–M4/G1
 completion; external-audience peer forwarding and cross-host continuation remain
 with their existing roadmap owners.
 
+Receiver recovery now exposes later pending requests through the existing CLI
+and identity-scoped MCP `next_cursor`. Deferred requests awaiting conclusions no
+longer prevent access beyond the first 20. `tests/test_inbox_pagination.py`
+qualifies 45 durable requests, process restart, scope rejection, live registration
+revocation and independent result return. This covers the local receiver paging
+part of A20 and restart evidence for A5/A13. It does not qualify cross-day managed
+execution, live Lark, frontend journey completion or the remaining M1–M4 work.
+
 ## 4. Current-system contract: audited facts
 
 The baseline already has substantial reusable machinery:

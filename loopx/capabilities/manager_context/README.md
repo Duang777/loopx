@@ -201,6 +201,24 @@ The receiving Agent still owns relevance and priority; normal context delivery
 never changes its Todos or interrupts its current work.
 
 `manager-inbox read` records the first provision of context to the receiver.
+Each response returns at most 20 pending requests and now includes `next_cursor`.
+When `has_more` is true, pass that cursor to read later requests without first
+concluding the earlier ones:
+
+```sh
+loopx manager-inbox read --goal-id research --agent-id worker --cursor <next_cursor>
+```
+
+Use the same registry, runtime root, Goal and Agent for every page. The scoped
+MCP equivalent is `read_context(cursor=<next_cursor>)`; a call without arguments
+still reads the first page. A cursor survives process restart and removal or
+completion of its anchor request. It is a navigation position, not a grant.
+Each call checks current registration and records reads only for returned requests.
+`next_cursor: null` ends this scan, not the outstanding work. Pages are live,
+ordered by request id; restart without a cursor to find new requests sorted
+before the last position. Peer results retain their separate consumption flow
+and are not paginated by this cursor. `status --offset/--limit` remains separate.
+
 After `acknowledge`, the request remains in the turn-start hook until the worker
 publishes a conclusion. The worker uses `link` for canonical Todo/evidence lineage
 and `report` to publish the answer intended for the original audience:

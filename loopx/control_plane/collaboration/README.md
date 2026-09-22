@@ -36,3 +36,11 @@ request amendment/cancellation, cross-Goal/host delegation, dynamic Agent creati
 and lifecycle supervision remain owned by their existing roadmap contracts.
 The nested-coordinator regression and the [managed delivery demo](../../../examples/collaboration-delivery/README.md)
 exercise this boundary without imposing a maximum tree depth or a manager hop.
+
+Pending request pagination also belongs to `inbox.py`. Its stateless cursor
+binds the resolved runtime root, Goal and receiving Agent to a request-id
+position. CLI and MCP use the same live 20-request pages. Invalid cursors and
+unreadable entry directories fail before request read receipts are written.
+No scan index, receipt migration or additional authority store is required.
+See [receiver pagination](../../capabilities/manager_context/README.md#a-delegation-returns-automatically)
+for restart and concurrent-arrival behavior.
