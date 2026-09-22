@@ -252,7 +252,21 @@ export async function qualifyCoordinationRuntimeShadowUnderLocks(
   minimum: number,
   required: string[],
 ): Promise<JsonObject> {
-    await verifyShadowSourceSnapshot(request);
+  await verifyShadowSourceSnapshot(request);
+  const result = await qualifyCoordinationShadowLineageUnderLocks(request, dependencies, minimum, required);
+  await verifyShadowSourceSnapshot(request);
+  return result;
+}
+
+/** Revalidate durable capture lineage under the maintenance lock. Callers must
+ * either verify a fresh source snapshot or first verify the exact durable fence.
+ * A fenced recovery cannot require a legacy document that is no longer authority. */
+export async function qualifyCoordinationShadowLineageUnderLocks(
+  request: Pick<ShadowRequest, "runtime_root" | "goal_id" | "projection">,
+  dependencies: RuntimeShadowDependencies,
+  minimum: number,
+  required: string[],
+): Promise<JsonObject> {
     const store = dependencies.createStore?.(join(request.runtime_root, "authority-shadow", "file-v0"), request.goal_id) ??
       new FileAuthorityStore(join(request.runtime_root, "authority-shadow", "file-v0"), request.goal_id, { existingOnly: true });
     const initial = await store.loadAuthority();
@@ -260,7 +274,6 @@ export async function qualifyCoordinationRuntimeShadowUnderLocks(
     const binding = await requireShadowCaptureBinding(request.runtime_root, request.goal_id);
     const lineage = await loadValidatedShadowLineage(store, request.runtime_root, request.goal_id, binding);
     const pending = await pendingOutbox(request.runtime_root, request.goal_id, binding, lineage.transactions);
-    await verifyShadowSourceSnapshot(request);
     const matched = localAuthorityShadowHeadDigest(request.projection) === localAuthorityShadowHeadDigest(lineage.head.head);
     const missing = required.filter((kind) => !lineage.write_classes.includes(kind));
     const operations = lineage.transactions.slice(1).filter((transaction) => transaction.receipts[0]?.no_op === false).length;

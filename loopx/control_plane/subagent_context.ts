@@ -4,14 +4,14 @@ import type { JsonObject } from "./effect_program.ts";
 import { jsonObject, requireJsonObject } from "./runtime_decode.ts";
 
 export const subagentContextProvider: AgentContextProvider = {
-  hookId: "multi_subagent.coordinator", capabilityId: "multi_subagent", revision: "v4",
+  hookId: "multi_subagent.coordinator", capabilityId: "multi_subagent", revision: "v5",
   phases: AGENT_CONTEXT_PHASES,
   produce(input, config) {
     const guidance = {
       before_plan: [
         "Prefer bounded independent delegation; max_children is a configured ceiling, not live availability. Admit native children incrementally, avoid duplicate reads, and keep one parent question.",
         "Native child tools can read loopx agent-context at before_delegate and after_delegate_result; these calls do not start Turns or spend quota.",
-        "Authorized routes are observations, not obligations. Use a ready route only when it fits; blocked/unknown routes never block native work. No heartbeat must use every route.",
+        "Choose independent work from current routes and user preferences. Runtime availability is not entrypoint admission; inspect bound delegation. Peer-activation blocks do not assess native children or delegation. Do not relaunch every route on every heartbeat.",
       ],
       before_delegate: [
         "Give each child a bounded question, sources, read/write limits, expected evidence and stopping condition; identify dependencies and the coordinator's concurrent question.",
@@ -119,7 +119,9 @@ function boundedDelegationContext(value: unknown): JsonObject | null {
       || !["ready", "blocked", "unknown"].includes(readiness)) return [];
     const compact: JsonObject = {
       binding_id: bindingId, agent_id: agentId, todo_id: todoId,
-      runtime_id: runtimeId, readiness,
+      runtime_id: runtimeId, readiness: readiness === "blocked" ? "blocked" : "unknown",
+      runtime_readiness: ["ready", "blocked", "unknown"].includes(String(route.runtime_readiness))
+        ? route.runtime_readiness! : readiness,
     };
     const executorKind = identifier(route.executor_kind);
     const profile = typeof route.execution_profile === "string"
@@ -149,6 +151,7 @@ function boundedDelegationContext(value: unknown): JsonObject | null {
     authorized_count: boundedCount(source.authorized_count),
     projected_count: 0,
     entrypoint: "loopx delegation",
+    execution_scope: "bound_delegation", preflight: "required",
     routes: [],
   };
   if (rawReceipts) result.operation_receipts = operationReceipts;

@@ -52,3 +52,5 @@ provider selection matrix 使用 production-scale synthetic coordination fixture
 PostgreSQL factory identity fencing，以及 factory 返回其他 provider 时的拒绝。
 File、SQLite 和 PostgreSQL 继续共享 provider-neutral transaction conformance
 contract；PostgreSQL 的真实服务器 qualification 仍是独立 gate。
+
+保存计划、执行和断点恢复的操作见[审核后的晋升与恢复](reviewed-coordination-promotion.zh-CN.md)。

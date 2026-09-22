@@ -1405,3 +1405,17 @@ transaction 只能靠削弱既有行为才能通过 invariant/recovery/performan
 
 实测交付记录存于[逐条 ledger](ledger/typescript-control-plane-migration-v0/)。
 每条记录说明已交付边界及剩余验收缺口；上方 T1–T4 检查点仍是当前迁移计划。
+
+### Reviewed coordination cutover ownership
+
+Saved-plan execution and fenced recovery now share the TypeScript promotion
+owner. Fresh-source qualification wraps durable lineage qualification; recovery
+uses that same lineage rule after exact fence verification. The Python CLI loads
+a reviewed JSON carrier and transports fresh observations, without recreating
+plan hashes, recovery decisions or receipt proof. Both commit paths share one
+receipt/first-transaction readback contract.
+
+This is a migration orchestration checkpoint, not completion of Stage 3 or a
+default-provider flip. Integrate claim-preserving migration separately, retain
+real-backend and captured-source qualification, and retire Python only where its
+actual callers have moved. [Operator contract](../../reference/reviewed-coordination-promotion.md).

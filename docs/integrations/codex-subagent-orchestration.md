@@ -295,12 +295,23 @@ loopx quota should-run \
   --available-capability peer_agent_activation
 ```
 
-The contract includes only peer lanes that are currently actionable. Dormant
-registered agents and closed, blocked, or deferred todos are not coordinator
-candidates. A dormant or non-resumable lane is projected under
-`blocked_peer_lanes`; if no peer lane can run, the bundle has
+The peer contract is scoped to `execution_scope=peer_agent_activation`.
+Its `task_selection=canonical_claimed_candidates` identifies open claimed
+Todo candidates, not the task pinned to a running session. Canonical inventory
+outranks display rows; all eligible tasks for the same peer remain visible.
+Large inventories stay in the full decision. The thin TurnEnvelope preserves
+scoped gates, counts and a signed content hash plus a required detail read;
+counts alone never authorize a task selection. Native child lanes are preserved
+when only their nested peer diagnostic needs compaction.
+Only currently actionable candidates appear under `eligible_peer_lanes`.
+Closed, blocked, or deferred Todos are excluded. An open candidate whose peer
+is dormant or whose dependency is not ready appears under `blocked_peer_lanes`;
+if no peer lane can run, the bundle has
 `execution_state=blocked`,
 `terminal_outcome=blocked`, and `retry_policy=material_peer_state_change_only`.
+When native child admission succeeds, its adaptive contract remains actionable
+and retains the blocked peer contract as `peer_activation_diagnostic`. Neither
+path grants permission to use a different entrypoint.
 That blocked diagnostic does not replace the coordinator's own runnable lane or
 re-arm an activation obligation on every heartbeat. If the coordinator also
 has no in-scope runnable fallback, the final interaction mode is
@@ -467,7 +478,7 @@ At `before_plan`, `loopx agent-context` considers at most six bindings authorize
 for the current requester and projects as many as fit the existing context byte
 budget; `authorized_count` and `routes_truncated` make omissions explicit. Each
 route carries only binding/Agent/Todo/runtime
-identity, `ready|blocked|unknown`, an optional public-safe execution profile and
+identity, separate `runtime_readiness` and `readiness` observations, an optional public-safe execution profile and
 one stable `loopx delegation` entrypoint. A separate, explicit
 `agent-context --phase after_delegate_result` read may include bounded
 operation-status and recovery-required counts. Automatic planning and managed
@@ -475,15 +486,28 @@ return paths do not enumerate the operation journal. These reads do not launch,
 resume or accept a worker, and they never expose raw host
 arguments, workspaces, output references, credentials or child results.
 
-Runtime availability and business adoption are separate. `ready` says that the
-existing runtime owner did not find a launch blocker; it does not select the
-route, establish task fit or prove execution. `blocked` or `unknown` never
-prevents useful native work. Before dispatch, the coordinator must use the
-authorized binding, recheck its runtime/model/budget and record a stable
-operation id; it must not silently substitute another runtime or model. No
-heartbeat is required to use every route. When Lark or another managed surface
-exposes these facts, it must consume the same signed capability context rather
-than own another route configuration.
+Runtime availability, entrypoint admission and business adoption are separate.
+`runtime_readiness=ready` only reports the existing runtime probe. Planning does
+not run the execution preflight: `execution_scope=bound_delegation` and
+`preflight=required` accompany `readiness=unknown` (or `blocked` for a known
+runtime failure). Use `loopx delegation inspect` on the selected binding to
+check canonical authority, task validation and Turn admission before dispatch.
+A peer-activation blocker does not assess this route or native children; neither
+does a successful runtime probe bypass authority promotion or another gate.
+Before dispatch, recheck runtime/model/budget and record a stable operation id;
+never silently substitute a runtime or model. User preferences guide independent
+batch selection; no heartbeat must relaunch every route. Lark and other managed
+surfaces consume this same capability context, not another route configuration.
+
+中文：peer 合约的阻塞范围仅为 `peer_agent_activation`，候选来自完整权威任务源，
+不再以显示列表第一条任务冒充绑定；同一 Agent 的多条候选保留。
+候选过多时，全量决策保留全部条目，简版携带状态、数量、哈希和必读详情引用；
+不能凭数量选择任务。若 native 子 Agent
+通过独立准入，使用 adaptive 合约并保留 `peer_activation_diagnostic`，不因另一个
+入口受阻而提前返回。运行库/凭据可用只记为 `runtime_readiness`；委派入口尚未预检时
+`readiness=unknown`、`preflight=required`，通过现有 `loopx delegation inspect`
+核验权威状态、任务验证与 Turn 准入。未知不等于禁用，ready 运行库也不等于可执行。
+用户的异构偏好影响批次选择，不要求每次心跳重启所有路线，不绕过任一真实门禁。
 
 中文：可在现有 `multi_subagent` 能力中配置
 `.loopx/config/delegations.json` 指针，让当前请求 Agent 在规划前看到自己已获授权的

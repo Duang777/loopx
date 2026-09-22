@@ -23,6 +23,7 @@ from ..control_plane.coordination.runtime_shadow import (  # noqa: F401
     resolve_coordination_runtime_shadow_config,
     rollback_coordination_runtime_shadow,
 )
+from ..control_plane.coordination.promotion_review import execute_reviewed_coordination_promotion
 from ..history import load_registry
 from ..paths import resolve_runtime_root
 from ..registry import find_registry_goal
@@ -66,17 +67,22 @@ def register_coordination_shadow_command(
             "Import the current legacy projection into an empty file shadow.",
         ),
         ("rollback", "Quarantine one exact pre-promotion file shadow lineage."),
+        ("recover-promotion", "Read back or recover an already-fenced saved promotion without reading legacy Markdown."),
     ):
         action = actions.add_parser(name, help=help_text)
         action.add_argument("--goal-id", required=True)
-        action.add_argument("--project", type=Path)
-        action.add_argument("--state-file", type=Path)
-        if name in {"bootstrap", "rollback", "promote"}:
+        if name != "recover-promotion":
+            action.add_argument("--project", type=Path)
+            action.add_argument("--state-file", type=Path)
+        if name in {"bootstrap", "rollback", "promote", "recover-promotion"}:
             action.add_argument(
                 "--execute",
                 action="store_true",
                 help="Execute the administrative effect; otherwise preview only.",
             )
+        if name in {"promote", "recover-promotion"}:
+            action.add_argument("--reviewed-plan", type=Path, required=name == "recover-promotion",
+                help="Saved successful promotion preview or its exact reviewed_plan envelope. The plan owns operation and qualification policy.")
         if name == "rollback":
             selector = action.add_mutually_exclusive_group(required=True)
             selector.add_argument(
@@ -101,7 +107,7 @@ def register_coordination_shadow_command(
             action.add_argument(
                 "--minimum-operations",
                 type=int,
-                default=3,
+                default=None,
                 help="Minimum verified primary mutations in the selected lineage (default: 3).",
             )
             action.add_argument(
@@ -213,6 +219,33 @@ def handle_coordination_shadow_command(
         goal = find_registry_goal(registry, args.goal_id)
         if goal is None:
             raise ValueError(f"goal {args.goal_id!r} is not present in the registry")
+        runtime_root = resolve_runtime_root(registry, runtime_root_arg, registry_path=registry_path)
+        reviewed_path = getattr(args, "reviewed_plan", None)
+        reviewed_plan = None
+        if reviewed_path is not None:
+            reviewed_plan = json.loads(reviewed_path.read_text(encoding="utf-8"))
+            if not isinstance(reviewed_plan, dict):
+                raise ValueError("reviewed promotion plan must be a JSON object")
+        if args.coordination_shadow_command == "recover-promotion":
+            if reviewed_plan is None:
+                raise ValueError("promotion recovery requires --reviewed-plan")
+            promotion = execute_reviewed_coordination_promotion(
+                reviewed_plan=reviewed_plan, runtime_root=runtime_root, goal_id=args.goal_id,
+                action="recover", execute=bool(args.execute),
+            )
+            payload = {
+                "ok": promotion.get("status") in {"recovery_ready", "applied", "replayed", "recovered"},
+                "schema_version": "loopx_coordination_shadow_admin_v0",
+                "action": "recover-promotion", "goal_id": args.goal_id,
+                "executed": promotion.get("executed") is True, "promotion": promotion,
+                "decision_read_from_shadow": False,
+            }
+            print_payload(payload, output_format(args), _render)
+            return 0 if payload["ok"] else 1
+        if reviewed_plan is not None and (
+            args.minimum_operations is not None or args.require_event_kind
+        ):
+            raise ValueError("--reviewed-plan owns qualification policy; omit --minimum-operations and --require-event-kind")
         config = resolve_coordination_runtime_shadow_config(goal)
         if not config.enabled:
             payload = {
@@ -232,11 +265,6 @@ def handle_coordination_shadow_command(
             }
             print_payload(payload, output_format(args), _render)
             return 1
-        runtime_root = resolve_runtime_root(
-            registry,
-            runtime_root_arg,
-            registry_path=registry_path,
-        )
         _, _, state_path = resolve_goal_state(registry=registry, goal_id=args.goal_id,
             project_override=args.project, state_file_override=args.state_file)
         if args.coordination_shadow_command == "rollback":
@@ -340,47 +368,54 @@ def handle_coordination_shadow_command(
                 and read_candidate.get("decision_read_from_shadow") is False
             )
         if args.coordination_shadow_command == "promote":
-            registered_agents = registered_agent_ids_for_goal(goal)
-            operation_digest = _projection_version(
-                {
-                    "goal_id": args.goal_id,
-                    "projection": projection,
-                    "minimum_operations": args.minimum_operations,
-                    "required_event_kinds": args.require_event_kind,
-                    **(
-                        {
-                            "handoff_mode_migration": args.handoff_mode_migration,
-                            "registered_agents": registered_agents,
-                        }
+            # A saved plan owns qualification policy, so the flag defaults to
+            # `None`; normalize it only for the freshly reviewed path.
+            minimum_operations = args.minimum_operations if args.minimum_operations is not None else 3
+            if reviewed_plan is not None:
+                promotion = execute_reviewed_coordination_promotion(
+                    reviewed_plan=reviewed_plan, runtime_root=runtime_root, goal_id=args.goal_id,
+                    action="apply", execute=bool(args.execute),
+                    projection=projection, source_snapshot=source_snapshot,
+                )
+            else:
+                registered_agents = registered_agent_ids_for_goal(goal)
+                operation_digest = _projection_version(
+                    {
+                        "goal_id": args.goal_id,
+                        "projection": projection,
+                        "minimum_operations": minimum_operations,
+                        "required_event_kinds": args.require_event_kind,
+                        **(
+                            {
+                                "handoff_mode_migration": args.handoff_mode_migration,
+                                "registered_agents": registered_agents,
+                            }
+                            if args.handoff_mode_migration is not None
+                            else {}
+                        ),
+                    }
+                )
+                promotion = review_local_coordination_authority_promotion(
+                    goal=goal,
+                    runtime_root=runtime_root,
+                    goal_id=args.goal_id,
+                    operation_id=f"promote:{args.goal_id}:{operation_digest}",
+                    projection=projection,
+                    source_snapshot=source_snapshot,
+                    minimum_operations=minimum_operations,
+                    required_event_kinds=args.require_event_kind,
+                    handoff_mode_migration=args.handoff_mode_migration,
+                    registered_agents=(
+                        registered_agents
                         if args.handoff_mode_migration is not None
-                        else {}
+                        else None
                     ),
-                }
-            )
-            promotion = review_local_coordination_authority_promotion(
-                goal=goal,
-                runtime_root=runtime_root,
-                goal_id=args.goal_id,
-                operation_id=f"promote:{args.goal_id}:{operation_digest}",
-                projection=projection,
-                source_snapshot=source_snapshot,
-                minimum_operations=args.minimum_operations,
-                required_event_kinds=args.require_event_kind,
-                handoff_mode_migration=args.handoff_mode_migration,
-                registered_agents=(
-                    registered_agents
-                    if args.handoff_mode_migration is not None
-                    else None
-                ),
-                execute=bool(args.execute),
-            )
-            payload["executed"] = bool(args.execute)
+                    execute=bool(args.execute),
+                )
+            payload["executed"] = promotion.get("executed") is True
             payload["promotion"] = promotion
             payload["ok"] = promotion.get("status") in {
-                "preview_ready",
-                "applied",
-                "replayed",
-                "recovered",
+                "preview_ready", "applied", "replayed", "recovered",
             }
         if args.coordination_shadow_command == "rollback":
             provider_revision = getattr(args, "provider_revision", None)

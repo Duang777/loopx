@@ -56,3 +56,5 @@ selected-provider failure without fallback, PostgreSQL factory identity
 fencing, and the factory's rejection of a different provider. File, SQLite,
 and PostgreSQL continue to share the provider-neutral transaction conformance
 contract; PostgreSQL's real-server qualification remains a separate gate.
+
+See [reviewed promotion and recovery](reviewed-coordination-promotion.md) for the explicit saved-plan CLI journey.

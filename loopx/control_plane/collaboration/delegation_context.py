@@ -56,7 +56,8 @@ def _route(binding: dict[str, Any]) -> dict[str, Any]:
         "todo_id": binding["todo_id"],
         "runtime_id": executor.get("executor") or "unknown",
         "executor_kind": executor.get("executor_kind") or "generic",
-        "readiness": readiness,
+        "runtime_readiness": readiness,
+        "readiness": "blocked" if available is False else "unknown",
     }
     profile = str(executor.get("execution_profile") or "").strip()
     if profile:
@@ -116,6 +117,8 @@ def project_delegation_context(
         result = {
             "schema_version": "loopx_delegation_context_v0",
             "configuration_state": "ready",
+            "execution_scope": "bound_delegation",
+            "preflight": "required",
             "observed_at": observed_at,
             "authorized_count": len(bindings),
             "projected_count": len(routes),

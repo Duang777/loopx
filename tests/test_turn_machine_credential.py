@@ -113,6 +113,9 @@ def test_delegation_uses_machine_readiness_without_expanding_requesters(tmp_path
         )
         assert packet["authorized_count"] == count
         if count:
-            assert packet["routes"][0]["readiness"] == "ready"
+            route = packet["routes"][0]
+            assert route["runtime_readiness"] == "ready"
+            assert route["readiness"] == "unknown"
+            assert packet["preflight"] == "required"
         assert KEY not in json.dumps(packet)
     assert not provider.operator_provider_store_path(runtime).exists()

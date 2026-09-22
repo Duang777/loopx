@@ -3269,6 +3269,35 @@ semantic corrections. A green unit suite, a canonical selector, or a new config
 field alone cannot advance a package to default readiness. Planned integration,
 soak, release, merge and live promotion retain their respective authorization.
 
+### Reviewed cutover checkpoint
+
+The saved-plan/recovery slice closes a concrete operator gap: execution can be
+bound to the reviewed source/provider/policy, and a fenced cutover can be
+completed or read back without reconstructing intent from legacy Markdown.
+The TS owner shares durable qualification and exact receipt proof between both
+paths. See [operation and acceptance](../../reference/reviewed-coordination-promotion.md).
+This stage does not authorize an active Goal migration or flip a default.
+
+For an existing claimed Goal, integrate the claim-preserving migration in #4870
+with this slice, qualify the exact combined head and resolve its existing CI and
+review holds. Preserve the registered owners, existing claims and leases; do not
+clear ownership to make storage migration appear ready. The saved-plan carrier
+must retain migration strategy, registered-agent facts and target digest when
+that extension is integrated.
+
+The remaining default-on program is still approximately **5–8 cohesive PR
+packages**, with scope rather than line counts determining the split: caller /
+external-effect fencing (1–2), consumer/projection closure (1), contributor-owned
+SQLite D2 (#4224, 1–2), integrated capture/whole-Goal acceptance (1–2), then default
+onboarding plus bounded Python retirement (1). This slice contributes to the
+integrated migration package; it does not count an entire package complete.
+Actual elapsed soak cannot be compressed into a promised number of PRs.
+PostgreSQL service admission and operations remain a separate medium-term lane.
+
+现有 Goal 的可审核晋升与恢复、所有新 Goal 默认选用 provider、删除全部 Python，
+是三个不同完成条件。先交付一条能保留状态、能读回、能恢复的真实迁移路径，再按调用方
+闭合程度删除旧实现。不要用已合入 PR 数量替代端到端验收。
+
 ### Parallel delivery plan
 
 | Lane | May start | Scope and exit condition | Dependency |

@@ -129,6 +129,10 @@ test("delegation routes and explicit result receipts are bounded public-safe fac
   const beforeFacts = (before.contributions as any[])[0].facts;
   assert.equal(beforeFacts.delegation_context.projected_count, 1);
   assert.equal(beforeFacts.delegation_context.entrypoint, "loopx delegation");
+  assert.equal(beforeFacts.delegation_context.execution_scope, "bound_delegation");
+  assert.equal(beforeFacts.delegation_context.preflight, "required");
+  assert.equal(beforeFacts.delegation_context.routes[0].readiness, "unknown");
+  assert.equal(beforeFacts.delegation_context.routes[0].runtime_readiness, "ready");
   assert.equal(beforeFacts.delegation_context.routes[0].execution_profile, "model-a@high");
   assert.equal(beforeFacts.delegation_context.operation_receipts, undefined);
   assert.ok(!JSON.stringify(before).includes("credential"));
@@ -188,7 +192,7 @@ test("coordinator participation guidance survives all bounded lifecycle projecti
     } })!;
     assert.deepEqual(packet.failures, []);
     const [contribution] = packet.contributions as Record<string, any>[];
-    assert.equal(contribution.revision, "v4");
+    assert.equal(contribution.revision, "v5");
     assert.equal(packet.authority, "guidance_only");
     assert.ok(Buffer.byteLength(JSON.stringify(contribution)) <= 2048);
     assert.ok(Buffer.byteLength(JSON.stringify(packet)) <= 3072);
