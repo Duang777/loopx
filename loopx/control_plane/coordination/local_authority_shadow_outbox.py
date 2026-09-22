@@ -580,7 +580,8 @@ def _proved_sequence(runtime_root: Path, goal_id: str, partition: str) -> int:
             "schema_version": LOCAL_AUTHORITY_SHADOW_READ_REQUEST_SCHEMA,
             "runtime_root": str(runtime_root),
             "goal_id": goal_id,
-            "scan_limit": 10_000,
+            "scan_limit": 0,
+            "read_model": "proof",
         },
         timeout=15.0,
     )

@@ -12,6 +12,7 @@ import {
 import { EffectRuntimeRequestError } from "../../loopx/control_plane/effect_runtime_errors.ts";
 import type { JsonObject } from "../../loopx/control_plane/effect_program.ts";
 import { TURN_ENVELOPE_SECTION_TARGETS } from "../../loopx/control_plane/quota/turn_envelope_budget.ts";
+import { projectPeerOrchestration } from "../../loopx/control_plane/quota/peer_orchestration.ts";
 
 function payload(): Record<string, unknown> {
   return {
@@ -71,6 +72,40 @@ const protocolActionFields = {
   llm: "no_api",
   agent_action: "advance one bounded segment",
 };
+
+test("large peer inventories retain scoped gates and signed detail without hiding tasks", () => {
+  const source = payload();
+  const items = Array.from({ length: 50 }, (_, i) => ({ todo_id: `todo_${i}`,
+    claimed_by: "worker", status: "open", task_class: "advancement_task",
+    title: "Inspect independent source and return verified evidence" }));
+  for (const available of [[], ["peer_agent_activation"]]) {
+    const peer = projectPeerOrchestration({ agent_id: "parent", registered_agents: ["worker"],
+      items, available_capabilities: available, agents: [{ agent_id: "worker", state: "running" }] })!;
+    for (const nested of [false, true]) {
+      source.task_orchestration_contract = nested
+        ? { mode: "adaptive", execution_state: "ready", eligible_child_lanes: [{ todo_id: "local-child" }], peer_activation_diagnostic: peer }
+        : peer;
+      const render = () => buildTurnEnvelope({ payload: source,
+        protocol_action_fields: protocolActionFields, scheduler_execution_args: " --available-capability shell" });
+      const envelope = render();
+      const contract = envelope.task_orchestration_contract as JsonObject;
+      const compact = (nested ? contract.peer_activation_diagnostic : contract) as JsonObject;
+      assert.equal(compact.execution_scope, "peer_agent_activation");
+      assert.equal(compact.execution_state, available.length ? "ready" : "blocked");
+      assert.equal(compact.activation_allowed, available.length > 0);
+      assert.equal(Number(compact.eligible_peer_count) + Number(compact.blocked_peer_count), 50);
+      assert.equal(compact.read_required, true);
+      assert.equal(compact.eligible_peer_lanes, undefined);
+      assert.equal((peer.eligible_peer_lanes as unknown[]).length + (peer.blocked_peer_lanes as unknown[]).length, 50);
+      assert.equal((envelope.compaction as JsonObject).within_budget, true);
+      assert.deepEqual(quotaActionSignatureDocument(source, protocolActionFields), turnEnvelopeActionSignatureDocument(envelope));
+      const rows = (available.length ? peer.eligible_peer_lanes : peer.blocked_peer_lanes) as JsonObject[];
+      rows[0].todo_id = `changed-identity-${nested}`;
+      assert.notEqual((render().action_signature as JsonObject).source_hash, (envelope.action_signature as JsonObject).source_hash);
+      if (nested) assert.deepEqual(contract.eligible_child_lanes, [{ todo_id: "local-child" }]);
+    }
+  }
+});
 
 test("Turn preserves checkpointed scope approval without lifting other gates", () => {
   const source = payload();

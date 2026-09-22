@@ -188,14 +188,14 @@ test("legacy write guard flips from allowed to fail-closed after the durable fen
   assert.equal(blocked.authority_mode, "file_v0");
 });
 
-test("new file outbox qualification does not implicitly enable canonical promotion", async () => {
+test("fenced v0 recovery cannot bypass reviewed promotion handoff-mode policy", async () => {
   const root = await mkdtemp(join(tmpdir(), "loopx-local-authority-promote-"));
   const shadow = await qualifiedShadow(root);
   const request = promotionRequest(root, shadow.projection, shadow.providerRevision);
   await engageFence(request);
   const applied = await promoteLocalCoordinationAuthority(request);
   assert.equal(applied.status, "failed");
-  assert.equal(applied.reason_code, "local_authority_shadow_not_qualified");
+  assert.equal(applied.reason_code, "local_authority_promotion_requires_hard_lease");
   const canonical = new FileAuthorityStore(join(root, "authority", "file-v0"), "goal-a", {existingOnly: true});
   assert.equal((await canonical.loadAuthority()).status, "missing");
 });

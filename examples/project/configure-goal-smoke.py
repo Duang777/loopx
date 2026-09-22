@@ -290,6 +290,7 @@ def main() -> int:
         assert set(features) == {
             "todo_replan_cadence",
             "local_authority_shadow",
+            "coordination_runtime_shadow",
             "multi_subagent",
             "peer_task_coordination",
             "explore_graph",

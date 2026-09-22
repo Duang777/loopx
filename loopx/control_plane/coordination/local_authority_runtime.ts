@@ -1,3 +1,5 @@
+import {readPromotionReceipt, commitPromotionAndReadBack} from './promotion_receipt.ts';
+import {reviewedPromotionPlan, promotionPlanDigest, decodeReviewedPromotionOperation, REVIEWED_PROMOTION_OPERATION_RESULT_SCHEMA} from './reviewed_promotion_plan.ts';
 import {registryAuthoritySourceCheck} from "./authority_source.ts";
 import {decodeTaskLeaseProof} from "./task_lease_proof.ts";
 import {COORDINATION_TODO_ARCHIVE_RESULT_SCHEMA} from "./todo_archive.ts";
@@ -29,7 +31,7 @@ import {
 import {
   indexCoordinationProjection,
 } from "./coordination_projection.ts";
-import { authorityStoreSourceAuthority, type AuthorityStore, type AuthorityStoreReceiptResult } from "./authority_store.ts";
+import { authorityStoreSourceAuthority, type AuthorityStore } from "./authority_store.ts";
 import {
   authorityUnicodeCompare,
   canonicalAuthorityBytes,
@@ -52,10 +54,9 @@ import {
   loadLegacyCoordinationWriterFence,
 } from "./legacy_writer_fence.ts";
 import {
-  COORDINATION_RUNTIME_SHADOW_QUALIFY_REQUEST_SCHEMA,
   decodeRuntimeShadowRequest,
   qualifyCoordinationRuntimeShadowUnderLocks,
-  qualifyCoordinationRuntimeShadow,
+  qualifyCoordinationShadowLineageUnderLocks,
   withShadowSourceLocks,
 } from "./runtime_shadow.ts";
 import {
@@ -149,7 +150,7 @@ export async function reviewLocalCoordinationAuthorityPromotion(
       value,
       LOCAL_COORDINATION_PROMOTION_REVIEW_REQUEST_SCHEMA,
       ["operation_id", "minimum_operations", "required_event_kinds", "execute",
-        "handoff_mode_migration", "registered_agents"],
+        "handoff_mode_migration", "registered_agents", "expected_promotion_plan_sha256"],
     );
     const operationId = requireAuthorityStoreId(input.operation_id, "operation id");
     const minimumOperations = requiredPositiveSafeInteger(
@@ -171,6 +172,8 @@ export async function reviewLocalCoordinationAuthorityPromotion(
     const registeredAgents = input.registered_agents === undefined || input.registered_agents === null
       ? []
       : normalizeRegisteredTodoAgents(input.registered_agents as string[]);
+    const expectedPlan = input.expected_promotion_plan_sha256 === undefined
+      ? null : promotionPlanDigest(input.expected_promotion_plan_sha256);
     const statePath = await realpath(String(input.source_snapshot.state_path));
     const shadow = dependencies.createShadowStore?.(
       shadowDirectory(input.runtime_root),
@@ -242,6 +245,14 @@ export async function reviewLocalCoordinationAuthorityPromotion(
             expected_target_projection_sha256: migration.target_projection_sha256,
           } : {}),
         });
+        if (expectedPlan !== null && expectedPlan !== promotionPlanSha256) return {
+          schema_version:schema, status:"not_ready", executed:false,
+          reason_code:"local_authority_reviewed_plan_changed",
+          reason:"The current promotion differs from the reviewed plan; preview and review the new plan.",
+          expected_promotion_plan_sha256:expectedPlan,
+          observed_promotion_plan_sha256:promotionPlanSha256,
+          legacy_writer_fenced:false, legacy_fallback_used:false,
+        };
         const fence = canonicalAuthorityObject({
           schema_version: LEGACY_COORDINATION_WRITER_FENCE_SCHEMA,
           state: "engaged",
@@ -325,6 +336,7 @@ export async function reviewLocalCoordinationAuthorityPromotion(
           };
         }
         const plan = {
+          reviewed_plan: reviewedPromotionPlan({schema_version:LOCAL_COORDINATION_PROMOTION_REQUEST_SCHEMA,...request}, promotionPlanSha256),
           operation_id: operationId,
           promotion_plan_sha256: promotionPlanSha256,
           canonical_authority: canonicalAuthority,
@@ -370,26 +382,21 @@ export async function reviewLocalCoordinationAuthorityPromotion(
           writerFenceVerified = true;
         }
         const identity = promotionIdentity(request);
-        const committed = await canonical.commitAuthority({
-          expected_provider_revision: null,
-          operation_id: operationId,
-          events: [{
-            ...identity,
-            schema_version: "loopx_local_coordination_promotion_event_v0",
-            mode_transition: `legacy_canonical_to_${canonicalAuthority}`,
-            handoff_mode_transition: `${migration.previous_mode}_to_${migration.target_mode}`,
-          }],
-          next_projection: migration.target_projection,
-          receipts: [identity],
-        });
-        const readback = await promotionReadback(canonical, request);
+        const attempted = await commitPromotionAndReadBack(canonical, {
+          operation_id:operationId, receipt:identity,
+          projection_sha256:promotionTargetProjectionSha256(request),
+        }, migration.target_projection, {...identity,
+          schema_version:"loopx_local_coordination_promotion_event_v0",
+          mode_transition:`legacy_canonical_to_${canonicalAuthority}`,
+          handoff_mode_transition:`${migration.previous_mode}_to_${migration.target_mode}`});
+        const {commit:committed,readback}=attempted;
         if (readback.matched) return {
           schema_version: schema,
           ...promotionResult(
             request,
-            committed.status === "applied"
+            committed?.status === "applied"
               ? recoveringFromFence ? "recovered" : "applied"
-              : committed.status === "ambiguous" ? "recovered" : "replayed",
+              : attempted.interrupted || committed?.status === "ambiguous" ? "recovered" : "replayed",
             readback,
             canonicalAuthority,
           ),
@@ -403,7 +410,7 @@ export async function reviewLocalCoordinationAuthorityPromotion(
           executed: true,
           reason_code: readback.reason_code ?? "local_authority_promotion_readback_mismatch",
           reason: "promotion did not produce an exact canonical readback",
-          reconciliation_required: committed.status === "ambiguous",
+          reconciliation_required: attempted.interrupted || committed?.status === "ambiguous",
           qualification: publicQualification,
           legacy_writer_fenced: true,
           legacy_fallback_used: false,
@@ -698,51 +705,18 @@ function promotionTargetProjectionSha256(request: LocalCoordinationPromotionRequ
   return request.expected_target_projection_sha256 ?? request.expected_shadow_projection_sha256;
 }
 
-function matchingReceipt(
-  result: AuthorityStoreReceiptResult,
-  expected: JsonObject,
-): Extract<AuthorityStoreReceiptResult, { status: "found" }> | null {
-  return result.status === "found" && result.receipts.length === 1 &&
-      canonicalAuthorityBytes(result.receipts[0]).equals(canonicalAuthorityBytes(expected))
-    ? result
-    : null;
-}
-
-async function promotionReadback(
-  store: AuthorityStore,
-  request: LocalCoordinationPromotionRequest,
-): Promise<{ matched: boolean; provider_revision?: string; cursor?: string; reason_code?: string }> {
-  const receiptResult = await store.readReceipt(request.operation_id);
-  const receipt = matchingReceipt(receiptResult, promotionIdentity(request));
-  if (receipt === null) {
-    return {
-      matched: false,
-      reason_code: receiptResult.status === "found"
-        ? "local_authority_promotion_identity_mismatch"
-        : "local_authority_promotion_receipt_missing",
-    };
-  }
-  const lineage = await store.scanCommitted(null, 1);
-  const promotion = lineage.status === "page" ? lineage.transactions[0] : undefined;
-  if (
-    promotion === undefined ||
-    promotion.cursor !== "1" ||
-    promotion.operation_id !== request.operation_id ||
-    canonicalAuthoritySha256(promotion.projection) !== promotionTargetProjectionSha256(request)
-  ) {
-    return { matched: false, reason_code: "local_authority_promotion_lineage_mismatch" };
-  }
-  return {
-    matched: true,
-    provider_revision: receipt.provider_revision,
-    cursor: receipt.cursor,
-  };
+/** One receipt/lineage readback owner for reviewed and already-fenced promotion. */
+function promotionReadback(store: AuthorityStore, request: LocalCoordinationPromotionRequest) {
+  return readPromotionReceipt(store, {
+    operation_id:request.operation_id, receipt:promotionIdentity(request),
+    projection_sha256:promotionTargetProjectionSha256(request),
+  });
 }
 
 function promotionResult(
   request: LocalCoordinationPromotionRequest,
   status: "applied" | "replayed" | "recovered",
-  readback: Awaited<ReturnType<typeof promotionReadback>>,
+  readback: Extract<Awaited<ReturnType<typeof promotionReadback>>, {matched:true}>,
   canonicalAuthority: string,
 ): JsonObject {
   return {
@@ -777,8 +751,14 @@ export async function promoteLocalCoordinationAuthority(
   dependencies: LocalAuthorityRuntimeDependencies = {},
 ): Promise<JsonObject> {
   let request: LocalCoordinationPromotionRequest;
+  let execute = true;
   try {
     request = decodePromotionRequest(value);
+    const raw=requireJsonObject(value,"promotion request");
+    if(raw.execute !== undefined) {
+      if(typeof raw.execute !== "boolean") throw new TypeError("execute must be a JSON boolean");
+      execute=raw.execute;
+    }
   } catch (error) {
     return {
       schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
@@ -816,153 +796,151 @@ export async function promoteLocalCoordinationAuthority(
   // Provider opening can fail before durable fence readback. Report only
   // evidence this invocation actually verified, including in the outer catch.
   let writerFenceVerified = false;
+  let commitAttempted = false;
   try {
-    const shadow = dependencies.createShadowStore?.(
-      shadowDirectory(request.runtime_root),
-      request.goal_id,
-    ) ?? new FileAuthorityStore(shadowDirectory(request.runtime_root), request.goal_id);
-    const canonical = dependencies.createCanonicalStore?.(
-      authorityDirectory(request.runtime_root),
-      request.goal_id,
-    ) ?? await openRuntimeStore(request.runtime_root, request.goal_id, dependencies);
-    const canonicalAuthority = sourceAuthorityFor(canonical);
-    if (request.canonical_authority !== canonicalAuthority) return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: "local_authority_promotion_provider_mismatch",
-      reason: "promotion request is not bound to the selected canonical authority provider",
-      expected_canonical_authority: request.canonical_authority,
-      observed_canonical_authority: canonicalAuthority,
-      legacy_writer_fenced: false,
-      legacy_fallback_used: false,
-    };
-    const promotionPlanSha256 = localCoordinationPromotionPlanSha256(request);
-    if (request.writer_fence.promotion_plan_sha256 !== promotionPlanSha256) return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: "local_authority_writer_fence_plan_mismatch",
-      reason: "writer fence is not bound to the complete reviewed promotion plan",
-      promotion_plan_sha256: promotionPlanSha256,
-      legacy_writer_fenced: false,
-      legacy_fallback_used: false,
-    };
-    const persistedFence = await loadLegacyCoordinationWriterFence(
-      request.runtime_root,
-      request.goal_id,
-    );
-    if (
-      persistedFence.status !== "loaded" ||
-      !canonicalAuthorityBytes(persistedFence.fence).equals(
-        canonicalAuthorityBytes(request.writer_fence),
-      )
-    ) return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: persistedFence.status === "failed"
-        ? persistedFence.reason_code
-        : "local_authority_writer_fence_not_verified",
-      reason: persistedFence.status === "failed"
-        ? persistedFence.reason
-        : "exact durable legacy writer fence must be engaged before promotion",
-      legacy_writer_fenced: false,
-      legacy_fallback_used: false,
-    };
-    writerFenceVerified = true;
-    const existing = await canonical.loadAuthority();
-    if (existing.status === "loaded") {
-      const readback = await promotionReadback(canonical, request);
-      return readback.matched
-        ? promotionResult(request, "replayed", readback, canonicalAuthority)
-        : {
-          schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-          status: "failed",
-          reason_code: readback.reason_code ?? "local_authority_already_initialized",
-          reason: "canonical local authority is already initialized by different content",
-          legacy_writer_fenced: true,
-          legacy_fallback_used: false,
-        };
-    }
-    if (existing.status !== "missing") return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      ...existing,
-      legacy_writer_fenced: true,
-      legacy_fallback_used: false,
-    };
-
-    const shadowHead = await shadow.loadAuthority();
-    if (shadowHead.status !== "loaded") return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: shadowHead.status === "missing"
-        ? "local_authority_shadow_missing"
-        : shadowHead.reason_code,
-      reason: shadowHead.status === "missing" ? "qualified shadow authority is missing" : shadowHead.reason,
-      legacy_writer_fenced: true,
-      legacy_fallback_used: false,
-    };
-    const observedDigest = canonicalAuthoritySha256(shadowHead.head);
-    if (
-      shadowHead.provider_revision !== request.expected_shadow_provider_revision ||
-      observedDigest !== request.expected_shadow_projection_sha256
-    ) return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: "local_authority_shadow_fence_mismatch",
-      reason: "shadow revision or projection changed before promotion",
-      observed_shadow_provider_revision: shadowHead.provider_revision,
-      observed_shadow_projection_sha256: observedDigest,
-      legacy_writer_fenced: true,
-      legacy_fallback_used: false,
-    };
-    indexCoordinationProjection(shadowHead.head, request.goal_id);
-    const qualification = await qualifyCoordinationRuntimeShadow({
-      schema_version: COORDINATION_RUNTIME_SHADOW_QUALIFY_REQUEST_SCHEMA,
-      runtime_root: request.runtime_root,
-      goal_id: request.goal_id,
-      projection: shadowHead.head,
-      minimum_operations: request.minimum_operations,
-      required_event_kinds: request.required_event_kinds,
-    }, {
-      createStore: () => shadow,
-    });
-    if (qualification.status !== "qualified" || qualification.qualified !== true) return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: "local_authority_shadow_not_qualified",
-      reason: "shadow parity evidence does not satisfy the promotion policy",
-      qualification_status: qualification.status,
-      legacy_writer_fenced: true,
-      legacy_fallback_used: false,
-    };
-
-    const migration = planPromotionHandoffMigration(
-      shadowHead.head,
-      request.goal_id,
-      request.handoff_mode_migration,
-      request.registered_agents ?? [],
-      new Date(),
-    );
-    if (!migration.ready) return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: migration.reason_code ?? "handoff_mode_migration_conflict",
-      reason: migration.reason ?? "handoff-mode migration is not ready",
-      handoff_mode_migration: publicPromotionHandoffMigrationPlan(migration),
-      legacy_writer_fenced: true,
-      legacy_fallback_used: false,
-    };
-    if (migration.target_projection_sha256 !== promotionTargetProjectionSha256(request)) return {
-      schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
-      reason_code: "local_authority_promotion_target_projection_mismatch",
-      reason: "handoff-mode migration target differs from the reviewed promotion plan",
-      observed_target_projection_sha256: migration.target_projection_sha256,
-      expected_target_projection_sha256: promotionTargetProjectionSha256(request),
-      legacy_writer_fenced: true,
-      legacy_fallback_used: false,
-    };
-
     return await withCanonicalWriter(request.runtime_root, request.goal_id, false, async () => {
+      const shadow = dependencies.createShadowStore?.(
+        shadowDirectory(request.runtime_root),
+        request.goal_id,
+      ) ?? new FileAuthorityStore(shadowDirectory(request.runtime_root), request.goal_id);
+      const canonical = dependencies.createCanonicalStore?.(
+        authorityDirectory(request.runtime_root),
+        request.goal_id,
+      ) ?? await openRuntimeStore(request.runtime_root, request.goal_id, dependencies);
+      const canonicalAuthority = sourceAuthorityFor(canonical);
+      if (request.canonical_authority !== canonicalAuthority) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: "local_authority_promotion_provider_mismatch",
+        reason: "promotion request is not bound to the selected canonical authority provider",
+        expected_canonical_authority: request.canonical_authority,
+        observed_canonical_authority: canonicalAuthority,
+        legacy_writer_fenced: false,
+        legacy_fallback_used: false,
+      };
+      const promotionPlanSha256 = localCoordinationPromotionPlanSha256(request);
+      if (request.writer_fence.promotion_plan_sha256 !== promotionPlanSha256) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: "local_authority_writer_fence_plan_mismatch",
+        reason: "writer fence is not bound to the complete reviewed promotion plan",
+        promotion_plan_sha256: promotionPlanSha256,
+        legacy_writer_fenced: false,
+        legacy_fallback_used: false,
+      };
+      const persistedFence = await loadLegacyCoordinationWriterFence(
+        request.runtime_root,
+        request.goal_id,
+      );
+      if (
+        persistedFence.status !== "loaded" ||
+        !canonicalAuthorityBytes(persistedFence.fence).equals(
+          canonicalAuthorityBytes(request.writer_fence),
+        )
+      ) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: persistedFence.status === "failed"
+          ? persistedFence.reason_code
+          : "local_authority_writer_fence_not_verified",
+        reason: persistedFence.status === "failed"
+          ? persistedFence.reason
+          : "exact durable legacy writer fence must be engaged before promotion",
+        legacy_writer_fenced: false,
+        legacy_fallback_used: false,
+      };
+      writerFenceVerified = true;
+      const existing = await canonical.loadAuthority();
+      if (existing.status === "loaded") {
+        const readback = await promotionReadback(canonical, request);
+        return readback.matched
+          ? promotionResult(request, "replayed", readback, canonicalAuthority)
+          : {
+            schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+            status: "failed",
+            reason_code: readback.reason_code ?? "local_authority_already_initialized",
+            reason: "canonical local authority is already initialized by different content",
+            legacy_writer_fenced: true,
+            legacy_fallback_used: false,
+          };
+      }
+      if (existing.status !== "missing") return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        ...existing,
+        legacy_writer_fenced: true,
+        legacy_fallback_used: false,
+      };
+
+      const shadowHead = await shadow.loadAuthority();
+      if (shadowHead.status !== "loaded") return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: shadowHead.status === "missing"
+          ? "local_authority_shadow_missing"
+          : shadowHead.reason_code,
+        reason: shadowHead.status === "missing" ? "qualified shadow authority is missing" : shadowHead.reason,
+        legacy_writer_fenced: true,
+        legacy_fallback_used: false,
+      };
+      const observedDigest = canonicalAuthoritySha256(shadowHead.head);
+      if (
+        shadowHead.provider_revision !== request.expected_shadow_provider_revision ||
+        observedDigest !== request.expected_shadow_projection_sha256
+      ) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: "local_authority_shadow_fence_mismatch",
+        reason: "shadow revision or projection changed before promotion",
+        observed_shadow_provider_revision: shadowHead.provider_revision,
+        observed_shadow_projection_sha256: observedDigest,
+        legacy_writer_fenced: true,
+        legacy_fallback_used: false,
+      };
+      indexCoordinationProjection(shadowHead.head, request.goal_id);
+
+      const qualification = await qualifyCoordinationShadowLineageUnderLocks({
+        runtime_root: request.runtime_root,
+        goal_id: request.goal_id,
+        projection: shadowHead.head,
+      }, {createStore: () => shadow}, request.minimum_operations, request.required_event_kinds);
+      if (qualification.status !== "qualified" || qualification.qualified !== true) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: "local_authority_shadow_not_qualified",
+        reason: "shadow parity evidence does not satisfy the promotion policy",
+        qualification_status: qualification.status,
+        legacy_writer_fenced: true,
+        legacy_fallback_used: false,
+      };
+      // A default reviewed promotion still requires the shadow's own
+      // hard_lease policy; an explicit migration request supplies the target.
+      const migration = planPromotionHandoffMigration(
+        shadowHead.head,
+        request.goal_id,
+        request.handoff_mode_migration,
+        request.registered_agents ?? [],
+        new Date(),
+      );
+      if (!migration.ready) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: migration.reason_code ?? "handoff_mode_migration_conflict",
+        reason: migration.reason ?? "handoff-mode migration is not ready",
+        handoff_mode_migration: publicPromotionHandoffMigrationPlan(migration),
+        legacy_writer_fenced: true,
+        legacy_fallback_used: false,
+      };
+      if (migration.target_projection_sha256 !== promotionTargetProjectionSha256(request)) return {
+        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status: "failed",
+        reason_code: "local_authority_promotion_target_projection_mismatch",
+        reason: "handoff-mode migration target differs from the reviewed promotion plan",
+        observed_target_projection_sha256: migration.target_projection_sha256,
+        expected_target_projection_sha256: promotionTargetProjectionSha256(request),
+        legacy_writer_fenced: true,
+        legacy_fallback_used: false,
+      };
+
       const finalShadowHead = await shadow.loadAuthority();
       if (
         finalShadowHead.status !== "loaded" ||
@@ -995,53 +973,39 @@ export async function promoteLocalCoordinationAuthority(
         legacy_fallback_used: false,
       };
 
+      if(!execute) return {
+        schema_version:LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        status:"recovery_ready", executed:false, operation_id:request.operation_id,
+        promotion_plan_sha256:promotionPlanSha256, canonical_authority:canonicalAuthority,
+        legacy_writer_fenced:true, legacy_fallback_used:false,
+      };
       const identity = promotionIdentity(request);
-      const committed = await canonical.commitAuthority({
-        expected_provider_revision: null,
-        operation_id: request.operation_id,
-        events: [{
-          ...identity,
-          schema_version: "loopx_local_coordination_promotion_event_v0",
-          mode_transition: `legacy_canonical_to_${canonicalAuthority}`,
-          handoff_mode_transition: `${finalMigration.previous_mode}_to_${finalMigration.target_mode}`,
-        }],
-        next_projection: finalMigration.target_projection,
-        receipts: [identity],
-      });
-      if (committed.status === "applied") {
-        const readback = await promotionReadback(canonical, request);
-        return readback.matched
-          ? promotionResult(request, "applied", readback, canonicalAuthority)
-          : {
-            schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-            status: "failed",
-            reason_code: readback.reason_code ?? "local_authority_promotion_readback_mismatch",
-            reason: "promotion commit lacks an exact durable readback",
-            legacy_writer_fenced: true,
-            legacy_fallback_used: false,
-          };
-      }
-      const readback = await promotionReadback(canonical, request);
-      if (readback.matched) {
-        return promotionResult(
-          request,
-          committed.status === "ambiguous" ? "recovered" : "replayed",
-          readback,
-          canonicalAuthority,
-        );
-      }
+      commitAttempted = true;
+      const attempted=await commitPromotionAndReadBack(canonical, {
+        operation_id:request.operation_id,receipt:identity,
+        projection_sha256:promotionTargetProjectionSha256(request),
+      }, finalMigration.target_projection, {...identity,
+        schema_version:"loopx_local_coordination_promotion_event_v0",
+        mode_transition:`legacy_canonical_to_${canonicalAuthority}`,
+        handoff_mode_transition:`${finalMigration.previous_mode}_to_${finalMigration.target_mode}`});
+      const {commit:committed,readback}=attempted;
+      if(readback.matched) return promotionResult(request,
+        committed?.status === "applied" ? "applied"
+          : attempted.interrupted || committed?.status === "ambiguous" ? "recovered" : "replayed",
+        readback,canonicalAuthority);
       return {
-        schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-        ...committed,
-        ...(committed.status === "ambiguous" ? { reconciliation_required: true } : {}),
-        legacy_writer_fenced: true,
-        legacy_fallback_used: false,
+        schema_version:LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
+        ...(committed ?? {}), status:"failed", executed:true,
+        reason_code:readback.reason_code,
+        reason:"promotion did not produce an exact durable readback",
+        reconciliation_required:attempted.interrupted || committed?.status === "ambiguous",
+        legacy_writer_fenced:true, legacy_fallback_used:false,
       };
     });
   } catch (error) {
     return {
       schema_version: LOCAL_COORDINATION_PROMOTION_RESULT_SCHEMA,
-      status: "failed",
+      status: "failed", executed:commitAttempted,
       reason_code: error instanceof ShadowManagementError ? error.reason_code : "local_authority_promotion_unavailable",
       reason: error instanceof Error ? error.message : "promotion unavailable",
       legacy_writer_fenced: writerFenceVerified,
@@ -1545,5 +1509,37 @@ export async function observeLocalCoordinationOwnership(value: unknown): Promise
     return {schema_version: "loopx_ownership_observation_result_v0", status: "failed",
       reason_code: "coordination_observation_unavailable", source_authority: sourceAuthority,
       decision_read_from_provider: true, legacy_fallback_used: false, ...localAuthorityOpenFailure(error)};
+  }
+}
+
+/** Saved review data cannot grant a fence or authorize another Goal. */
+export async function executeReviewedCoordinationPromotion(
+  value: unknown, dependencies: LocalAuthorityRuntimeDependencies = {},
+): Promise<JsonObject> {
+  try {
+    const input=decodeReviewedPromotionOperation(value);
+    const request=decodePromotionRequest(input.request);
+    const digest=localCoordinationPromotionPlanSha256(request);
+    if(digest !== input.expected_plan_sha256 || request.writer_fence.promotion_plan_sha256 !== digest) {
+      throw new TypeError("reviewed promotion request does not match its plan digest");
+    }
+    const result=input.action === "recover"
+      ? await promoteLocalCoordinationAuthority({...input.request,execute:input.execute},dependencies)
+      : await reviewLocalCoordinationAuthorityPromotion({
+        schema_version:LOCAL_COORDINATION_PROMOTION_REVIEW_REQUEST_SCHEMA,
+        runtime_root:input.runtime_root,goal_id:input.goal_id,
+        operation_id:request.operation_id,minimum_operations:request.minimum_operations,
+        required_event_kinds:request.required_event_kinds,execute:input.execute,
+        expected_promotion_plan_sha256:input.expected_plan_sha256,
+        projection:input.projection,source_snapshot:input.source_snapshot,
+      },dependencies);
+    return {...result, reviewed_plan_sha256:input.expected_plan_sha256,
+      reviewed_action:input.action, executed:result.executed === true || (input.execute &&
+        ["applied","recovered"].includes(String(result.status)))};
+  } catch(error) {
+    return {schema_version:REVIEWED_PROMOTION_OPERATION_RESULT_SCHEMA,
+      status:"failed",executed:false,reason_code:"invalid_reviewed_promotion_plan",
+      reason:error instanceof Error ? error.message : "reviewed promotion is unavailable",
+      legacy_writer_fenced:false,legacy_fallback_used:false};
   }
 }

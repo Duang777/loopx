@@ -283,6 +283,10 @@ COMMAND_GROUPS: list[dict[str, object]] = [
                 "command": "loopx connector",
                 "purpose": "List, register, rank, and record usage for public connector providers.",
             },
+            {
+                "command": "loopx external-evidence",
+                "purpose": "Plan, admit, and retire provenance-bound external evidence.",
+            },
             {"command": "loopx issue-fix", "purpose": "Build public-safe issue or PR fix workflow packets."},
             {
                 "command": "loopx review-batch",

@@ -485,8 +485,13 @@ def render_quota_should_run_markdown(payload: dict[str, Any]) -> str:
                     f"resume_when={vision_wait_state.get('resume_when')} "
                     f"automatic_resume={vision_wait_state.get('automatic_resume')}"
                 )
-    task_orchestration = as_dict(payload.get("task_orchestration_contract"))
-    if task_orchestration:
+    orchestration = as_dict(payload.get("task_orchestration_contract"))
+    for label, task_orchestration in (
+        ("task_orchestration", orchestration),
+        ("peer_activation_diagnostic", as_dict(orchestration.get("peer_activation_diagnostic"))),
+    ):
+        if not task_orchestration:
+            continue
         lanes = as_list(task_orchestration.get("eligible_child_lanes"))
         if not lanes:
             lanes = as_list(task_orchestration.get("eligible_peer_lanes"))
@@ -494,13 +499,26 @@ def render_quota_should_run_markdown(payload: dict[str, Any]) -> str:
         if not blocked_lanes:
             blocked_lanes = as_list(task_orchestration.get("blocked_peer_lanes"))
         lines.append(
-            "- task_orchestration: "
+            f"- {label}: "
             f"mode={task_orchestration.get('mode')} "
             f"activation_required={task_orchestration.get('activation_required')} "
-            f"lanes={len(lanes)} "
-            f"blocked_lanes={len(blocked_lanes)} "
+            f"lanes={task_orchestration.get('eligible_peer_count', len(lanes))} "
+            f"blocked_lanes={task_orchestration.get('blocked_peer_count', len(blocked_lanes))} "
             f"writeback_owner={task_orchestration.get('writeback_owner')}"
         )
+        fields = " ".join(
+            f"{key}={markdown_scalar(task_orchestration[key])}"
+            for key in ("execution_scope", "execution_state", "task_selection", "activation_allowed")
+            if key in task_orchestration
+        )
+        if fields:
+            lines.append(f"- {label}_admission: {fields}")
+        reasons = sorted({str(reason) for row in blocked_lanes if isinstance(row, dict)
+                          for reason in as_list(row.get("reason_codes"))})
+        if reasons:
+            lines.append(f"- {label}_blockers: {', '.join(reasons)}")
+        if task_orchestration.get("read_required") is True:
+            lines.append(f"- {label}_required_detail: {task_orchestration.get('detail_ref')}")
     replan_decision = as_dict(payload.get("autonomous_replan_decision"))
     if replan_decision:
         lines.append(

@@ -85,7 +85,24 @@ def main() -> int:
     parser.add_argument("--model")
     parser.add_argument("--reasoning-effort", default="high")
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
+    parser.add_argument(
+        "--real-codex-cli",
+        action="store_true",
+        help="Run the live Codex CLI check instead of recording a default skip.",
+    )
     args = parser.parse_args()
+    if not args.real_codex_cli:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "real Codex CLI execution requires --real-codex-cli",
+                },
+                indent=2,
+            )
+        )
+        return 0
     codex_bin = shutil.which(args.codex_bin)
     if codex_bin is None:
         parser.error(f"Codex CLI is unavailable: {args.codex_bin}")

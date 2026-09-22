@@ -131,6 +131,13 @@ function providerCalls(directory: string, revision: string, dryRun: boolean) {
       {...witnessed, schema_version: runtime.LOCAL_COORDINATION_TODO_TERMINAL_LIFECYCLE_WITNESSED_REQUEST_SCHEMA}],
     archiveLocalCoordinationTodos: [{...input, schema_version: runtime.LOCAL_COORDINATION_TODO_ARCHIVE_REQUEST_SCHEMA, max_active_done: 0}],
     acknowledgeLocalCoordinationTodoArchive: [{...input, schema_version: runtime.LOCAL_COORDINATION_TODO_ARCHIVE_ACK_REQUEST_SCHEMA}],
+    executeReviewedCoordinationPromotion: [{
+      schema_version:"loopx_reviewed_coordination_promotion_operation_v0",action:"recover",
+      runtime_root:directory,goal_id:"goal-a",execute:!dryRun,
+      reviewed_plan:{schema_version:"loopx_reviewed_coordination_promotion_v0",
+        promotion_plan_sha256:runtime.localCoordinationPromotionPlanSha256(promotionRequest(directory,{},"file:synthetic:1")),
+        request:promotionRequest(directory,{},"file:synthetic:1")},
+    }],
     promoteLocalCoordinationAuthority: [promotionRequest(directory, {}, "file:synthetic:1")],
     reviewLocalCoordinationAuthorityPromotion: [{
       schema_version: runtime.LOCAL_COORDINATION_PROMOTION_REVIEW_REQUEST_SCHEMA,
@@ -348,7 +355,7 @@ for (const provider of ["file", "sqlite"] as const) {
       const directory = await root(t);
       if (provider === "sqlite") await selectLocalSqliteAuthority(directory, "goal-a", true);
       const canonical = await openLocalAuthorityStore(directory, "goal-a");
-      const shadow = await qualifiedShadow(directory);
+      const shadow = await qualifiedShadow(directory, "hard_lease");
       const shadowStore = new FileAuthorityStore(join(directory, "authority-shadow", "file-v0"), "goal-a");
       const canonicalAuthority = provider === "sqlite" ? "sqlite_v0" : "file_v0";
       const request = promotionRequest(
@@ -369,6 +376,11 @@ for (const provider of ["file", "sqlite"] as const) {
           committed.provider_revision,
           canonicalAuthority,
         ));
+      }
+      if (phase === "qualification") {
+        // An otherwise valid fenced source has only one verified mutation.
+        request.minimum_operations = 2;
+        request.writer_fence.promotion_plan_sha256 = runtime.localCoordinationPromotionPlanSha256(request);
       }
       if (phase !== "fence_missing") await engageFence(request);
       const fencePath = legacyCoordinationWriterFencePath(directory, "goal-a");

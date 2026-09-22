@@ -40,7 +40,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
                     {
                         "id": "independent-review",
                         "agent_id": "worker",
-                        "todo_id": "todo-review",
+                        "todo_id": "todo_review0002",
                         "requesters": ["coordinator"],
                         "workspace": str(tmp_path / "worker"),
                         "host_args": ["--host", "generic-cli"],
@@ -54,7 +54,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return project, registry, tmp_path / "runtime"
 
 
-def test_projects_authorized_route_without_private_binding_material(
+def test_runtime_availability_does_not_admit_uninspected_delegation(
     tmp_path: Path, monkeypatch
 ) -> None:
     project, registry, runtime = _fixture(tmp_path)
@@ -87,16 +87,19 @@ def test_projects_authorized_route_without_private_binding_material(
         execution_config=".loopx/config/delegations.json",
     )
     assert packet["configuration_state"] == "ready"
+    assert packet["preflight"] == "required"
+    assert packet["execution_scope"] == "bound_delegation"
     assert packet["authorized_count"] == packet["projected_count"] == 1
     assert "operation_receipts" not in packet
     assert packet["routes"] == [
         {
             "binding_id": "independent-review",
             "agent_id": "worker",
-            "todo_id": "todo-review",
+            "todo_id": "todo_review0002",
             "runtime_id": "managed-runtime",
             "executor_kind": "managed",
-            "readiness": "ready",
+            "runtime_readiness": "ready",
+            "readiness": "unknown",
             "execution_profile": "model-a@high",
         }
     ]
@@ -157,6 +160,9 @@ def test_repeated_live_quota_planning_never_reads_operation_inventory(
         "execution_config": ".loopx/config/delegations.json",
     }
     payload["goals"][0]["spawn_policy"] = policy
+    coordination = {"registered_agents": ["coordinator", "worker"],
+                    "peer_task_coordination": {"coordinator_agent_id": "coordinator"}}
+    payload["goals"][0]["coordination"] = coordination
     registry.write_text(json.dumps(payload))
     from loopx.collaboration_mcp import Delegations
 
@@ -171,7 +177,7 @@ def test_repeated_live_quota_planning_never_reads_operation_inventory(
         goal_id="goal-a",
         status="active",
         recommended_action="Inspect delegated evidence",
-        coordination={"registered_agents": ["coordinator", "worker"]},
+        coordination=coordination,
         agent_todo_items=[
             {
                 "todo_id": "todo_review0001",
@@ -181,7 +187,11 @@ def test_repeated_live_quota_planning_never_reads_operation_inventory(
                 "priority": "P1",
                 "role": "agent",
                 "task_class": "advancement_task",
-            }
+            },
+            {"todo_id": "todo_old_peer", "status": "open", "priority": "P0",
+             "role": "agent", "task_class": "advancement_task", "claimed_by": "worker", "text": "Older still-open task"},
+            {"todo_id": "todo_review0002", "status": "open", "priority": "P0",
+             "role": "agent", "task_class": "advancement_task", "claimed_by": "worker", "text": "Bound review task"},
         ],
         goal_extra={"repo": str(project), "spawn_policy": policy},
     )
@@ -207,6 +217,23 @@ def test_repeated_live_quota_planning_never_reads_operation_inventory(
         ]["facts"]
         assert facts["delegation_context"]["projected_count"] == 1
         assert "operation_receipts" not in facts["delegation_context"]
+        route = facts["delegation_context"]["routes"][0]
+        assert route["todo_id"] == "todo_review0002"
+        assert route["readiness"] == "unknown"
+        assert facts["delegation_context"]["preflight"] == "required"
+        peer = packet["task_orchestration_contract"]
+        assert peer["execution_scope"] == "peer_agent_activation"
+        assert peer["execution_state"] == "blocked"
+        assert {row["todo_id"] for row in peer["blocked_peer_lanes"]} == {"todo_old_peer", "todo_review0002"}
+        assert packet["should_run"] is True
+        from loopx.control_plane.quota.turn_envelope import build_turn_envelope
+        from loopx.control_plane.turn_driver.driver import build_loopx_turn_plan
+
+        envelope = build_turn_envelope(packet)
+        planned = build_loopx_turn_plan(envelope, host="codex-cli", execution_mode="interactive-visible")
+        # The parent Turn owns its selected Todo; peer candidates and the bound
+        # delegation target must not silently replace the coordinator's identity.
+        assert planned["route"]["selected_todo"]["todo_id"] == "todo_review0001"
 
 
 def test_missing_config_is_blocked_observation_not_empty_success(tmp_path: Path) -> None:

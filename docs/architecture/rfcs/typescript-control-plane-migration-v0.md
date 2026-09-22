@@ -1830,3 +1830,17 @@ recovery and pinned-intent preservation use the existing journal-backed path;
 no new RPC method, durable ACK or provider default. The stronger confirmation
 costs one additional read on a stable delivery. Full L5/D1 qualification, D2 and
 cutover remain open; see the [projection contract](../../reference/protocols/active-state-structured-projection-v0.md).
+
+### Reviewed coordination cutover ownership
+
+Saved-plan execution and fenced recovery now share the TypeScript promotion
+owner. Fresh-source qualification wraps durable lineage qualification; recovery
+uses that same lineage rule after exact fence verification. The Python CLI loads
+a reviewed JSON carrier and transports fresh observations, without recreating
+plan hashes, recovery decisions or receipt proof. Both commit paths share one
+receipt/first-transaction readback contract.
+
+This is a migration orchestration checkpoint, not completion of Stage 3 or a
+default-provider flip. Integrate claim-preserving migration separately, retain
+real-backend and captured-source qualification, and retire Python only where its
+actual callers have moved. [Operator contract](../../reference/reviewed-coordination-promotion.md).

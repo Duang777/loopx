@@ -417,6 +417,7 @@ def read_local_authority_shadow(
     scan_after_cursor: str | None = None,
     scan_limit: int = 0,
     receipt_operation_id: str | None = None,
+    read_model: str = "full",
 ) -> dict[str, Any]:
     """Read-only candidate view through the TypeScript store boundary."""
 
@@ -430,6 +431,7 @@ def read_local_authority_shadow(
             "scan_after_cursor": scan_after_cursor,
             "scan_limit": scan_limit,
             "receipt_operation_id": receipt_operation_id,
+            "read_model": read_model,
         },
         timeout=15.0,
     )
@@ -520,6 +522,7 @@ class _PartitionDrainer:
             runtime_root=self._runtime_root,
             goal_id=self._goal_id,
             scan_limit=10_000,
+            read_model="proof",
         )
         proof = view.get("proof")
         if view.get("status") != "loaded" or not isinstance(proof, dict):
@@ -724,7 +727,7 @@ class _PartitionDrainer:
     def _cursor_digest(self, transaction: dict[str, Any]) -> str | None:
         # The native history validator owns this applied-mutation marker.
         # Settled no-ops advance position but never synthesize a baseline digest.
-        marker = transaction["projection"]["partitions"][self._partition]
+        marker = transaction["projection_partitions"][self._partition]
         return None if marker is None else marker["partition_digest"]
 
     def _resolve(

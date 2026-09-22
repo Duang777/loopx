@@ -1,5 +1,6 @@
 import {registerPeriodicReportConformance} from "./periodic_report_conformance.ts";
 import {registerIssueFixMonitorReconciliationConformance} from "./issue_fix_monitor_reconciliation_conformance.ts";
+import {registerPromotionRecoveryConformance} from "./promotion_recovery_conformance.ts";
 import {registerTodoConsumerScopeConformance} from "./todo_consumer_scope_conformance.ts";
 import {registerProjectionConfirmationConformance} from "./projection_confirmation_conformance.ts";
 import {registerUserCompletionFollowthroughConformance} from "./user_completion_followthrough_conformance.ts";
@@ -266,6 +267,7 @@ export function registerAuthorityStoreConformance(
   registerCoordinationReceiptConformance(providerName, factory);
   registerAuthoritySourceConformance(providerName, factory);
   registerHandoffModeConformance(providerName, factory);
+  registerPromotionRecoveryConformance(providerName, factory);
   for (const native of [false, true]) test(`${providerName} conformance: standing revocation survives canonical ordering and archive (${native ? "native" : "legacy"})`, async (t) => {
     const {store} = await factory(t);
     const goal = "goal-standing";

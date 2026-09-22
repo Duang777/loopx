@@ -410,6 +410,7 @@ const ENTRY_FIELDS = new Set([
   "resolution",
 ]);
 const READ_REQUEST_FIELDS = new Set([
+  "read_model",
   "receipt_operation_id",
   "schema_version",
   "runtime_root",
@@ -489,6 +490,7 @@ export interface LocalAuthorityShadowCommitEntryResult extends JsonObject {
 }
 
 interface ReadRequest {
+  read_model: "full" | "proof";
   receipt_operation_id: string | null;
   runtime_root: string;
   goal_id: string;
@@ -651,6 +653,9 @@ function decodeReadRequest(value: unknown): ReadRequest {
     throw new EffectRuntimeRequestError(`scan_limit must be between 0 and ${MAX_SCAN_LIMIT}`);
   }
   return {
+    read_model: request.read_model === undefined || request.read_model === "full" ? "full"
+      : request.read_model === "proof" ? "proof"
+      : (() => {throw new EffectRuntimeRequestError("read_model must be full or proof");})(),
     receipt_operation_id: optionalString(request.receipt_operation_id, "receipt_operation_id"),
     runtime_root: requireNonEmptyString(request.runtime_root, "runtime_root"),
     goal_id: requireGoalId(request.goal_id),
@@ -1405,12 +1410,13 @@ function loadedReadResult(
   base: JsonObject,
   storeIdentity: string,
   loaded: Extract<AuthorityStoreLoadResult, { status: "loaded" | "missing" }>,
+  includeHead: boolean,
 ): JsonObject {
   const result: JsonObject = { ...base, status: loaded.status, store_identity: storeIdentity };
   if (loaded.status === "loaded") {
     result.provider_revision = loaded.provider_revision;
     result.cursor = loaded.cursor;
-    result.head = structuredClone(loaded.head);
+    result.head = includeHead ? structuredClone(loaded.head) : null;
     result.head_digest = localAuthorityShadowHeadDigest(loaded.head);
     result.partitions = partitionsOf(loaded.head);
   }
@@ -1485,7 +1491,7 @@ export async function readLocalAuthorityShadow(
         store_identity: identity.store_identity,
       };
     }
-    const result = loadedReadResult(base, identity.store_identity, loaded);
+    const result = loadedReadResult(base, identity.store_identity, loaded, request.read_model === "full");
     if (request.store_kind === "runtime_shadow" && loaded.status === "loaded" && loaded.head.capture_profile !== "file_outbox_v1") {
       result.eligible = false;
       result.reason_code = "legacy_lineage_ineligible";
@@ -1499,13 +1505,16 @@ export async function readLocalAuthorityShadow(
         bootstrap_provider_revision: binding.bootstrap_provider_revision,
         last_sequences: lineage.last_sequences,
         last_applied_sequences: lineage.last_applied_sequences,
-        transactions: structuredClone(lineage.transactions.filter((transaction) =>
+        transactions: lineage.transactions.filter((transaction) =>
           request.scan_after_cursor === null || Number(transaction.cursor) > Number(request.scan_after_cursor)
-        ).slice(0, request.scan_limit)) as unknown as JsonObject[],
-        receipt: receipt === null ? null : structuredClone(receipt) as unknown as JsonObject,
+        ).slice(0, request.scan_limit).map(transaction => request.read_model === "proof"
+          ? scanTransactionView(transaction) : structuredClone(transaction) as unknown as JsonObject),
+        receipt: receipt === null ? null : request.read_model === "proof"
+          ? scanTransactionView(receipt) : structuredClone(receipt) as unknown as JsonObject,
       };
     }
-    return request.scan_limit > 0 ? await appendScanPage(store, request, result) : result;
+    return request.read_model === "full" && request.scan_limit > 0
+      ? await appendScanPage(store, request, result) : result;
   } catch (error) {
     const raw = error as { reason_code?: string; code?: string };
     return { ...base, status: "failed", reason_code: raw.reason_code ?? raw.code ?? "provider_call_failed" };

@@ -619,6 +619,14 @@ path, and canary route rather than as a user-facing release baseline.
   governance (#4433, #4453), and the Codex App autonomous goal guide (#4442).
   The published wheel, source distribution, checksum, and PyPI artifacts were
   verified against the exact release source before `stable` fast-forwarded.
+- `v1.1.0` on 2026-09-20 01:04 +08:00: organization migration and governed
+  collaboration release at the matching `v1.1.0` tag (`607c11d75`). LoopX
+  moved its repository, Pages, installer, and update surfaces to
+  `loopx-project`; team plans gained an explicit confirmation-to-canonical-work
+  path, local delegation gained durable operation recovery and checked returns,
+  and Goal acceptance plus replan obligations retained their existing authority
+  owners. The published package, desktop artifacts, signed update feed, and
+  website were verified before `stable` fast-forwarded.
 
 When a new public release is promoted, add it here only after the matching tag,
 release note, stable ref, update path, and focused release canary agree.

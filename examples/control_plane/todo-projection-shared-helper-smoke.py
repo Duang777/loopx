@@ -162,7 +162,7 @@ def assert_shared_ordering_parity(summary: dict) -> None:
         "text": "Keep this text with embedded P0 wording but no bracket prefix.",
     }
     assert todo_projection_sort_key(embedded_priority) == (50, 9), embedded_priority
-    assert quota_todo_projection_sort_key(embedded_priority) == (0, 9), embedded_priority
+    assert quota_todo_projection_sort_key(embedded_priority) == (50, 9), embedded_priority
 
 
 def assert_claimed_visibility_parity() -> None:

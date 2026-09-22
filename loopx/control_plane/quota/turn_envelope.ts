@@ -9,7 +9,7 @@ import { EffectRuntimeRequestError } from "../effect_runtime_errors.ts";
 import { turnStartPromptBudgetBytes } from "../capability_hooks.ts";
 import { requireJsonObject } from "../runtime_decode.ts";
 import { projectPendingCapabilityIntent } from "../work_items/pending_capability_intent.ts";
-import { measureTurnEnvelope, turnEnvelopeBudgetBytes } from "./turn_envelope_budget.ts";
+import { measureTurnEnvelope, turnEnvelopeBudgetBytes, TURN_ENVELOPE_SECTION_TARGETS } from "./turn_envelope_budget.ts";
 export { TURN_ENVELOPE_BUDGET_BYTES } from "./turn_envelope_budget.ts";
 
 export const TURN_ENVELOPE_SCHEMA_VERSION = "loopx_turn_envelope_v0";
@@ -689,8 +689,33 @@ function actionProjection(payload: JsonObject, protocolActionFields: JsonObject)
   return projection;
 }
 
+function compactPeerActivation(contract: JsonObject, detailRef: string): JsonObject {
+  if (contract.mode !== "task_scoped_peer"
+    || Buffer.byteLength(JSON.stringify(contract), "utf8") <= TURN_ENVELOPE_SECTION_TARGETS.context) return contract;
+  const summary: JsonObject = {};
+  for (const field of ["schema_version", "mode", "coordinator_agent_id", "assignment_key",
+    "execution_scope", "task_selection", "execution_state", "activation_required",
+    "activation_allowed", "required_capability", "retry_policy", "terminal_outcome", "writeback_owner"]) {
+    if (field in contract) summary[field] = contract[field];
+  }
+  return { ...summary, delivery: "projected", read_required: true,
+    eligible_peer_count: Array.isArray(contract.eligible_peer_lanes) ? contract.eligible_peer_lanes.length : 0,
+    blocked_peer_count: Array.isArray(contract.blocked_peer_lanes) ? contract.blocked_peer_lanes.length : 0,
+    content_hash: canonicalHash(contract), detail_ref: detailRef,
+    instruction: "Read the envelope full_decision detail command before selecting or activating a peer task; counts are not executable lanes.",
+  };
+}
+
 function turnActionProjection(payload: JsonObject, protocolActionFields: JsonObject): JsonObject {
   const projection = actionProjection(payload, protocolActionFields);
+  const orchestration = object(projection.task_orchestration_contract);
+  if (Object.keys(orchestration).length > 0) {
+    const peer = object(orchestration.peer_activation_diagnostic);
+    projection.task_orchestration_contract = orchestration.mode === "adaptive" && Object.keys(peer).length > 0
+      ? { ...orchestration, peer_activation_diagnostic: compactPeerActivation(peer,
+        "full_decision.task_orchestration_contract.peer_activation_diagnostic") }
+      : compactPeerActivation(orchestration, "full_decision.task_orchestration_contract");
+  }
   const action = object(projection.action);
   const horizon = object(action.planning_horizon);
   if (Object.keys(object(horizon.detail_refs)).length > 0) {
