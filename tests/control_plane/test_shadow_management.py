@@ -63,10 +63,20 @@ process.stdout.write(JSON.stringify(result));
     assert binding is not None
     assert binding["capture_lineage_id"] == applied["capture_lineage_id"]
     assert require_shadow_primary_write_allowed(root, "goal-a") == binding
+    state_path = shadow_management_state_path(root, "goal-a")
+    state = json.loads(state_path.read_text())
+    lexical_digest = "sha256:" + hashlib.sha256(str(alias).encode()).hexdigest()
+    assert lexical_digest != binding["source_root_digest"]
+    state["source_root_digest"] = lexical_digest
+    state_path.write_text(json.dumps(state))
+    with pytest.raises(ShadowManagementError, match="shadow_management_state_invalid"):
+        require_shadow_primary_write_allowed(alias, "goal-a")
+    state["source_root_digest"] = binding["source_root_digest"]
+    state_path.write_text(json.dumps(state))
     other = tmp_path / "other-root"
     destination = shadow_management_state_path(other, "goal-a")
     destination.parent.mkdir(parents=True)
-    destination.write_bytes(shadow_management_state_path(root, "goal-a").read_bytes())
+    destination.write_bytes(state_path.read_bytes())
     with pytest.raises(ShadowManagementError, match="shadow_management_state_invalid"):
         require_shadow_primary_write_allowed(other, "goal-a")
 
