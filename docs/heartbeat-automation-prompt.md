@@ -298,7 +298,9 @@ whose capabilities are known when the automation is installed.
   ordinary work selection. The host must repair the prior closeout, rerun the
   same current Turn, and then continue an eligible successor. Recovery is
   idempotent and no-spend; receipts created before this explicit flag are not
-  retroactively treated as unsettled;
+  retroactively treated as unsettled. Exact-ID lifecycle reads include retained
+  `Completed Work Archive` rows, while ordinary Todo lists remain active-only;
+  an archived terminal fact closes recovery without rewriting archive history;
 - use `user_gate` only for an exact authority boundary such as approval to merge
   an aggregate branch into `main`, release, launch a benchmark, or perform a
   protected action;
