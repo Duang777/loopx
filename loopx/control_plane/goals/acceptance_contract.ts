@@ -165,16 +165,15 @@ export function goalAcceptanceTodoDigest(todo: JsonObject): string {
 function acceptanceBindingMatches(todo: JsonObject, boundDigest: string): boolean {
   if (goalAcceptanceTodoDigest(todo) === boundDigest) return true;
 
-  const successors = todo.successor_todo_ids;
-  const successorVariants: JsonObject[] = [todo];
-  if (Array.isArray(successors) && successors.length <= 32 &&
-      successors.every(value => typeof value === "string")) {
-    for (let count = successors.length - 1; count >= 0; count--) {
-      successorVariants.push({...todo, successor_todo_ids: successors.slice(0, count)});
-    }
-    const withoutSuccessors = {...todo};
-    delete withoutSuccessors.successor_todo_ids;
-    successorVariants.push(withoutSuccessors);
+  // Adding a wait condition changes when existing work can resume, not which
+  // owner-confirmed Goal criterion it serves. Only the absent -> present case
+  // is reconstructible from the current Todo; changing an existing condition
+  // remains stale because its previous value cannot be proven here.
+  const scheduleVariants: JsonObject[] = [todo];
+  if (Object.hasOwn(todo, "resume_when")) {
+    const withoutResume = {...todo};
+    delete withoutResume.resume_when;
+    scheduleVariants.push(withoutResume);
   }
 
   const revision = todo.completion_validation_revision;
@@ -195,16 +194,29 @@ function acceptanceBindingMatches(todo: JsonObject, boundDigest: string): boolea
     revisionPrefixes = Array.from({length: Number(revision)}, (_, index) => index);
   }
 
-  for (const successorVariant of successorVariants) {
-    if (successorVariant !== todo && goalAcceptanceTodoDigest(successorVariant) === boundDigest) return true;
-    for (const priorRevision of revisionPrefixes) {
-      const previous: JsonObject = {...successorVariant, completion_validation_revision: priorRevision,
-        completion_validation_revision_history: (history as JsonObject[]).slice(0, priorRevision)};
-      if (goalAcceptanceTodoDigest(previous) === boundDigest) return true;
-      if (priorRevision === 0) {
-        delete previous.completion_validation_revision;
-        delete previous.completion_validation_revision_history;
+  for (const scheduleVariant of scheduleVariants) {
+    const successors = scheduleVariant.successor_todo_ids;
+    const successorVariants: JsonObject[] = [scheduleVariant];
+    if (Array.isArray(successors) && successors.length <= 32 &&
+        successors.every(value => typeof value === "string")) {
+      for (let count = successors.length - 1; count >= 0; count--) {
+        successorVariants.push({...scheduleVariant, successor_todo_ids: successors.slice(0, count)});
+      }
+      const withoutSuccessors = {...scheduleVariant};
+      delete withoutSuccessors.successor_todo_ids;
+      successorVariants.push(withoutSuccessors);
+    }
+    for (const successorVariant of successorVariants) {
+      if (successorVariant !== todo && goalAcceptanceTodoDigest(successorVariant) === boundDigest) return true;
+      for (const priorRevision of revisionPrefixes) {
+        const previous: JsonObject = {...successorVariant, completion_validation_revision: priorRevision,
+          completion_validation_revision_history: (history as JsonObject[]).slice(0, priorRevision)};
         if (goalAcceptanceTodoDigest(previous) === boundDigest) return true;
+        if (priorRevision === 0) {
+          delete previous.completion_validation_revision;
+          delete previous.completion_validation_revision_history;
+          if (goalAcceptanceTodoDigest(previous) === boundDigest) return true;
+        }
       }
     }
   }

@@ -66,6 +66,19 @@ test("explicit outcome restriction remains authoritative; trigger prose is not",
     observation_delta: {delta_kinds: ["new_surface"]}}).accepted, true);
 });
 
+test("stale Goal Acceptance cannot be discharged by unrelated progress or a vision patch", () => {
+  const stale = {triggers: [{kind: "goal_acceptance_stale", vision_todo_ids: ["todo_stale"]}],
+    satisfying_semantic_outcomes: ["new_runnable_successor", "new_concrete_blocker"]};
+  assert.deepEqual(requiredSemanticOutcomes(stale), ["new_runnable_successor", "new_concrete_blocker"]);
+  assert.equal(projectReplanSemantics({operation: "qualify", obligation: stale,
+    observation_delta: {delta_kinds: ["new_surface"]}}).accepted, false);
+  assert.equal(projectReplanSemantics({operation: "qualify", obligation: stale, agent_vision: vision}).accepted, false);
+  for (const outcome of ["new_runnable_successor", "new_concrete_blocker"]) {
+    assert.equal(projectReplanSemantics({operation: "qualify", obligation: stale,
+      observation_delta: {delta_kinds: [outcome]}}).accepted, true);
+  }
+});
+
 test("no-followup cannot hide an inconsistent vision behind another accepted outcome", () => {
   const request = {operation: "qualify", obligation,
     observation_delta: {delta_kinds: ["coverage_backed_no_followup", "new_concrete_blocker"]}};

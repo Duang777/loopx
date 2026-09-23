@@ -332,15 +332,44 @@ def test_bound_work_cannot_be_closed_by_editing_its_way_out_of_the_gate(
         terminal = ("todo", "supersede", *common, "--reason", "pivot")
     code, refused = run(*terminal)
     assert code == 1, refused
-    assert refused["reason_code"] in {
-        "goal_acceptance_validation_required",
-        "goal_acceptance_stale",
-    }, refused
+    if escape and "--resume-when" in escape:
+        # A newly added scheduling wait preserves the binding, but the fresh
+        # completion validator must still reject the missing artifact.
+        assert refused["reason_code"] == "goal_acceptance_validation_rejected", refused
+    else:
+        assert refused["reason_code"] in {
+            "goal_acceptance_validation_required",
+            "goal_acceptance_stale",
+        }, refused
     assert "validation_argv" not in json.dumps(refused)
     # The refusal must be a refusal, not a report: the work stays open.
     contract = cli("inspect")[1]["goal_acceptance_contract"]
     assert contract["status"] != "accepted"
     assert contract["verification"] is None
+
+
+def test_real_cli_stale_binding_is_projected_for_agent_replan(acceptance_goal):
+    _, document, cli, run = acceptance_goal
+    basis = cli("inspect")[1]["provider_revision"]
+    code, configured = cli(
+        "configure", "--document", str(document),
+        "--expected-provider-revision", basis, "--execute",
+    )
+    assert code == 0, configured
+    code, updated = run(
+        "todo", "update", "--todo-id", "todo_export", "--goal-id", "goal-acceptance",
+        "--agent-id", "agent-a", "--text", "Write the export artifact and checksum",
+    )
+    assert code == 0, updated
+    assert cli("inspect")[1]["goal_acceptance_contract"]["tasks"][0]["state"] == "stale"
+    code, projected = run("quota", "should-run", "--goal-id", "goal-acceptance", "--agent-id", "agent-a")
+    assert code == 0, projected
+    assert projected["goal_frontier_projection"]["acceptance_gaps"][0]["kind"] == "goal_acceptance_stale"
+    assert "autonomous_replan_obligation" in projected, sorted(projected)
+    obligation = projected["autonomous_replan_obligation"]
+    assert obligation["triggers"][0]["kind"] == "goal_acceptance_stale"
+    assert obligation["triggers"][0]["vision_todo_ids"] == ["todo_export"]
+    assert len(obligation["triggers"][0]["frontier_revision"]) == 64
 
 
 def test_preview_discloses_the_criteria_the_real_call_will_run(acceptance_goal):

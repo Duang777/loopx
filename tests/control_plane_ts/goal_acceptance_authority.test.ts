@@ -77,11 +77,19 @@ test("validator revisions and successor links preserve an existing acceptance bi
   assert.notEqual(goalAcceptanceTodoDigest(revised), goalAcceptanceTodoDigest(original),
     "persisted v0 digests must remain compatible without rebinding every existing Todo");
   assert.equal(guarded(revised)?.state, "ready");
+  assert.equal(guarded({...revised, resume_when: "monitor_changed:todo_followup"})?.state, "ready",
+    "an added scheduling wait cannot alter the confirmed acceptance association");
   assert.equal(guarded({...revised, text: "Different work"})?.state, "stale");
   assert.equal(guarded({...revised, required_write_scopes: ["private"]})?.state, "stale");
   assert.equal(guarded({...revised, completion_validation_required: false})?.state, "stale");
   assert.equal(guarded({...revised, completion_validation_revision_history: [{...receipt,
     declaration_sha256: "c".repeat(64)}]})?.state, "stale");
+  const boundWithWait = {...state, bindings: [{...state.bindings[0],
+    todo_semantic_digest: goalAcceptanceTodoDigest({...original, resume_when: "monitor_changed:todo_first"})}]};
+  const changedWait = acceptanceWorkGuard(authorityProjectionFixture(goal,
+    [{...original, resume_when: "monitor_changed:todo_followup"}, todo("todo_followup")], [], "native",
+    {goal_acceptance: boundWithWait}), goal, "todo_first");
+  assert.equal(changedWait?.state, "stale", "the matcher cannot reconstruct a replaced prior wait condition");
 });
 async function seed(store: AuthorityStore) {
   assert.equal((await store.commitAuthority({operation_id: "seed", expected_provider_revision: null,

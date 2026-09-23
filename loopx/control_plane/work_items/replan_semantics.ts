@@ -20,7 +20,7 @@ const KNOWN_OUTCOMES: ReadonlySet<string> = new Set([...PROGRESS_OUTCOMES, ...VI
 const PROGRESS_IDENTITY_OUTCOMES: ReadonlySet<string> = new Set(["new_surface", "new_hypothesis", "new_probe_family"]);
 const VISION_TRIGGERS = new Set([
   "vision_acceptance_gap", "vision_checkpoint_missing", "vision_outcome_checkpoint_required",
-  "vision_successor_required", "required_agent_vision_missing",
+  "vision_successor_required", "required_agent_vision_missing", "goal_acceptance_stale",
 ]);
 const EXTERNAL_REVIEW_TRIGGERS = new Set(["external_progress_review_drift"]);
 const FRESH_PATH_DISPOSITIONS = new Set(["continue", "no_change", "replan"]);
