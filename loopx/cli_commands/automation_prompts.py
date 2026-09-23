@@ -33,7 +33,7 @@ def run(args: argparse.Namespace, registry: Path) -> dict:
             return snapshot(registry=registry, home=home, runtime_root=args.runtime_root, cli_bin=args.cli_bin)
         if not args.plan_file:
             raise ValueError("sync-installed --execute requires the private pre-update --plan-file")
-        before = json.loads(args.plan_file.read_text())
+        before = json.loads(args.plan_file.read_text(encoding="utf-8"))
         if args.automation_id:
             before["entries"] = [entry for entry in before.get("entries", [])
                                  if entry["automation_id"] in args.automation_id]

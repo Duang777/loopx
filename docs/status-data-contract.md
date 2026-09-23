@@ -1835,6 +1835,7 @@ Goal shape:
     "blocked_action_scope": "gated_delivery",
     "safe_bypass_allowed": true
   },
+  "index_digest": "sha256:<exact-run-index-digest>",
   "index_exists": true,
   "raw_index_records": 2,
   "unique_runs": 2,
@@ -1868,6 +1869,11 @@ Goal shape:
   "latest_runs": []
 }
 ```
+
+`index_digest` is the SHA-256 digest of the exact run-index bytes observed by
+the status read. It is `null` when the index file does not exist. Quota spend
+previews carry this opaque value into the write-time compare-and-swap check, so
+consumers must not recompute it from the compact `latest_runs` projection.
 
 `authority_registry` on the goal comes from the registry and stays visible even
 when the latest run is an operator gate or reward overlay rather than a fresh

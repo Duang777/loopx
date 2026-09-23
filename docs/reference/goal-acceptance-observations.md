@@ -139,8 +139,15 @@ task arguments; this contract adds no bypass flags.
 
 Terminal observations, including `no_followup`, do not change the work digest:
 finishing a task must not stale the binding that just admitted its completion.
-Text, validation requirements and unknown future work fields still invalidate
-the association. Existing enabled contracts configured with a persisted
+The v0 binding matcher also accepts a prior digest when the only intervening
+changes are a valid append-only completion-validator revision history or added
+successor links. It checks reconstructible prior states rather than rewriting
+owner bindings, so existing ready contracts retain their stored digests.
+Revised validators still undergo their own fresh completion check; Goal
+acceptance criteria remain separately configured and checked. Text, whether
+completion validation is required, repository/write-scope declarations, and
+unknown future work fields still invalidate the association. Existing enabled
+contracts configured with a persisted
 `no_followup` field under the earlier digest rule require owner inspection and
 reconfiguration; no historical receipt is rewritten or automatically accepted.
 Disabled/absent acceptance retains its existing behavior.
@@ -279,6 +286,12 @@ status 同时在独立的 `run_history.goals[].artifact_lifecycle` 和 Markdown 
 所有者通过重新配置确认当前关联；完成任务必须执行当前绑定的产物检查，并继续满足原有
 claim、lease/fence、权限和后续工作要求。既有验证回执或已确认的关联不能代替本次任务完成验证。
 任务参数沿用 `loopx todo claim --help`、`loopx todo complete --help`，没有绕过门禁的新参数。
+
+终态观察不会让刚完成的任务关联过期。对既有 v0 绑定，若差异仅来自可校验的完成验证命令
+修订历史追加或后继任务链接追加，读出会比对可重建的旧状态并自动保留 `ready`，无需所有者
+重复确认，也不改写已保存的绑定摘要。修订后的命令仍须在完成时重新验证，Goal 验收条件
+也仍独立执行。任务文本、是否要求完成验证、仓库与写入范围等实质工作声明变化仍使关联
+过期；未知的新工作字段默认按实质变化处理。
 
 `loopx goal-acceptance verify --goal-id example-goal` 仅预览；加 `--execute` 执行全部配置条件，
 再运行 inspect 读回。进入 **概览 → 交付与依据**，刷新并展开交付链下方的 **Goal 验收合同**。

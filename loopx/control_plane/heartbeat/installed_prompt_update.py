@@ -109,7 +109,7 @@ def reconcile(*, before: dict, registry: Path, home: Path,
                 # complete prompt-only request, plus a precondition to re-view.
                 import tomllib
                 try:
-                    manifest = tomllib.loads((home / "automations" / identifier / "automation.toml").read_text())
+                    manifest = tomllib.loads((home / "automations" / identifier / "automation.toml").read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     manifest = {}
                 required = {"name", "status", "rrule", "target_thread_id"}

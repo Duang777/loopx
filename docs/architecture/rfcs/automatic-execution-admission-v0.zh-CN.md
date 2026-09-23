@@ -5,7 +5,7 @@
 - **维护边界：** quota、scheduler、host runtime
 - **创建 / 规范修订：** 2026-09-23
 - **实现基线：** `23edcb19c`
-- **语言镜像：** [English](automatic-execution-admission-v0.md)
+- **语言镜像：** 本文与 [English](automatic-execution-admission-v0.md) 互为语义镜像。
 - **相关契约：** [路线图](loopx-overall-roadmap-v0.zh-CN.md)、[quota](../../quota-allocation.md)、[节奏提示](../../operations/long-task-cadence-policy.md)、[执行模式](agent-session-execution-modes-v0.md)
 
 第 1–12 节定义设计与验收契约；附录记录交付边界。实现某个阶段不等于 RFC 已获批准。

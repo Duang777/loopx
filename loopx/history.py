@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import nullcontext
 from collections.abc import Callable
@@ -124,6 +125,13 @@ class StatusHistoryCollection:
     contract_audit: RunHistoryAudit
 
 
+@dataclass(frozen=True, slots=True)
+class RunIndexSnapshot:
+    records: list[dict[str, Any]]
+    raw_count: int
+    digest: str | None
+
+
 def now_local() -> str:
     return now_local_iso()
 
@@ -219,18 +227,21 @@ def _indexed_artifact_exists(value: Any, *, artifact_root: Path | None) -> bool:
     return path.exists()
 
 
-def load_index(
+def load_index_snapshot(
     path: Path,
     *,
     artifact_root: Path | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    if not path.exists():
-        return [], 0
+) -> RunIndexSnapshot:
+    try:
+        stream = path.open("rb")
+    except FileNotFoundError:
+        return RunIndexSnapshot(records=[], raw_count=0, digest=None)
 
     records: list[dict[str, Any]] = []
     positions: dict[tuple[str, str, str], int] = {}
     artifact_exists: dict[tuple[str, str], bool] = {}
     raw_count = 0
+    digest = hashlib.sha256()
 
     def artifact_is_present(value: Any) -> bool:
         text = str(value or "").strip()
@@ -242,8 +253,10 @@ def load_index(
             )
         return artifact_exists[cache_key]
 
-    with path.open(encoding="utf-8") as f:
-        for line in f:
+    with stream:
+        for encoded_line in stream:
+            digest.update(encoded_line)
+            line = encoded_line.decode("utf-8")
             if not line.strip():
                 continue
             raw_count += 1
@@ -267,7 +280,20 @@ def load_index(
             else:
                 positions[key] = len(records)
                 records.append(item)
-    return records, raw_count
+    return RunIndexSnapshot(
+        records=records,
+        raw_count=raw_count,
+        digest=f"sha256:{digest.hexdigest()}",
+    )
+
+
+def load_index(
+    path: Path,
+    *,
+    artifact_root: Path | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    snapshot = load_index_snapshot(path, artifact_root=artifact_root)
+    return snapshot.records, snapshot.raw_count
 
 
 def latest_status_run(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -335,10 +361,12 @@ def collect_history(
         if activation_filter is not None and activation_state is not activation_filter:
             continue
         index_path = runtime_root / "goals" / current_goal_id / "runs" / "index.jsonl"
-        runs, raw_count = load_index(
+        index_snapshot = load_index_snapshot(
             index_path,
             artifact_root=registry_project_root(registry_path),
         )
+        runs = index_snapshot.records
+        raw_count = index_snapshot.raw_count
         runs = [
             run
             for _, run in sorted(
@@ -391,6 +419,7 @@ def collect_history(
             "authority_registry": goal_authority_registry_summary(meta) if registry_member else None,
             "quota": quota,
             "index_path": str(index_path),
+            "index_digest": index_snapshot.digest,
             "index_exists": index_path.exists(),
             "raw_index_records": raw_count,
             "unique_runs": len(runs),

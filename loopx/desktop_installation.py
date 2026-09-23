@@ -29,7 +29,7 @@ def desktop_installation_status(
         try:
             info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
             identity = json.loads(
-                (app / "Contents/Resources/runtime/identity.json").read_text()
+                (app / "Contents/Resources/runtime/identity.json").read_text(encoding="utf-8")
             )
             if isinstance(info, dict):
                 value = info.get("CFBundleShortVersionString")

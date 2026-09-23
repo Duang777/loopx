@@ -5,7 +5,7 @@
 - **Owners:** Quota, scheduler and host-runtime maintainers
 - **Created / last normative revision:** 2026-09-23
 - **Implementation baseline:** `23edcb19c`
-- **Language mirror:** [中文版](automatic-execution-admission-v0.zh-CN.md)
+- **Language mirror:** [中文版](automatic-execution-admission-v0.zh-CN.md) is the semantic mirror.
 - **Related contracts:** [roadmap](loopx-overall-roadmap-v0.md), [quota](../../quota-allocation.md), [cadence hint](../../operations/long-task-cadence-policy.md), [session execution modes](agent-session-execution-modes-v0.md)
 
 Sections 1–12 define the proposal and acceptance contract. The appendix records

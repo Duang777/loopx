@@ -27,20 +27,13 @@ def main() -> int:
     compact_readme = compact(readme)
     compact_readme_zh = "".join(readme_zh.split())
     compact_demo = compact(demo)
-    auto_research = readme.split("### Auto Research", 1)[1].split(
-        "### Used In Real Projects", 1
-    )[0]
-    auto_research_zh = readme_zh.split("### Auto Research", 1)[1].split(
-        "### 真实项目中的使用", 1
-    )[0]
-
     for required in [
         '<div align="center">',
-        "docs/assets/loopx-social-preview.png",
-        "LoopX loop engineering social preview banner",
-        "Loop engineering for long-horizon AI agents and peer agent teams.",
-        "The open, provider-neutral, stateful control plane for long-horizon agents.",
-        "preserves objectives, gates, todos, evidence, quota, and handoffs across turns",
+        "long-horizon agents",
+        "personal agent teams",
+        "## Meet the Personal Agent Workspace",
+        "docs/assets/personal-workspace/workspace-1.0.webp",
+        "docs/architecture/rfcs/capable-manager-semantic-handoff-v0.md",
         "## Why LoopX",
         "objective / issue / project",
         "LoopX state: objective + gates + todos + scope + evidence + quota",
@@ -59,7 +52,7 @@ def main() -> int:
         "not continuous model execution or unattended production autonomy",
         "docs/assets/long-running-loop-openviking-trajectory.png",
         "docs/assets/long-running-loop-ml-experiment-trajectory.png",
-        "### Presets and Auto Research",
+        "### Recurring Work Presets",
         "### Review Agent Work",
         "### App and Projection Paths",
         '<a id="how-it-works"></a>',
@@ -91,36 +84,15 @@ def main() -> int:
     ]:
         assert required in readme_zh, required
 
-    first_screen = readme.split("## Why LoopX", 1)[0]
-    assert "docs/assets/loopx-logo.png" not in first_screen
-
     for required in [
-        "company or employer endorsement",
         "independent reproduction",
     ]:
         assert required in compact_readme, required
     for required in [
         "不是连续模型执行时长或无人值守的生产自治",
-        "公司或雇主背书",
-        "第三方独立复现",
+        "不代表连续算力执行、独立复现或生产结果",
     ]:
         assert required.replace(" ", "") in compact_readme_zh, required
-
-    for required in [
-        "Reproducible public KNN demo",
-        "deterministic CPU evaluator",
-        "docs/product/use-cases/auto-research/decentralized-auto-research-showcase.md",
-    ]:
-        assert required in auto_research, required
-    assert "redacted" not in auto_research.lower()
-
-    for required in [
-        "可复现的公开 KNN demo",
-        "deterministic CPU evaluator",
-        "docs/product/use-cases/auto-research/decentralized-auto-research-showcase.md",
-    ]:
-        assert required in auto_research_zh, required
-    assert "脱敏" not in auto_research_zh
 
     for required in [
         "`$loopx <complex task>`",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -204,13 +205,17 @@ def test_status_reuses_one_history_scan_without_hiding_runtime_only_audit(
 ) -> None:
     registry_path, runtime_root = _write_fixture(tmp_path)
     loaded_goal_ids: list[str] = []
-    original_load_index = history_module.load_index
+    original_load_index_snapshot = history_module.load_index_snapshot
 
-    def record_load_index(path: Path, **kwargs: Any):
+    def record_load_index_snapshot(path: Path, **kwargs: Any):
         loaded_goal_ids.append(path.parts[-3])
-        return original_load_index(path, **kwargs)
+        return original_load_index_snapshot(path, **kwargs)
 
-    monkeypatch.setattr(history_module, "load_index", record_load_index)
+    monkeypatch.setattr(
+        history_module,
+        "load_index_snapshot",
+        record_load_index_snapshot,
+    )
 
     payload = collect_status(
         registry_path=registry_path,
@@ -232,6 +237,30 @@ def test_status_reuses_one_history_scan_without_hiding_runtime_only_audit(
         SECOND_REGISTERED_GOAL_ID,
         RUNTIME_ONLY_GOAL_ID,
     ]
+
+
+def test_status_projects_the_exact_run_index_digest(tmp_path: Path) -> None:
+    registry_path, runtime_root = _write_fixture(tmp_path)
+    index_path = (
+        runtime_root / "goals" / REGISTERED_GOAL_ID / "runs" / "index.jsonl"
+    )
+    index_path.write_bytes(index_path.read_bytes() + b"\n")
+    expected_digest = f"sha256:{hashlib.sha256(index_path.read_bytes()).hexdigest()}"
+
+    payload = collect_status(
+        registry_path=registry_path,
+        runtime_root_override=str(runtime_root),
+        scan_roots=[tmp_path],
+        limit=2,
+        include_public_boundary_scan=False,
+    )
+
+    goal = next(
+        item
+        for item in payload["run_history"]["goals"]
+        if item["id"] == REGISTERED_GOAL_ID
+    )
+    assert goal["index_digest"] == expected_digest
 
 
 def test_contract_rejects_a_history_audit_from_another_runtime(

@@ -53,7 +53,7 @@ def _write(path: Path, value: dict) -> None:
 def _read(path: Path) -> dict:
     if path.stat().st_size > 128_000:
         raise ValueError("manager context record too large")
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("invalid manager context record")
     return value

@@ -896,6 +896,29 @@ def build_quota_should_run(
     )
 
 
+def _quota_spend_index_basis(
+    status_payload: Mapping[str, Any],
+    *,
+    goal_id: str,
+) -> tuple[bool, str | None]:
+    run_history = status_payload.get("run_history")
+    if not isinstance(run_history, Mapping):
+        return False, None
+    goals = run_history.get("goals")
+    if not isinstance(goals, list):
+        return False, None
+    for goal in goals:
+        if not isinstance(goal, Mapping) or str(goal.get("id") or "") != goal_id:
+            continue
+        if "index_digest" not in goal:
+            return False, None
+        digest = goal.get("index_digest")
+        if digest is not None and not isinstance(digest, str):
+            raise ValueError("quota status index digest must be a string or null")
+        return True, digest
+    return False, None
+
+
 def build_quota_slot_preview(
     status_payload: dict[str, Any],
     *,
@@ -914,7 +937,11 @@ def build_quota_slot_preview(
     effect_ref: str | None = None,
     source: str = DEFAULT_SLOT_SPEND_SOURCE,
 ) -> dict[str, Any]:
-    safe_goal_id = str(goal_id or "").strip()
+    safe_goal_id = _validate_goal_id_path_segment(str(goal_id or ""))
+    basis_available, expected_index_digest = _quota_spend_index_basis(
+        status_payload,
+        goal_id=safe_goal_id,
+    )
     before = build_quota_should_run(
         status_payload,
         goal_id=safe_goal_id,
@@ -945,6 +972,8 @@ def build_quota_slot_preview(
         turn_instance_id=turn_instance_id,
         source=source,
     )
+    if preview.get("ok") and basis_available:
+        preview["expected_index_digest"] = expected_index_digest
     if not effect_ref:
         return preview
     return {**preview, "effect_ref": str(effect_ref).strip()}

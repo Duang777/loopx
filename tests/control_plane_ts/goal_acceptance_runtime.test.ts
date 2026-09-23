@@ -123,6 +123,25 @@ for (const provider of ["file", ...(process.env.LOOPX_TEST_POSTGRES_URL ? ["post
     assert.equal((await executeCoordinationTodoTerminalLifecycle(store, terminal)).reason_code, "goal_acceptance_stale");
   });
 
+  test(`${provider}: a real validator revision leaves the bound Todo claimable`, async t => {
+    const previous = {validation_command: null, validation_command_argv: ["node", "old-check.mjs"],
+      validation_label: "focused check", validation_timeout_seconds: 10};
+    const replacement = {...previous, validation_command_argv: ["node", "new-check.mjs"]};
+    const {store} = await seeded(t, provider, "bound", {completion_validation_required: true,
+      completion_validation_sha256: canonicalAuthoritySha256(previous),
+      completion_validation_revision: 0, completion_validation_revision_history: []});
+    const before = await loaded(store);
+    const changed = await executeCoordinationTodoUpdate(store, {goal_id: "goal-a", todo_id: "todo_work",
+      expected_role: "agent", actor_agent_id: "agent-a", registered_agents: ["agent-a"],
+      operation_id: "revise-validator", patch: {}, clear_fields: [], dry_run: false, now,
+      expected_provider_revision: before.provider_revision,
+      completion_validation_revision: {schema_version: "loopx_todo_completion_validation_revision_v0",
+        expected_declaration_sha256: canonicalAuthoritySha256(previous), declaration: replacement}});
+    assert.equal(changed.status, "applied");
+    assert.equal(acceptanceWorkGuard((await loaded(store)).head, "goal-a", "todo_work")?.state, "ready");
+    assert.equal((await executeCoordinationTodoClaim(store, claim)).status, "applied");
+  });
+
   test(`${provider}: acquisition replay checks current acceptance after current lease proof`, async t => {
     const {store} = await seeded(t, provider, "bound");
     assert.equal((await executeCanonicalTaskLeaseAcquire(store, acquire)).status, "applied");
