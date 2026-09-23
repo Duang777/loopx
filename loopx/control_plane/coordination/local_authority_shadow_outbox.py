@@ -376,16 +376,21 @@ def raw_bytes_digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-def reclaim_verified_files(files: Iterable[tuple[Path, str]]) -> int:
-    """Remove only exact bytes proved against receipts under maintenance/primary locks.
-
-    Validate the complete batch before the first unlink. A watermark alone is
-    deliberately not accepted by this interface.
-    """
-    batch = list(files)
-    for path, expected_digest in batch:
+def verify_observed_files(files: Iterable[tuple[Path, str]]) -> None:
+    """Recheck the complete observed byte batch before checkpoint or unlink effects."""
+    for path, expected_digest in files:
         if raw_bytes_digest(path.read_bytes()) != expected_digest:
             raise OutboxError("outbox_file_changed", "verified outbox bytes changed")
+
+
+def reclaim_verified_files(files: Iterable[tuple[Path, str]]) -> int:
+    """Remove only exact receipt-proven bytes under maintenance/primary locks.
+
+    A watermark alone never authorizes deletion. Recheck the whole batch before
+    the first unlink, including when the caller just wrote its checkpoint.
+    """
+    batch = list(files)
+    verify_observed_files(batch)
     for path, _digest in batch:
         path.unlink()
         _fsync_directory(path.parent)

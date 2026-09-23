@@ -108,11 +108,9 @@ CASES = [
         '? "Todo update cannot edit another claim owner\'s work"',
         '? "Update rejected"')),),
          'tests/control_plane/test_shadow_observable_native_e2e.py::test_canonical_argument_intent_and_atomic_claim[disabled]'),
-    Case('cursor_baseline_digest', ((COORDINATION + 'local_authority_shadow_adapter.py', replacement(
-        '        return None if marker is None else marker["partition_digest"]',
-        '''        head = transaction["projection"]
-        return partition_digest({"handoff_mode": head["handoff_mode"], "todos": head["todos"]}
-            if self._partition == TODO_PARTITION else {"leases": head["leases"]})''')),),
+    Case('cursor_baseline_digest', ((COORDINATION + 'shadow_drain_plan.ts', replacement(
+        'last_partition_digest: partitionDigest(last, r.partition)',
+        'last_partition_digest: view.head_digest')),),
          'tests/control_plane/test_shadow_cursor_recovery_e2e.py::test_abandoned_cursor_survives_all_consumers[2-0-todos]'),
     Case('qualification_baseline_digest', ((COORDINATION + 'runtime_shadow.ts', replacement(
         'const digest = marker === null ? null : (marker as JsonObject).partition_digest;',
@@ -122,8 +120,10 @@ CASES = [
         (COORDINATION + 'runtime_shadow.ts', replacement(
             'if (digest !== cursor.last_partition_digest) throw new ShadowLineageError("outbox_cursor_unproved");',
             '// DELIBERATE MUTANT: accept any syntactically valid cursor digest.')),
-        (COORDINATION + 'local_authority_shadow_adapter.py', replacement(
-            '                or self._cursor_digest(anchor) != cursor["last_partition_digest"]\n', ''))),
+        (COORDINATION + 'shadow_drain_plan.ts', replacement(
+            '      anchor.provider_revision === r.cursor.last_provider_revision &&\n'
+            '      partitionDigest(anchor, r.partition) === r.cursor.last_partition_digest,\n',
+            '      anchor.provider_revision === r.cursor.last_provider_revision,\n'))),
          'tests/control_plane/test_shadow_cursor_recovery_e2e.py::test_forged_applied_digest_holds_every_consumer_without_rewriting_bytes[True-todos]'),
     Case('lineage', ((COORDINATION + 'local_authority_shadow.ts', replacement('  requireLineage(entry.capture_lineage_id === binding.capture_lineage_id, "stale_generation");', '  // DELIBERATE MUTANT: omit active lineage validation.')),),
          'tests/control_plane_ts/local_authority_shadow_outbox.test.ts', 'self-consistent foreign'),
@@ -148,12 +148,13 @@ PREPARED_WRITE = '''            durable_write_json(
                 record,
             )'''
 CASES.extend([
-    Case("receipt_bytes", ((COORDINATION + "local_authority_shadow_adapter.py", replacement(
-        "            expected = receipt.get(key)",
-        "            expected = outbox.raw_bytes_digest(path.read_bytes())")),),
+    Case("receipt_bytes", ((COORDINATION + "shadow_drain_plan.ts", replacement(
+        "entry[key] === null || entry[key] === rc[key]",
+        "entry[key] === null || entry[key] === entry[key]")),),
         "tests/control_plane/test_shadow_drain_adversarial.py::test_raw_residue_mismatch_preserves_every_file_before_any_cleanup"),
-    Case("cursor_regression", ((COORDINATION + "local_authority_shadow_adapter.py", replacement(
-        "last_seq=len(history),", "last_seq=1,")),),
+    Case("cursor_regression", ((COORDINATION + "shadow_drain_plan.ts", replacement(
+        "{last_seq: history.size, last_entry_id: last.operation_id",
+        "{last_seq: 1, last_entry_id: last.operation_id")),),
         "tests/control_plane/test_shadow_drain_e2e.py::test_public_primary_maps_one_to_one_to_receipts_and_replays_idempotently"),
     Case("early_committed", ((COORDINATION + "local_authority_shadow_outbox.py", replacement(
         PREPARED_WRITE, PREPARED_WRITE + '''
@@ -181,8 +182,8 @@ CASES.extend([
         "const matched = true;")),),
         LADDER_ROW + "[s2c2.parity_divergent_detects_foreign_edit]"),
     Case("replay_counted_as_delivery", ((COORDINATION + "local_authority_shadow_adapter.py", replacement(
-        '                    self._result.replayed += 1\n                    self._result.no_op += int(receipt["no_op"])',
-        '                    self._result.delivered += 1\n                    self._result.no_op += int(receipt["no_op"])')),),
+        "                    self._result.replayed += 1\n",
+        "                    self._result.delivered += 1\n")),),
         LADDER_ROW + "[s2c2.sigkill_mid_drain]"),
 ])
 
@@ -252,8 +253,11 @@ CASES.extend([
         "    return  # DELIBERATE MUTANT: allow another goal to bypass source authority.\n    resolved_source = state_file.resolve(strict=False)")),),
          "tests/control_plane/test_shadow_writer_variant_e2e.py::test_other_goal_cannot_write_a_protected_goal_source_via_state_override[active_capture]"),
     Case("cleanup_hides_verified_commit", ((COORDINATION + "local_authority_shadow_adapter.py", replacement(
-        "                self._record_view(view)\n                self._reconcile(transactions, delivered_entry_id=entry.entry_id)",
-        "                self._reconcile(transactions, delivered_entry_id=entry.entry_id)\n                self._record_view(view)")),),
+        "            if self._result.cursor_before is None:\n"
+        "                self._result.cursor_before = view.get(\"cursor\")\n"
+        "            self._record_view(view)\n",
+        "            if self._result.cursor_before is None:\n"
+        "                self._result.cursor_before = view.get(\"cursor\")\n")),),
          "tests/control_plane/test_shadow_drain_adversarial.py::test_cleanup_permission_failure_reports_verified_commit_and_recovers[before_commit]"),
     Case("native_update_maintenance", ((COORDINATION + "local_authority_runtime.ts",
          remove_native_update_maintenance),),

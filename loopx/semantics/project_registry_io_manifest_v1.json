@@ -839,7 +839,7 @@
     },
     {
       "site": "loopx/control_plane/coordination/local_authority_shadow_adapter.py::<module>._drain_prelude::codec_read:load_registry#1",
-      "line": 895,
+      "line": 752,
       "column": 20,
       "kind": "codec_read",
       "api": "load_registry",
@@ -855,7 +855,7 @@
     },
     {
       "site": "loopx/control_plane/coordination/local_authority_shadow_adapter.py::<module>.local_authority_shadow_status::codec_read:load_registry#1",
-      "line": 1064,
+      "line": 921,
       "column": 16,
       "kind": "codec_read",
       "api": "load_registry",
