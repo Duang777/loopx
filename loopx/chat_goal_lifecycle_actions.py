@@ -21,7 +21,28 @@ class ChatGoalLifecycleActionMixin:
     ) -> dict[str, Any]:
         operation = str(parameters["operation"])
         if operation == "delete":
-            return {"state_fingerprint": self._registry_fingerprint()}
+            preview = delete_stopped_goal(
+                registry_path=self.registry_path,
+                goal_id=str(parameters["goal_id"]),
+                execute=False,
+            )
+            fingerprint = str(preview.get("observed_state_fingerprint") or "")
+            source_basis = preview.get("source_basis")
+            if (
+                not preview.get("ok")
+                or not fingerprint
+                or not isinstance(source_basis, dict)
+            ):
+                raise ValueError(
+                    str(
+                        preview.get("error")
+                        or "Goal deletion source basis is unavailable"
+                    )
+                )
+            return {
+                "state_fingerprint": fingerprint,
+                "source_basis": source_basis,
+            }
         target_state = (
             GoalActivationState.STOPPED
             if operation == "stop"
@@ -95,6 +116,11 @@ class ChatGoalLifecycleActionMixin:
             goal_id=goal_id,
             execute=True,
             expected_state_fingerprint=expected_fingerprint,
+            expected_source_basis=(
+                proposal.get("canonical_update_basis")
+                if isinstance(proposal.get("canonical_update_basis"), dict)
+                else None
+            ),
         )
         if result.get("stale"):
             stale = self.store.apply(
@@ -105,10 +131,15 @@ class ChatGoalLifecycleActionMixin:
                 receipt={},
             )
             return {"proposal": stale, "turn": None}
-        if not result.get("ok") or not (result.get("readback") or {}).get("verified"):
-            raise ValueError(
-                str(result.get("error") or "Goal deletion did not verify")
+        if not result.get("ok"):
+            error = ValueError(
+                str(result.get("error") or "Goal deletion did not complete")
             )
+            if not result.get("written") and not result.get("partial_write"):
+                return self._goal_delete_failed(proposal_id, error)
+            raise error
+        if not (result.get("readback") or {}).get("verified"):
+            raise ValueError("Goal deletion did not verify")
         receipt = {
             "receipt_id": _digest(
                 {
@@ -128,6 +159,19 @@ class ChatGoalLifecycleActionMixin:
         )
         return {"proposal": stored, "turn": None}
 
+    def _goal_delete_failed(
+        self,
+        proposal_id: str,
+        error: OSError | ValueError,
+    ) -> dict[str, Any]:
+        failed = self.store.mark_failed(
+            proposal_id,
+            error_code="goal_delete_unavailable",
+            message="Goal deletion could not safely acquire or update its registries.",
+            details={"exception_type": type(error).__name__},
+        )
+        return {"proposal": failed, "turn": None}
+
     def _apply_goal_lifecycle(
         self, proposal_id: str, proposal: dict[str, Any], parameters: dict[str, Any]
     ) -> dict[str, Any]:
@@ -136,7 +180,42 @@ class ChatGoalLifecycleActionMixin:
         goal_id = str(parameters["goal_id"])
         operation = str(parameters["operation"])
         if operation == "delete":
-            current_fingerprint = self._registry_fingerprint()
+            expected_fingerprint = str(
+                proposal.get("expected_state_fingerprint") or ""
+            )
+            expected_source_basis = (
+                proposal.get("canonical_update_basis")
+                if isinstance(proposal.get("canonical_update_basis"), dict)
+                else None
+            )
+            try:
+                current = delete_stopped_goal(
+                    registry_path=self.registry_path,
+                    goal_id=goal_id,
+                    execute=False,
+                    expected_state_fingerprint=expected_fingerprint,
+                    expected_source_basis=expected_source_basis,
+                )
+            except (OSError, ValueError) as exc:
+                return self._goal_delete_failed(proposal_id, exc)
+            current_fingerprint = str(current.get("observed_state_fingerprint") or "")
+            if not current.get("ok") or not current_fingerprint:
+                if current.get("stale") and current_fingerprint:
+                    stale = self.store.apply(
+                        proposal_id,
+                        current_state_fingerprint=current_fingerprint,
+                        receipt={},
+                    )
+                    return {"proposal": stale, "turn": None}
+                return self._goal_delete_failed(
+                    proposal_id,
+                    ValueError(
+                        str(
+                            current.get("error")
+                            or "Goal deletion source basis is unavailable"
+                        )
+                    ),
+                )
             return self._apply_goal_delete(
                 proposal_id, proposal, goal_id, current_fingerprint
             )

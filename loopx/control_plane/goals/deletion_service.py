@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import ExitStack
 import hashlib
 import os
@@ -15,7 +16,14 @@ from ..projects.registry_codec import (
     ProjectRegistryTransaction,
     project_registry_transaction,
 )
-from ...file_lock import exclusive_file_lock
+from ...configuration_transaction import configuration_payload_revision
+from ...file_lock import (
+    EFFECT_MUTATION_LOCK_SUFFIX,
+    exclusive_cross_runtime_file_lock,
+    exclusive_file_lock,
+    lock_holder_path,
+    lock_incident_path,
+)
 from ...history import load_registry
 from ...registry import atomic_write_json, read_json
 from ...registry_writability import probe_registry_write_path
@@ -23,14 +31,21 @@ from ..runtime.time import now_local_iso
 from .activation import GoalActivationState, goal_activation_state
 from .activation_service import (
     GoalActivationAuthorityRouteMode,
+    _goal_activation_source_identity,
     _goal_or_none,
     _same_path,
     _source_and_target,
+    _source_status,
 )
 
 
 GOAL_DELETION_SCHEMA_VERSION = "loopx_goal_deletion_v1"
+GOAL_DELETION_SOURCE_BASIS_SCHEMA_VERSION = "loopx_goal_deletion_source_basis_v1"
+GOAL_DELETION_STATE_FINGERPRINT_SCHEMA_VERSION = (
+    "loopx_goal_deletion_state_fingerprint_v1"
+)
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
 
 
 def _require_opaque_id(value: str, *, field: str) -> str:
@@ -44,6 +59,140 @@ def _require_opaque_id(value: str, *, field: str) -> str:
 
 def _registry_fingerprint(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _registry_identity(path: Path) -> str:
+    return configuration_payload_revision(
+        {"registry_path": str(path.expanduser().resolve())}
+    ).removeprefix("sha256:")
+
+
+def _source_basis(route: dict[str, Any]) -> dict[str, str]:
+    source_registry = Path(route["declared_source_registry"])
+    try:
+        source_content = source_registry.read_bytes()
+    except OSError:
+        source_content = (
+            f"unavailable:{route['source_status']}:{_registry_identity(source_registry)}"
+        ).encode()
+    return {
+        "schema_version": GOAL_DELETION_SOURCE_BASIS_SCHEMA_VERSION,
+        "source_identity": _goal_activation_source_identity(source_registry),
+        "source_content_sha256": hashlib.sha256(source_content).hexdigest(),
+        "route_mode": str(route["route_mode"]),
+    }
+
+
+def _state_fingerprint(
+    *,
+    goal_id: str,
+    source_basis: Mapping[str, str],
+    target_registry: Path,
+) -> str:
+    return configuration_payload_revision(
+        {
+            "schema_version": GOAL_DELETION_STATE_FINGERPRINT_SCHEMA_VERSION,
+            "goal_id": goal_id,
+            "source_basis": dict(source_basis),
+            "target_identity": _registry_identity(target_registry),
+            "target_content_sha256": _registry_fingerprint(target_registry),
+        }
+    ).removeprefix("sha256:")
+
+
+def _normalize_source_basis(value: Mapping[str, Any] | None) -> dict[str, str] | None:
+    if value is None:
+        return None
+    schema_version = str(value.get("schema_version") or "")
+    source_identity = str(value.get("source_identity") or "")
+    source_content_sha256 = str(value.get("source_content_sha256") or "")
+    route_mode = str(value.get("route_mode") or "")
+    if schema_version != GOAL_DELETION_SOURCE_BASIS_SCHEMA_VERSION:
+        raise ValueError("expected source basis has an unsupported schema version")
+    if not _SHA256.fullmatch(source_identity):
+        raise ValueError("expected source identity must be a SHA-256 digest")
+    if not _SHA256.fullmatch(source_content_sha256):
+        raise ValueError("expected source content digest must be a SHA-256 digest")
+    if route_mode not in {mode.value for mode in GoalActivationAuthorityRouteMode}:
+        raise ValueError("expected source route mode is unsupported")
+    return {
+        "schema_version": schema_version,
+        "source_identity": source_identity,
+        "source_content_sha256": source_content_sha256,
+        "route_mode": route_mode,
+    }
+
+
+def _mark_stale(
+    payload: dict[str, Any],
+    *,
+    current_state_fingerprint: str,
+    current_source_basis: Mapping[str, str],
+) -> None:
+    payload.update(
+        {
+            "ok": False,
+            "stale": True,
+            "error_kind": "goal_registry_changed",
+            "error": (
+                "Goal source or registry route changed after preview; "
+                "regenerate the deletion preview"
+            ),
+            "current_state_fingerprint": current_state_fingerprint,
+            "observed_state_fingerprint": current_state_fingerprint,
+            "source_basis": dict(current_source_basis),
+        }
+    )
+
+
+def _missing_state_fingerprint(*, goal_id: str, registry_path: Path) -> str:
+    target_content_sha256 = (
+        _registry_fingerprint(registry_path) if registry_path.is_file() else None
+    )
+    return configuration_payload_revision(
+        {
+            "schema_version": GOAL_DELETION_STATE_FINGERPRINT_SCHEMA_VERSION,
+            "goal_id": goal_id,
+            "deletion_state": "missing",
+            "target_identity": _registry_identity(registry_path),
+            "target_content_sha256": target_content_sha256,
+        }
+    ).removeprefix("sha256:")
+
+
+def _missing_stale_payload(
+    *,
+    goal_id: str,
+    registry_path: Path,
+    execute: bool,
+    expected_state_fingerprint: str | None,
+) -> dict[str, Any]:
+    current_fingerprint = _missing_state_fingerprint(
+        goal_id=goal_id,
+        registry_path=registry_path,
+    )
+    return {
+        "ok": False,
+        "schema_version": GOAL_DELETION_SCHEMA_VERSION,
+        "dry_run": not execute,
+        "execute": execute,
+        "goal_id": goal_id,
+        "target_global_registry": str(registry_path),
+        "expected_state_fingerprint": expected_state_fingerprint,
+        "observed_state_fingerprint": current_fingerprint,
+        "current_state_fingerprint": current_fingerprint,
+        "written": False,
+        "partial_write": False,
+        "backup_paths": [],
+        "readback": {
+            "source_missing": True,
+            "global_missing": True,
+            "verified": False,
+        },
+        "stale": True,
+        "error_kind": "goal_registry_changed",
+        "error": "Goal disappeared after preview; regenerate the deletion preview",
+    }
 
 
 def _backup_path(path: Path, timestamp: str, nonce: str) -> Path:
@@ -99,7 +248,12 @@ def _remove_goal(payload: dict[str, Any], goal_id: str) -> tuple[dict[str, Any],
     return updated, changed
 
 
-def _resolve_route(goal_id: str, registry_path: Path) -> dict[str, Any]:
+def _resolve_route(
+    goal_id: str,
+    registry_path: Path,
+    *,
+    require_stopped: bool = True,
+) -> dict[str, Any]:
     route = _source_and_target(
         registry_path=registry_path,
         goal_id=goal_id,
@@ -114,17 +268,27 @@ def _resolve_route(goal_id: str, registry_path: Path) -> dict[str, Any]:
     goal = source_goal or target_goal
     if goal is None:
         raise ValueError(f"goal id not found in registry: {goal_id}")
-    if goal_activation_state(goal) is not GoalActivationState.STOPPED:
+    if require_stopped and goal_activation_state(goal) is not GoalActivationState.STOPPED:
         raise ValueError("stop the Goal before deleting it")
     if target_goal is None:
         raise ValueError("global registry does not contain the Goal projection")
+    declared_source_registry = route.source_registry
+    if (
+        route.mode is GoalActivationAuthorityRouteMode.ORPHANED_GLOBAL_STOP_FALLBACK
+    ):
+        source_ref = str(target_goal.get("source_registry") or "").strip()
+        if source_ref:
+            declared_source_registry = Path(source_ref).expanduser().resolve()
     return {
         "source_registry": route.source_registry,
+        "declared_source_registry": declared_source_registry,
         "target_registry": route.target_registry,
         "source_available": source_available,
+        "source_status": route.source_status.value,
         "source_goal": source_goal,
         "target_goal": target_goal,
         "same_registry": _same_path(route.source_registry, route.target_registry),
+        "route_mode": route.mode.value,
     }
 
 
@@ -135,23 +299,136 @@ def _check_writability(paths: list[Path]) -> dict[str, Any] | None:
     return next((item for item in writability if not item.get("ok")), None)
 
 
-def _registry_paths(source_registry: Path, target_registry: Path, same_registry: bool) -> list[Path]:
-    paths = [target_registry]
-    if not same_registry:
-        paths.append(source_registry)
-    return sorted(paths, key=lambda item: str(item))
+def _orphan_source_lock_error(path: Path) -> str | None:
+    parent = path.parent
+    if parent.exists() and (not parent.is_dir() or parent.is_symlink()):
+        return "Goal source registry parent is unavailable for safe locking"
+    kernel_lock = path.with_name(f"{path.name}.lock")
+    lock_artifacts = {
+        kernel_lock,
+        lock_holder_path(path),
+        lock_incident_path(path),
+        Path(f"{path}{EFFECT_MUTATION_LOCK_SUFFIX}"),
+    }
+    if any(
+        artifact.is_symlink()
+        or (artifact.exists() and not artifact.is_file())
+        for artifact in lock_artifacts
+    ):
+        return "Goal source registry lock path is unsafe"
+    return None
 
 
-def _load_locked_payloads(
+def _route_matches_locked_paths(
+    route: Mapping[str, Any],
     *,
     source_registry: Path,
+    declared_source_registry: Path,
+    target_registry: Path,
+    source_available: bool,
+    same_registry: bool,
+) -> bool:
+    return (
+        _same_path(Path(route["source_registry"]), source_registry)
+        and _same_path(
+            Path(route["declared_source_registry"]),
+            declared_source_registry,
+        )
+        and _same_path(Path(route["target_registry"]), target_registry)
+        and bool(route["source_available"]) is source_available
+        and bool(route["same_registry"]) is same_registry
+    )
+
+
+def _validated_locked_route_snapshot(
+    *,
+    requested_registry: Path,
+    source_registry: Path,
+    declared_source_registry: Path,
     target_registry: Path,
     source_available: bool,
     same_registry: bool,
     goal_id: str,
     expected_state_fingerprint: str | None,
+    expected_source_basis: Mapping[str, str] | None,
     payload: dict[str, Any],
-) -> dict[Path, dict[str, Any]] | None:
+) -> tuple[dict[str, Any], dict[str, str], str] | None:
+    try:
+        locked_route, current_source_basis, current_fingerprint = _route_snapshot(
+            goal_id=goal_id,
+            requested_registry=requested_registry,
+        )
+    except ValueError as exc:
+        if str(exc) != f"goal id not found in registry: {goal_id}":
+            raise
+        payload.update(
+            _missing_stale_payload(
+                goal_id=goal_id,
+                registry_path=requested_registry,
+                execute=True,
+                expected_state_fingerprint=expected_state_fingerprint,
+            )
+        )
+        return None
+    route_changed = not _route_matches_locked_paths(
+        locked_route,
+        source_registry=source_registry,
+        declared_source_registry=declared_source_registry,
+        target_registry=target_registry,
+        source_available=source_available,
+        same_registry=same_registry,
+    )
+    if route_changed or (
+        expected_state_fingerprint is not None
+        and current_fingerprint != expected_state_fingerprint
+    ) or (
+        expected_source_basis is not None
+        and current_source_basis != expected_source_basis
+    ):
+        _mark_stale(
+            payload,
+            current_state_fingerprint=current_fingerprint,
+            current_source_basis=current_source_basis,
+        )
+        return None
+    return locked_route, current_source_basis, current_fingerprint
+
+
+def _route_snapshot(
+    *,
+    goal_id: str,
+    requested_registry: Path,
+) -> tuple[dict[str, Any], dict[str, str], str]:
+    route = _resolve_route(
+        goal_id,
+        requested_registry,
+        require_stopped=False,
+    )
+    source_basis = _source_basis(route)
+    return (
+        route,
+        source_basis,
+        _state_fingerprint(
+            goal_id=goal_id,
+            source_basis=source_basis,
+            target_registry=Path(route["target_registry"]),
+        ),
+    )
+
+
+def _load_locked_payloads(
+    *,
+    requested_registry: Path,
+    source_registry: Path,
+    declared_source_registry: Path,
+    target_registry: Path,
+    source_available: bool,
+    same_registry: bool,
+    goal_id: str,
+    expected_state_fingerprint: str | None,
+    expected_source_basis: Mapping[str, str] | None,
+    payload: dict[str, Any],
+) -> tuple[dict[Path, dict[str, Any]], dict[str, str], str] | None:
     current_source = (
         read_json(source_registry)
         if source_available and same_registry
@@ -160,17 +437,21 @@ def _load_locked_payloads(
         else None
     )
     current_target = read_json(target_registry)
-    if expected_state_fingerprint is not None:
-        current_fingerprint = _registry_fingerprint(target_registry)
-        if current_fingerprint != expected_state_fingerprint:
-            payload.update({
-                "ok": False,
-                "stale": True,
-                "error_kind": "goal_registry_changed",
-                "error": "Goal registry changed after preview; regenerate the deletion preview",
-                "current_state_fingerprint": current_fingerprint,
-            })
-            return None
+    snapshot = _validated_locked_route_snapshot(
+        requested_registry=requested_registry,
+        source_registry=source_registry,
+        declared_source_registry=declared_source_registry,
+        target_registry=target_registry,
+        source_available=source_available,
+        same_registry=same_registry,
+        goal_id=goal_id,
+        expected_state_fingerprint=expected_state_fingerprint,
+        expected_source_basis=expected_source_basis,
+        payload=payload,
+    )
+    if snapshot is None:
+        return None
+    _, current_source_basis, current_fingerprint = snapshot
 
     source_goal = _goal_or_none(current_source, goal_id) if current_source else None
     target_goal = _goal_or_none(current_target, goal_id)
@@ -184,7 +465,7 @@ def _load_locked_payloads(
         if current_source is None or source_goal is None:
             raise ValueError("Goal source registry changed; refresh and retry")
         current_payloads[source_registry] = current_source
-    return current_payloads
+    return current_payloads, current_source_basis, current_fingerprint
 
 
 def _updated_payloads(
@@ -204,8 +485,10 @@ def _write_deletion(
     current_payloads: dict[Path, dict[str, Any]],
     updated_payloads: dict[Path, dict[str, Any]],
     source_registry: Path,
+    declared_source_registry: Path,
     target_registry: Path,
     source_available: bool,
+    locked_source_basis: Mapping[str, str],
     goal_id: str,
     payload: dict[str, Any],
     source_transaction: ProjectRegistryTransaction | None,
@@ -224,20 +507,33 @@ def _write_deletion(
                 source_transaction=source_transaction,
             )
             written_paths.append(path)
-        source_after = load_registry(source_registry) if source_available else None
+        source_missing = (
+            _goal_or_none(load_registry(source_registry), goal_id) is None
+            if source_available
+            else _source_basis(
+                {
+                    "declared_source_registry": declared_source_registry,
+                    "source_status": _source_status(
+                        declared_source_registry,
+                        goal_id=goal_id,
+                    ).value,
+                    "route_mode": locked_source_basis["route_mode"],
+                }
+            )
+            == locked_source_basis
+        )
         target_after = read_json(target_registry)
-        source_missing = not source_after or _goal_or_none(source_after, goal_id) is None
         global_missing = _goal_or_none(target_after, goal_id) is None
+        if not source_missing or not global_missing:
+            raise ValueError("Goal deletion readback did not verify")
         payload["readback"] = {
             "source_missing": source_missing,
             "global_missing": global_missing,
             "verified": source_missing and global_missing,
         }
         payload["written"] = bool(written_paths)
-        payload["ok"] = bool(payload["readback"]["verified"])
-        payload["partial_write"] = bool(payload["written"] and not payload["ok"])
-        if not payload["ok"]:
-            payload["error"] = "Goal deletion readback did not verify"
+        payload["ok"] = True
+        payload["partial_write"] = False
     except Exception:
         for path in reversed(written_paths):
             _restore_locked_registry(
@@ -277,52 +573,82 @@ def _restore_locked_registry(
 
 def _execute_deletion(
     *,
+    requested_registry: Path,
     source_registry: Path,
+    declared_source_registry: Path,
     target_registry: Path,
     source_available: bool,
     same_registry: bool,
     goal_id: str,
     expected_state_fingerprint: str | None,
+    expected_source_basis: Mapping[str, str] | None,
     payload: dict[str, Any],
 ) -> None:
     """Apply deletion and read it back while registry locks are held."""
 
-    paths = _registry_paths(source_registry, target_registry, same_registry)
+    locked_source_registry = (
+        source_registry if source_available else declared_source_registry
+    )
     with ExitStack() as stack:
         source_transaction = None
-        for path in paths:
-            if (
-                source_available
-                and not same_registry
-                and _same_path(path, source_registry)
-            ):
+        if not _same_path(locked_source_registry, target_registry):
+            if source_available and not same_registry:
                 source_transaction = stack.enter_context(
                     project_registry_transaction(
-                        path,
+                        locked_source_registry,
                         operation="delete_stopped_goal",
                     )
                 )
             else:
                 stack.enter_context(
-                    exclusive_file_lock(path, operation="delete_stopped_goal")
+                    exclusive_cross_runtime_file_lock(
+                        locked_source_registry,
+                        operation="delete_stopped_goal",
+                    )
                 )
-        current_payloads = _load_locked_payloads(
+        stack.enter_context(
+            exclusive_file_lock(target_registry, operation="delete_stopped_goal")
+        )
+        locked_state = _load_locked_payloads(
+            requested_registry=requested_registry,
             source_registry=source_registry,
+            declared_source_registry=declared_source_registry,
             target_registry=target_registry,
             source_available=source_available,
             same_registry=same_registry,
             goal_id=goal_id,
             expected_state_fingerprint=expected_state_fingerprint,
+            expected_source_basis=expected_source_basis,
             payload=payload,
         )
-        if current_payloads is None:
+        if locked_state is None:
+            return
+        current_payloads, locked_source_basis, locked_state_fingerprint = locked_state
+        updated_payloads = _updated_payloads(current_payloads, goal_id)
+        if (
+            _validated_locked_route_snapshot(
+                requested_registry=requested_registry,
+                source_registry=source_registry,
+                declared_source_registry=declared_source_registry,
+                target_registry=target_registry,
+                source_available=source_available,
+                same_registry=same_registry,
+                goal_id=goal_id,
+                expected_state_fingerprint=locked_state_fingerprint,
+                expected_source_basis=locked_source_basis,
+                payload=payload,
+            )
+            is None
+        ):
             return
         _write_deletion(
             current_payloads=current_payloads,
-            updated_payloads=_updated_payloads(current_payloads, goal_id),
+            updated_payloads=updated_payloads,
             source_registry=source_registry,
+            declared_source_registry=declared_source_registry,
             target_registry=target_registry,
             source_available=source_available,
+            locked_source_basis=locked_source_basis,
             goal_id=goal_id,
             payload=payload,
             source_transaction=source_transaction,
@@ -335,17 +661,48 @@ def delete_stopped_goal(
     goal_id: str,
     execute: bool = False,
     expected_state_fingerprint: str | None = None,
+    expected_source_basis: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Preview or permanently remove one stopped Goal from its registries.
 
     Goal data such as state files and project files is intentionally retained;
     deletion removes only the registry entries that make the Goal visible to
-    the LoopX control plane. When an expected fingerprint is supplied, the
-    target registry is checked again while both registry locks are held.
+    the LoopX control plane. Expected state and source values are checked again
+    while both registry locks are held.
     """
 
     normalized_goal_id = _require_opaque_id(goal_id, field="goal_id")
-    route = _resolve_route(normalized_goal_id, Path(registry_path))
+    requested_registry = Path(registry_path)
+    normalized_fingerprint = str(expected_state_fingerprint or "").strip() or None
+    if normalized_fingerprint is not None and not _SHA256.fullmatch(
+        normalized_fingerprint
+    ):
+        raise ValueError("expected state fingerprint must be a SHA-256 digest")
+    normalized_source_basis = _normalize_source_basis(expected_source_basis)
+    try:
+        route = _resolve_route(
+            normalized_goal_id,
+            requested_registry,
+            require_stopped=False,
+        )
+    except ValueError as exc:
+        if (
+            normalized_fingerprint is None
+            or str(exc) != f"goal id not found in registry: {normalized_goal_id}"
+        ):
+            raise
+        return _missing_stale_payload(
+            goal_id=normalized_goal_id,
+            registry_path=requested_registry,
+            execute=execute,
+            expected_state_fingerprint=normalized_fingerprint,
+        )
+    observed_source_basis = _source_basis(route)
+    observed_fingerprint = _state_fingerprint(
+        goal_id=normalized_goal_id,
+        source_basis=observed_source_basis,
+        target_registry=route["target_registry"],
+    )
 
     payload: dict[str, Any] = {
         "ok": True,
@@ -357,6 +714,10 @@ def delete_stopped_goal(
         "target_global_registry": str(route["target_registry"]),
         "source_registry_present": route["source_goal"] is not None,
         "global_registry_present": route["target_goal"] is not None,
+        "source_basis": observed_source_basis,
+        "authority_route_mode": route["route_mode"],
+        "expected_state_fingerprint": normalized_fingerprint,
+        "observed_state_fingerprint": observed_fingerprint,
         "written": False,
         "partial_write": False,
         "backup_paths": [],
@@ -366,8 +727,40 @@ def delete_stopped_goal(
             "verified": False,
         },
     }
+    if (
+        normalized_fingerprint is not None
+        and observed_fingerprint != normalized_fingerprint
+    ) or (
+        normalized_source_basis is not None
+        and observed_source_basis != normalized_source_basis
+    ):
+        _mark_stale(
+            payload,
+            current_state_fingerprint=observed_fingerprint,
+            current_source_basis=observed_source_basis,
+        )
+        return payload
+    goal = route["source_goal"] or route["target_goal"]
+    if goal_activation_state(goal) is not GoalActivationState.STOPPED:
+        raise ValueError("stop the Goal before deleting it")
     if not execute:
         return payload
+
+    if not route["source_available"]:
+        lock_error = _orphan_source_lock_error(route["declared_source_registry"])
+        if lock_error is not None:
+            payload.update(
+                {
+                    "ok": False,
+                    "error_kind": "goal_source_lock_unavailable",
+                    "error": lock_error,
+                    "recommended_action": (
+                        "Repair the Goal source registry route before deleting "
+                        "this Goal."
+                    ),
+                }
+            )
+            return payload
 
     paths = [route["target_registry"]]
     if not route["same_registry"]:
@@ -385,12 +778,15 @@ def delete_stopped_goal(
         return payload
 
     _execute_deletion(
+        requested_registry=requested_registry,
         source_registry=route["source_registry"],
+        declared_source_registry=route["declared_source_registry"],
         target_registry=route["target_registry"],
         source_available=route["source_available"],
         same_registry=route["same_registry"],
         goal_id=normalized_goal_id,
-        expected_state_fingerprint=expected_state_fingerprint,
+        expected_state_fingerprint=normalized_fingerprint,
+        expected_source_basis=normalized_source_basis,
         payload=payload,
     )
     return payload

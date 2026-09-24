@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import tempfile
 import time
 import importlib
@@ -121,6 +122,28 @@ def _policy(value: LockAcquisitionPolicy | str) -> LockAcquisitionPolicy:
 
 def _lock_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.lock")
+
+
+def _open_lock_descriptor(path: Path, *, flags: int) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    if not no_follow and path.is_symlink():
+        raise OSError(errno.ELOOP, "lock path must not be a symlink", str(path))
+    descriptor = os.open(path, flags | no_follow, 0o600)
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        path_stat = os.lstat(path)
+        if (
+            not stat.S_ISREG(descriptor_stat.st_mode)
+            or stat.S_ISLNK(path_stat.st_mode)
+            or descriptor_stat.st_dev != path_stat.st_dev
+            or descriptor_stat.st_ino != path_stat.st_ino
+            or getattr(descriptor_stat, "st_nlink", 1) != 1
+        ):
+            raise OSError(errno.EINVAL, "lock path must be a regular file", str(path))
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def lock_holder_path(path: Path) -> Path:
@@ -292,10 +315,9 @@ def _append_incident(path: Path, record: dict[str, object]) -> bool:
         + "\n"
     ).encode("utf-8")
     try:
-        descriptor = os.open(
+        descriptor = _open_lock_descriptor(
             incident_path,
-            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
-            0o600,
+            flags=os.O_APPEND | os.O_CREAT | os.O_WRONLY,
         )
         try:
             os.write(descriptor, encoded)
@@ -409,7 +431,10 @@ def exclusive_file_lock(
     lock_path = _lock_path(path)
     holder_path = lock_holder_path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    descriptor = _open_lock_descriptor(
+        lock_path,
+        flags=os.O_CREAT | os.O_RDWR,
+    )
     with os.fdopen(descriptor, "r+", encoding="utf-8") as lock_file:
         started = time.monotonic()
         started_at = _utc_now_iso()
@@ -467,7 +492,10 @@ def try_exclusive_file_lock(
     lock_path = _lock_path(path)
     holder_path = lock_holder_path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    descriptor = _open_lock_descriptor(
+        lock_path,
+        flags=os.O_CREAT | os.O_RDWR,
+    )
     with os.fdopen(descriptor, "r+", encoding="utf-8") as lock_file:
         if not _try_acquire_kernel_lock(lock_file):
             yield None

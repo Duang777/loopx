@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import hashlib
 import json
+import os
 from pathlib import Path
 import threading
 
@@ -107,6 +109,38 @@ def _orphaned_global_registry(
         },
     )
     return source_registry, global_registry
+
+
+def _preview_delete_action(
+    *,
+    global_registry: Path,
+    action_store: Path,
+    idempotency_key: str,
+) -> tuple[ChatActionService, dict[str, object]]:
+    set_goal_activation_state(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        state="stopped",
+        actor_kind="owner",
+        execute=True,
+    )
+    service = ChatActionService(
+        store=ChatActionStore(action_store),
+        registry_path=global_registry,
+    )
+    proposal = service.preview(
+        {
+            "action_kind": "goal.lifecycle",
+            "summary": "Delete a stopped Goal",
+            "normalized_parameters": {
+                "goal_id": "goal-one",
+                "operation": "delete",
+            },
+            "context": {"kind": "goal_directory"},
+            "idempotency_key": idempotency_key,
+        }
+    )
+    return service, proposal
 
 
 def test_activation_contract_defaults_active_and_rejects_unknown_state() -> None:
@@ -925,9 +959,17 @@ def test_delete_active_goal_fails_closed(
         )
 
 
-def test_delete_orphaned_stopped_global_goal(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "source_status",
+    ["registry_missing", "registry_unreadable", "goal_missing"],
+)
+def test_delete_orphaned_stopped_global_goal(
+    tmp_path: Path,
+    source_status: str,
+) -> None:
     _source_registry, global_registry = _orphaned_global_registry(
         tmp_path,
+        source_status=source_status,
         activation_state="stopped",
     )
 
@@ -940,6 +982,28 @@ def test_delete_orphaned_stopped_global_goal(tmp_path: Path) -> None:
     assert deleted["ok"] is True
     assert deleted["readback"]["verified"] is True
     assert registry_goals(load_registry(global_registry)) == []
+
+
+def test_delete_orphaned_stopped_goal_fails_when_source_parent_is_not_a_directory(
+    tmp_path: Path,
+) -> None:
+    source_registry, global_registry = _orphaned_global_registry(
+        tmp_path,
+        activation_state="stopped",
+    )
+    source_registry.parent.parent.mkdir(parents=True)
+    source_registry.parent.write_text("not-a-directory\n", encoding="utf-8")
+
+    deleted = delete_stopped_goal(
+        registry_path=global_registry,
+        goal_id="orphaned-goal",
+        execute=True,
+    )
+
+    assert deleted["ok"] is False
+    assert deleted["error_kind"] == "goal_source_lock_unavailable"
+    assert _goal(global_registry, "orphaned-goal")["id"] == "orphaned-goal"
+    assert not list(tmp_path.rglob("*.goal-delete-*.bak"))
 
 
 def test_owner_confirmed_typed_action_deletes_stopped_goal(
@@ -977,6 +1041,184 @@ def test_owner_confirmed_typed_action_deletes_stopped_goal(
     assert applied["proposal"]["receipt"]["outcome"] == "goal_deleted"
     assert registry_goals(load_registry(source_registry)) == []
     assert registry_goals(load_registry(global_registry)) == []
+
+
+def test_owner_confirmed_typed_action_rejects_orphan_source_restored_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_registry, global_registry = _orphaned_global_registry(
+        tmp_path,
+        activation_state="stopped",
+    )
+    service = ChatActionService(
+        store=ChatActionStore(tmp_path / "actions"),
+        registry_path=global_registry,
+    )
+    proposal = service.preview(
+        {
+            "action_kind": "goal.lifecycle",
+            "summary": "Delete an orphaned stopped Goal",
+            "normalized_parameters": {
+                "goal_id": "orphaned-goal",
+                "operation": "delete",
+            },
+            "context": {"kind": "goal_directory"},
+            "idempotency_key": "delete-orphaned-goal-before-source-restore",
+        }
+    )
+    original_updated_payloads = deletion_service._updated_payloads
+    source_restored = False
+
+    def restore_source_before_write(
+        current_payloads: dict[Path, dict[str, object]],
+        goal_id: str,
+    ) -> dict[Path, dict[str, object]]:
+        nonlocal source_restored
+        if not source_restored:
+            source_goal = dict(_goal(global_registry, "orphaned-goal"))
+            source_goal.pop("source_registry", None)
+            _write_json(
+                source_registry,
+                {
+                    "schema_version": "0.1",
+                    "common_runtime_root": str(global_registry.parent),
+                    "goals": [source_goal],
+                },
+            )
+            source_restored = True
+        return original_updated_payloads(current_payloads, goal_id)
+
+    monkeypatch.setattr(
+        deletion_service,
+        "_updated_payloads",
+        restore_source_before_write,
+    )
+
+    applied = service.apply(str(proposal["proposal_id"]))
+
+    assert source_restored is True
+    assert applied["proposal"]["status"] == "stale"
+    assert applied["proposal"]["receipt"] is None
+    assert _goal(source_registry, "orphaned-goal")["id"] == "orphaned-goal"
+    assert _goal(global_registry, "orphaned-goal")["id"] == "orphaned-goal"
+    assert not list(tmp_path.rglob("*.goal-delete-*.bak"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires privileges")
+def test_owner_confirmed_typed_action_rejects_symlinked_orphan_source_lock(
+    tmp_path: Path,
+) -> None:
+    source_registry, global_registry = _orphaned_global_registry(
+        tmp_path,
+        activation_state="stopped",
+    )
+    service = ChatActionService(
+        store=ChatActionStore(tmp_path / "actions"),
+        registry_path=global_registry,
+    )
+    proposal = service.preview(
+        {
+            "action_kind": "goal.lifecycle",
+            "summary": "Delete an orphaned stopped Goal",
+            "normalized_parameters": {
+                "goal_id": "orphaned-goal",
+                "operation": "delete",
+            },
+            "context": {"kind": "goal_directory"},
+            "idempotency_key": "delete-orphaned-goal-with-unsafe-lock",
+        }
+    )
+    victim = tmp_path / "victim.txt"
+    victim.write_text("unchanged\n", encoding="utf-8")
+    source_registry.parent.mkdir(parents=True)
+    source_registry.with_name(f"{source_registry.name}.lock").symlink_to(victim)
+
+    applied = service.apply(str(proposal["proposal_id"]))
+
+    assert applied["proposal"]["status"] == "failed"
+    assert applied["proposal"]["receipt"] is None
+    assert victim.read_text(encoding="utf-8") == "unchanged\n"
+    assert _goal(global_registry, "orphaned-goal")["id"] == "orphaned-goal"
+
+
+@pytest.mark.parametrize("restored_source_kind", ["goal", "unreadable"])
+def test_owner_confirmed_typed_action_rolls_back_when_orphan_source_restores_after_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    restored_source_kind: str,
+) -> None:
+    source_registry, global_registry = _orphaned_global_registry(
+        tmp_path,
+        activation_state="stopped",
+    )
+    service = ChatActionService(
+        store=ChatActionStore(tmp_path / "actions"),
+        registry_path=global_registry,
+    )
+    proposal = service.preview(
+        {
+            "action_kind": "goal.lifecycle",
+            "summary": "Delete an orphaned stopped Goal",
+            "normalized_parameters": {
+                "goal_id": "orphaned-goal",
+                "operation": "delete",
+            },
+            "context": {"kind": "goal_directory"},
+            "idempotency_key": "delete-orphaned-goal-after-source-restore",
+        }
+    )
+    original_atomic_write = deletion_service.atomic_write_json
+    restored_source_goal = dict(_goal(global_registry, "orphaned-goal"))
+    restored_source_goal.pop("source_registry", None)
+    source_restored = False
+
+    def restore_source_after_global_write(
+        path: Path,
+        payload: dict[str, object],
+        **kwargs: object,
+    ) -> None:
+        nonlocal source_restored
+        original_atomic_write(path, payload, **kwargs)
+        if (
+            not source_restored
+            and path == global_registry
+            and not registry_goals(payload)
+        ):
+            if restored_source_kind == "goal":
+                _write_json(
+                    source_registry,
+                    {
+                        "schema_version": "0.1",
+                        "common_runtime_root": str(global_registry.parent),
+                        "goals": [restored_source_goal],
+                    },
+                )
+            else:
+                source_registry.mkdir()
+            source_restored = True
+
+    monkeypatch.setattr(
+        deletion_service,
+        "atomic_write_json",
+        restore_source_after_global_write,
+    )
+
+    proposal_id = str(proposal["proposal_id"])
+    with pytest.raises(ValueError, match="Goal deletion readback did not verify"):
+        service.apply(proposal_id)
+
+    assert source_restored is True
+    persisted = ChatActionStore(tmp_path / "actions").load(proposal_id)
+    assert persisted is not None
+    assert persisted["status"] == "applying"
+    assert persisted["failure"] is None
+    assert persisted["receipt"] is None
+    if restored_source_kind == "goal":
+        assert _goal(source_registry, "orphaned-goal")["id"] == "orphaned-goal"
+    else:
+        assert source_registry.is_dir()
+    assert _goal(global_registry, "orphaned-goal")["id"] == "orphaned-goal"
 
 
 def test_owner_confirmed_typed_action_rejects_stale_delete_without_writing(
@@ -1017,6 +1259,373 @@ def test_owner_confirmed_typed_action_rejects_stale_delete_without_writing(
     assert _goal(source_registry)["id"] == "goal-one"
     assert _goal(global_registry)["id"] == "goal-one"
     assert not list(global_registry.parent.glob("*.goal-delete-*.bak"))
+
+
+def test_owner_confirmed_typed_action_rejects_changed_source_before_delete(
+    connected_registries: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    source_registry, global_registry = connected_registries
+    service, proposal = _preview_delete_action(
+        global_registry=global_registry,
+        action_store=tmp_path / "actions",
+        idempotency_key="delete-goal-one-before-source-change",
+    )
+    source_basis = proposal["canonical_update_basis"]
+    activation_preview = set_goal_activation_state(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        state="stopped",
+        execute=False,
+    )
+    assert source_basis == {
+        "schema_version": "loopx_goal_deletion_source_basis_v1",
+        "source_identity": activation_preview["source_identity"],
+        "source_content_sha256": hashlib.sha256(
+            source_registry.read_bytes()
+        ).hexdigest(),
+        "route_mode": "source_to_global",
+    }
+    source_payload = load_registry(source_registry)
+    registry_goals(source_payload)[0]["display_name"] = "Changed after confirmation"
+    _write_json(source_registry, source_payload)
+    before = source_registry.read_bytes(), global_registry.read_bytes()
+
+    applied = service.apply(str(proposal["proposal_id"]))
+
+    assert applied["proposal"]["status"] == "stale"
+    assert applied["proposal"]["receipt"] is None
+    assert (source_registry.read_bytes(), global_registry.read_bytes()) == before
+    assert _goal(source_registry)["display_name"] == "Changed after confirmation"
+    assert _goal(global_registry)["id"] == "goal-one"
+    assert not list(tmp_path.rglob("*.goal-delete-*.bak"))
+
+
+def test_owner_confirmed_typed_action_marks_resumed_goal_stale(
+    connected_registries: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    source_registry, global_registry = connected_registries
+    service, proposal = _preview_delete_action(
+        global_registry=global_registry,
+        action_store=tmp_path / "actions",
+        idempotency_key="delete-goal-one-before-resume",
+    )
+    resumed = set_goal_activation_state(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        state="active",
+        actor_kind="owner",
+        execute=True,
+    )
+    assert resumed["ok"] is True
+
+    applied = service.apply(str(proposal["proposal_id"]))
+
+    assert applied["proposal"]["status"] == "stale"
+    assert applied["proposal"]["receipt"] is None
+    assert goal_activation_state(_goal(source_registry)) is GoalActivationState.ACTIVE
+    assert goal_activation_state(_goal(global_registry)) is GoalActivationState.ACTIVE
+    assert not list(tmp_path.rglob("*.goal-delete-*.bak"))
+
+
+def test_owner_confirmed_typed_action_marks_already_deleted_goal_stale(
+    connected_registries: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    source_registry, global_registry = connected_registries
+    service, proposal = _preview_delete_action(
+        global_registry=global_registry,
+        action_store=tmp_path / "actions",
+        idempotency_key="delete-goal-one-before-receipt",
+    )
+    deleted = delete_stopped_goal(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        execute=True,
+        expected_state_fingerprint=proposal["expected_state_fingerprint"],
+        expected_source_basis=proposal["canonical_update_basis"],
+    )
+    assert deleted["ok"] is True
+
+    applied = service.apply(str(proposal["proposal_id"]))
+
+    assert applied["proposal"]["status"] == "stale"
+    assert applied["proposal"]["receipt"] is None
+    assert registry_goals(load_registry(source_registry)) == []
+    assert registry_goals(load_registry(global_registry)) == []
+
+
+def test_owner_confirmed_typed_action_marks_concurrent_delete_stale(
+    connected_registries: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_registry, global_registry = connected_registries
+    service, proposal = _preview_delete_action(
+        global_registry=global_registry,
+        action_store=tmp_path / "actions",
+        idempotency_key="delete-goal-one-concurrently",
+    )
+    original_delete = chat_goal_lifecycle_actions.delete_stopped_goal
+    delete_calls = 0
+
+    def delete_between_preflight_and_execute(**kwargs: object) -> dict[str, object]:
+        nonlocal delete_calls
+        delete_calls += 1
+        current = original_delete(**kwargs)
+        if delete_calls == 1:
+            deleted = original_delete(
+                registry_path=global_registry,
+                goal_id="goal-one",
+                execute=True,
+                expected_state_fingerprint=proposal["expected_state_fingerprint"],
+                expected_source_basis=proposal["canonical_update_basis"],
+            )
+            assert deleted["ok"] is True
+        return current
+
+    monkeypatch.setattr(
+        chat_goal_lifecycle_actions,
+        "delete_stopped_goal",
+        delete_between_preflight_and_execute,
+    )
+
+    applied = service.apply(str(proposal["proposal_id"]))
+
+    assert delete_calls == 2
+    assert applied["proposal"]["status"] == "stale"
+    assert applied["proposal"]["receipt"] is None
+    assert registry_goals(load_registry(source_registry)) == []
+    assert registry_goals(load_registry(global_registry)) == []
+
+
+def test_owner_confirmed_typed_action_marks_locked_concurrent_delete_stale(
+    connected_registries: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_registry, global_registry = connected_registries
+    service, proposal = _preview_delete_action(
+        global_registry=global_registry,
+        action_store=tmp_path / "actions",
+        idempotency_key="delete-goal-one-during-lock",
+    )
+    original_transaction = deletion_service.project_registry_transaction
+    concurrent_delete_completed = False
+
+    @contextmanager
+    def delete_before_source_lock(*args: object, **kwargs: object):
+        nonlocal concurrent_delete_completed
+        if not concurrent_delete_completed:
+            for registry in (source_registry, global_registry):
+                payload = load_registry(registry)
+                payload["goals"] = []
+                _write_json(registry, payload)
+            concurrent_delete_completed = True
+        with original_transaction(*args, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(
+        deletion_service,
+        "project_registry_transaction",
+        delete_before_source_lock,
+    )
+
+    applied = service.apply(str(proposal["proposal_id"]))
+
+    assert concurrent_delete_completed is True
+    assert applied["proposal"]["status"] == "stale"
+    assert applied["proposal"]["receipt"] is None
+    assert not list(tmp_path.rglob("*.goal-delete-*.bak"))
+
+
+@pytest.mark.parametrize(
+    ("failure_call", "expected_status"),
+    [(1, "failed"), (2, "applying")],
+)
+def test_owner_confirmed_typed_action_records_delete_failures(
+    connected_registries: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_call: int,
+    expected_status: str,
+) -> None:
+    source_registry, global_registry = connected_registries
+    service, proposal = _preview_delete_action(
+        global_registry=global_registry,
+        action_store=tmp_path / "actions",
+        idempotency_key=f"delete-goal-one-lock-failure-{failure_call}",
+    )
+    original_delete = chat_goal_lifecycle_actions.delete_stopped_goal
+    delete_calls = 0
+
+    def fail_delete(**kwargs: object) -> dict[str, object]:
+        nonlocal delete_calls
+        delete_calls += 1
+        if delete_calls == failure_call:
+            raise PermissionError("simulated registry lock failure")
+        return original_delete(**kwargs)
+
+    monkeypatch.setattr(
+        chat_goal_lifecycle_actions,
+        "delete_stopped_goal",
+        fail_delete,
+    )
+
+    proposal_id = str(proposal["proposal_id"])
+    if failure_call == 1:
+        applied = service.apply(proposal_id)["proposal"]
+    else:
+        with pytest.raises(
+            PermissionError,
+            match="simulated registry lock failure",
+        ):
+            service.apply(proposal_id)
+        applied = ChatActionStore(tmp_path / "actions").load(proposal_id)
+
+    assert delete_calls == failure_call
+    assert applied is not None
+    assert applied["status"] == expected_status
+    if failure_call == 1:
+        assert applied["failure"]["error_code"] == "goal_delete_unavailable"
+        assert applied["failure"]["retry_safe"] is True
+    else:
+        assert applied["failure"] is None
+    assert _goal(source_registry)["id"] == "goal-one"
+    assert _goal(global_registry)["id"] == "goal-one"
+
+
+def test_owner_confirmed_typed_action_does_not_mark_committed_delete_retry_safe(
+    connected_registries: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_registry, global_registry = connected_registries
+    action_store = tmp_path / "actions"
+    service, proposal = _preview_delete_action(
+        global_registry=global_registry,
+        action_store=action_store,
+        idempotency_key="delete-goal-one-before-receipt-write-failure",
+    )
+    proposal_id = str(proposal["proposal_id"])
+    original_write = service.store._write
+
+    def fail_applied_receipt(payload: dict[str, object]) -> None:
+        proposals = payload.get("proposals")
+        stored = proposals.get(proposal_id) if isinstance(proposals, dict) else None
+        if isinstance(stored, dict) and stored.get("status") == "applied":
+            raise PermissionError("simulated receipt write failure")
+        original_write(payload)
+
+    monkeypatch.setattr(service.store, "_write", fail_applied_receipt)
+
+    with pytest.raises(PermissionError, match="simulated receipt write failure"):
+        service.apply(proposal_id)
+
+    persisted = ChatActionStore(action_store).load(proposal_id)
+    assert persisted is not None
+    assert persisted["status"] == "applying"
+    assert persisted["failure"] is None
+    assert registry_goals(load_registry(source_registry)) == []
+    assert registry_goals(load_registry(global_registry)) == []
+
+
+def test_delete_stopped_goal_rechecks_source_inside_write_lock(
+    connected_registries: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_registry, global_registry = connected_registries
+    set_goal_activation_state(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        state="stopped",
+        actor_kind="owner",
+        execute=True,
+    )
+    preview = delete_stopped_goal(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        execute=False,
+    )
+    original_transaction = deletion_service.project_registry_transaction
+    source_changed = False
+
+    @contextmanager
+    def change_source_before_source_lock(*args: object, **kwargs: object):
+        nonlocal source_changed
+        if not source_changed:
+            source_payload = load_registry(source_registry)
+            registry_goals(source_payload)[0]["display_name"] = (
+                "Changed before source lock"
+            )
+            _write_json(source_registry, source_payload)
+            source_changed = True
+        with original_transaction(*args, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(
+        deletion_service,
+        "project_registry_transaction",
+        change_source_before_source_lock,
+    )
+    before_global = global_registry.read_bytes()
+
+    result = delete_stopped_goal(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        execute=True,
+        expected_state_fingerprint=preview["observed_state_fingerprint"],
+        expected_source_basis=preview["source_basis"],
+    )
+
+    assert source_changed is True
+    assert result["ok"] is False
+    assert result["stale"] is True
+    assert result["written"] is False
+    assert _goal(source_registry)["display_name"] == "Changed before source lock"
+    assert global_registry.read_bytes() == before_global
+    assert not list(global_registry.parent.glob("*.goal-delete-*.bak"))
+
+
+def test_delete_stopped_goal_rejects_restored_orphan_source(
+    tmp_path: Path,
+) -> None:
+    source_registry, global_registry = _orphaned_global_registry(
+        tmp_path,
+        activation_state="stopped",
+    )
+    preview = delete_stopped_goal(
+        registry_path=global_registry,
+        goal_id="orphaned-goal",
+        execute=False,
+    )
+    source_goal = dict(_goal(global_registry, "orphaned-goal"))
+    source_goal.pop("source_registry", None)
+    _write_json(
+        source_registry,
+        {
+            "schema_version": "0.1",
+            "common_runtime_root": str(global_registry.parent),
+            "goals": [source_goal],
+        },
+    )
+    before_global = global_registry.read_bytes()
+
+    result = delete_stopped_goal(
+        registry_path=global_registry,
+        goal_id="orphaned-goal",
+        execute=True,
+        expected_state_fingerprint=preview["observed_state_fingerprint"],
+        expected_source_basis=preview["source_basis"],
+    )
+
+    assert result["ok"] is False
+    assert result["stale"] is True
+    assert result["written"] is False
+    assert _goal(source_registry, "orphaned-goal")["id"] == "orphaned-goal"
+    assert global_registry.read_bytes() == before_global
+    assert not list(tmp_path.rglob("*.goal-delete-*.bak"))
 
 
 def test_goal_deletion_backups_are_unique_and_preserve_preimages(

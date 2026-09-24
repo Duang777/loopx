@@ -107,6 +107,33 @@ def test_exclusive_lock_persists_public_safe_holder_metadata(tmp_path: Path) -> 
     assert holder_path.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires privileges")
+def test_exclusive_lock_rejects_a_symlinked_lock_file(tmp_path: Path) -> None:
+    target = tmp_path / "state.json"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("unchanged\n", encoding="utf-8")
+    target.with_name(f"{target.name}.lock").symlink_to(victim)
+
+    with pytest.raises(OSError):
+        with exclusive_file_lock(target):
+            pytest.fail("symlinked lock file was accepted")
+
+    assert victim.read_text(encoding="utf-8") == "unchanged\n"
+
+
+def test_exclusive_lock_rejects_a_hard_linked_lock_file(tmp_path: Path) -> None:
+    target = tmp_path / "state.json"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("unchanged\n", encoding="utf-8")
+    os.link(victim, target.with_name(f"{target.name}.lock"))
+
+    with pytest.raises(OSError):
+        with exclusive_file_lock(target):
+            pytest.fail("hard-linked lock file was accepted")
+
+    assert victim.read_text(encoding="utf-8") == "unchanged\n"
+
+
 def test_stalled_holder_times_out_and_records_independent_incident(tmp_path: Path) -> None:
     target = tmp_path / "todos.md"
     process = _start_stalled_holder(target)
@@ -158,6 +185,30 @@ def test_stalled_holder_times_out_and_records_independent_incident(tmp_path: Pat
         _stop(process)
 
     assert target.with_name(f"{target.name}.lock").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires privileges")
+def test_lock_timeout_does_not_follow_a_symlinked_incident_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "todos.md"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("unchanged\n", encoding="utf-8")
+    process = _start_stalled_holder(target)
+    try:
+        lock_incident_path(target).symlink_to(victim)
+        with pytest.raises(LockAcquireTimeoutError) as raised:
+            with exclusive_file_lock(
+                target,
+                timeout_seconds=0.05,
+                poll_interval_seconds=0.01,
+            ):
+                pytest.fail("waiter unexpectedly acquired the stalled lock")
+
+        assert raised.value.incident_recorded is False
+        assert victim.read_text(encoding="utf-8") == "unchanged\n"
+    finally:
+        _stop(process)
 
 
 def test_single_flight_returns_none_without_timeout_incident(tmp_path: Path) -> None:
