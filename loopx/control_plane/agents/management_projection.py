@@ -25,6 +25,7 @@ AGENT_MANAGEMENT_MODE = "read_only"
 MAX_AGENT_ROWS = 24
 MAX_AGENT_TODOS = 8
 MAX_REFS = 1
+MAX_SESSION_BINDING_CANDIDATES = 3
 MAX_WORKSPACE_SCOPES = 4
 STALE_CLAIM_THRESHOLD_HOURS = 36
 EXECUTING_ACTIVITY_THRESHOLD_HOURS = 8
@@ -583,8 +584,11 @@ def build_agent_management_projection(
     goal_filter = _compact(status_payload.get("goal_filter"), limit=180)
 
     # Session bindings come from run_history.coordination.thread_agent_bindings.
-    # This is the only source for addressable/bound lifecycle states.
-    session_bindings: dict[str, dict[str, str]] = {}
+    # This is the only source for addressable/bound lifecycle states. One Agent
+    # can hold several historical bindings, and an omitted one is not disproved:
+    # keep a bounded candidate summary plus the full count, so no consumer can
+    # read the surviving row as the only route to that peer.
+    session_binding_candidates: dict[str, list[dict[str, str]]] = {}
     run_history = _as_dict(status_payload.get("run_history"))
     for raw_goal in _as_list(run_history.get("goals")):
         if not isinstance(raw_goal, dict):
@@ -596,11 +600,15 @@ def build_agent_management_projection(
             agent_id = _compact(raw_binding.get("agent_id"), limit=120)
             thread_id = _compact(raw_binding.get("thread_id"), limit=120)
             host_surface = _compact(raw_binding.get("host_surface"), limit=60)
-            if agent_id and thread_id:
-                session_bindings[agent_id] = {
-                    "thread_id": thread_id,
-                    "host_surface": host_surface or "unknown",
-                }
+            if not agent_id or not thread_id:
+                continue
+            candidates = session_binding_candidates.setdefault(agent_id, [])
+            candidate = {
+                "thread_id": thread_id,
+                "host_surface": host_surface or "unknown",
+            }
+            if candidate not in candidates:
+                candidates.append(candidate)
 
     seen_todos: set[tuple[str, str, str, str]] = set()
     for todo in _iter_status_todos(status_payload):
@@ -652,7 +660,7 @@ def build_agent_management_projection(
         agent_state = _agent_state(
             all_todos,
             current=current,
-            has_session_binding=agent_id in session_bindings,
+            has_session_binding=agent_id in session_binding_candidates,
             last_activity_at=_last_activity([current]) if current else None,
         )
         agent_row: dict[str, Any] = {
@@ -666,8 +674,12 @@ def build_agent_management_projection(
             "handoff_refs": handoff_refs[:MAX_REFS],
             "goal_ids": _as_list(raw_row.get("_goal_ids"))[:MAX_REFS],
         }
-        if agent_id in session_bindings:
-            agent_row["session_binding"] = session_bindings[agent_id]
+        binding_candidates = session_binding_candidates.get(agent_id)
+        if binding_candidates:
+            agent_row["session_binding_candidates"] = binding_candidates[
+                :MAX_SESSION_BINDING_CANDIDATES
+            ]
+            agent_row["session_binding_count"] = len(binding_candidates)
         material_frontier_key = _agent_material_frontier_key(
             raw_row=raw_row,
             current=current,
