@@ -3,6 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Draft, under maintainer review |
+| Supersedes / closes | none |
 | Date | 2026-08-26 |
 | Tracking issue | [#3479](https://github.com/huangruiteng/loopx/issues/3479) |
 | Source baseline | LoopX `11824ef5f` |

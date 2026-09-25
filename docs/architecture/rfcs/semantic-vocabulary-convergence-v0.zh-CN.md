@@ -1,6 +1,7 @@
 # RFC：语义词表收敛与提交期漂移检查（v0）
 
 - **RFC status：** Draft
+- **替代 / 关闭：** 无
 - **Delivery maturity：** Partial（M0/M0.5 检查、M1 类型化动作域与 M2 Turn 契约生成已实现；M3/M4 退休仍未完成）
 - **Authors / owners：** LoopX 贡献者；控制面内核维护者拥有批准权
 - **Created：** 2026-09-15

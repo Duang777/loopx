@@ -1,6 +1,7 @@
 # RFC：LoopX 控制面 TypeScript 渐进迁移方向 v0
 
 - Status：Accepted，transaction-payoff 阶段进行中
+- 替代 / 关闭：无
 - Proposed by：LoopX maintainers
 - Date：2026-08-15
 - Last revised：2026-09-26
@@ -29,13 +30,7 @@
 不生效、可显式清理。这是删除已被替代的路径，不代表其余 Python 业务 writer 或
 reference executor 已退役。[交付清单与操作](ledger/shared-goal-authority-state-provider-v0/2026-09-24-observation-retirement.zh-CN.md)。
 
-## canonical collection 分页检查点（2026-09-23）
-
-canonical collection 跨语言传输改为 TS 一致性分页：旧 direct list 和分页共用
-`canonicalTodoCollection` 规则 owner，Python 校验并组装完整分页，保持调用方形状。
-不提高 2 MiB RPC 上限，不在 Python 重建 Todo/acceptance 规则；并发版本变化导致
-整份读取失败，File 只读打开不创建缺失 authority。限制与开销见[分页合同](../../reference/canonical-snapshot-pagination.md)。
-shared-authority 的当前核对表区分已合入实现、在途 PR、新代码边界和 D1–D3 证据，不再以粗粒度包数代替剩余 PR。
+- 检查点已移至执行账本：[canonical collection 分页检查点（2026-09-23）](ledger/typescript-control-plane-migration-v0/2026-09-23-canonical-collection-pagination.zh-CN.md)。
 
 ## 跨 RFC 的执行优先级（2026-09-16）
 
@@ -43,7 +38,7 @@ shared-authority 的当前核对表区分已合入实现、在途 PR、新代码
 
 保留 T0 caller/parity 盘点、T1/T2 事务与 effect 收敛、T3 完整来源消费、T4 删除条件。#4472 已合入，执行前核验 `todos/public_update.ts` 和实际 caller，不能重建 Todo update。新增团队领域规则应在现有 typed work-items/collaboration 归属中收敛；Python 保留输入/IO adapter。R1 的独立反例与 real-path 验证是交付条件；不以更多 leaf RPC、enum 或文件数量记迁移收益。D1–D3 仍由 shared-authority RFC 拥有。
 
-## 当前实现检查点
+## 当前实现事实
 
 长历史 closeout 现在复用经原始字节校验的 TS 日志前缀与统一 monitor 提交规则，
 Python 删除重复 run log 读取，只适配 Todo 事实。只读失败与提交不确定性分开报告。
@@ -264,47 +259,8 @@ replay、concurrency、归档压力与 hard-lease fence。该 fixture 是持久�
 声明 fixture 影响、覆盖所有受影响的 provider arm，并把只读三臂演练保留为独立的
 promotion gate。
 
-### Provider-neutral projection conformance 检查点（2026-09-12）
-
-conformance 边界现在为 legacy v0 与 native Todo record 共用一个 projection-fixture
-builder。它统一负责确定性的 Unicode 排序、read-model digest/field 构造，以及仅限
-兼容层的转换；provider 测试不再手工重建这些字段。规模 envelope 显式声明 status
-顺序并校验计数，因此 JSON key 顺序变化不会静默改变哪个 Todo 获得 lease、successor
-或 archive 角色。
-
-File、SQLite 与 NoKV suite 现在会在两种 record shape 上执行同一组生产规模 terminal
-case。另有独立 parity harness，使用三个隔离 provider 重放同一条 seed、observation、
-lease 序列，并在忽略 provider-specific revision token 后比较 logical head 以及已提交
-的 event/projection/receipt trace。这是 conformance 证据，不是新的 authority writer、
-provider 默认值或 promotion 声明；PostgreSQL 仍受现有真实服务资格化 gate 约束。
-
-旧 v0 consumer manifest 继续可读，并保留所有已有字段。默认 Markdown capture 仍
-输出 v0；本 PR 不改写已存 head，也不自动晋升 goal。schema 分层不等于允许后续迁移
-丢失 v0 provenance 或改变旧排序。
-
-### Canonical Todo 展示检查点（2026-09-12）
-
-authority 边界现在把 presentation 作为一等 projection contract，而不再把它命名为
-`legacy_projection`。共享的 TS presentation normalizer 会把 v0 wire shape 的
-`source_section`／`index` 映射为 `display_section`／`display_order`；native record
-则根据 domain 的 role／archive state 推导展示 section，绝不伪造持久化 index。两种
-wire shape 共用同一份 normalized presentation contract，wire 坐标不构成第二套 Todo
-state machine。
-
-Todo creation、terminal successor materialization、projection validation、
-standing-decision ordering 与 archive ordering 现在共用同一个 presentation owner。
-两种 wire shape 共用 canonical domain validator，v0 record 只是从已校验 domain
-record 经过 adapter 生成。这统一了语义 owner，但不重写 v0 head 或 receipt。
-
-Python read caller 现在直接导入语义 owner；兼容 facade 不再是内部依赖。Python 的
-展示排序在存在 source `index` 时保持其顺序，在 native record 上使用完成／更新时间
-加 Todo identity 做确定性排序，因此兼容 shape 不会泄漏进业务 eligibility 或 lifecycle
-decision。
-
-后续迁移可以持久化可选的 canonical `presentation` object，但必须先证明导入的
-section 到底是 provenance 还是当前 display intent，并资格化稳定的 display-order
-策略。在此之前，native display position 仍在 renderer 边界派生，不能参与 authority
-lifecycle decision。
+- 检查点已移至执行账本：[Provider-neutral projection conformance 检查点（2026-09-12）](ledger/typescript-control-plane-migration-v0/2026-09-12-provider-neutral-projection-conformance.zh-CN.md)。
+- 检查点已移至执行账本：[Canonical Todo 展示检查点（2026-09-12）](ledger/typescript-control-plane-migration-v0/2026-09-12-canonical-todo-presentation.zh-CN.md)。
 
 ### 长程持久化也是迁移收益的一部分
 
@@ -391,27 +347,7 @@ marker/hint 配置。精确的旧 lifecycle classification code、历史选取�
 policy 不在本批范围内，不能宣称所有 writer 已迁移或全局已无文本规则。这一读策略
 闭合不改变下文 provider-first Todo 顺序，也不等待 provider cutover。
 
-### Legacy 字段规则退役检查点
-
-`todos/field_update.ts` 现在持有 legacy `update`、`claim`、`complete`、`supersede`
-line writer 共用的完整 metadata intent 组装：status 与 completion 时间、未传与显式
-清空、binding 优先级、已移除 policy 的修复、resume-generation 配对及 completion
-metadata。它直接组合已有 TS completion rule。被替代的 Python decision 分支，以及
-失去最后调用者的 `todo.completion_state.metadata_updates` RPC/facade 一起删除，
-不保留为 fallback。
-
-这是一份纯 plan，不是 admission 或 provider commit。Python 仍保留 Markdown 定位／
-编码、字节级 no-op 检查、锁与外部 effect；本批不宣称迁完公共 role/binding admission
-或 event writer。Native planning 现按 T1 所述组合此 owner；不支持的字段不扩权、
-不 promotion goal、不增加第三条存储路径。plan 拒绝时，现在连调用方的内存行缓冲也保持不变；公共
-事务在拒绝时原本就不会提交。
-
-每次 legacy line write 有一次 field-plan crossing：普通编辑替代原 metadata RPC；
-已经 finalization、携带 override 的 completion 会增加一次 planning crossing。
-带缓存的 codec normalization 调用仍在。这兑现的是语义代码删除，不宣称每个命令
-都减少 round trip。完整 goal cutover 后随最后 legacy lifecycle caller 删除 adapter，
-或者迁移该 caller 时将 plan 折叠进其粗粒度事务；不得继续扩张逐字段 RPC。
-Markdown renderer 长期保留。
+- 检查点已移至执行账本：[Legacy 字段规则退役检查点](ledger/typescript-control-plane-migration-v0/2026-09-09-legacy-field-rule-retirement.zh-CN.md)。
 
 ### 下一步交付顺序
 
@@ -922,21 +858,7 @@ promotion、启动模型／任务、soak automation、发布或合并仍需各�
 stack 中的 schema identifier 清理是独立维护，不是上述路线的前置条件。只吸收所选
 完整事务确实依赖的下游改动；base 合并后，其余工作再 rebase。
 
-### 管家 collaboration 衔接检查点（2026-09-13）
-
-在 `7eb4b7bb1661bd5eff63a8725a33169792d5964b`，#4152 是已合并的
-lease-fenced text/note update 切片；#4121 SQLite 候选也已合并，但未晋级 provider。
-实际 head 更新早期执行卡暗示的代码待合并状态，不解除其资格保留条件。
-
-[管家/handoff RFC](capable-manager-semantic-handoff-v0.zh-CN.md) 遵循本文完整
-事务收益规则：拟议 collaboration owner 替换一个完整请求事务与旧语义 caller，
-不按字段增加 leaf RPC、不新增 TS daemon、不另造 Todo/Vision/lease authority。
-已有 `coordination/todo_continuation.ts` 仅支持 promoted-local、同机、已注册
-Agent、无 lease Todo，不是通用 pre-Todo/cross-Goal handoff；集成时保留其真实
-兼容语义。M2 提供迁移收益回执及跨提交恢复证据；M1 普通主机工具无需等待全部 TS
-或 provider 迁移。共享 Goal amendment 保留独立 proposal/commit 边界；受影响的
-存储或完整 writer 退役，继续遵守 shared-authority D1–D3/T4 条件。此说明不交付
-新的 runtime 行为。
+- 检查点已移至执行账本：[管家 collaboration 衔接检查点（2026-09-13）](ledger/typescript-control-plane-migration-v0/2026-09-13-manager-collaboration-integration.zh-CN.md)。
 
 ## 0. 用一个例子说明决策
 

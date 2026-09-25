@@ -60,8 +60,11 @@ Within an RFC, keep the same separation:
 - a decision log records explicit approval and the sections it changed;
 - an evidence registry maps claims to reproducible, public-safe proof.
 
-Do not append progress reports to a normative delivery plan. Move long ledgers
-to a linked `*-execution.md` companion. Schema reduction is never an incidental
+Do not append progress reports to a normative delivery plan. Dated checkpoint
+logs live in [`ledger/<rfc-slug>/`](ledger/README.md), one entry per date and
+slice, with the RFC body keeping only a pointer; a heading containing
+`checkpoint` inside an RFC body fails the docs governance smoke. Schema
+reduction is never an incidental
 cleanup: the RFC or PR must name each removed field, document producer/reader/
 writer and compatibility research, define migration and rollback, prove the
 claimed semantic equivalence, and record explicit maintainer approval.
@@ -69,6 +72,24 @@ claimed semantic equivalence, and record explicit maintainer approval.
 This index was last audited against `main` on **2026-09-04**. Update an entry
 whenever its RFC status, promoted behavior, or meaningful delivery boundary
 changes.
+
+### Lifecycle index and supersession
+
+[`STATUS.md`](STATUS.md) ([中文版](STATUS.zh-CN.md)) is the generated
+lifecycle index. It groups every RFC into `Accepted`, `Active` (`Draft`,
+`Under review`), `Superseded` and `Retired` (`Retired`, `Rejected`) from the
+status header inside each RFC, cross-checked against the status line in this
+README. Regenerate it with `python3 scripts/generate_rfc_status_index.py
+--write`; `--check` fails when the file is stale or when any RFC violates the
+rules below, and the docs governance smoke runs that check.
+
+- Every RFC header carries `**RFC status:**` whose value starts with one
+  lifecycle state, and `**Supersedes / closes:**` naming the RFCs it replaces
+  or closes, or `none`. A new RFC cannot land without that declaration; every
+  current RFC already carries it.
+- An RFC marked `Superseded` also carries `**Superseded by:**` pointing at its
+  successor, and the successor names it in `Supersedes / closes`.
+- The Chinese mirror carries the same `**替代 / 关闭：**` declaration.
 
 ## Overall Product and Delivery Roadmap
 
@@ -259,10 +280,19 @@ changes.
     Cross-session restoration, execution takeover and automatic return are specified
     separately, reusing #4094 with optional Obelisk gap recall under its own scope.
     Full runtime-profile qualification and generic handoff migration remain open.
-
-
+- [Manager Runtime Profile v0](manager-runtime-profile-v0.md)
+  ([中文版](manager-runtime-profile-v0.zh-CN.md))
+  - **RFC status:** Draft; M1 implementation candidate under the capable-manager RFC.
+  - **Delivery on `main`:** Partial; the explicit persistent `restricted` /
+    `trusted_owner` machine-level grant and its readback are the shipped slice
+    recorded by the parent RFC.
+  - **Current boundary:** Defines `manager_runtime_profile_v0` so that host
+    sandbox, prompt, managed workspace instructions, persistent configuration
+    and Session readback describe one effective mode. Qualification of the
+    profile as the default manager mode stays with the parent RFC.
 - [Explicit Todo Continuation — Stage A](cross-session-memory-substrate-v0.md)
   ([中文版](cross-session-memory-substrate-v0.zh-CN.md))
+  - **RFC status:** Accepted; Stage A shipped, the historical filename is retained.
   - **Delivery on `main`:** #4094 shipped the explicit local CLI and rich/legacy
     continuation note with revision-guarded ownership adoption.
   - **Current boundary:** Registered agents, same host/Goal, lease-free promoted
@@ -277,7 +307,7 @@ changes.
     composition, and recoverable migration are proposed for #3930. A unified
     `loopxd` service has not shipped.
 - [Provider-Neutral Turn-Start Inbox Hook v0](provider-neutral-turn-start-inbox-hook-v0.md)
-  - **RFC status:** Implemented behind explicit provider configuration.
+  - **RFC status:** Accepted; implemented behind explicit provider configuration.
   - **Delivery on `main`:** Implemented, opt-in.
   - **Current boundary:** The provider-neutral turn-start read contract and
     Lark ACK/replay path shipped in
@@ -304,6 +334,26 @@ changes.
     pieces exist, but the unified execution-frontend/session-ownership contract
     and cross-transport convergence are not accepted as one shipped product
     boundary.
+- [DSH / Pi: L1 Observation and Managed Runtime Selection](harness-selection-dsh-pi-v0.md)
+  ([中文版](harness-selection-dsh-pi-v0.zh-CN.md))
+  - **RFC status:** Draft; evidence-backed implementation assessment, not a
+    runtime promotion.
+  - **Delivery on `main`:** Partial; the combined reliability-diagnostics
+    readback and the bounded managed Turn host default-host resolution shipped,
+    the steward channel transport and intake sections record dated increments.
+  - **Current boundary:** Keeps DSH as the first L1 event source and Pi as a
+    managed-runtime candidate; no quantitative winner is claimed and the
+    session-owning runtime role stays opt-in pending the C0/C1, overhead,
+    retention and Mode B evidence rows.
+- [External Evidence Research Capability v0](external-evidence-research-capability-v0.md)
+  ([中文版](external-evidence-research-capability-v0.zh-CN.md))
+  - **RFC status:** Draft implementation slice.
+  - **Delivery on `main`:** Bounded slice; see the RFC acceptance section for
+    the audited state of the `external_evidence_research_v0` lifecycle.
+  - **Current boundary:** Provider-neutral research planning, provenance
+    admission, projection and retirement under one capability; a provider is
+    selectable only when readback says `declared`, `installed`, `enabled` and
+    `ready`. Product surfaces and TypeScript ownership are proposed, not promoted.
 - [Agent Session Execution Modes v0](agent-session-execution-modes-v0.md)
   ([中文版](agent-session-execution-modes-v0.zh-CN.md))
   - **RFC status:** Draft, under maintainer review.

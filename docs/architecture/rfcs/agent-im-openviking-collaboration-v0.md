@@ -1,6 +1,7 @@
 # RFC: Agent IM, LoopX, And OpenViking Collaboration v0
 
 - Status: Draft
+- Supersedes / closes: none
 - Scope: multi-host, multi-runtime agent collaboration
 - Decision type: architecture and staged integration contract
 

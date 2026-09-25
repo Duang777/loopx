@@ -3,6 +3,7 @@
 | 字段 | 内容 |
 |---|---|
 | 状态 | Draft，等待 maintainer 评审 |
+| 替代 / 关闭 | 无 |
 | 日期 | 2026-08-26 |
 | 跟踪 issue | [#3479](https://github.com/huangruiteng/loopx/issues/3479) |
 | 源码基线 | LoopX `11824ef5f` |

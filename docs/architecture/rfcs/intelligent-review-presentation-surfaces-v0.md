@@ -1,6 +1,7 @@
 # RFC: Intelligent Review and Dynamic Presentation Surfaces v0
 
 - Status: Draft, under maintainer review
+- Supersedes / closes: none
 - Proposed by: LoopX maintainers
 - Date: 2026-09-01
 - Scope: a provider-neutral typed interaction projection that selects,

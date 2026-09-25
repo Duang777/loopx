@@ -1,6 +1,7 @@
 # RFC: TypeScript Control-Plane Migration Direction v0
 
 - Status: Accepted, transaction-payoff phase in progress
+- Supersedes / closes: none
 - Proposed by: LoopX maintainers
 - Date: 2026-08-15
 - Last revised: 2026-09-26
@@ -50,7 +51,7 @@ reference executor are retired. [Delivery inventory and transition](ledger/share
 
 Retain T0 caller/parity inventory, T1/T2 transaction/effect convergence, T3 complete-source consumption and T4 deletion conditions. #4472 is merged; inspect `todos/public_update.ts` and actual callers before rebuilding Todo update. Converge new team domain rules in existing typed work-items/collaboration ownership; Python retains input/IO adaptation. R1 independent counterexamples and real-path verification gate delivery. More leaf RPCs, enums or files are not migration payoff. Shared-authority retains D1–D3.
 
-## Current implementation checkpoint
+## Current implementation facts
 
 Long-history closeout now reuses byte-verified TS receipt prefixes and the
 single committed-monitor rule. Python retires its duplicate run-log scan and
@@ -363,55 +364,8 @@ this RFC follows the
 It declares fixture impact, exercises every affected provider arm, and keeps
 the read-only three-arm rehearsal as a separate promotion gate.
 
-### Provider-neutral projection conformance checkpoint (2026-09-12)
-
-The conformance boundary now has one projection-fixture builder for both the
-legacy v0 and native Todo record shapes. It owns deterministic Unicode ordering,
-read-model digest/field construction, and the compatibility-only conversion;
-provider tests no longer hand-rebuild those fields. The scale envelope declares
-status ordering explicitly and validates its counts, so changing JSON key order
-cannot silently change which Todo receives a lease, successor, or archive role.
-
-The File, SQLite, and NoKV suites now execute the same production-scale terminal
-cases in both record shapes. A separate parity harness replays one seed,
-observation, and lease sequence through all three isolated providers and compares
-the logical head plus committed event/projection/receipt trace while ignoring
-provider-specific revision tokens. This is conformance evidence, not a new
-authority writer, provider default, or promotion claim; PostgreSQL remains under
-its existing real-service qualification gate.
-
-The old v0 consumer manifest remains readable and retains all existing fields.
-Default Markdown capture still emits v0; this PR neither rewrites stored heads
-nor auto-promotes a goal. The schema split is not permission to drop v0
-provenance or change legacy ordering during a later migration.
-
-### Canonical Todo presentation checkpoint (2026-09-12)
-
-The authority boundary now treats presentation as a first-class projection
-contract rather than naming it `legacy_projection`. A shared TS presentation
-normalizer maps the v0 wire shape's `source_section`/`index` to
-`display_section`/`display_order`, while native records derive their display
-section from domain role/archive state and never receive a fake persisted
-index. The normalized presentation contract is shared; the wire coordinate is
-not a second Todo state machine.
-
-Todo creation, terminal successor materialization, projection validation,
-standing-decision ordering, and archive ordering all use the same presentation
-owner. The canonical domain validator is shared by both wire shapes, and the
-v0 record is produced by an adapter from a validated domain record. This
-unifies the semantic owner without rewriting v0 heads or receipts.
-
-Python read callers now import the semantic owner directly; the compatibility
-facade is no longer an internal dependency. Python presentation sorting keeps
-source `index` order when it is present and uses completion/update time plus
-Todo identity for native records, so the compatibility shape cannot leak into
-business eligibility or lifecycle decisions.
-
-The next migration may persist an optional canonical `presentation` object, but
-only after proving whether an imported section is provenance or current display
-intent and after qualifying a stable display-order policy. Until then, native
-display positions remain derived at the renderer boundary and must not affect
-authority lifecycle decisions.
+- Checkpoint moved to the execution ledger: [Provider-neutral projection conformance checkpoint (2026-09-12)](ledger/typescript-control-plane-migration-v0/2026-09-12-provider-neutral-projection-conformance.md).
+- Checkpoint moved to the execution ledger: [Canonical Todo presentation checkpoint (2026-09-12)](ledger/typescript-control-plane-migration-v0/2026-09-12-canonical-todo-presentation.md).
 
 ### Long-goal persistence is part of the migration payoff
 
@@ -527,31 +481,7 @@ remain outside this slice. Do not claim all writers migrated or all prose rules
 retired. This read-policy closure does not displace the provider-first Todo
 sequence below or wait for a provider cutover.
 
-### Legacy field-rule retirement checkpoint
-
-`todos/field_update.ts` now owns the complete metadata intent assembly used by
-the legacy `update`, `claim`, `complete`, and `supersede` line writer: status and
-completion timestamps, omission versus explicit clears, binding precedence,
-removed-policy repair, resume-generation pairing, and completion metadata.
-It composes the existing TS completion rule directly. The replaced Python
-decision branches and the last-caller `todo.completion_state.metadata_updates`
-RPC/facade are removed, not kept as a fallback.
-
-This is a pure plan, not admission or a provider commit. Python still owns
-Markdown lookup/encoding, byte-level no-op detection, locking and external
-effects. Public role/binding admission and the event writer are not declared
-migrated by that slice. Native planning now composes this owner as described in
-T1; unsupported fields gain no authority, no goal is promoted, and no third storage path appears.
-Rejected plans now leave even the caller's in-memory line buffer unchanged;
-public rejected transactions were already non-committing.
-
-There is one field-plan crossing per legacy line write. It replaces the former
-metadata RPC on ordinary edits; already-finalized completions with an override
-gain one planning crossing. Cached codec normalization calls remain. This is
-semantic deletion, not a claim of fewer crossings on every command. Retire the
-adapter with its final legacy lifecycle caller after full-goal cutover, or fold
-it into that caller's coarse transaction when migrating the caller; do not grow
-a series of field-level RPCs. Retain Markdown rendering permanently.
+- Checkpoint moved to the execution ledger: [Legacy field-rule retirement checkpoint](ledger/typescript-control-plane-migration-v0/2026-09-09-legacy-field-rule-retirement.md).
 
 ### Next delivery sequence
 
@@ -1257,25 +1187,7 @@ Stacked schema-identifier cleanup is independent maintenance, not a prerequisite
 for this sequence. Absorb a downstream change only when the selected complete
 transaction actually needs it; rebase the remaining work after its base merges.
 
-### Manager collaboration integration checkpoint (2026-09-13)
-
-At `7eb4b7bb1661bd5eff63a8725a33169792d5964b`, #4152 is the merged
-lease-fenced text/note update slice; #4121's SQLite candidate is also merged,
-without provider promotion. These actual heads supersede the earlier execution
-card's pending-code implication, not its qualification holds.
-
-The [manager/handoff RFC](capable-manager-semantic-handoff-v0.md) follows this
-RFC's transaction-payoff rule. Its proposed collaboration owner replaces one
-complete request transaction and old semantic callers; it does not introduce
-a leaf RPC per field, a new TS daemon, or another Todo/Vision/lease authority.
-Existing `coordination/todo_continuation.ts` is a promoted-local, same-machine,
-registered-agent, lease-free Todo path, not a general pre-Todo/cross-Goal
-handoff. Retain its actual compatibility semantics while integrating it.
-M2 reports the migration economics receipt and cross-commit recovery evidence;
-M1 normal host tools need not wait for full TS or provider migration.
-Shared Goal amendments retain their own proposal/commit boundary, and
-shared-authority D1–D3/T4 conditions remain applicable to any affected storage
-or full-writer retirement. No new runtime behavior is delivered by this note.
+- Checkpoint moved to the execution ledger: [Manager collaboration integration checkpoint (2026-09-13)](ledger/typescript-control-plane-migration-v0/2026-09-13-manager-collaboration-integration.md).
 
 ## 0. Decision in one example
 
@@ -1958,19 +1870,7 @@ Measured delivery records live in the [per-entry ledger](ledger/typescript-contr
 Each entry names its delivered boundary and remaining acceptance gaps; the T1–T4
 checkpoints above remain the current migration plan.
 
-### T2 Agent-addressed read checkpoint
-
-Todo list selection now composes with the existing typed summary-lanes batch.
-The Python role/status/id/Agent predicates and independent User scope rule are
-removed; legacy and promoted consumers share `todos/agent_scope.ts` with quota
-and decision scope. Explicit gate scope retains precedence over execution claim,
-while retained User claims now correctly restrict scoped list visibility.
-Full-source resume/succession stays evaluated before selection; original array
-ordinals survive filters and display limits. No extra selection runtime crossing,
-new capability/provider, or Python storage migration is introduced. Python keeps
-input normalization and rendering until their actual host consumers migrate.
-See [the read contract](../../reference/todo-work-counts.md); broader L5/D1 and
-local-default qualifications remain open.
+- Checkpoint moved to the execution ledger: [T2 Agent-addressed read checkpoint](ledger/typescript-control-plane-migration-v0/2026-09-21-t2-agent-addressed-read.md).
 
 ### T2 canonical read and display confirmation boundary
 

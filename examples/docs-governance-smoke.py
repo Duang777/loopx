@@ -213,7 +213,43 @@ LEDGER_ENTRY_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*$")
 # The appendix that points at the ledger directory is whichever one an RFC has
 # free: an RFC whose Appendix A carries other content adopts a later letter
 # rather than renumbering history and forcing every open branch to re-resolve it.
-LEDGER_APPENDIX_HEADING = re.compile(r"^## Appendix [A-Z]: Execution ledger", re.MULTILINE)
+LEDGER_APPENDIX_HEADING = re.compile(
+    r"^## Appendix [A-Z]: (?:[A-Za-z ]+ and )?[Ee]xecution ledger", re.MULTILINE
+)
+# Dated checkpoint logs belong in ledger/<rfc-slug>/, never in an RFC body. A
+# heading that still says "checkpoint" is the append cluster the ledger removed.
+RFC_BODY_CHECKPOINT_HEADING = re.compile(r"^#{1,6}\s.*(?:checkpoint|检查点)", re.IGNORECASE | re.MULTILINE)
+
+
+def check_rfc_status_index() -> None:
+    """Derived lifecycle index must be current and every RFC header well-formed.
+
+    `scripts/generate_rfc_status_index.py --check` fails when STATUS.md or
+    STATUS.zh-CN.md is stale, when an RFC lacks a lifecycle status or a
+    `Supersedes / closes` declaration, or when a `checkpoint` heading is still in
+    an RFC body. The README index deliberately has no hand-maintained status
+    matrix; the generated file is the only enumerating surface.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "generate_rfc_status_index.py"), "--check"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, (
+        "RFC status index check failed; run `python3 scripts/generate_rfc_status_index.py "
+        f"--write` and fix reported headers:\n{result.stdout}{result.stderr}"
+    )
+    rfc_dir = DOCS / "architecture" / "rfcs"
+    for rfc in sorted(rfc_dir.glob("*.md")):
+        if rfc.name in {"README.md", "TEMPLATE.md", "STATUS.md", "STATUS.zh-CN.md"}:
+            continue
+        offending = RFC_BODY_CHECKPOINT_HEADING.findall(rfc.read_text(encoding="utf-8"))
+        assert not offending, (
+            f"{rfc.name}: checkpoint heading belongs in ledger/{rfc.name.split('.')[0]}/"
+        )
 
 
 def check_rfc_ledger_entries() -> None:
@@ -920,6 +956,7 @@ def main() -> int:
 
     check_rfc_language_mirrors()
     check_rfc_ledger_entries()
+    check_rfc_status_index()
     print("docs-governance-smoke ok")
     return 0
 
