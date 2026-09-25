@@ -270,6 +270,10 @@ Repository roles and decision authority are defined in
 [Governance](.github/GOVERNANCE.md). Creator and contributor attribution is
 recorded in [docs/project/authors.md](docs/project/authors.md), while path-scoped maintenance and
 preferred review assignments are recorded in the same governance document.
+Its [Maintainer And Review Roster](.github/GOVERNANCE.md#maintainer-and-review-roster)
+lists who can approve which paths, and
+[Review Service Levels](.github/GOVERNANCE.md#review-service-levels) states how
+quickly a pull request should get a first response and a decision.
 The public Git history records individual contributions. Contribution does not
 automatically grant merge or release authority, and an agent or automation
 identity is not a human maintainer.
