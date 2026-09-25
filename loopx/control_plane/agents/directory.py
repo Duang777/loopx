@@ -26,6 +26,7 @@ from typing import Any
 
 from ..runtime.public_safety import public_safe_compact_text
 from ..runtime.time import now_utc_iso
+from ...thread_agent_binding import summarize_agent_binding_routes
 from ..todos.contract import normalize_todo_id
 from .management_projection import build_agent_management_projection
 
@@ -187,6 +188,9 @@ def build_peer_agent_directory(
     if not caller:
         limitations.append(LIMITATION_CALLER_IDENTITY_NOT_SUPPLIED)
 
+    # Route candidates are read from the same published bindings the management
+    # projection walks, but only the owning resolver module interprets them.
+    binding_goals = _as_list(_as_mapping(payload.get("run_history")).get("goals"))
     rows: list[dict[str, Any]] = []
     dropped_at_cap = 0
     for row in agent_rows:
@@ -209,6 +213,9 @@ def build_peer_agent_directory(
             ),
             "delivery_refs": _compact_refs(
                 row.get("handoff_refs"), limit=MAX_DELIVERY_REFS
+            ),
+            "peer_route": summarize_agent_binding_routes(
+                binding_goals, agent_id=agent_id
             ),
         }
         rows.append(

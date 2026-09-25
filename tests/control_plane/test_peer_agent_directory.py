@@ -150,3 +150,31 @@ def test_truncated_directory_declares_the_rows_it_omitted() -> None:
     )
     assert packet["omitted_row_count"] > 0
     assert LIMITATION_ROWS_TRUNCATED in packet["limitations"]  # type: ignore[operator]
+
+
+def test_rows_report_a_peer_route_without_selecting_one() -> None:
+    payload = _status_payload()
+    coordination = payload["run_history"]["goals"][0]["coordination"]
+    coordination["thread_agent_bindings"] = [
+        {
+            "agent_id": WORKING_AGENT,
+            "thread_id": "thread-app",
+            "host_surface": "codex-app",
+        },
+        {
+            "agent_id": WORKING_AGENT,
+            "thread_id": "thread-cli",
+            "host_surface": "codex-cli",
+        },
+    ]
+
+    packet = build_peer_agent_directory(payload, caller_agent_id=WORKING_AGENT)
+    rows = _rows_by_agent(packet)
+
+    assert rows[WORKING_AGENT]["peer_route"]["outcome"] == "ambiguous"
+    assert rows[WORKING_AGENT]["peer_route"]["candidate_count"] == 2
+    assert rows[IDLE_AGENT]["peer_route"]["outcome"] == "unbound"
+    assert rows[IDLE_AGENT]["peer_route"]["candidates"] == []
+    # A route is a locator: it must not read as membership, presence or a lease.
+    assert packet["scope"]["caller_membership"] == "registered_agent"
+    assert LIMITATION_LEASE_STATE_NOT_PROJECTED in packet["limitations"]

@@ -131,6 +131,14 @@ an identity.
 Rules:
 
 - a row exists per registered Agent of the Goal, whether or not it is running;
+- `peer_route` summarizes the thread bindings already published for that Agent as
+  `{schema_version, agent_id, outcome, candidate_count, candidates[], provenance}`
+  with `outcome` in `resolved` (exactly one binding addresses the Agent),
+  `ambiguous` (more than one does) or `unbound` (none does). At most three
+  candidates are carried while `candidate_count` keeps the full total, so a short
+  list is a cap and not a disproof. This field selects nothing: `ambiguous` means
+  the caller must resolve an exact link before addressing the peer, and a route is
+  a locator, never a claim, lease, capability or cross-host resume authority;
 - `presence` is optional and must carry `provider`, `observed_at` and `basis`,
   so a reader can tell "not running" from "this machine cannot see it";
 - `provider_session_ref` is an opaque handle **inside one provider session**.

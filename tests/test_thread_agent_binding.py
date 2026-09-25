@@ -10,12 +10,17 @@ import pytest
 from loopx.cli import main as cli_main
 from loopx.global_registry import global_registry_path
 from loopx.thread_agent_binding import (
+    MAX_ROUTE_CANDIDATES,
+    ROUTE_AMBIGUOUS,
+    ROUTE_RESOLVED,
+    ROUTE_UNBOUND,
     ThreadBindingRequestError,
     bind_thread_agent_in_registry,
     codex_thread_deep_link_locator,
     normalize_thread_id,
     resolve_registry_thread_agent_binding,
     resolve_thread_agent_binding,
+    summarize_agent_binding_routes,
     unbind_thread_agent_in_registry,
 )
 
@@ -688,3 +693,122 @@ def test_unbind_is_idempotent_and_expected_agent_mismatch_fails_closed(
     assert missing["ok"] is True
     assert missing["changed"] is False
     assert path.read_bytes() == before
+
+
+def _binding(
+    agent_id: str,
+    thread_id: str,
+    host_surface: str = "codex-app",
+) -> dict[str, str]:
+    return {
+        "agent_id": agent_id,
+        "thread_id": thread_id,
+        "host_surface": host_surface,
+    }
+
+
+def _goal(*bindings: dict[str, str]) -> dict[str, object]:
+    return {"coordination": {"thread_agent_bindings": [dict(b) for b in bindings]}}
+
+
+def test_route_summary_resolves_only_when_one_binding_addresses_the_agent() -> None:
+    summary = summarize_agent_binding_routes(
+        [_goal(_binding("peer", "thread-one"))],
+        agent_id="peer",
+    )
+
+    assert summary["outcome"] == ROUTE_RESOLVED
+    assert summary["candidate_count"] == 1
+    assert summary["candidates"] == [
+        {"thread_id": "thread-one", "host_surface": "codex-app"}
+    ]
+
+
+def test_route_summary_reports_ambiguous_instead_of_choosing_a_row() -> None:
+    summary = summarize_agent_binding_routes(
+        [
+            _goal(
+                _binding("peer", "thread-old"),
+                _binding("peer", "thread-new", "codex-cli"),
+            )
+        ],
+        agent_id="peer",
+    )
+
+    assert summary["outcome"] == ROUTE_AMBIGUOUS
+    assert [item["thread_id"] for item in summary["candidates"]] == [
+        "thread-old",
+        "thread-new",
+    ]
+
+
+def test_route_summary_counts_a_republished_binding_once() -> None:
+    summary = summarize_agent_binding_routes(
+        [
+            _goal(_binding("peer", "thread-shared")),
+            _goal(_binding("peer", "thread-shared"), _binding("peer", "thread-extra")),
+        ],
+        agent_id="peer",
+    )
+
+    assert summary["candidate_count"] == 2
+    assert summary["outcome"] == ROUTE_AMBIGUOUS
+
+
+def test_route_summary_caps_candidates_without_losing_the_count() -> None:
+    summary = summarize_agent_binding_routes(
+        [_goal(*[_binding("peer", f"thread-{index}") for index in range(5)])],
+        agent_id="peer",
+    )
+
+    assert summary["candidate_count"] == 5
+    assert len(summary["candidates"]) == MAX_ROUTE_CANDIDATES
+    assert summary["outcome"] == ROUTE_AMBIGUOUS
+
+
+def test_route_summary_keeps_other_agents_out_of_the_candidates() -> None:
+    summary = summarize_agent_binding_routes(
+        [
+            _goal(
+                _binding("peer", "thread-peer"), _binding("reviewer", "thread-reviewer")
+            )
+        ],
+        agent_id="peer",
+    )
+
+    assert summary["candidate_count"] == 1
+    assert summary["outcome"] == ROUTE_RESOLVED
+
+
+def test_route_summary_excludes_a_binding_the_owner_cannot_normalise() -> None:
+    """No host surface is not a route, so it is not counted as one either."""
+
+    summary = summarize_agent_binding_routes(
+        [
+            _goal(
+                _binding("peer", "thread-named"),
+                {"agent_id": "peer", "thread_id": "thread-surfaceless"},
+            )
+        ],
+        agent_id="peer",
+    )
+
+    assert summary["candidate_count"] == 1
+    assert summary["outcome"] == ROUTE_RESOLVED
+    assert summary["candidates"] == [
+        {"thread_id": "thread-named", "host_surface": "codex-app"}
+    ]
+
+
+@pytest.mark.parametrize("agent_id", ["agent-absent", "", None, 42, "x" * 400])
+def test_route_summary_reports_unbound_for_any_unaddressable_agent(
+    agent_id: object,
+) -> None:
+    summary = summarize_agent_binding_routes(
+        [_goal(_binding("peer", "thread-peer"))],
+        agent_id=agent_id,
+    )
+
+    assert summary["outcome"] == ROUTE_UNBOUND
+    assert summary["candidate_count"] == 0
+    assert summary["candidates"] == []

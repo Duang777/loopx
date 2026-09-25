@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from .control_plane.projects.registry_codec import mutate_project_registry
@@ -26,6 +26,12 @@ CODEX_THREAD_HOST_SURFACES = frozenset(
     }
 )
 _CODEX_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+AGENT_BINDING_ROUTE_SCHEMA_VERSION = "loopx_agent_binding_route_v0"
+MAX_ROUTE_CANDIDATES = 3
+ROUTE_RESOLVED = "resolved"
+ROUTE_AMBIGUOUS = "ambiguous"
+ROUTE_UNBOUND = "unbound"
 
 
 class ThreadBindingRequestError(ValueError):
@@ -166,6 +172,58 @@ def resolve_thread_agent_binding(
         base["status"] = "conflict"
         base["reason"] = "one thread is bound to multiple agent lanes"
     return base
+
+
+def summarize_agent_binding_routes(
+    goals: Iterable[Any],
+    *,
+    agent_id: Any,
+) -> dict[str, Any]:
+    """Report every published route that addresses one Agent, or say none selects.
+
+    This is the reverse of `resolve_thread_agent_binding`: that resolver answers
+    "which Agent does this exact link belong to", while a coordinator holding a
+    peer name and no link needs to know whether the bindings on record single
+    one out at all. Candidates are exactly the entries the owner's own
+    normalisation accepts: a binding whose host surface cannot be named is
+    dropped there rather than counted here, so this never advertises a route the
+    resolver could not later match. Every accepted binding is counted, the first
+    `MAX_ROUTE_CANDIDATES` are carried, and `candidate_count` keeps the omitted
+    remainder visible. Nothing here picks a route, opens a session, or transfers
+    claim, lease or capability: several candidates is an answer of "ask", and the
+    caller still resolves an exact link before addressing the peer.
+    """
+
+    wanted = normalize_todo_claimed_by(agent_id)
+    candidates: list[dict[str, str]] = []
+    if wanted:
+        for raw_goal in goals:
+            if not isinstance(raw_goal, dict):
+                continue
+            for binding in _bindings_for_goal(raw_goal):
+                if binding["agent_id"] != wanted or binding in candidates:
+                    continue
+                candidates.append(binding)
+    if not candidates:
+        outcome = ROUTE_UNBOUND
+    elif len(candidates) == 1:
+        outcome = ROUTE_RESOLVED
+    else:
+        outcome = ROUTE_AMBIGUOUS
+    return {
+        "schema_version": AGENT_BINDING_ROUTE_SCHEMA_VERSION,
+        "agent_id": wanted or "",
+        "outcome": outcome,
+        "candidate_count": len(candidates),
+        "candidates": [
+            {
+                "thread_id": item["thread_id"],
+                "host_surface": item["host_surface"],
+            }
+            for item in candidates[:MAX_ROUTE_CANDIDATES]
+        ],
+        "provenance": "run_history.goals[].coordination.thread_agent_bindings",
+    }
 
 
 def _registry_thread_binding_request(
