@@ -47,6 +47,14 @@
 writer fence/D2。剩余三个实现边界不因该运行缺陷修复而机械减一。
 [证据与边界](ledger/shared-goal-authority-state-provider-v0/2026-09-24-default-cutover-reconciliation.zh-CN.md#长历史收尾检查本次修复与剩余边界)。
 
+对 journal 超过 128 MiB 完整文档缓存上限的既有 file-v0 Goal，Effect server
+现在复用按原始字节和 store identity 校验、容量有界的 head 与历史回执读取视图；
+提交及历史扫描仍校验完整 journal。canonical 写入 caller 的 RPC 预算覆盖既有
+30 秒 maintenance lock 等待、5 秒 provider lock 等待和有界读回，避免过早报告
+结果不明；只读的 lease inspect 有独立预算。这只是面向既有 Goal 的 L2/L5
+可靠性修复，不解决 file-v0 写入放大，不代表 SQLite D2 资格通过，也不授权迁移
+活跃 Goal。第 7.2 节的容量、恢复、soak 和 fenced migration 门槛仍然有效。
+
 晋升准入现将完整来源绑定到当前 registry witness，并在 TS 持锁范围内重新校验；
 保存计划执行保留已审核的 handoff 策略，失败结果如实报告持久 fence。
 已提交事务的恢复仍按原 fence/receipt，不要求失去权威的旧来源重新有效。
