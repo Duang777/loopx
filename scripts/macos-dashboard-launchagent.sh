@@ -12,6 +12,7 @@ chat_port="${LOOPX_CHAT_PORT:-8767}"
 host="${LOOPX_DASHBOARD_HOST:-127.0.0.1}"
 chat_runtime_endpoint="$host:$chat_port"
 label_prefix="${LOOPX_LAUNCH_LABEL_PREFIX:-com.loopx}"
+log_max_bytes="${LOOPX_LOG_MAX_BYTES:-10485760}"
 
 uid="$(id -u)"
 launch_agents_dir="$HOME/Library/LaunchAgents"
@@ -44,6 +45,7 @@ Environment overrides:
   LOOPX_CHAT_PORT
   LOOPX_DASHBOARD_HOST
   LOOPX_LAUNCH_LABEL_PREFIX
+  LOOPX_LOG_MAX_BYTES    Rotate an agent log once it exceeds this size (default 10 MiB)
   LOOPX_CHAT_CODEX_HOME  Explicit managed Codex home (upgrades preserve the existing binding)
 EOF
 }
@@ -59,6 +61,25 @@ xml_escape() {
 
 shell_quote() {
   printf '%q' "$1"
+}
+
+# Keep the agent logs bounded. KeepAlive means these files outlive every
+# release: without a retention step they only ever grow, and a service that
+# becomes noisy for a while leaves that output on disk forever.
+#
+# Rotation has to run inside the agent's own wrapper, because launchd restarts
+# the service on its own and those restarts never re-enter this installer.
+# It also must not rename the live file: launchd opens StandardOutPath before
+# the wrapper runs and keeps appending to that descriptor, so renaming would
+# send the service's output to the rotated copy and leave the live path empty.
+# Copy the previous generation aside and truncate in place instead, which the
+# append-mode descriptor follows back to offset zero.
+log_rotation_prelude() {
+  local basename="$1"
+  printf 'for loopx_log in %s %s; do [ -f "$loopx_log" ] && [ "$(stat -f%%z "$loopx_log" 2>/dev/null || echo 0)" -gt %s ] && { cp -f "$loopx_log" "$loopx_log.1" 2>/dev/null; : >"$loopx_log"; }; done; unset loopx_log;' \
+    "$(shell_quote "$logs_dir/$basename.out.log")" \
+    "$(shell_quote "$logs_dir/$basename.err.log")" \
+    "$log_max_bytes"
 }
 
 require_macos() {
@@ -221,8 +242,8 @@ write_plists() {
   fi
   chat_codex_home="$(resolve_chat_codex_home "$python_command")"
   codex_home_export=" export CODEX_HOME=$(shell_quote "$chat_codex_home"); export LOOPX_CHAT_CODEX_HOME=$(shell_quote "$chat_codex_home");"
-  status_shell="export LOOPX_PYTHON=$(shell_quote "$python_command"); export PATH=$(shell_quote "$path_prefix"):\$PATH; exec $(shell_quote "$status_command") --registry $(shell_quote "$registry") serve-status --global-registry --host $(shell_quote "$host") --port $(shell_quote "$status_port") --limit $(shell_quote "$status_limit")$control_plane_write_arg"
-  chat_shell="export LOOPX_PYTHON=$(shell_quote "$python_command");$codex_home_export export PATH=$(shell_quote "$path_prefix"):\$PATH; exec $(shell_quote "$status_command") --registry $(shell_quote "$registry") chat --global-registry --host $(shell_quote "$host") --port $(shell_quote "$chat_port") --codex-bin $(shell_quote "$codex_command") --claude-bin $(shell_quote "$claude_command")$lark_cli_arg --replace-existing-loopx-chat --no-open"
+  status_shell="$(log_rotation_prelude status) export LOOPX_PYTHON=$(shell_quote "$python_command"); export PATH=$(shell_quote "$path_prefix"):\$PATH; exec $(shell_quote "$status_command") --registry $(shell_quote "$registry") serve-status --global-registry --host $(shell_quote "$host") --port $(shell_quote "$status_port") --limit $(shell_quote "$status_limit")$control_plane_write_arg"
+  chat_shell="$(log_rotation_prelude chat) export LOOPX_PYTHON=$(shell_quote "$python_command");$codex_home_export export PATH=$(shell_quote "$path_prefix"):\$PATH; exec $(shell_quote "$status_command") --registry $(shell_quote "$registry") chat --global-registry --host $(shell_quote "$host") --port $(shell_quote "$chat_port") --codex-bin $(shell_quote "$codex_command") --claude-bin $(shell_quote "$claude_command")$lark_cli_arg --replace-existing-loopx-chat --no-open"
 
   mkdir -p "$launch_agents_dir" "$logs_dir"
 
@@ -429,6 +450,7 @@ print_status() {
   echo "- $logs_dir/status.err.log"
   echo "- $logs_dir/chat.out.log"
   echo "- $logs_dir/chat.err.log"
+  echo "- retention: rotated to .1 at each agent start once a log exceeds $log_max_bytes bytes"
 }
 
 main() {

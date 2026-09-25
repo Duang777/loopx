@@ -45,6 +45,50 @@ def run_status(fake_bin: Path, home: Path, *, schema_version: int, write_enabled
     return run_script(fake_bin, home, ["status"], schema_version=schema_version, write_enabled=write_enabled).stdout
 
 
+def log_rotation_prelude(plist: Path) -> str:
+    """The rotation step the agent wrapper runs before it execs the service."""
+    command = plistlib.loads(plist.read_bytes())["ProgramArguments"][2]
+    prelude, separator, _ = command.partition(" export LOOPX_PYTHON=")
+    assert separator, command
+    return prelude
+
+
+def check_log_rotation(home: Path, plist: Path, basename: str, limit: int) -> None:
+    logs_dir = home / "Library" / "Logs" / "loopx"
+    prelude = log_rotation_prelude(plist)
+    for stream in ("out", "err"):
+        assert str(logs_dir / f"{basename}.{stream}.log") in prelude, prelude
+
+    # launchd opens StandardOutPath before the wrapper runs and keeps appending
+    # to that descriptor. Rotation must therefore truncate the live file rather
+    # than rename it, or the service's output follows the rotated copy and the
+    # live log stays empty until the next restart. Reproduce that descriptor.
+    live = logs_dir / f"{basename}.out.log"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_bytes(b"O" * (limit + 1))
+    descriptor = os.open(live, os.O_WRONLY | os.O_APPEND)
+    try:
+        subprocess.run(["zsh", "-c", prelude], check=True)
+        os.write(descriptor, b"after-rotation\n")
+    finally:
+        os.close(descriptor)
+    assert live.exists(), (
+        "rotation must truncate the live log in place: launchd's descriptor "
+        "follows a rename, which would strand the service's output in the "
+        "rotated copy and leave this path missing"
+    )
+    assert live.read_bytes() == b"after-rotation\n", live.read_bytes()[:80]
+    assert live.with_suffix(".log.1").read_bytes() == b"O" * (limit + 1)
+
+    # A log under the limit keeps its history; rotation is retention, not a
+    # reset on every service start.
+    small = logs_dir / f"{basename}.err.log"
+    small.write_bytes(b"kept")
+    subprocess.run(["zsh", "-c", prelude], check=True)
+    assert not small.with_suffix(".log.1").exists()
+    assert small.read_bytes() == b"kept"
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="loopx-launchagent-status-smoke-") as raw_tmp:
         tmp = Path(raw_tmp)
@@ -131,6 +175,18 @@ def main() -> int:
         assert "/loopx --registry" in default_plist, default_plist
         assert "/loopx-canary" not in default_plist, default_plist
         assert not (home / "Library" / "LaunchAgents" / "com.loopx.dashboard.plist").exists(), "retired dashboard LaunchAgent should not be installed"
+
+        # KeepAlive restarts never re-enter this installer, so each agent
+        # carries its own retention step for both of its streams.
+        rotation_limit = 1024
+        run_script(fake_bin, home, ["install"], schema_version=2,
+                   extra_env={"LOOPX_LOG_MAX_BYTES": str(rotation_limit)})
+        for plist, basename in ((status_plist, "status"), (chat_plist, "chat")):
+            check_log_rotation(home, plist, basename, rotation_limit)
+        assert f"- retention: rotated to .1 at each agent start once a log exceeds {rotation_limit} bytes" in run_script(
+            fake_bin, home, ["status"], schema_version=2,
+            extra_env={"LOOPX_LOG_MAX_BYTES": str(rotation_limit)},
+        ).stdout
 
         run_script(
             fake_bin,
