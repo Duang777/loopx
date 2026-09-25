@@ -22,7 +22,10 @@ from ..coordination.local_authority import (
     read_canonical_todos_if_promoted,
 )
 from ..coordination.local_authority_shadow_adapter import effective_runtime_root
-from ..effect_runtime import effect_runtime_result
+from ..effect_runtime import (
+    CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    effect_runtime_result,
+)
 from .completion_policy import (
     build_completion_policy_request,
     linked_successor_from_todo,
@@ -45,10 +48,6 @@ _TERMINAL_REQUEST_SCHEMA = "loopx_local_coordination_todo_terminal_lifecycle_req
 _ARCHIVE_REQUEST_SCHEMA = "loopx_local_coordination_todo_archive_request_v0"
 _ARCHIVE_ACK_REQUEST_SCHEMA = "loopx_local_coordination_todo_archive_ack_request_v0"
 _ACCEPTED = {"applied", "recovered", "replayed", "no_change", "planned"}
-# A promoted File authority can verify and publish a retained journal while
-# holding the canonical writer fence. This is an explicit terminal-command
-# budget, not a global relaxation of the Effect runtime request deadline.
-_TERMINAL_RUNTIME_TIMEOUT_SECONDS = 45.0
 
 
 TodoMutation = Callable[..., dict[str, Any]]
@@ -414,7 +413,7 @@ def terminal_canonical_todo_if_promoted(
         }
     result = effect_runtime_result(
         "coordination.local_authority.todo_terminal", request,
-        timeout=_TERMINAL_RUNTIME_TIMEOUT_SECONDS,
+        timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
     )
     if isinstance(result, Mapping) and result.get("status") == "resolve_validation":
         # Admission and receipt recovery precede host-local declaration IO.
@@ -430,7 +429,7 @@ def terminal_canonical_todo_if_promoted(
         )
         result = effect_runtime_result(
             "coordination.local_authority.todo_terminal", request,
-            timeout=_TERMINAL_RUNTIME_TIMEOUT_SECONDS,
+            timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
         )
     completion_validation_executed = False
     if isinstance(result, Mapping) and result.get("status") == "execute_validation":
@@ -458,7 +457,7 @@ def terminal_canonical_todo_if_promoted(
         request["observed_at"] = now_local()
         result = effect_runtime_result(
             "coordination.local_authority.todo_terminal", request,
-            timeout=_TERMINAL_RUNTIME_TIMEOUT_SECONDS,
+            timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
         )
     if not isinstance(result, Mapping):
         raise LocalCoordinationAuthorityUnavailable(
@@ -574,6 +573,7 @@ def archive_canonical_todos_if_promoted(
             "dry_run": dry_run,
             "observed_at": now_local(),
         },
+        timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
     )
     if not isinstance(result, Mapping) or result.get("status") not in _ACCEPTED:
         payload = dict(result) if isinstance(result, Mapping) else {}
@@ -612,6 +612,7 @@ def archive_canonical_todos_if_promoted(
                     "role": role,
                     "operation_id": response.get("operation_id"),
                 },
+                timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
             )
             response["archive_delivery_ack"] = (
                 dict(acknowledgement)

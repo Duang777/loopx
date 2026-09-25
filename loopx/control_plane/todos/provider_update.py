@@ -18,7 +18,10 @@ from ..coordination.local_authority import (
     local_authority_is_promoted,
     read_canonical_todos_if_promoted,
 )
-from ..effect_runtime import effect_runtime_result
+from ..effect_runtime import (
+    CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    effect_runtime_result,
+)
 from .contract import compact_todo_text
 from .provider_projection import settle_canonical_todo_projection
 from .text import normalize_new_todo
@@ -221,7 +224,10 @@ def update_canonical_todo_if_promoted(
         prepare_completion_validation_declaration(
             runtime_root=runtime_root, goal_id=goal_id, declaration=completion_validation_revision
         )
-    result = effect_runtime_result("coordination.local_authority.todo_update", request)
+    result = effect_runtime_result(
+        "coordination.local_authority.todo_update", request,
+        timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    )
     completion_validation_executed = False
     if isinstance(result, dict) and result.get("status") == "execute_validation":
         if completion is None:
@@ -231,7 +237,10 @@ def update_canonical_todo_if_promoted(
             result, registry_path=registry_path, goal_id=goal_id))
         completion_validation_executed = True
         request["observed_at"] = now_local()
-        result = effect_runtime_result("coordination.local_authority.todo_update", request)
+        result = effect_runtime_result(
+            "coordination.local_authority.todo_update", request,
+            timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+        )
     if isinstance(result, dict):
         failure = completion_validation_failure(result, goal_id=goal_id, todo_id=todo_id, dry_run=dry_run)
         if failure is not None:
