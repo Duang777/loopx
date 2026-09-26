@@ -69,13 +69,21 @@ over the 90 days before 2026-09-26, so that they hold with the current number
 of reviewers rather than describing a best week.
 
 Business days are Monday to Friday in UTC+8, excluding public holidays there.
-The clock starts when a pull request is opened or leaves draft.
+The clock starts when a pull request is opened or leaves draft, so a pull
+request that sat as a draft before it was ready is measured from the moment it
+left draft.
+
+A "response" means a review, comment or merge by an account on the
+[roster](#maintainer-and-review-roster) above — the accounts that can satisfy a
+review requirement. Comments from anyone else are real conversation, but they
+do not satisfy this target, and neither do bot accounts. Both facts come from
+GitHub's typed actor data rather than from login names.
 
 | Event | Target | Observed 2026-06-28 → 2026-09-26 |
 | --- | --- | --- |
-| First maintainer response: review, routing comment, or close with a reason | Within 2 business days | 92% within 2 business days; median about 2 hours |
+| First maintainer response: review, routing comment, or close with a reason | Within 2 business days | 90% within 2 business days; median about 1.5 hours, p90 about 13 hours (728 contributor pull requests) |
 | Re-review after the author pushes and re-requests review | Within 2 business days | Not separately measured yet |
-| Decision (approve, request changes, or close with rationale) once required checks pass and no review thread is open | Within 5 business days | Merge measured from opening: median within the same business day, p90 about 2 business days |
+| Decision (approve, request changes, or close with rationale) once required checks pass and no review thread is open | Within 5 business days | Merge measured from the review clock: median about 6 hours, p90 about 2 business days |
 | Security report acknowledgement | Within 5 business days, per [`SECURITY.md`](SECURITY.md) | Unchanged |
 
 - A code owner or first-review contact who cannot respond within the
@@ -93,8 +101,13 @@ The clock starts when a pull request is opened or leaves draft.
 
 `python3 scripts/review_sla_report.py --since YYYY-MM-DD` reproduces the
 observed column and the cross-author review counts used for
-[code-owner eligibility](#code-owner-eligibility). Revisit the targets and the
-roster together, at least every eight weeks.
+[code-owner eligibility](#code-owner-eligibility). Its `--responder` option
+defaults to this page's roster. The report reads one page of review and comment
+history per pull request and prints how many records exceeded that page, so a
+truncated period is disclosed instead of being read as "no response". Those
+cross-author counts are raw public activity; they inform a scope but never
+qualify an account on their own. Revisit the targets and the roster together,
+at least every eight weeks.
 
 ## Repository Developers With Write Access
 
