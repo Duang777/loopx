@@ -240,7 +240,18 @@ class ClaudeCodeAdapter:
         finally:
             with self.lock:
                 self.current_process = None
-        raw_response = "".join(parts) or result_text
+        streamed_response = "".join(parts)
+        raw_response = streamed_response if streamed_response.strip() else result_text
+        if not raw_response.strip():
+            summary = "Claude Code completed without returning an answer."
+            raise CodexChatAgentError(
+                summary,
+                error_code="provider_empty_response",
+                gate=_host_tool_gate(
+                    summary,
+                    "Retry this session or select another healthy Agent endpoint.",
+                ),
+            )
         if not parts and result_text:
             visible = display_filter.feed(result_text)
             if visible:
