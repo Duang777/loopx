@@ -36,10 +36,13 @@ LoopX 不读取也不发送项目名、goal / todo 内容、路径、主机名�
   执行，超时 3 秒，不会拖慢命令或让命令失败；失败当天不重试。
 - `loopx usage-ping` 本身永远不会触发发送。
 
-地址优先取 `LOOPX_USAGE_PING_ENDPOINT`，否则用发布版默认值。必须是
-`https://`（明文 `http://` 仅允许回环地址，用于本地测试）。项目 collector
-部署之前，发布版默认值为空，因此开启只会记录授权、不会发送；此时
-`loopx usage-ping` 显示 `sending: false`。
+当前源码版本的默认地址是
+`https://loopx-usage-collector.huangrt01.workers.dev/v0/ping`。
+`LOOPX_USAGE_PING_ENDPOINT` 可覆盖为另一个 `https://` collector
+（明文 `http://` 仅允许回环地址，用于本地测试）。地址可用不代表授权：
+机器仍需明确 `enable` 才会发送。默认地址为空的旧版本可通过此环境变量
+直接使用服务，无需等待发布。无法访问 `workers.dev` 的网络会发送失败，
+但不会影响命令正常完成。
 
 ## 开关
 

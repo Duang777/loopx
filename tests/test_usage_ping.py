@@ -28,12 +28,13 @@ class _Spawn:
         self.calls.append(argv)
 
 
-def test_undecided_machine_never_schedules_or_creates_state(tmp_path):
+@pytest.mark.parametrize("env", [{}, ENDPOINT])
+def test_undecided_machine_never_schedules_or_creates_state(tmp_path, env):
     spawn = _Spawn()
-    assert usage_ping.maybe_schedule(["status"], env=ENDPOINT, runtime_root=tmp_path, spawn=spawn) is False
+    assert usage_ping.maybe_schedule(["status"], env=env, runtime_root=tmp_path, spawn=spawn) is False
     assert spawn.calls == []
     assert not usage_ping.state_path(tmp_path).exists()
-    assert usage_ping.status(usage_ping.state_path(tmp_path), env=ENDPOINT)["consent"] == "undecided"
+    assert usage_ping.status(usage_ping.state_path(tmp_path), env=env)["consent"] == "undecided"
 
 
 def test_enable_generates_random_id_and_disable_forgets_it(tmp_path):
@@ -85,7 +86,8 @@ def test_endpoint_must_be_https_or_loopback():
     assert usage_ping.resolve_endpoint(ENDPOINT) == ENDPOINT["LOOPX_USAGE_PING_ENDPOINT"]
 
 
-def test_without_a_configured_collector_consent_is_recorded_but_nothing_is_scheduled(tmp_path):
+def test_without_a_configured_collector_consent_is_recorded_but_nothing_is_scheduled(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage_ping, "DEFAULT_ENDPOINT", "")
     usage_ping.enable(usage_ping.state_path(tmp_path), now=DAY1)
     spawn = _Spawn()
     assert usage_ping.maybe_schedule(["status"], env={}, runtime_root=tmp_path, spawn=spawn) is False
@@ -161,13 +163,15 @@ def test_send_round_trips_to_a_loopback_collector(tmp_path):
     assert received[0]["body"] == usage_ping.build_payload(usage_ping.load_state(path))
 
 
-def test_cli_enable_status_disable(tmp_path, monkeypatch, capsys):
+def test_cli_opt_in_reports_deployed_default_and_disable(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(usage_ping, "DEFAULT_RUNTIME_ROOT", tmp_path)
-    monkeypatch.delenv("LOOPX_USAGE_PING_ENDPOINT", raising=False)
+    for key in ("LOOPX_USAGE_PING_ENDPOINT", "CI", "DO_NOT_TRACK", "LOOPX_USAGE_PING"):
+        monkeypatch.delenv(key, raising=False)
     assert cli_main(["usage-ping", "enable", "--format", "json"]) == 0
     enabled = json.loads(capsys.readouterr().out)
     assert enabled["consent"] == "enabled"
-    assert enabled["sending"] is False  # no collector configured in this build
+    assert enabled["sending"] is True
+    assert enabled["endpoint"] == usage_ping.DEFAULT_ENDPOINT
     assert enabled["next_payload"]["install_id"]
     assert cli_main(["usage-ping", "disable"]) == 0
     assert "LoopX usage ping: disabled" in capsys.readouterr().out

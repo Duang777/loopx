@@ -31,9 +31,8 @@ from .file_lock import LockAcquisitionPolicy, exclusive_file_lock
 PAYLOAD_SCHEMA = "loopx_usage_ping_v0"
 STATE_SCHEMA = "loopx_usage_ping_state_v0"
 STATE_FILENAME = "usage-ping.json"
-# Empty until the project collector (apps/usage-collector) is deployed; while it
-# is empty an enabled ping records consent but sends nothing.
-DEFAULT_ENDPOINT = ""
+# Project collector; configuring an endpoint never grants machine consent.
+DEFAULT_ENDPOINT = "https://loopx-usage-collector.huangrt01.workers.dev/v0/ping"
 ENDPOINT_ENV = "LOOPX_USAGE_PING_ENDPOINT"
 SWITCH_ENV = "LOOPX_USAGE_PING"
 REQUEST_TIMEOUT_SECONDS = 3.0
