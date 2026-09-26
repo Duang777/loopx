@@ -1,6 +1,8 @@
 # Manager runtime profile v0 / 管家运行模式 v0
 
-状态：capable-manager-semantic-handoff-v0 强能力管家 RFC 下的 M1 实现候选
+- **RFC 状态：** Draft（[capable-manager-semantic-handoff-v0](capable-manager-semantic-handoff-v0.zh-CN.md)
+  强能力管家 RFC 下的 M1 实现候选）
+- **替代 / 关闭：** 无
 
 > 语言说明：本文与
 > [英文版](./manager-runtime-profile-v0.md)

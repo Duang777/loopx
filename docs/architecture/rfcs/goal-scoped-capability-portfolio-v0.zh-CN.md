@@ -1,6 +1,7 @@
 # RFC：Goal 级能力组合与 Connector 生命周期（v0）
 
 - **RFC 状态：** Draft
+- **替代 / 关闭：** 无
 - **交付成熟度：** Proposal；现有目录、hook 与外部证据切片只是部分前置
 - **作者 / Owner：** LoopX capability 与 control-plane 维护者
 - **创建时间：** 2026-09-21

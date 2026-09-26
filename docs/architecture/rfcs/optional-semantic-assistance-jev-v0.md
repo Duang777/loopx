@@ -1,6 +1,7 @@
 # RFC: Agent Judgment and Optional Independent Assessment — Jev as a Candidate (v0)
 
 - **RFC status:** Draft; M0 **accepted-for-discussion** ([maintainer decision](https://github.com/loopx-project/loopx/pull/4749#pullrequestreview-5259253204)). Q1–Q7 remain pending; the research/design is not accepted for implementation.
+- **Supersedes / closes:** none
 - **Delivery maturity:** Research proposal; a separate D1-only optional shadow implementation is proposed in Appendix A. No model qualification or automatic correction is established. The default-off sentinel capability and its recorded differential live in [`loopx/capabilities/progress_review`](../../../loopx/capabilities/progress_review/README.md); those numbers do not change this Draft's status.
 - **Created:** 2026-09-19. **Last normative revision:** 2026-09-20.
 - **Implementation baseline:** `9f1916960306b3650d795895b89f331eeae2516e`; source ownership and trigger behavior rechecked at PR revision `27812bd0fb437f831a541b564bcb5be8a96ff77e`. Historical upstream inspection is recorded in Appendix A, not a whole-system certification.

@@ -1,6 +1,7 @@
 # RFC: Semantic Vocabulary Convergence and Commit-Time Drift Checks (v0)
 
 - **RFC status:** Draft
+- **Supersedes / closes:** none
 - **Delivery maturity:** Partial (M0/M0.5 checks, M1 typed action domains and M2 Turn contract generation implemented; M3/M4 retirement remains incomplete)
 - **Authors / owners:** LoopX contributors; control-plane kernel maintainers own approval
 - **Created:** 2026-09-15

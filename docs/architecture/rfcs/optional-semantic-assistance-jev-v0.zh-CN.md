@@ -1,6 +1,7 @@
 # RFC：Agent 判断与可选独立评估——以 Jev 为候选方案（v0）
 
 - **RFC status：** Draft；M0 **accepted-for-discussion（接受为讨论稿）**（[维护者决定](https://github.com/loopx-project/loopx/pull/4749#pullrequestreview-5259253204)）。Q1–Q7 仍待决；研究/设计未获实施批准。
+- **替代 / 关闭：** 无
 - **Delivery maturity：** 研究提案；附录 A 单独提出仅 D1 的可选 shadow 实现，没有建立模型质量资格或自动纠正效果。默认关闭的哨兵 capability 及其录制对照见 [`loopx/capabilities/progress_review`](../../../loopx/capabilities/progress_review/README.zh-CN.md)；这些数字不改变本 Draft 的状态。
 - **Created：** 2026-09-19。**Last normative revision：** 2026-09-20。
 - **Implementation baseline：** `9f1916960306b3650d795895b89f331eeae2516e`；在 PR 版本 `27812bd0fb437f831a541b564bcb5be8a96ff77e` 重新核对源码归属与触发器行为。历史 upstream 检查记于附录 A，不构成全系统认证。

@@ -3,6 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Draft, under maintainer review |
+| Supersedes / closes | none |
 | Date | 2026-08-13 |
 | Authors | LoopX maintainers |
 | Scope | Research evidence, coverage, composition frontier, replan integration, execution handoff, and qualification |

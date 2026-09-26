@@ -2,7 +2,8 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft integration proposal |
+| Status | Draft, integration proposal |
+| Supersedes / closes | none |
 | Date | 2026-09-02 |
 | Authors | LoopX maintainers |
 | Scope | Provider-neutral benchmark study description, upload records, and read-only dashboard projections |

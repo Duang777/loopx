@@ -1,6 +1,8 @@
 # RFC: <Decision or Capability Name> (v0)
 
-- **RFC status:** Draft | Under review | Accepted | Rejected | Superseded
+- **RFC status:** Draft | Under review | Accepted | Rejected | Superseded | Retired
+- **Supersedes / closes:** none | <links to the RFCs this one replaces or closes>
+- **Superseded by:** <link> (only when the status is Superseded)
 - **Delivery maturity:** Proposal | Experiment | Partial | Implemented | Promoted
 - **Authors / owners:** <public identities or roles>
 - **Created:** YYYY-MM-DD
@@ -24,8 +26,13 @@ normative sections change:
   registry, rejected alternatives, and incident lessons.
 
 RFC maturity and delivery maturity are independent. Dated progress entries do
-not amend normative sections. If an appendix becomes hard to review, move it
-without loss into a companion `<rfc-name>-execution.md` and link it here.
+not amend normative sections. Dated checkpoints live in
+[`ledger/<rfc-slug>/YYYY-MM-DD-slug.md`](ledger/README.md), never as a
+`checkpoint` heading inside the RFC body; the execution-ledger appendix only
+points at that directory. Lifecycle state is read from the header above into
+the generated [`STATUS.md`](STATUS.md): the value must start with one of the
+listed states, `Supersedes / closes` is mandatory (`none` is an explicit
+answer), and a `Superseded` RFC must name its successor.
 
 ---
 
@@ -151,10 +158,11 @@ approval.
 
 ## Appendix A: Execution ledger (non-normative)
 
-Append dated entries; do not rewrite history to resemble the current plan.
-Each entry states the exact implementation baseline and claim boundary.
-
-### YYYY-MM-DD — <milestone or finding>
+Dated entries live in [`ledger/<rfc-slug>/`](ledger/README.md), one file per
+measured slice named `YYYY-MM-DD-slug.md` with a `.zh-CN.md` mirror; this
+appendix only links the directory. Do not rewrite history to resemble the
+current plan. Each entry states the exact implementation baseline and claim
+boundary:
 
 - **Baseline:** `<commit>` / PR
 - **Delivered:** <observable behavior>

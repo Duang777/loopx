@@ -1,6 +1,7 @@
 # RFC：智能化审阅与动态展示面 v0
 
 - 状态：Draft，等待 Maintainer 审阅
+- 替代 / 关闭：无
 - 提案人：LoopX Maintainers
 - 日期：2026-09-01
 - 范围：定义一个 provider-neutral 的 typed interaction projection，用于筛选、展示、审阅和反馈控制面的重要变化，并为卡片、对比、图、报告、Dashboard 与持续演进的文档提供有界 presentation plan；不新增 source store、authority grant、provider effect、通知调度器、万能 renderer，也不要求必须依赖模型
