@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -438,7 +438,7 @@ def test_windows_installer_keeps_pointer_when_candidate_validation_fails(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="native Windows installer regression")
-def test_windows_installer_rolls_back_late_user_surface_failure(
+def test_windows_installer_rolls_back_user_surfaces_and_retains_upgraded_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -485,4 +485,6 @@ def test_windows_installer_rolls_back_late_user_surface_failure(
         '{"release_id":"known-good"}\n'
     )
     assert existing_skill.read_text(encoding="utf-8") == "# known-good skill\n"
-    assert not (install_root / "releases" / "rejected-late").exists()
+    retained_candidate = install_root / "releases" / "rejected-late"
+    assert retained_candidate.is_dir()
+    assert (retained_candidate / "scripts" / "loopx_entry.py").is_file()
