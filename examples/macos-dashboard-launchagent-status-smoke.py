@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,7 +20,7 @@ def write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def run_script(fake_bin: Path, home: Path, args: list[str], *, schema_version: int, write_enabled: bool = False, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_script(fake_bin: Path, home: Path, args: list[str], *, schema_version: int, write_enabled: bool = False, extra_env: dict[str, str] | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "HOME": str(home),
@@ -35,7 +36,7 @@ def run_script(fake_bin: Path, home: Path, args: list[str], *, schema_version: i
         [str(LAUNCHAGENT_SCRIPT), *args],
         cwd=REPO_ROOT,
         env=env,
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
     )
@@ -87,6 +88,79 @@ def check_log_rotation(home: Path, plist: Path, basename: str, limit: int) -> No
     subprocess.run(["zsh", "-c", prelude], check=True)
     assert not small.with_suffix(".log.1").exists()
     assert small.read_bytes() == b"kept"
+
+
+def check_retention_keeps_the_log_when_the_backup_fails(home: Path, plist: Path, basename: str, limit: int) -> None:
+    """A failed backup must leave the live log alone.
+
+    Truncating on a failed copy would destroy the only record of the failure
+    the operator is trying to diagnose, so retention has to stand down and say
+    so instead.
+    """
+    logs_dir = home / "Library" / "Logs" / "loopx"
+    prelude = log_rotation_prelude(plist)
+    live = logs_dir / f"{basename}.out.log"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    original = b"E" * (limit + 1)
+    backup = live.with_suffix(".log.1")
+
+    def run_prelude() -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(["zsh", "-c", prelude], capture_output=True, text=True)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert live.read_bytes() == original, "a failed backup must not truncate the live log"
+        assert not backup.is_file(), "a failed backup must not leave a partial generation"
+        assert "skipped retention" in result.stderr, result.stderr
+        return result
+
+    # The previous generation is not replaceable: a directory at the backup path
+    # is a real copy failure, and cp would otherwise copy *into* it.
+    live.write_bytes(original)
+    if backup.is_file():
+        backup.unlink()
+    backup.mkdir()
+    try:
+        run_prelude()
+    finally:
+        shutil.rmtree(backup, ignore_errors=True)
+
+    # And a directory that cannot accept a new file fails the same way.
+    if os.geteuid() != 0:
+        backup.unlink(missing_ok=True)
+        live.write_bytes(original)
+        logs_dir.chmod(0o500)
+        try:
+            run_prelude()
+        finally:
+            logs_dir.chmod(0o755)
+
+
+def check_installed_retention_readback(
+    fake_bin: Path, home: Path, plist: Path, basename: str, limit: int
+) -> None:
+    """Status reports the installed policy, not the caller's environment."""
+    command = plistlib.loads(plist.read_bytes())["ProgramArguments"][2]
+    assert f"-gt {limit}" in command, command
+    installed = run_script(fake_bin, home, ["status"], schema_version=2).stdout
+    assert f"- retention: rotated to .1 at each agent start once a log exceeds {limit} bytes" in installed, installed
+    assert "not in effect" not in installed, installed
+    overridden = run_script(
+        fake_bin, home, ["status"], schema_version=2, extra_env={"LOOPX_LOG_MAX_BYTES": "4096"}
+    ).stdout
+    assert f"once a log exceeds {limit} bytes" in overridden, overridden
+    assert "LOOPX_LOG_MAX_BYTES=4096 is not in effect" in overridden, overridden
+
+
+def check_invalid_retention_is_rejected(fake_bin: Path, home: Path, plist: Path, limit: int) -> None:
+    """An unusable threshold fails before a wrapper is written."""
+    rejected = run_script(
+        fake_bin, home, ["install"], schema_version=2,
+        extra_env={"LOOPX_LOG_MAX_BYTES": "invalid"}, check=False,
+    )
+    assert rejected.returncode != 0, rejected.stdout
+    assert "LOOPX_LOG_MAX_BYTES must be a positive byte count, got: invalid" in rejected.stderr, rejected.stderr
+    # The rejected install left the previously installed wrapper in place.
+    command = plistlib.loads(plist.read_bytes())["ProgramArguments"][2]
+    assert f"-gt {limit}" in command, command
 
 
 def main() -> int:
@@ -183,9 +257,11 @@ def main() -> int:
                    extra_env={"LOOPX_LOG_MAX_BYTES": str(rotation_limit)})
         for plist, basename in ((status_plist, "status"), (chat_plist, "chat")):
             check_log_rotation(home, plist, basename, rotation_limit)
+            check_retention_keeps_the_log_when_the_backup_fails(home, plist, basename, rotation_limit)
+            check_installed_retention_readback(fake_bin, home, plist, basename, rotation_limit)
+        check_invalid_retention_is_rejected(fake_bin, home, status_plist, rotation_limit)
         assert f"- retention: rotated to .1 at each agent start once a log exceeds {rotation_limit} bytes" in run_script(
             fake_bin, home, ["status"], schema_version=2,
-            extra_env={"LOOPX_LOG_MAX_BYTES": str(rotation_limit)},
         ).stdout
 
         run_script(
