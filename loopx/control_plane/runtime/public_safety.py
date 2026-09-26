@@ -92,14 +92,19 @@ def validate_public_safe_value(
 ) -> None:
     """Fail closed for private material in a typed public-output payload.
 
-    Field classification is exact after case, separator, and camelCase
-    normalization. Values are then checked recursively so nested maps and lists
-    cannot bypass the same credential and local-path boundary.
+    Mapping field names must be strings. Field classification is exact after
+    case, separator, and camelCase normalization. Values are then checked
+    recursively so nested maps and lists cannot bypass the same credential
+    and local-path boundary.
     """
 
     if isinstance(value, Mapping):
         for key, item in value.items():
-            key_text = str(key)
+            if not isinstance(key, str):
+                raise ValueError(
+                    f"{path} contains a non-string field name ({type(key).__name__})"
+                )
+            key_text = key
             if LOCAL_PATH_SURFACE_PATTERN.search(
                 key_text
             ) or SECRET_LIKE_SURFACE_PATTERN.search(key_text):
