@@ -8,6 +8,8 @@ The TypeScript client/collector allowlist lives in
 |---|---|
 | `POST /v1/ping` | Daily random-ID heartbeat with version/OS/CPU/Python/channel; ≤1 KiB |
 | `POST /v1/aggregate` | Fixed CLI counts, no installation ID or join key; ≤16 KiB |
+| `POST /v1/goals` | Observed Goal-day span/execution buckets, no identity; ≤16 KiB |
+| `GET /v1/goal-stats` | Independent 30-day duration histograms; cells below 5 omitted |
 | `GET /v0/stats` | Deduplicated active/new installations, including retained v0 clients; version/OS/CPU/channel breakdown |
 | `GET /v1/aggregate-stats` | Independent 30-day feature/result/duration/error totals; cells below 5 omitted |
 | `POST /v0/ping` | Retained six-field opt-in client contract; no new default-on clients use this route |
@@ -47,7 +49,11 @@ npx wrangler d1 migrations apply loopx-usage --remote
 npx wrangler deploy
 ```
 
-Qualify `/v1/ping`, `/v1/aggregate`, both stats endpoints, and invalid-field/size
+Existing v1 installations also apply `0002-goal-usage.sql` before deploying
+the Goal-duration Worker. Back up first; this only adds `goal_usage_counts`.
+A Worker rollback can leave that additive table intact.
+
+Qualify `/v1/ping`, `/v1/aggregate`, `/v1/goals`, all stats endpoints, and invalid-field/size
 rejections on a separate database first. Deploy the collector before releasing
 the new client default: the v0-only Worker does not accept v1 requests. Server
 rollback can restore the prior Worker without dropping the additive columns
@@ -69,4 +75,4 @@ node --no-warnings --experimental-strip-types --test tests/control_plane_ts/usag
 ```
 
 Run from repository root. The collector suite executes actual SQL in SQLite,
-including the v0 migration; no production telemetry is needed for these tests.
+including both additive migrations; no production telemetry is needed for these tests.

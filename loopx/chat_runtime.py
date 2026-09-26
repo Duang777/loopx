@@ -1274,12 +1274,18 @@ class ChatRuntimeController:
                     if execution_lock is not None:
                         execution_lock.__exit__(None, None, None)
                     adapter.goal_driver = None
-            elif attachments:
-                if not isinstance(adapter, CodexAppServerAdapter):
-                    raise ValueError("image attachments currently require the Codex Agent endpoint")
-                response = adapter.start_turn_with_attachments(message, event_sink, attachments)
             else:
-                response = adapter.start_turn(message, event_sink)
+                from .usage_goal import observe_goal_execution
+                # Manager/native/external conversations have different execution
+                # and waiting boundaries. Do not invent Goal timing for them.
+                observed_goal = str(session.get("goal_id") or "") if scope["kind"] == "owner_goal" else ""
+                with observe_goal_execution(self.store.root.parent, observed_goal):
+                    if attachments:
+                        if not isinstance(adapter, CodexAppServerAdapter):
+                            raise ValueError("image attachments currently require the Codex Agent endpoint")
+                        response = adapter.start_turn_with_attachments(message, event_sink, attachments)
+                    else:
+                        response = adapter.start_turn(message, event_sink)
             if consume_interrupted():
                 event_buffer.close()
                 return

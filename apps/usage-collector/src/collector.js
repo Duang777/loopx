@@ -1,4 +1,4 @@
-import { validAggregate, validPing, recordAggregate, aggregateStats } from "./basic-usage.ts";
+import { validAggregate, validPing, recordAggregate, aggregateStats, validGoalAggregate, recordGoals, goalStats } from "./basic-usage.ts";
 // Pure request handling for the LoopX usage collector. worker.js binds it to
 // Cloudflare; tests bind it to an in-memory database.
 
@@ -135,6 +135,7 @@ export async function purge(db, day) {
   const cutoff = shiftDays(day, -RETENTION_DAYS);
   await db.batch([
     db.prepare("DELETE FROM pings WHERE day < ?1").bind(cutoff),
+    db.prepare("DELETE FROM goal_usage_counts WHERE day < ?1").bind(shiftDays(day, -30)),
     db.prepare("DELETE FROM usage_counts WHERE day < ?1").bind(shiftDays(day, -30)),
     db.prepare("DELETE FROM installs WHERE install_id NOT IN (SELECT DISTINCT install_id FROM pings)"),
   ]);
@@ -143,16 +144,20 @@ export async function purge(db, day) {
 export async function handle(request, db, now = new Date()) {
   const url = new URL(request.url);
   const day = utcDay(now);
+  if (url.pathname === "/v1/goal-stats") {
+    if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+    return json(await goalStats(db, shiftDays(day, -29)), 200, { "cache-control": "public, max-age=3600" });
+  }
   if (url.pathname === "/v1/aggregate-stats") {
     if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
     return json(await aggregateStats(db, shiftDays(day, -29)), 200, { "cache-control": "public, max-age=3600" });
   }
-  if (["/v0/ping", "/v1/ping", "/v1/aggregate"].includes(url.pathname)) {
+  if (["/v0/ping", "/v1/ping", "/v1/aggregate", "/v1/goals"].includes(url.pathname)) {
     if (request.method !== "POST") return json({ error: "method not allowed" }, 405, { allow: "POST" });
     if (!(request.headers.get("content-type") ?? "").startsWith("application/json")) {
       return json({ error: "content-type must be application/json" }, 415);
     }
-    const limit = url.pathname === "/v1/aggregate" ? 16384 : MAX_BODY_BYTES;
+    const limit = ["/v1/aggregate", "/v1/goals"].includes(url.pathname) ? 16384 : MAX_BODY_BYTES;
     // Bound streaming reads too: Content-Length can be absent or untrusted.
     const reader = request.body?.getReader();
     if (!reader) return json({ error: "missing body" }, 400);
@@ -174,6 +179,11 @@ export async function handle(request, db, now = new Date()) {
       parsed = JSON.parse(raw);
     } catch {
       return json({ error: "invalid JSON" }, 400);
+    }
+    if (url.pathname === "/v1/goals") {
+      if (!validGoalAggregate(parsed)) return json({ error: "invalid goal aggregate" }, 400);
+      await recordGoals(db, parsed, day);
+      return new Response(null, { status: 204 });
     }
     if (url.pathname === "/v1/aggregate") {
       if (!validAggregate(parsed)) return json({ error: "invalid aggregate" }, 400);

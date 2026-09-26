@@ -755,6 +755,8 @@ def _host_result_stage(
     journal_path: Path,
     effects: dict[str, bool],
     confirm_start: Callable[[], None] | None = None,
+    usage_runtime_root: Path | None = None,
+    usage_goal_id: str = "",
 ) -> tuple[dict[str, Any] | None, list[str], dict[str, Any] | None]:
     completed_phases = list(journal.get("completed_phases") or [])
     result = (
@@ -769,16 +771,18 @@ def _host_result_stage(
         # reservation. Confirmation failure stops before the host starts.
         if confirm_start is not None:
             confirm_start()
-        host_observation = (
-            _run_host_runner(request, runner=host_runner)
-            if host_runner is not None
-            else _run_host(
-                request,
-                argv=argv or [],
-                project=project,
-                timeout_seconds=timeout_seconds,
+        from ...usage_goal import observe_goal_execution
+        with observe_goal_execution(usage_runtime_root or project, usage_goal_id):
+            host_observation = (
+                _run_host_runner(request, runner=host_runner)
+                if host_runner is not None
+                else _run_host(
+                    request,
+                    argv=argv or [],
+                    project=project,
+                    timeout_seconds=timeout_seconds,
+                )
             )
-        )
         effects["host_invoked"] = True
         if not host_observation.get("ok"):
             failure = _host_failure(
@@ -1418,6 +1422,8 @@ def run_loopx_turn_once(
             plan,
             request,
             host_runner=host_runner,
+            usage_runtime_root=runtime_root,
+            usage_goal_id=goal_id,
             argv=argv,
             completion_lifecycle_configured=all(
                 callback is not None
