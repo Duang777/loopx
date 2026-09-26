@@ -239,6 +239,21 @@ def test_windows_lane_rebuilds_the_frontend_without_a_usable_python3() -> None:
     )
 
 
+def test_windows_lifecycle_suite_references_existing_tests() -> None:
+    job = WORKFLOW.split("  windows-powershell:\n", 1)[1].split(
+        "  presentation:\n", 1,
+    )[0]
+    step = job.split("name: Run native Windows lifecycle tests", 1)[1].split(
+        "\n\n      - name:", 1,
+    )[0]
+    test_paths = re.findall(r"^\s+(tests/\S+\.py)\s*$", step, re.MULTILINE)
+
+    assert test_paths
+    assert [
+        path for path in test_paths if not (WORKFLOW_ROOT / path).is_file()
+    ] == []
+
+
 def test_four_shards_execute_each_test_once_and_merge_portable_coverage(
     tmp_path: Path,
 ) -> None:
