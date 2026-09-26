@@ -3,13 +3,15 @@
 <!-- 由 scripts/generate_rfc_status_index.py 生成；不要手工编辑。 -->
 
 本索引从本目录每个 RFC 自己的状态头生成。改变一个 RFC 的状态只需要改它的头部，
+和 [README 索引](README.md) 里对应条目（仅英文）的 `**RFC status:**` 行，
 然后运行 `python3 scripts/generate_rfc_status_index.py --write`；`--check` 在索引过期时失败，`examples/docs-governance-smoke.py` 会调用它。
 
 生命周期分档：**已接受**（Accepted）、**进行中**（Draft、Under review）、
 **已被替代**（Superseded，必须写明 `Superseded by`）、**已退役**（Retired、Rejected）。
 RFC 状态和交付成熟度是两件事；后者见 [README 索引](README.md)（仅英文）的 Delivery 行。
 新 RFC 必须在头部声明 `**替代 / 关闭：**`（`无` 或所替代 / 关闭的旧 RFC 链接）。
-带日期的 checkpoint 记录写进 [ledger/](ledger/README.zh-CN.md)，不写进 RFC 正文。
+带日期的交付记录写进 [ledger/](ledger/README.zh-CN.md)；附录里可以留历史，
+但附录之前的正文不允许再出现带日期的记录标题。
 
 [English](STATUS.md) 与本文互为语义镜像。
 

@@ -216,24 +216,42 @@ LEDGER_ENTRY_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*$")
 LEDGER_APPENDIX_HEADING = re.compile(
     r"^## Appendix [A-Z]: (?:[A-Za-z ]+ and )?[Ee]xecution ledger", re.MULTILINE
 )
-# Dated checkpoint logs belong in ledger/<rfc-slug>/, never in an RFC body. A
-# heading that still says "checkpoint" is the append cluster the ledger removed.
-RFC_BODY_CHECKPOINT_HEADING = re.compile(r"^#{1,6}\s.*(?:checkpoint|检查点)", re.IGNORECASE | re.MULTILINE)
+# Dated delivery logs belong in ledger/<rfc-slug>/, never in an RFC body above
+# its appendices. A heading is a dated log when the date leads it or when it
+# names a checkpoint and carries a date, so a normative `## Checkpoint
+# persistence contract` and the append-only dated history an appendix keeps both
+# stay legal. This mirrors DATED_LOG_HEADING_RE in the generator; the fixture
+# check below runs the generator itself on both classes of heading.
+RFC_BODY_DATED_LOG_HEADING = re.compile(
+    r"(?:^#{1,6}\s*(?:\*\*)?(?:19|20)\d{2}-\d{2}-\d{2}\b"
+    r"|^#{1,6}\s.*(?:checkpoint|检查点).*(?:19|20)\d{2}-\d{2}-\d{2})",
+    re.IGNORECASE | re.MULTILINE,
+)
+RFC_APPENDIX_HEADING = re.compile(r"^##\s+(?:Appendix\b|附录)", re.MULTILINE)
+
+
+def rfc_body_above_appendices(text: str) -> str:
+    appendix = RFC_APPENDIX_HEADING.search(text)
+    return text[: appendix.start()] if appendix else text
 
 
 def check_rfc_status_index() -> None:
     """Derived lifecycle index must be current and every RFC header well-formed.
 
     `scripts/generate_rfc_status_index.py --check` fails when STATUS.md or
-    STATUS.zh-CN.md is stale, when an RFC lacks a lifecycle status or a
-    `Supersedes / closes` declaration, or when a `checkpoint` heading is still in
-    an RFC body. The README index deliberately has no hand-maintained status
-    matrix; the generated file is the only enumerating surface.
+    STATUS.zh-CN.md is stale, when an RFC lacks a parseable lifecycle status or a
+    `Supersedes / closes` declaration, or when a dated log heading is still above
+    an RFC's appendices. The generated file is the only enumerating surface; the
+    README status lines it cross-checks are per-RFC entries, not a matrix.
     """
     import subprocess
 
     result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "scripts" / "generate_rfc_status_index.py"), "--check"],
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "generate_rfc_status_index.py"),
+            "--check",
+        ],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
@@ -246,10 +264,257 @@ def check_rfc_status_index() -> None:
     for rfc in sorted(rfc_dir.glob("*.md")):
         if rfc.name in {"README.md", "TEMPLATE.md", "STATUS.md", "STATUS.zh-CN.md"}:
             continue
-        offending = RFC_BODY_CHECKPOINT_HEADING.findall(rfc.read_text(encoding="utf-8"))
-        assert not offending, (
-            f"{rfc.name}: checkpoint heading belongs in ledger/{rfc.name.split('.')[0]}/"
+        offending = RFC_BODY_DATED_LOG_HEADING.findall(
+            rfc_body_above_appendices(rfc.read_text(encoding="utf-8"))
         )
+        assert not offending, (
+            f"{rfc.name}: dated log heading belongs in ledger/{rfc.name.split('.')[0]}/"
+        )
+
+
+def check_rfc_status_index_rules() -> None:
+    """Exercise the status-index rules through the real CLI on a scratch tree.
+
+    `check_rfc_status_index` proves this repository is clean; it cannot prove the
+    rules reject anything, because a rule that accepted every document would also
+    pass. So the generator and the RFC directory are copied into a temporary
+    root, and each fixture below is staged as a real RFC, indexed in the README,
+    and run through `--write`/`--check`. Positive fixtures assert the tree still
+    checks out, negative fixtures assert the named problem is reported.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="rfc-status-index-") as tmp:
+        root = Path(tmp)
+        rfcs = root / "docs" / "architecture" / "rfcs"
+        shutil.copytree(DOCS / "architecture" / "rfcs", rfcs)
+        (root / "scripts").mkdir()
+        generator = root / "scripts" / "generate_rfc_status_index.py"
+        shutil.copy(REPO_ROOT / "scripts" / "generate_rfc_status_index.py", generator)
+        readme = rfcs / "README.md"
+        pristine_readme = readme.read_text(encoding="utf-8")
+        staged: list[str] = []
+
+        def run(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, str(generator), *args],
+                capture_output=True,
+                text=True,
+                cwd=root,
+            )
+
+        def stage(
+            slug: str,
+            *,
+            status: str,
+            supersedes: str = "none",
+            superseded_by: str | None = None,
+            body: str = "",
+            mirror: bool = False,
+        ) -> None:
+            header = [f"# Fixture {slug}", "", f"- **RFC status:** {status}"]
+            header.append(f"- **Supersedes / closes:** {supersedes}")
+            if superseded_by is not None:
+                header.append(f"- **Superseded by:** {superseded_by}")
+            (rfcs / f"{slug}.md").write_text(
+                "\n".join(header) + "\n" + body, encoding="utf-8"
+            )
+            if mirror:
+                (rfcs / f"{slug}.zh-CN.md").write_text(
+                    "\n".join(
+                        [
+                            f"# 夹具 {slug} v0",
+                            "",
+                            f"- **RFC status：** {status}",
+                            f"- **替代 / 关闭：** {'无' if supersedes == 'none' else supersedes}",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            staged.append(
+                f"\n- [Fixture {slug}]({slug}.md)\n  - **RFC status:** {status}\n"
+            )
+            readme.write_text(pristine_readme + "".join(staged), encoding="utf-8")
+
+        def reset() -> None:
+            for path in rfcs.glob("fixture-*.md"):
+                path.unlink()
+            staged.clear()
+            readme.write_text(pristine_readme, encoding="utf-8")
+
+        def check_after_write() -> tuple[int, str]:
+            # `--write` first, so the only failure left is a rule violation.
+            run("--write")
+            result = run("--check")
+            return result.returncode, result.stdout + result.stderr
+
+        assert run("--check").returncode == 0, (
+            "the copied RFC tree is not clean to start with"
+        )
+
+        typed_tail = {
+            "slug": "fixture-alpha-v0",
+            "status": "Draft, under maintainer review",
+        }
+        positive: list[tuple[str, list[dict[str, object]]]] = [
+            ("a typed lifecycle value with a descriptive tail", [typed_tail]),
+            (
+                "a normative heading that says checkpoint without a date",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Draft",
+                        "body": "\n## Checkpoint persistence contract\n\nState is flushed.\n",
+                    }
+                ],
+            ),
+            (
+                "dated history kept in an appendix",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Draft",
+                        "body": (
+                            "\n## Appendix A: Execution ledger (non-normative)\n\n"
+                            "### 2026-09-24 — shipped\n\nEntry text.\n"
+                        ),
+                    }
+                ],
+            ),
+            (
+                "a supersession chain declared in both directions",
+                [
+                    {
+                        "slug": "fixture-old-v0",
+                        "status": "Superseded",
+                        "superseded_by": "fixture-new-v0.md",
+                    },
+                    {
+                        "slug": "fixture-new-v0",
+                        "status": "Accepted",
+                        "supersedes": "[fixture-old-v0.md](fixture-old-v0.md)",
+                    },
+                ],
+            ),
+            (
+                "a Chinese mirror carrying the supersession declaration",
+                [{"slug": "fixture-alpha-v0", "status": "Draft", "mirror": True}],
+            ),
+        ]
+        for case, fixtures in positive:
+            for fixture in fixtures:
+                stage(**fixture)
+            code, output = check_after_write()
+            assert code == 0, f"{case}: expected a clean run\n{output}"
+            reset()
+
+        negative: list[tuple[str, list[dict[str, object]], str]] = [
+            (
+                "an untyped lifecycle value",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Drafting notes are not a lifecycle state",
+                    }
+                ],
+                "does not begin with a lifecycle state",
+            ),
+            (
+                "`Superseded by: none`",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Superseded",
+                        "superseded_by": "none",
+                    }
+                ],
+                "`none` is not a successor",
+            ),
+            (
+                "a successor that does not exist",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Superseded",
+                        "superseded_by": "missing-successor-v0.md",
+                    }
+                ],
+                "`Superseded by` names missing-successor-v0.md, which is not an RFC",
+            ),
+            (
+                "a successor that never acknowledges its predecessor",
+                [
+                    {"slug": "fixture-new-v0", "status": "Draft"},
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Superseded",
+                        "superseded_by": "fixture-new-v0.md",
+                    },
+                ],
+                "does not name it in `Supersedes / closes`",
+            ),
+            (
+                "a predecessor that never acknowledges its successor",
+                [
+                    {"slug": "fixture-old-v0", "status": "Draft"},
+                    {
+                        "slug": "fixture-new-v0",
+                        "status": "Accepted",
+                        "supersedes": "[fixture-old-v0.md](fixture-old-v0.md)",
+                    },
+                ],
+                "does not declare `Superseded by: fixture-new-v0.md`",
+            ),
+            (
+                "a `Supersedes / closes` value that is neither none nor an RFC",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Draft",
+                        "supersedes": "later",
+                    }
+                ],
+                "must be `none` or name the RFCs",
+            ),
+            (
+                "a dated log heading above the appendices",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Draft",
+                        "body": "\n### 2026-09-24 — shipped\n\nEntry text.\n",
+                    }
+                ],
+                "dated log heading belongs in ledger/fixture-alpha-v0/",
+            ),
+            (
+                "a dated checkpoint heading above the appendices",
+                [
+                    {
+                        "slug": "fixture-alpha-v0",
+                        "status": "Draft",
+                        "body": "\n### Checkpoint 2026-09-24 — shipped\n\nEntry text.\n",
+                    }
+                ],
+                "dated log heading belongs in ledger/fixture-alpha-v0/",
+            ),
+        ]
+        for case, fixtures, expected in negative:
+            for fixture in fixtures:
+                stage(**fixture)
+            code, output = check_after_write()
+            assert code != 0, f"{case}: expected {expected!r}, but the check passed"
+            assert expected in output, f"{case}: expected {expected!r} in\n{output}"
+            reported = [
+                line for line in output.splitlines() if line.startswith("fixture-")
+            ]
+            assert len(reported) == 1, (
+                f"{case}: expected exactly the {expected!r} problem, reported {reported}"
+            )
+            reset()
 
 
 def check_rfc_ledger_entries() -> None:
@@ -957,6 +1222,7 @@ def main() -> int:
     check_rfc_language_mirrors()
     check_rfc_ledger_entries()
     check_rfc_status_index()
+    check_rfc_status_index_rules()
     print("docs-governance-smoke ok")
     return 0
 

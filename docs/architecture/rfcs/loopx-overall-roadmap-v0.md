@@ -1,6 +1,6 @@
 # LoopX Overall Roadmap v0: Product, Collaboration, Technology and Delivery
 
-- Status: Draft overall roadmap; no automatic domain-RFC acceptance, provider promotion or permission-default change.
+- Status: Draft, overall roadmap; no automatic domain-RFC acceptance, provider promotion or permission-default change.
 - Supersedes / closes: none
 - Scope baseline: 2026-09-16, `0aa6179de`; steward reproduction baseline is preserved separately in Section 8.
 - Ownership: overall product outcomes, cross-domain dependencies, priorities and portfolio acceptance here; concrete rules in domain RFCs/stable protocols; execution state in canonical Todos.

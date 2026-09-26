@@ -83,19 +83,28 @@ README. Regenerate it with `python3 scripts/generate_rfc_status_index.py
 --write`; `--check` fails when the file is stale or when any RFC violates the
 rules below, and the docs governance smoke runs that check.
 
-- Every RFC header carries `**RFC status:**` whose value starts with one
-  lifecycle state, and `**Supersedes / closes:**` naming the RFCs it replaces
-  or closes, or `none`. A new RFC cannot land without that declaration; every
-  current RFC already carries it.
-- An RFC marked `Superseded` also carries `**Superseded by:**` pointing at its
-  successor, and the successor names it in `Supersedes / closes`.
+- Every RFC header carries `**RFC status:**` whose value begins with one
+  lifecycle state. A descriptive tail has to follow a delimiter (`,`, `;`, `:`,
+  `(` or `—`): `Draft, under maintainer review`, not `Drafting notes`. The
+  README entry for the same RFC repeats the state and is cross-checked against
+  the header, so changing a state means editing both.
+- `**Supersedes / closes:**` names the RFCs this one replaces or closes, or
+  `none`. A named RFC has to exist, has to be marked `Superseded`, and has to
+  point back with `**Superseded by:**`; that successor must in turn name this
+  RFC in its own `Supersedes / closes`. `Superseded by: none` is not a
+  supersession. A new RFC cannot land without the declaration; every current
+  RFC carries `none`.
 - The Chinese mirror carries the same `**替代 / 关闭：**` declaration.
+- Dated delivery logs live in [`ledger/<rfc-slug>/`](ledger/README.md), not in
+  an RFC body: no dated log heading may appear above the first appendix. An
+  appendix may keep append-only dated history, and a normative heading may say
+  "checkpoint" as long as it carries no date.
 
 ## Overall Product and Delivery Roadmap
 
 - [LoopX Overall Roadmap v0](loopx-overall-roadmap-v0.md)
   ([中文版](loopx-overall-roadmap-v0.zh-CN.md))
-  - **RFC status:** Draft portfolio roadmap.
+  - **RFC status:** Draft, portfolio roadmap.
   - **Delivery on `main`:** Planning and audit evidence, not runtime promotion.
   - **Current boundary:** Maps all 30 pre-existing primary RFCs and important
     non-RFC domains into 13 streams, G0–G5 product milestones and R1–R7 core
@@ -259,7 +268,7 @@ rules below, and the docs governance smoke runs that check.
     promotion remain open.
 - [Obelisk Session Evidence Provider v0](obelisk-session-evidence-provider-v0.md)
   ([中文版](obelisk-session-evidence-provider-v0.zh-CN.md))
-  - **RFC status:** Draft integration proposal.
+  - **RFC status:** Draft, integration proposal.
   - **Delivery on `main`:** Evaluation only.
   - **Current boundary:** The default-off, read-only evidence-provider boundary
     is documented. Obelisk is not installed, promoted, or authoritative for
@@ -347,7 +356,7 @@ rules below, and the docs governance smoke runs that check.
     retention and Mode B evidence rows.
 - [External Evidence Research Capability v0](external-evidence-research-capability-v0.md)
   ([中文版](external-evidence-research-capability-v0.zh-CN.md))
-  - **RFC status:** Draft implementation slice.
+  - **RFC status:** Draft, implementation slice.
   - **Delivery on `main`:** Bounded slice; see the RFC acceptance section for
     the audited state of the `external_evidence_research_v0` lifecycle.
   - **Current boundary:** Provider-neutral research planning, provenance
@@ -401,7 +410,7 @@ rules below, and the docs governance smoke runs that check.
     living documents and governed amendment/settlement review remain open.
 - [Live Team Workspace v0](live-team-workspace-v0.md)
   ([中文版](live-team-workspace-v0.zh-CN.md))
-  - **RFC status:** Draft presentation slice under intelligent presentation.
+  - **RFC status:** Draft, presentation slice under intelligent presentation.
   - **Delivery on `main`:** Design proposal only; no live team-stream qualification.
   - **Current boundary:** A command surface plus spatial research studio, evidence
     handoff motion, conclusion revision and replay. L1 requires one real
@@ -419,7 +428,7 @@ rules below, and the docs governance smoke runs that check.
 ## Benchmark And Reliability Engineering
 
 - [Benchmark Study Upload and Dashboard Projection v0](benchmark-study-upload-dashboard-v0.md)
-  - **RFC status:** Draft integration proposal.
+  - **RFC status:** Draft, integration proposal.
   - **Delivery on `main`:** Proposal only.
   - **Current boundary:** Experiment-board rows and benchmark-native scores
     remain authoritative; the study manifest, upload/readback envelope, and
