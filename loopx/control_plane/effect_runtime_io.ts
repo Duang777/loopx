@@ -56,6 +56,18 @@ async function readFileIdentity(path: string): Promise<CreatedFileIdentity | nul
   }
 }
 
+async function publishedMutationLockMatches(
+  lockPath: string,
+  identity: CreatedFileIdentity,
+  ownerPid: number,
+  token: string,
+): Promise<boolean> {
+  if (!sameFileIdentity(identity, await readFileIdentity(lockPath))) return false;
+  const owner = await readMutationLockOwner(lockPath);
+  if (owner?.pid !== ownerPid || owner.token !== token) return false;
+  return sameFileIdentity(identity, await readFileIdentity(lockPath));
+}
+
 function processIsAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
@@ -321,6 +333,23 @@ export async function acquireFileMutationLock(
       } catch (error) {
         await removeCreatedFile(lockPath, identity);
         throw error;
+      }
+      if (!identity) {
+        throw new Error("mutation lock identity was not captured");
+      }
+      if (
+        !(await publishedMutationLockMatches(
+          lockPath,
+          identity,
+          ownerPid,
+          token,
+        ))
+      ) {
+        await removeCreatedFile(lockPath, identity);
+        if (Date.now() >= deadline) {
+          throw new EffectRuntimeLockTimeoutError();
+        }
+        continue;
       }
       return { targetPath, lockPath, token };
     } catch (error) {

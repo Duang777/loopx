@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -92,4 +92,39 @@ test("blank mutation lock tokens are not treated as valid owners", async (t) => 
     "utf8",
   );
   assert.equal(await mutationLockOwner(target), null);
+});
+
+test("acquire rejects success when its lock inode is replaced before owner publication", async (t) => {
+  const root = await workspace(t);
+  const target = join(root, "state");
+  const lockPath = `${target}.ts-effect.lock`;
+  const replacement = { pid: process.pid, token: "replacement-token" };
+  const probe = await open(join(root, "probe"), "w");
+  const prototype = Object.getPrototypeOf(probe) as {
+    writeFile(data: string, encoding: BufferEncoding): Promise<void>;
+  };
+  await probe.close();
+  const writeFileToHandle = prototype.writeFile;
+  let replaced = false;
+
+  prototype.writeFile = async function (data, encoding) {
+    if (!replaced) {
+      replaced = true;
+      await rm(lockPath, { force: true });
+      await writeFile(lockPath, JSON.stringify(replacement), "utf8");
+    }
+    await writeFileToHandle.call(this, data, encoding);
+  };
+
+  try {
+    await assert.rejects(
+      acquireFileMutationLock(target, process.pid, 0),
+      { code: "mutation_lock_timeout" },
+    );
+    assert.equal(replaced, true);
+    assert.deepEqual(await mutationLockOwner(target), replacement);
+  } finally {
+    prototype.writeFile = writeFileToHandle;
+    await rm(lockPath, { force: true });
+  }
 });
