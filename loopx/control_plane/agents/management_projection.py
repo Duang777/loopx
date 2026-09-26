@@ -12,6 +12,7 @@ from ..todos.contract import (
     normalize_todo_id,
 )
 from ..todos.summary_item import TODO_SUMMARY_SOURCE_KEYS
+from ...thread_agent_binding import collect_accepted_bindings
 from .material_frontier import AGENT_MATERIAL_FRONTIER_SCHEMA_VERSION
 from .material_handoff import (
     build_material_handoff_note_v1,
@@ -563,45 +564,29 @@ def _safe_next_action(todo: dict[str, Any] | None) -> str:
 def _collect_session_binding_candidates(
     status_payload: dict[str, Any],
 ) -> dict[str, list[dict[str, str]]]:
-    """Group one Agent's historical session bindings by their full identity.
+    """Group one Agent's accepted session bindings by the owner's agent identity.
 
     Session bindings come from run_history.coordination.thread_agent_bindings
-    and are the only source for addressable/bound lifecycle states. The display
-    budget is not an identity key: the binding owner accepts thread identifiers
-    to 128 characters and host surfaces to 64, both wider than what this
-    projection shows, so two valid bindings that share a visible prefix are
-    still two routes. Identity is therefore the untouched value, and compaction
-    only renders it.
+    and are the only source for addressable/bound lifecycle states. They are
+    read through the binding owner's `collect_accepted_bindings`, so this row
+    counts the same bindings the peer directory publishes as routes instead of
+    normalising a second time here; that also keys the candidates by the same
+    agent identity this projection uses for its rows. The display budget is not
+    an identity key: the owner accepts thread identifiers to 128 characters and
+    host surfaces to 64, both wider than what this projection shows, so two
+    accepted bindings that share a visible prefix are still two routes.
+    Identity stays whole, and `_compact` only renders it.
     """
 
     candidates: dict[str, list[dict[str, str]]] = {}
-    seen_identities: set[tuple[str, str, str]] = set()
     run_history = _as_dict(status_payload.get("run_history"))
-    for raw_goal in _as_list(run_history.get("goals")):
-        if not isinstance(raw_goal, dict):
-            continue
-        coordination = _as_dict(raw_goal.get("coordination"))
-        for raw_binding in _as_list(coordination.get("thread_agent_bindings")):
-            if not isinstance(raw_binding, dict):
-                continue
-            raw_agent = str(raw_binding.get("agent_id") or "").strip()
-            raw_thread = str(raw_binding.get("thread_id") or "").strip()
-            raw_host = str(raw_binding.get("host_surface") or "").strip()
-            agent_id = _compact(raw_agent, limit=120)
-            thread_id = _compact(raw_thread, limit=120)
-            host_surface = _compact(raw_host, limit=60)
-            if not agent_id or not thread_id:
-                continue
-            identity = (raw_agent, raw_thread, raw_host)
-            if identity in seen_identities:
-                continue
-            seen_identities.add(identity)
-            candidates.setdefault(agent_id, []).append(
-                {
-                    "thread_id": thread_id,
-                    "host_surface": host_surface or "unknown",
-                }
-            )
+    for binding in collect_accepted_bindings(_as_list(run_history.get("goals"))):
+        candidates.setdefault(binding["agent_id"], []).append(
+            {
+                "thread_id": _compact(binding["thread_id"], limit=120),
+                "host_surface": _compact(binding["host_surface"], limit=60),
+            }
+        )
     return candidates
 
 
