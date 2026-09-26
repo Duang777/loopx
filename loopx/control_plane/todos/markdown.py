@@ -231,6 +231,15 @@ def render_todo_markdown(payload: dict[str, Any]) -> str:
         )
     if payload.get("error"):
         lines.append(f"- error: {payload.get('error')}")
+        recovery = payload.get("recovery")
+        if isinstance(recovery, dict) and recovery.get("reason") and payload.get("handoff_mode"):
+            lines.append(f"- handoff_mode: `{payload.get('handoff_mode')}`")
+            lines.append(f"- recovery: {recovery['reason']}")
+            for step in ("inspect", "acquire", "retry", "release"):
+                instruction = recovery.get(step)
+                if isinstance(instruction, dict) and instruction.get("command"):
+                    lines.append(f"- {step}: `{instruction['command']}`")
+            lines.append("- Use `--format json` for the recovery arguments and current-version requirements.")
         if payload.get("operator_action"):
             action = payload["operator_action"]
             lines.append(f"- error_code: `{payload.get('error_code')}`")

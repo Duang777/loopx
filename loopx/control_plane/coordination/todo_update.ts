@@ -186,7 +186,9 @@ export async function executeCoordinationTodoUpdate(
   const target = loadUpdateTarget(head.head, input);
   if (isFailure(target)) return target;
   const rejected = todoUpdateAdmissionRejection(head.head, target.todo, target.leases, input);
-  if (rejected !== null) return failure(rejected.code, rejected.reason);
+  if (rejected !== null) return {...failure(rejected.code, rejected.reason),
+    ...(rejected.handoff_mode === undefined ? {} : {handoff_mode: rejected.handoff_mode}),
+    ...(rejected.recovery === undefined ? {} : {recovery: rejected.recovery})};
   let prepared: ReturnType<typeof prepareUpdatedTodo>;
   try { prepared = prepareUpdatedTodo(target.todo, input, head.head); }
   catch (error) { return failure("invalid_coordination_todo_update",
