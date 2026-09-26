@@ -154,6 +154,7 @@ def test_configure_goal_preserves_strict_project_envelope(tmp_path: Path) -> Non
 
 def test_activation_and_deletion_preserve_strict_project_envelope(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = tmp_path / "project"
     runtime_root = tmp_path / "runtime"
@@ -178,10 +179,45 @@ def test_activation_and_deletion_preserve_strict_project_envelope(
         actor_kind="owner",
         execute=True,
     )
-    deleted = delete_stopped_goal(
+    preview = delete_stopped_goal(
         registry_path=runtime_root / "registry.global.json",
         goal_id="goal-one",
+        execute=False,
+    )
+    original_write = deletion_service._write_locked_registry
+    write_count = 0
+
+    def interrupt_after_source_commit(**kwargs: object) -> None:
+        nonlocal write_count
+        original_write(**kwargs)
+        write_count += 1
+        if write_count == 1:
+            raise KeyboardInterrupt("simulated process termination")
+
+    monkeypatch.setattr(
+        deletion_service,
+        "_write_locked_registry",
+        interrupt_after_source_commit,
+    )
+    with pytest.raises(KeyboardInterrupt, match="simulated process termination"):
+        delete_stopped_goal(
+            registry_path=runtime_root / "registry.global.json",
+            goal_id="goal-one",
+            execute=True,
+            expected_state_fingerprint=preview["observed_state_fingerprint"],
+            expected_source_basis=preview["source_basis"],
+        )
+    monkeypatch.setattr(
+        deletion_service,
+        "_write_locked_registry",
+        original_write,
+    )
+    deleted = delete_stopped_goal(
+        registry_path=registry_path,
+        goal_id="goal-one",
         execute=True,
+        expected_state_fingerprint=preview["observed_state_fingerprint"],
+        expected_source_basis=preview["source_basis"],
     )
 
     source_root = json.loads(registry_path.read_text(encoding="utf-8"))
@@ -189,6 +225,7 @@ def test_activation_and_deletion_preserve_strict_project_envelope(
         (runtime_root / "registry.global.json").read_text(encoding="utf-8")
     )
     assert stopped["readback"]["verified"] is True
+    assert deleted["recovered"] is True
     assert deleted["readback"]["verified"] is True
     assert source_root[0]["payload_sha256"] == _payload_digest(source_root[1])
     assert source_root[1]["goals"] == []

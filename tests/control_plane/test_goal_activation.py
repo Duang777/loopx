@@ -143,6 +143,55 @@ def _preview_delete_action(
     return service, proposal
 
 
+def _interrupt_goal_deletion(
+    *,
+    global_registry: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_after_write: int,
+) -> dict[str, object]:
+    assert set_goal_activation_state(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        state="stopped",
+        actor_kind="owner",
+        execute=True,
+    )["ok"] is True
+    preview = delete_stopped_goal(
+        registry_path=global_registry,
+        goal_id="goal-one",
+        execute=False,
+    )
+    original_write = deletion_service._write_locked_registry
+    write_count = 0
+
+    def interrupt_commit(**kwargs: object) -> None:
+        nonlocal write_count
+        original_write(**kwargs)
+        write_count += 1
+        if write_count == interrupt_after_write:
+            raise KeyboardInterrupt("simulated process termination")
+
+    monkeypatch.setattr(
+        deletion_service,
+        "_write_locked_registry",
+        interrupt_commit,
+    )
+    with pytest.raises(KeyboardInterrupt, match="simulated process termination"):
+        delete_stopped_goal(
+            registry_path=global_registry,
+            goal_id="goal-one",
+            execute=True,
+            expected_state_fingerprint=preview["observed_state_fingerprint"],
+            expected_source_basis=preview["source_basis"],
+        )
+    monkeypatch.setattr(
+        deletion_service,
+        "_write_locked_registry",
+        original_write,
+    )
+    return preview
+
+
 def test_activation_contract_defaults_active_and_rejects_unknown_state() -> None:
     assert goal_activation_state({}) is GoalActivationState.ACTIVE
     assert goal_activation_state({"activation_state": "stopped"}) is GoalActivationState.STOPPED
@@ -946,6 +995,96 @@ def test_delete_stopped_goal_removes_source_and_global(
     assert len(deleted["backup_paths"]) == 2
 
 
+@pytest.mark.parametrize(
+    ("interrupt_after_write", "retry_from"),
+    [(1, "source"), (1, "global"), (2, "source"), (2, "global")],
+)
+def test_delete_stopped_goal_recovers_interrupted_registry_commit(
+    connected_registries: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_after_write: int,
+    retry_from: str,
+) -> None:
+    source_registry, global_registry = connected_registries
+    preview = _interrupt_goal_deletion(
+        global_registry=global_registry,
+        monkeypatch=monkeypatch,
+        interrupt_after_write=interrupt_after_write,
+    )
+    retry_registry = source_registry if retry_from == "source" else global_registry
+
+    recovery_preview = delete_stopped_goal(
+        registry_path=retry_registry,
+        goal_id="goal-one",
+        execute=False,
+        expected_state_fingerprint=preview["observed_state_fingerprint"],
+        expected_source_basis=preview["source_basis"],
+    )
+    recovered = delete_stopped_goal(
+        registry_path=retry_registry,
+        goal_id="goal-one",
+        execute=True,
+        expected_state_fingerprint=preview["observed_state_fingerprint"],
+        expected_source_basis=preview["source_basis"],
+    )
+
+    assert recovery_preview["ok"] is True
+    assert recovery_preview["recovery_pending"] is True
+    assert (
+        recovery_preview["observed_state_fingerprint"]
+        == preview["observed_state_fingerprint"]
+    )
+    assert recovered["ok"] is True
+    assert recovered["recovered"] is True
+    assert recovered["readback"]["verified"] is True
+    assert registry_goals(load_registry(source_registry)) == []
+    assert registry_goals(load_registry(global_registry)) == []
+    with pytest.raises(ValueError, match="goal id not found in registry"):
+        delete_stopped_goal(
+            registry_path=retry_registry,
+            goal_id="goal-one",
+            execute=False,
+        )
+
+
+def test_delete_stopped_goal_recovery_rejects_concurrent_registry_change(
+    connected_registries: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_registry, global_registry = connected_registries
+    preview = _interrupt_goal_deletion(
+        global_registry=global_registry,
+        monkeypatch=monkeypatch,
+        interrupt_after_write=1,
+    )
+
+    remaining = next(
+        path
+        for path in (source_registry, global_registry)
+        if any(
+            goal.get("id") == "goal-one" for goal in registry_goals(load_registry(path))
+        )
+    )
+    concurrent = load_registry(remaining)
+    concurrent["concurrent_marker"] = "must survive"
+    _write_json(remaining, concurrent)
+    before = source_registry.read_bytes(), global_registry.read_bytes()
+
+    with pytest.raises(
+        ValueError,
+        match="Goal deletion recovery conflicts with current registry state",
+    ):
+        delete_stopped_goal(
+            registry_path=global_registry,
+            goal_id="goal-one",
+            execute=True,
+            expected_state_fingerprint=preview["observed_state_fingerprint"],
+            expected_source_basis=preview["source_basis"],
+        )
+
+    assert (source_registry.read_bytes(), global_registry.read_bytes()) == before
+
+
 def test_delete_active_goal_fails_closed(
     connected_registries: tuple[Path, Path],
 ) -> None:
@@ -1329,7 +1468,7 @@ def test_owner_confirmed_typed_action_marks_resumed_goal_stale(
     assert not list(tmp_path.rglob("*.goal-delete-*.bak"))
 
 
-def test_owner_confirmed_typed_action_marks_already_deleted_goal_stale(
+def test_owner_confirmed_typed_action_recovers_already_committed_delete(
     connected_registries: tuple[Path, Path],
     tmp_path: Path,
 ) -> None:
@@ -1350,13 +1489,13 @@ def test_owner_confirmed_typed_action_marks_already_deleted_goal_stale(
 
     applied = service.apply(str(proposal["proposal_id"]))
 
-    assert applied["proposal"]["status"] == "stale"
-    assert applied["proposal"]["receipt"] is None
+    assert applied["proposal"]["status"] == "applied"
+    assert applied["proposal"]["receipt"]["outcome"] == "goal_deleted"
     assert registry_goals(load_registry(source_registry)) == []
     assert registry_goals(load_registry(global_registry)) == []
 
 
-def test_owner_confirmed_typed_action_marks_concurrent_delete_stale(
+def test_owner_confirmed_typed_action_recovers_concurrent_same_operation_delete(
     connected_registries: tuple[Path, Path],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1394,8 +1533,8 @@ def test_owner_confirmed_typed_action_marks_concurrent_delete_stale(
     applied = service.apply(str(proposal["proposal_id"]))
 
     assert delete_calls == 2
-    assert applied["proposal"]["status"] == "stale"
-    assert applied["proposal"]["receipt"] is None
+    assert applied["proposal"]["status"] == "applied"
+    assert applied["proposal"]["receipt"]["outcome"] == "goal_deleted"
     assert registry_goals(load_registry(source_registry)) == []
     assert registry_goals(load_registry(global_registry)) == []
 
