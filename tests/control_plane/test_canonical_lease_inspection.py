@@ -131,14 +131,14 @@ def test_registration_change_retries_and_uses_new_eligibility(tmp_path, monkeypa
     original = effect_runtime.effect_runtime_result
     calls = []
 
-    def change_registration(method, payload):
+    def change_registration(method, payload, **kwargs):
         if method == "task_lease.inspect.native":
             calls.append(method)
             if len(calls) == 1:
                 updated = json.loads(registry.read_text())
                 updated["goals"][0]["coordination"]["registered_agents"] = ["agent-b"]
                 registry.write_text(json.dumps(updated))
-        return original(method, payload)
+        return original(method, payload, **kwargs)
 
     monkeypatch.setattr(effect_runtime, "effect_runtime_result", change_registration)
     result = _inspect(registry, runtime)
@@ -155,11 +155,11 @@ def test_continuous_source_churn_exhausts_bounded_retry_without_success(tmp_path
     original = effect_runtime.effect_runtime_result
     calls = []
 
-    def change_source(method, payload):
+    def change_source(method, payload, **kwargs):
         if method == "task_lease.inspect.native":
             calls.append(method)
             registry.write_text(registry.read_text() + "\n")
-        return original(method, payload)
+        return original(method, payload, **kwargs)
 
     monkeypatch.setattr(effect_runtime, "effect_runtime_result", change_source)
     with pytest.raises(LocalCoordinationAuthorityUnavailable) as error:
