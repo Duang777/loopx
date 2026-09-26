@@ -71,11 +71,10 @@ REQUIRED_INSTALLED_SKILL_PHRASES = {
         "For a generic library microbenchmark",
     ),
     "loopx-self-repair": (
-        "Build a compact evidence packet",
-        "loopx --format json diagnose --goal-id <goal-id>",
-        "loopx --format json status --goal-id <goal-id> --limit 20",
-        "registry-declared active state file",
-        "references/repair-patterns.md",
+        "Reuse evidence before collecting more",
+        "scripts/find_pattern.py",
+        "references/targeted-diagnostics.md",
+        "references/pattern-lookup.md",
         "Repair at the lowest durable layer",
     ),
 }
