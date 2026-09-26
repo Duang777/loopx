@@ -4,6 +4,13 @@ import type {JsonObject} from "../effect_program.ts";
 import {requireJsonObject} from "../runtime_decode.ts";
 import {EffectRuntimeRequestError} from "../effect_runtime_errors.ts";
 import {parseIsoTimestamp} from "../runtime_timestamp.ts";
+import {indexCoordinationProjection} from "./coordination_projection.ts";
+import {canonicalTaskLeaseAcquireFacts} from "./task_lease_state.ts";
+import {coordinationTodoWriteScopes} from "./todo_write_scopes.ts";
+import {decideTaskLeaseAcquire} from "../work_items/task_lease_acquire_decision.ts";
+import {leaseOwnerRejection} from "../work_items/task_lease_eligibility.ts";
+import {TODO_WORK_REQUIREMENT_FIELDS} from "../todos/work_requirements.ts";
+import {acceptanceWorkGuard} from "../goals/acceptance_contract.ts";
 import {leaseEpoch} from "../work_items/task_lease_acquire.ts";
 import {evaluateCoordinationTerminalFence, COORDINATION_TERMINAL_FENCE_REQUEST_SCHEMA} from "./todo_lifecycle_decision.ts";
 
@@ -57,4 +64,94 @@ export function evaluateCanonicalTaskLeaseProof(input: {
   // Strip the terminal owner's release proposal: callers receive only a
   // decision, so an observation cannot accidentally apply terminal effects.
   return {outcome: decision.outcome, code: decision.code};
+}
+
+export type TodoUpdateLeaseRecovery = JsonObject & {
+  action: "inspect_current_proof" | "reconcile_lease_owner" | "resolve_acquire_rejection" |
+    "resolve_lifecycle_edit" | "acquire_fresh_lease";
+  lease_state: "absent" | "active" | "released" | "expired";
+  owner_relation: "none" | "same_owner" | "foreign_owner";
+};
+
+/** Metadata editing cannot replace a retained execution grant's work contract. */
+export function leasedTodoEditRejection(todo: JsonObject, intent: JsonObject): {code: string; reason: string} | null {
+  if (TODO_WORK_REQUIREMENT_FIELDS.some(field => Object.hasOwn(intent, field))) {
+    return {code: "update_lease_requirements_transition_unsupported",
+      reason: "Changing leased work requirements requires a new execution grant; metadata update leaves the lease unchanged"};
+  }
+  if (typeof intent.status === "string" && intent.status.toLowerCase() !== todo.status) {
+    return {code: "update_lease_status_transition_unsupported",
+      reason: "Changing a leased Todo status requires an atomic lifecycle operation; planning update leaves the lease unchanged"};
+  }
+  return null;
+}
+
+/** Diagnostic only: acquisition still rechecks the current head and its CAS.
+ * Reuse admission rather than recommend a new lease solely from its expiry. */
+export function todoUpdateLeaseRecovery(head: JsonObject, input: {
+  goal_id: string; todo_id: string; actor_agent_id: string | null;
+  registered_agents: readonly string[]; now: Date; planning_intent?: JsonObject;
+}, mode: string): TodoUpdateLeaseRecovery {
+  const index = indexCoordinationProjection(head, input.goal_id);
+  const facts = canonicalTaskLeaseAcquireFacts(index, input.goal_id, input.todo_id,
+    input.registered_agents, input.now);
+  const lease = facts.lease;
+  const leaseState: TodoUpdateLeaseRecovery["lease_state"] = lease === null ? "absent" : lease.active ? "active"
+    : lease.status === "released" ? "released" : "expired";
+  const sameOwner = lease !== null && lease.owner === input.actor_agent_id;
+  const ownerRelation: TodoUpdateLeaseRecovery["owner_relation"] =
+    lease === null ? "none" : sameOwner ? "same_owner" : "foreign_owner";
+  const base = {
+    lease_state: leaseState,
+    owner_relation: ownerRelation,
+    observed_version: lease?.version ?? 0,
+    inspect: {command: "loopx task-lease inspect", goal_id: input.goal_id, todo_id: input.todo_id},
+    execution_authority_granted: false,
+  };
+  const todo = index.todos.get(input.todo_id)!;
+  const intent = input.planning_intent ?? {};
+  const editRejection = lease === null ? null : leasedTodoEditRejection(todo, intent);
+  if (editRejection !== null) {
+    return {...base, action: "resolve_lifecycle_edit", reason_code: editRejection.code,
+      reason: "This edit changes leased work requirements or status. Use the owning lifecycle transition; reacquiring a lease alone cannot authorize this metadata edit."};
+  }
+  if (todo.claimed_by !== input.actor_agent_id) {
+    return {...base, action: "reconcile_lease_owner",
+      reason: "A leased update requires the actor to own the Todo claim. Reconcile ownership before acquiring execution authority."};
+  }
+  const retry = {command: "loopx todo update",
+    requires_flags: ["--task-lease-idempotency-key", "--task-lease-expected-version"],
+    proof_source: "current_owner_lease_readback"};
+  if (lease?.active) {
+    const eligible = sameOwner && leaseOwnerRejection(facts.todo,
+      input.actor_agent_id, input.registered_agents) === null;
+    return {...base, action: eligible ? "inspect_current_proof" : "reconcile_lease_owner",
+      reason: eligible
+        ? "Inspect the active lease and retry with its current owner proof; do not acquire a competing execution."
+        : "Reconcile the Todo claim and active lease holder through the lease lifecycle before retrying; do not borrow another holder's proof.",
+      ...(eligible ? {retry} : {})};
+  }
+  const scopes = coordinationTodoWriteScopes(todo);
+  // This hypothetical fresh identity is never published or returned as proof.
+  const key = lease?.idempotency_key === "recovery-probe" ? "recovery-probe-next" : "recovery-probe";
+  const decision = decideTaskLeaseAcquire({handoff_mode: mode, registered_agents: input.registered_agents,
+    ...facts, command: {owner: input.actor_agent_id ?? "", idempotency_key: key,
+      ttl_seconds: 60, write_scopes: scopes, expected_version: lease?.version ?? 0}});
+  const acceptance = acceptanceWorkGuard(head, input.goal_id, input.todo_id);
+  const blocked = decision.outcome !== "apply" ? decision.code
+    : acceptance !== null && !acceptance.allowed ? String(acceptance.reason_code) : null;
+  if (blocked !== null) {
+    return {...base, action: "resolve_acquire_rejection", reason_code: blocked,
+      reason: "Current mode, Todo eligibility, acceptance or write scopes reject acquisition. Resolve that condition before retrying the edit; changing handoff mode is not a recovery shortcut."};
+  }
+  return {...base, action: "acquire_fresh_lease",
+    reason: "Inspect the current version, acquire a short lease with a fresh key, retry the edit with the returned proof, then release that lease. Acquisition revalidates current authority.",
+    acquire: {command: "loopx task-lease acquire", goal_id: input.goal_id, todo_id: input.todo_id,
+      owner: input.actor_agent_id, expected_version: lease?.version ?? 0,
+      ttl_seconds: 60, write_scopes: scopes, fresh_idempotency_key_required: true,
+      recheck_version_with_inspect: true},
+    retry,
+    release: {command: "loopx task-lease release",
+      requires_flags: ["--owner", "--idempotency-key", "--expected-version"],
+      proof_source: "current_owner_lease_readback"}};
 }

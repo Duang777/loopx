@@ -9,11 +9,11 @@ import {TODO_WORK_REQUIREMENT_FIELDS} from "../todos/work_requirements.ts";
 import {TODO_OWNERSHIP_INTENT_FIELDS} from "../todos/authoring_scope.ts";
 import {evaluateCoordinationTodoMutationDecision,
   COORDINATION_TODO_MUTATION_DECISION_REQUEST_SCHEMA} from "./todo_lifecycle_decision.ts";
-import {decodeTaskLeaseProof, evaluateCanonicalTaskLeaseProof} from "./task_lease_proof.ts";
+import {decodeTaskLeaseProof, evaluateCanonicalTaskLeaseProof, todoUpdateLeaseRecovery, leasedTodoEditRejection} from "./task_lease_proof.ts";
 import {deferredReopenRejection, isDeferredReopen} from "./todo_deferred_reopen.ts";
 import {blockedLifecycleRejection, isBlockedLifecycleTransition} from "./todo_blocked_lifecycle.ts";
 
-interface TodoUpdateRejection {code: string; reason: string}
+interface TodoUpdateRejection {code: string; reason: string; handoff_mode?: string; recovery?: JsonObject}
 const reject = (code: string, reason: string): TodoUpdateRejection => ({code, reason});
 
 export function todoUpdateAdmissionRejection(
@@ -149,20 +149,14 @@ export function todoUpdateAdmissionRejection(
         if (restoration?.kind === "unavailable") {
           return reject("goal_acceptance_restoration_unavailable", restoration.reason);
         }
-        return reject(String(fence.code), "Todo update requires the current active lease execution proof");
+        return {...reject(String(fence.code), "Todo update requires the current active lease execution proof"),
+          handoff_mode: mode, recovery: todoUpdateLeaseRecovery(head, input, mode)};
       }
       if (lease !== undefined && todo.claimed_by !== input.actor_agent_id) {
         return reject("update_owner_mismatch", "Leased Todo update requires the current claim owner");
       }
-      const status = input.planning_intent?.status;
-      if (lease !== undefined && TODO_WORK_REQUIREMENT_FIELDS.some(field =>
-        Object.hasOwn(input.planning_intent ?? {}, field))) {
-        return reject("update_lease_requirements_transition_unsupported",
-          "Changing leased work requirements requires a new execution grant; metadata update leaves the lease unchanged");
-      }
-      if (lease !== undefined && typeof status === "string" && status.toLowerCase() !== todo.status) {
-        return reject("update_lease_status_transition_unsupported",
-          "Changing a leased Todo status requires an atomic lifecycle operation; planning update leaves the lease unchanged");
+      if (lease !== undefined) {
+        return leasedTodoEditRejection(todo, input.planning_intent ?? {});
       }
     } catch (error) {
       return reject("invalid_coordination_projection",
