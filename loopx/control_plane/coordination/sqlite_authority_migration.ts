@@ -71,7 +71,7 @@ interface SqliteAuthorityMigrationInspection {
 export function migrateSqliteAuthorityStoreV1ToV2(
   directory: string,
   goalId: string,
-  options: {execute?: boolean; expectedIdentity?: string} = {},
+  options: {execute?: boolean; expectedIdentity?: string; expectedSequenceDigest?: string} = {},
 ): SqliteAuthorityMigrationResult {
   const path = sqliteAuthorityPath(directory, goalId);
   const base: SqliteAuthorityMigrationResult = {schema_version: "loopx_sqlite_authority_migration_v0", status: "failed"};
@@ -98,7 +98,7 @@ export function migrateSqliteAuthorityStoreV1ToV2(
     return {...base, status: "planned", database_path: path, identity: inspection.value.identity,
       commits: inspection.value.commits, database_bytes_before: before};
   }
-  return executeSqliteAuthorityMigration(path, goalId, inspection.value, before);
+  return executeSqliteAuthorityMigration(path, goalId, inspection.value, before, options.expectedSequenceDigest);
 }
 
 function inspectSqliteAuthorityStore(
@@ -118,6 +118,10 @@ function inspectSqliteAuthorityStore(
         (metadata.schema_version !== SQLITE_AUTHORITY_STORE_SCHEMA &&
           metadata.schema_version !== SQLITE_AUTHORITY_STORE_V1_SCHEMA)) {
       throw new AuthorityStoreProtocolError("SQLite authority metadata or goal identity is invalid");
+    }
+    if ((version === 1 && metadata.schema_version !== SQLITE_AUTHORITY_STORE_V1_SCHEMA) ||
+      (version === 2 && metadata.schema_version !== SQLITE_AUTHORITY_STORE_SCHEMA)) {
+      throw new AuthorityStoreProtocolError("SQLite schema metadata and user_version disagree");
     }
     if (version === 1 || version === 2) {
       const bounds = db.prepare(`SELECT
@@ -146,6 +150,7 @@ function executeSqliteAuthorityMigration(
   goalId: string,
   inspection: SqliteAuthorityMigrationInspection,
   before: number,
+  expectedSequenceDigest?: string,
 ): SqliteAuthorityMigrationResult {
   const base: SqliteAuthorityMigrationResult = {schema_version: "loopx_sqlite_authority_migration_v0", status: "failed"};
   const {driver: sqlite} = sqliteAuthorityRuntime();
@@ -227,6 +232,10 @@ function executeSqliteAuthorityMigration(
     // store reads with, so the swap cannot publish a log only its writer can
     // decode.
     verifyWrittenStateLogReadable(db, commits);
+    const sequenceDigest = identityDigest.digest("hex");
+    if (expectedSequenceDigest !== undefined && sequenceDigest !== expectedSequenceDigest) {
+      throw new AuthorityStoreProtocolError("SQLite source changed after its verified backup; retry upgrade");
+    }
     // Swap only after every retained row was proved and re-published.
     db.exec("DROP TABLE head");
     db.exec("DROP TABLE commits");
@@ -237,7 +246,6 @@ function executeSqliteAuthorityMigration(
     db.exec("PRAGMA user_version = 2");
     db.exec("COMMIT");
     transactionOpen = false;
-    const sequenceDigest = identityDigest.digest("hex");
     const verification = verifyMigratedStore(path, goalId, inspection.identity, sequenceDigest);
     if (verification !== null) {
       return {...base, reason_code: verification.reason_code, reason: verification.reason,

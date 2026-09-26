@@ -894,6 +894,8 @@ def _execute_python_distribution_update(
     )
     commands = {
         "install": install_command,
+        "authority_upgrade": [sys.executable, "-m", "loopx.cli", "--format", "json",
+                              "authority-archive", "upgrade", "--all-known", "--execute"],
         "workflow_skills": [
             sys.executable,
             "-m",
@@ -940,16 +942,18 @@ def _execute_python_distribution_update(
         timeout=timeout_seconds,
     )
     if results["install"].returncode == 0:
-        for step in ("workflow_skills", "slash_commands", "doctor"):
+        for step in ("authority_upgrade", "workflow_skills", "slash_commands", "doctor"):
             results[step] = subprocess.run(
                 commands[step],
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True,
                 timeout=timeout_seconds,
             )
+            if results[step].returncode != 0:
+                break
         if all(
-            results[step].returncode == 0
-            for step in ("workflow_skills", "slash_commands", "doctor")
+            step in results and results[step].returncode == 0
+            for step in ("authority_upgrade", "workflow_skills", "slash_commands", "doctor")
         ):
             results["extension_doctor"] = subprocess.run(
                 commands["extension_doctor"],
@@ -965,7 +969,7 @@ def _execute_python_distribution_update(
         "install_stdout_tail": results["install"].stdout[-2000:],
         "install_stderr_tail": results["install"].stderr[-2000:],
     }
-    for step in ("workflow_skills", "slash_commands", "doctor", "extension_doctor"):
+    for step in ("authority_upgrade", "workflow_skills", "slash_commands", "doctor", "extension_doctor"):
         result = results.get(step)
         if result is None:
             execution[f"{step}_status"] = "skipped_prior_step_failed"
@@ -976,6 +980,7 @@ def _execute_python_distribution_update(
 
     runtime_steps = (
         "install",
+        "authority_upgrade",
         "workflow_skills",
         "slash_commands",
         "doctor",
@@ -1021,26 +1026,18 @@ def _execute_python_distribution_update(
             "reason": updated["recommended_action"],
         }
     else:
-        backup = (
-            payload.get("plan", {}).get("backup")
-            if isinstance(payload.get("plan"), dict)
-            else {}
-        )
-        rollback_command = (
-            backup.get("rollback_command") if isinstance(backup, dict) else None
-        )
         updated["recommended_action"] = (
-            "inspect the failed update step, then use the recorded package rollback command"
-            if rollback_command
-            else "inspect the failed package-manager or host-material update step"
+            "inspect the failed update step and retry the verified authority upgrade; "
+            "do not roll back the package without checking current data-format compatibility"
         )
         updated["next_action"] = {
-            "kind": "review_or_rollback",
-            "command": rollback_command,
-            "mutating": bool(rollback_command),
-            "requires_explicit_approval": bool(rollback_command),
+            "kind": "review_update_failure",
+            "command": "loopx --format json authority-archive upgrade --all-known",
+            "mutating": False,
+            "requires_explicit_approval": False,
             "reason": updated["recommended_action"],
         }
+
     return updated
 
 
@@ -1232,6 +1229,14 @@ def execute_rollback_plan(
     }
     updated = dict(payload)
     try:
+        compatible = subprocess.run(
+            [str(target_script), "--format", "json", "authority-archive", "upgrade",
+             "--all-known", "--require-current"],
+            capture_output=True, text=True, timeout=timeout_seconds,
+        )
+        if compatible.returncode != 0:
+            raise RuntimeError("Rollback target cannot read current authority formats. "
+                               "Keep the current runtime; recover a verified backup into an isolated store first.")
         loopx_bin.parent.mkdir(parents=True, exist_ok=True)
         temp_link = loopx_bin.with_name(f".{loopx_bin.name}.rollback.{os.getpid()}")
         if temp_link.exists() or temp_link.is_symlink():

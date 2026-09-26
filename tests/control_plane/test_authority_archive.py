@@ -81,3 +81,68 @@ def test_archive_cli_complete_isolated_recovery(tmp_path, monkeypatch, provider)
     finally:
         subprocess.run([sys.executable, "-c", "from loopx.control_plane.effect_runtime import effect_runtime_result; effect_runtime_result('runtime.shutdown',{},retry_safe=False)"],
                        cwd=REPO, capture_output=True, text=True, timeout=30, check=True)
+
+
+def test_upgrade_cli_requires_migration_and_keeps_verified_backup(tmp_path, monkeypatch):
+    isolate_sqlite_runtime(tmp_path, monkeypatch)
+    runtime, registry, state = tmp_path / "runtime", tmp_path / "registry.json", tmp_path / "state.md"
+    state.write_text("# Synthetic state\n")
+    goal = "upgrade-cli-goal"
+    registry.write_text(json.dumps({"common_runtime_root": str(runtime), "goals": []}))
+    initialize_canonical_authority(runtime, goal, {"goal_id": goal, "value": 1}, state_path=state, provider="file")
+    store = next((runtime / "authority" / "file-v0").glob("authority-store-*.json"))
+    document = json.loads(store.read_text())
+    # Single-commit legacy envelope, independently expressed on disk.
+    row = document["committed"][0]
+    row["projection"] = row.pop("state")["projection"]
+    document["schema_version"] = "loopx_file_authority_store_v0"
+    store.write_text(json.dumps(document))
+    before = store.read_bytes()
+    identified = subprocess.run([sys.executable, "-m", "loopx.cli", "--format", "json",
+        "authority-archive", "inspect", "--source", str(store)], capture_output=True, text=True,
+        check=True, timeout=60)
+    inspection = json.loads(identified.stdout)["inspection"]
+    assert inspection["artifact_kind"] == "authority_store"
+    assert inspection["upgrade_required"] is True
+    assert inspection["verification"] == "metadata_only"
+    command = [sys.executable, "-m", "loopx.cli", "--registry", str(registry),
+               "--runtime-root", str(runtime), "--format", "json", "authority-archive", "upgrade"]
+    checked = subprocess.run([*command, "--require-current"], capture_output=True, text=True, timeout=60)
+    assert checked.returncode == 1
+    assert store.read_bytes() == before
+    preview = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
+    assert json.loads(preview.stdout)["results"][0]["status"] == "planned"
+    executed = subprocess.run([*command, "--execute"], capture_output=True, text=True, check=True, timeout=60)
+    result = json.loads(executed.stdout)
+    assert result["status"] == "upgraded"
+    backup = Path(result["results"][0]["backup_directory"])
+    assert (backup / "source.json").read_bytes() == before
+    assert json.loads((backup / "manifest.json").read_text())["cursor"] == document["cursor"]
+    assert json.loads(store.read_text())["provider_revision"] == document["provider_revision"]
+    subprocess.run([*command, "--require-current"], capture_output=True, text=True, check=True, timeout=60)
+
+
+def test_all_known_upgrade_roots_are_registry_owned_and_do_not_create_stores(tmp_path, monkeypatch):
+    from loopx.cli_commands import authority_archive
+
+    common, project = tmp_path / "common", tmp_path / "project"
+    common.mkdir()
+    (project / ".loopx").mkdir(parents=True)
+    project_registry = project / ".loopx" / "registry.json"
+    project_registry.write_text(json.dumps({"common_runtime_root": ".loopx/runtime", "goals": [
+        {"id": "markdown-only"}, {"id": "another-goal"}]}))
+    global_registry = common / "registry.global.json"
+    global_registry.write_text(json.dumps({"goals": [
+        {"id": "markdown-only", "source_registry": str(project_registry)},
+        {"id": "another-goal", "source_registry": str(project_registry)},
+        {"id": "disconnected", "source_registry": str(tmp_path / "removed" / "registry.json")},
+    ]}))
+    monkeypatch.delenv("LOOPX_RUNTIME_ROOT", raising=False)
+    monkeypatch.setattr(authority_archive, "DEFAULT_RUNTIME_ROOT", common)
+    before = {p: p.read_bytes() for p in (global_registry, project_registry)}
+    roots = authority_archive.authority_upgrade_roots(project_registry, None, all_known=True)
+    assert roots == sorted(map(str, [common, project / ".loopx/runtime"]))
+    assert authority_archive.authority_upgrade_roots(project_registry, None, all_known=False) == [str(project / ".loopx/runtime")]
+    assert all(p.read_bytes() == data for p, data in before.items())
+    assert not (project / ".loopx/runtime").exists()
+    assert not (common / "authority").exists()
