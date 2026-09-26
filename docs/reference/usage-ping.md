@@ -9,8 +9,8 @@ outcomes. No content collection is implemented.
 
 ```bash
 loopx usage-ping status      # current policy, recipient and outgoing payload previews
-loopx usage-ping disable     # stop both channels; delete local ID and pending counts
-loopx usage-ping enable      # explicitly allow both channels after reading the disclosure
+loopx usage-ping disable     # stop all channels; delete local ID and pending counts
+loopx usage-ping enable      # explicitly allow all channels after reading the disclosure
 ```
 
 Settings → Capability Center exposes the same machine-wide switch and previews.
@@ -80,8 +80,8 @@ silently opt itself in: use the visible App setting or explicit CLI enable.
 JSON stdout is unaffected. Previously enabled v0 clients keep their random ID
 but must see the expanded-scope disclosure; previously disabled clients stay off.
 
-An explicit stored disable blocks both channels. The following environment
-settings also block both channels, even after explicit enable:
+An explicit stored disable blocks all channels. The following environment
+settings also block all channels, even after explicit enable:
 
 - `LOOPX_USAGE_PING=0|false|no|off`
 - `DO_NOT_TRACK` set to a nonempty value other than `0`
@@ -142,3 +142,57 @@ requests can never be correlated. Public unauthenticated counters can be
 inflated, and suppression/loss makes these estimates unsuitable for billing.
 The service may be unreachable on some networks; the owner can supply a reachable
 collector, and LoopX continues to work without telemetry.
+
+## Observed Goal duration
+
+The Goal channel adds two duration histograms to basic statistics. It helps
+answer whether observed work continues for hours or days, and how much Host
+execution those spans contain. It does not identify a person or a Goal.
+
+- **Span:** first to most recent observed Host execution, including intervening
+  pauses. It stops growing while no execution is observed.
+- **Execution:** union of observed Host-call intervals for one Goal on one
+  machine. Concurrent or nested calls overlap only once; retry execution counts,
+  settlement-only replay does not. Network/tool/approval waits inside a Host call
+  are included; this is neither CPU time nor billing time.
+- **Sampling:** one cumulative snapshot per locally observed Goal-day, flushed
+  after that UTC day closes when another observation or normal usage occurs.
+  Unfinished Goals are included. A continuously executing Host checkpoints every
+  minute and can flush without another CLI command. Quiet Goals are not counted
+  again every day. These counts are **Goal-day observations, not unique Goals**;
+  the collector cannot join a Goal across days or machines.
+
+Coverage is managed `turn run-once` Host execution and regular owner Goal chat.
+Native `/goal`, externally attached agent sessions, manager and external-audience
+conversations are excluded because they do not share these timing boundaries.
+File, SQLite and PostgreSQL use the same observer; no provider state is queried
+or changed. Measurement starts when first observed after notice acknowledgment,
+not at historical Goal creation. Disabling, changing recipient, or clearing local
+state restarts measurement. There is no historical backfill or completion claim.
+
+All durations are lower bounds on observed work: confirmed prefixes survive a
+crash; missing final checkpoints, lock contention, network failure, suspended
+hosts and collection limits can lose observations. Never extrapolate a crashed
+Host as still executing. Local storage holds at most 64 Goals and 512 disjoint
+recent intervals per Goal; old intervals compact into totals, and 90-day inactive
+Goals expire. Delayed observations older than one day are discarded; pending
+snapshots older than seven days are discarded. Do not use this channel for
+liveness detection, quotas, acceptance, or accounting.
+
+The only outgoing Goal payload is:
+
+```json
+{"schema":"loopx_goal_usage_aggregate_v1","counters":[{"span":"lt_7d","execution":"lt_6h","count":1}]}
+```
+
+Both durations use `lt_1m`, `lt_10m`, `lt_1h`, `lt_6h`, `lt_1d`, `lt_7d`,
+`lt_30d`, `gte_30d`. No Goal ID, installation ID, source path, name, event time
+or free text is sent. `/v1/goals` accepts the strict payload; `/v1/goal-stats`
+returns independent marginal histograms for the last 30 receipt days and omits
+cells below five. The existing usage settings switch, environment opt-outs and
+consent policy control all three channels. Settings and `loopx usage-ping status`
+show `goal_preview`; this is a current local snapshot, not a delivery receipt.
+The expanded scope requires notice version 2; previous explicit disable persists.
+
+Deploy collector migration `0002-goal-usage.sql` and its Worker before shipping
+the client. This additive table leaves existing heartbeats and CLI counts intact.

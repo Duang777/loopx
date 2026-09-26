@@ -2964,3 +2964,39 @@ def test_run_once_does_not_refuse_a_launchable_managed_executor(tmp_path):
             timeout_seconds=5,
             execute=True,
         )
+
+
+def test_real_host_duration_is_observed_but_settlement_replay_is_not(tmp_path, monkeypatch):
+    """Production Turn entrypoint, actual Host subprocess and detached TS state."""
+    import time
+    from loopx import usage_ping
+
+    machine = tmp_path / "machine"
+    monkeypatch.setattr(usage_ping, "DEFAULT_RUNTIME_ROOT", machine)
+    for name in ("CI", "DO_NOT_TRACK", "LOOPX_USAGE_PING", "LOOPX_USAGE_POLICY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LOOPX_USAGE_PING_ENDPOINT", "http://127.0.0.1:1/v1/ping")
+    usage_ping.control("enable")
+    plan = _plan()
+    host_file = tmp_path / "host.py"
+    host_file.write_text("import json, sys, time\njson.load(sys.stdin)\ntime.sleep(0.08)\nprint(" + repr(json.dumps(_host_result(plan))) + ")\n")
+    calls = {"writeback": 0, "spend": 0, "scheduler": 0}
+    writeback, spend, scheduler = _callbacks(calls)
+    options = dict(host_argv=[sys.executable, str(host_file)], project=tmp_path,
+                   runtime_root=tmp_path / "runtime", goal_id="fixture-goal",
+                   timeout_seconds=5, execute=True, task_validator=_passing_validator,
+                   writeback=writeback, spend=spend, scheduler=scheduler)
+    result = run_loopx_turn_once(plan, **options)
+    assert result["ok"], result
+    local = machine / "usage-ping.json.goals"
+    deadline = time.monotonic() + 5
+    while not local.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    before = json.loads(local.read_text())
+    intervals = before["goals"][0]["intervals"]
+    assert sum(end - start for start, end in intervals) >= 80
+    assert "fixture-goal" not in local.read_text()
+    assert run_loopx_turn_once(plan, **options)["ok"]
+    time.sleep(0.15)
+    assert json.loads(local.read_text()) == before
+    assert calls == {"writeback": 1, "spend": 1, "scheduler": 1}

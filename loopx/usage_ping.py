@@ -71,7 +71,7 @@ def begin(command: str) -> tuple[str, float] | None:
         state = json.loads(path.read_text()) if path.exists() else {}
         if state.get("consent") == "disabled":
             return None
-        if not state.get("notice"):
+        if (state.get("notice") or {}).get("version") != 2:
             # Unattended machines remain silent until the owner sees the notice
             # or explicitly enables from CLI/settings. JSON stdout stays clean.
             if not sys.stderr.isatty():

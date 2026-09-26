@@ -187,3 +187,18 @@ def test_real_chat_settings_share_cli_choice_and_reject_cross_origin(isolated):
         connection.close()
         server.shutdown()
         server.server_close()
+
+
+def test_goal_observer_does_not_wait_for_unresponsive_collector(isolated, collector, monkeypatch):
+    from loopx.usage_goal import observe_goal_execution
+    endpoint, received, accepted, release = collector
+    monkeypatch.setenv('LOOPX_USAGE_PING_ENDPOINT', endpoint)
+    usage_ping.control('enable')
+    started = time.monotonic()
+    with observe_goal_execution(isolated / 'runtime', 'synthetic-goal'):
+        time.sleep(0.01)
+    assert time.monotonic() - started < 0.8
+    assert accepted.wait(4)
+    assert not release.is_set(), 'host returned before collector released HTTP response'
+    usage_ping.control('disable')
+    release.set()

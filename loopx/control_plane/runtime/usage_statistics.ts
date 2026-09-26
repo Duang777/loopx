@@ -1,5 +1,5 @@
 /** Machine-local telemetry owner. Never opens Goal/provider state. */
-import { readFile, chmod } from "node:fs/promises";
+import { readFile, chmod, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { arch, platform } from "node:os";
 import type { JsonObject } from "../effect_program.ts";
@@ -7,9 +7,13 @@ import { withFileMutationLock, atomicWriteJson } from "../effect_runtime_io.ts";
 import { AGGREGATE_SCHEMA, PING_SCHEMA, MAX_COUNT, MAX_ROWS, counterKey, object, validAggregate, validCounter, validId, validPing } from "./usage_statistics_contract.ts";
 import type { Aggregate, Counter, Ping } from "./usage_statistics_contract.ts";
 
+import { recordGoalUsage, goalPreview } from "./usage_statistics_goals.ts";
+import { validGoalAggregate } from "./usage_statistics_goal_contract.ts";
+import type { GoalAggregate, GoalObservation } from "./usage_statistics_goal_contract.ts";
+
 export const STATE_SCHEMA = "loopx_usage_ping_state_v1";
 export const DEFAULT_ENDPOINT = "https://loopx-usage-collector.huangrt01.workers.dev/v1/ping";
-export const NOTICE_VERSION = 1;
+export const NOTICE_VERSION = 2;
 export type Env = Record<string, string | undefined>;
 export type Context = { env: Env; version: string; python: string; channel: string; now?: Date };
 type Notice = { version: number; endpoint: string; policy: string };
@@ -85,19 +89,25 @@ export async function inspect(path: string, ctx: Context) {
     notice: notice(ctx), notice_required: !sameNotice(state, ctx), last_sent_day: state.last_sent_day ?? null,
     next_payload: state.consent === "disabled" ? null : ping(state, ctx),
     aggregate_preview: state.consent === "disabled" || !state.counters?.length ? null : { schema: AGGREGATE_SCHEMA, counters: state.counters },
+    goal_preview: state.consent === "disabled" ? null : await goalPreview(path + ".goals", state.generation).catch(() => null),
     aggregate_day: state.day ?? null,
-    disclosure: "LoopX basic usage statistics are on by default after this notice. Daily heartbeats send a random installation ID, version, OS, CPU architecture, Python version and install channel to the configured LoopX collector (Cloudflare). Fixed CLI feature/result/duration/error counts are sent separately without an ID. No prompts, code, paths, arguments, Goal data or raw errors. Disable both with loopx usage-ping disable or LOOPX_USAGE_PING=0; inspect with loopx usage-ping status. Consent-required distributions wait for explicit enable. Recipient: " + (endpoint(ctx.env) || "not configured") };
+    disclosure: "LoopX basic usage statistics are on by default after this notice. Daily heartbeats send a random installation ID, version, OS, CPU architecture, Python version and install channel to the configured LoopX collector (Cloudflare). Fixed CLI feature/result/duration/error counts are sent separately without an ID. Observed Goal execution-span and Host-call duration buckets are separately aggregated without Goal or installation IDs. Measurements cover managed Turns and regular owner Goal chat, from observation onward; they are lower bounds, not completion or billing evidence. No prompts, code, paths, arguments, Goal contents or raw errors. Disable all with loopx usage-ping disable or LOOPX_USAGE_PING=0; inspect with loopx usage-ping status. Consent-required distributions wait for explicit enable. Recipient: " + (endpoint(ctx.env) || "not configured") };
 }
 export async function configure(path: string, ctx: Context, action: "enable" | "disable" | "acknowledge", expectedNotice?: unknown) {
   await withFileMutationLock(path, async () => {
     // Explicit disable can repair malformed state without permitting a send.
     const state = action === "disable" ? { schema: STATE_SCHEMA, consent: "disabled", generation: randomUUID() } as State : await load(path);
-    if (action === "disable") return save(path, state);
+    if (action === "disable") {
+      await save(path, state);
+      await rm(path + ".goals", { force: true });
+      return;
+    }
     if (action === "acknowledge" && JSON.stringify(expectedNotice) !== JSON.stringify(notice(ctx))) throw new Error("usage_notice_changed");
     if (action === "acknowledge" && state.consent === "disabled") return;
     if (action === "enable") state.consent = "enabled";
     if (state.notice && !sameNotice(state, ctx)) {
       state.counters = [];
+      await rm(path + ".goals", { force: true });
       state.generation = randomUUID();
       if (state.notice.endpoint !== endpoint(ctx.env)) state.install_id = randomUUID();
     }
@@ -108,29 +118,32 @@ export async function configure(path: string, ctx: Context, action: "enable" | "
   }, 1000);
   return inspect(path, ctx);
 }
-export type Post = (url: string, payload: Ping | Aggregate) => Promise<number>;
+export type Post = (url: string, payload: Ping | Aggregate | GoalAggregate) => Promise<number>;
 const post: Post = async (url, payload) => (await fetch(url, {
   method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "loopx-usage-ping" },
   body: JSON.stringify(payload), signal: AbortSignal.timeout(3000), redirect: "error",
 })).status;
 
 /** Called in a detached process with one allowlisted observation, never raw argv/output. */
-export async function observe(path: string, ctx: Context, generation: string, counter: Counter | null, send: Post = post) {
+export async function observe(path: string, ctx: Context, generation: string, counter: Counter | null, send: Post = post, goal?: GoalObservation) {
   if (counter !== null && (!validCounter(counter) || counter.count !== 1)) return { sent: false, reason: "invalid_observation" };
   let heartbeat: Ping | null = null;
   let aggregate: Aggregate | null = null;
+  let goals: GoalAggregate | null = null;
   const today = day(ctx);
   const allowed = await withFileMutationLock(path, async () => {
     const state = await load(path);
     const blocked = blockedBy(state, ctx);
     if (blocked || !generation || generation !== state.generation) return false;
+    if (state.day && state.day > today) return false;
+    try { goals = await recordGoalUsage(path + ".goals", generation, (ctx.now ?? new Date()).getTime(), goal); }
+    catch { /* A damaged optional measurement cannot block other diagnostics. */ }
     // Flush only a completed day's local aggregate. No event times or per-install key leave this boundary.
     if (state.day && state.day < today && state.counters?.length) {
       const age = Date.parse(today) - Date.parse(state.day);
       if (age <= 7 * 86400000) aggregate = { schema: AGGREGATE_SCHEMA, counters: state.counters };
       state.counters = [];
     }
-    if (state.day && state.day > today) return false; // backward clock: do not resend or mislabel counts
     state.day = today;
     state.counters ??= [];
     if (counter) {
@@ -147,9 +160,9 @@ export async function observe(path: string, ctx: Context, generation: string, co
   }, 0); // Never queue behind business or telemetry work.
   if (!allowed) return { sent: false, reason: "blocked" };
   let sent = false;
-  for (const [url, payload] of [[endpoint(ctx.env), heartbeat], [endpoint(ctx.env).replace(/\/ping$/, "/aggregate"), aggregate]] as const) {
+  for (const [url, payload] of [[endpoint(ctx.env), heartbeat], [endpoint(ctx.env).replace(/\/ping$/, "/aggregate"), aggregate], [endpoint(ctx.env).replace(/\/ping$/, "/goals"), goals]] as const) {
     if (!payload) continue;
-    if (!(validPing(payload) || validAggregate(payload))) continue;
+    if (!(validPing(payload) || validAggregate(payload) || validGoalAggregate(payload))) continue;
     try {
       let request: Promise<number> | undefined;
       // Start under the same short lock as disable, but never hold it while
