@@ -31,27 +31,56 @@ import {AuthorityJournalScan} from "./authority_journal_scan.ts";
 const FILE_AUTHORITY_STORE_SCHEMA = "loopx_file_authority_store_v0";
 const STORE_IDENTITY_PATTERN = /^file:[0-9a-f]{32}$/;
 // File-v0 retains every projection in one envelope. A managed Effect server
-// opens a new store handle for each request, so revalidating an unchanged
-// journal on every read makes one Goal's history dominate the RPC budget.
-// Keep only one verified document process-wide; bytes and store identity must
-// both match before a later handle may reuse that validation.
+// opens a new store handle for each request. Keep one verified read view across
+// handles, keyed by exact bytes and store identity. Large journals retain only
+// the head and receipt index in memory; commits and scans still load and verify
+// the complete history. This is a bounded read optimization, not a new source
+// of authority or a substitute for the SQLite long-goal profile.
 const MAX_CACHED_DOCUMENT_BYTES = 128 * 1024 * 1024;
-let verifiedDocument: {
+const MAX_CACHED_READ_VIEW_BYTES = 16 * 1024 * 1024;
+interface VerifiedDocument {
   path: string;
   identity: string;
   digest: string;
-  document: FileAuthorityStoreDocument;
-} | null = null;
+  head: JsonObject;
+  providerRevision: string;
+  cursor: string;
+  receipts: ReadonlyMap<string, {
+    cursor: string;
+    providerRevision: string;
+    receipts: readonly JsonObject[];
+  }>;
+  document?: FileAuthorityStoreDocument;
+}
+let verifiedDocument: VerifiedDocument | null = null;
 
 function documentDigest(raw: Uint8Array): string {
   return createHash("sha256").update(raw).digest("hex");
 }
 
 function rememberVerifiedDocument(path: string, identity: string, raw: Uint8Array,
-  digest: string, document: FileAuthorityStoreDocument): void {
-  verifiedDocument = raw.byteLength <= MAX_CACHED_DOCUMENT_BYTES
-    ? {path, identity, digest, document}
-    : null;
+  digest: string, document: FileAuthorityStoreDocument,
+  maxDocumentBytes: number): VerifiedDocument {
+  const receipts = new Map<string, {
+    cursor: string;
+    providerRevision: string;
+    receipts: readonly JsonObject[];
+  }>();
+  let viewBytes = Buffer.byteLength(JSON.stringify(document.head));
+  for (const entry of document.committed) {
+    receipts.set(entry.operation_id, {cursor: entry.cursor,
+      providerRevision: entry.provider_revision, receipts: entry.receipts});
+    viewBytes += Buffer.byteLength(entry.operation_id) + Buffer.byteLength(entry.cursor) +
+      Buffer.byteLength(entry.provider_revision) + Buffer.byteLength(JSON.stringify(entry.receipts));
+  }
+  const view: VerifiedDocument = {path, identity, digest, head: document.head,
+    providerRevision: document.provider_revision, cursor: document.cursor,
+    receipts, document};
+  verifiedDocument = raw.byteLength <= maxDocumentBytes ? view
+    : viewBytes <= MAX_CACHED_READ_VIEW_BYTES
+      ? {...view, document: undefined}
+      : null;
+  return view;
 }
 
 interface FileAuthorityStoreDocument extends JsonObject, RetainedAuthorityJournal {
@@ -195,6 +224,11 @@ export class FileAuthorityStore implements AuthorityStore {
     return decodeDocument(value, this.goalId, identity);
   }
 
+  /** Test seam for the compact-view path; production keeps the fixed memory cap. */
+  protected fullDocumentCacheLimitBytes(): number {
+    return MAX_CACHED_DOCUMENT_BYTES;
+  }
+
   private async readStoreIdentity(createIfMissing = !this.existingOnly): Promise<string> {
     try {
       const identity = await readFile(this.identityPath, "utf8");
@@ -241,7 +275,7 @@ export class FileAuthorityStore implements AuthorityStore {
     }
   }
 
-  private async readDocument(knownIdentity?: string): Promise<FileAuthorityStoreDocument | null> {
+  private async readVerified(knownIdentity?: string, requireHistory = false): Promise<VerifiedDocument | null> {
     let raw: Buffer;
     try {
       raw = await readFile(this.path);
@@ -255,12 +289,13 @@ export class FileAuthorityStore implements AuthorityStore {
     try {
       const digest = documentDigest(raw);
       if (verifiedDocument?.path === this.path &&
-          verifiedDocument.identity === identity && verifiedDocument.digest === digest) {
-        return verifiedDocument.document;
+          verifiedDocument.identity === identity && verifiedDocument.digest === digest &&
+          (!requireHistory || verifiedDocument.document !== undefined)) {
+        return verifiedDocument;
       }
       const document = this.decodeStoredDocument(JSON.parse(raw.toString("utf8")), identity);
-      rememberVerifiedDocument(this.path, identity, raw, digest, document);
-      return document;
+      return rememberVerifiedDocument(this.path, identity, raw, digest, document,
+        this.fullDocumentCacheLimitBytes());
     } catch (error) {
       if (error instanceof SyntaxError) {
         throw new AuthorityStoreProtocolError(`file authority store JSON is invalid: ${error.message}`);
@@ -269,15 +304,19 @@ export class FileAuthorityStore implements AuthorityStore {
     }
   }
 
+  private async readDocument(knownIdentity?: string): Promise<FileAuthorityStoreDocument | null> {
+    return (await this.readVerified(knownIdentity, true))?.document ?? null;
+  }
+
   async loadAuthority(): Promise<AuthorityStoreLoadResult> {
     try {
-      const document = await this.readDocument();
-      return document
+      const verified = await this.readVerified();
+      return verified
         ? {
           status: "loaded",
-          head: structuredClone(document.head),
-          provider_revision: document.provider_revision,
-          cursor: document.cursor,
+          head: structuredClone(verified.head),
+          provider_revision: verified.providerRevision,
+          cursor: verified.cursor,
         }
         : { status: "missing" };
     } catch (error) {
@@ -356,7 +395,8 @@ export class FileAuthorityStore implements AuthorityStore {
         try {
           const bytes = canonicalAuthorityBytes(document);
           await this.replaceDurably(this.path, bytes);
-          rememberVerifiedDocument(this.path, identity, bytes, documentDigest(bytes), document);
+          rememberVerifiedDocument(this.path, identity, bytes, documentDigest(bytes), document,
+            this.fullDocumentCacheLimitBytes());
         } catch (error) {
           // A failure after rename may already have published the new bytes.
           // The next read must prove the actual file rather than reuse either
@@ -393,15 +433,13 @@ export class FileAuthorityStore implements AuthorityStore {
       };
     }
     try {
-      const transaction = (await this.readDocument())?.committed.find(
-        (entry) => entry.operation_id === normalized,
-      );
+      const transaction = (await this.readVerified())?.receipts.get(normalized);
       return transaction
         ? {
           status: "found",
           cursor: transaction.cursor,
-          provider_revision: transaction.provider_revision,
-          receipts: structuredClone(transaction.receipts),
+          provider_revision: transaction.providerRevision,
+          receipts: structuredClone([...transaction.receipts]),
         }
         : { status: "missing" };
     } catch (error) {

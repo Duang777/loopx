@@ -9,6 +9,16 @@ and relevant domain acceptance; do not make every fix wait for every RFC or
 invent a roadmap id. Check latest `main`, related PRs and canonical Todos so an
 older task description cannot override corrected direction or duplicate work.
 
+For recurring operational or performance problems, connect the demonstrated
+failure to the owning roadmap/RFC acceptance before choosing a repair. Separate
+caller overhead, shared typed semantics/transport and provider-specific costs;
+prefer the existing common contract where behavior is shared. Follow the
+[optimization evidence guide](docs/development/testing-and-quality.md#roadmap-aligned-optimization).
+Distinguish an interim mitigation from closing the owning acceptance: faster
+lookup, a larger timeout or successful promotion alone does not qualify sustained
+operation. Reconcile the existing checkpoint when the evidence changes it;
+do not add a parallel roadmap or require unrelated RFC work for a bounded fix.
+
 Carry one compact delivery brief from task to PR: goal/source, current gap,
 observable result, owning boundary and decisive acceptance evidence. Reuse the
 existing task/PR fields; keep private Goal state out of public artifacts.

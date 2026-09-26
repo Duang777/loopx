@@ -15,7 +15,10 @@ from uuid import uuid4
 from ...agent_registry import registered_agent_ids_from_registry
 from .authority_source_capture import authority_registry_source
 from ..runtime.time import now_local_iso as now_local
-from ..effect_runtime import effect_runtime_result
+from ..effect_runtime import (
+    CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    effect_runtime_result,
+)
 from .coordination_state_contract import (
     TODO_CANONICAL_READ_RECORD_SCHEMA_VERSION,
     TODO_DOMAIN_READ_RECORD_SCHEMA_VERSION,
@@ -133,6 +136,7 @@ def claim_canonical_todo_if_promoted(
             "observed_at": now_local(),
             "dry_run": dry_run,
         },
+        timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
     )
     if not isinstance(result, Mapping):
         raise LocalCoordinationAuthorityUnavailable(

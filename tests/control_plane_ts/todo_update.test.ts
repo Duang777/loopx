@@ -10,6 +10,7 @@ import {
   TODO_DOMAIN_ITEM_SCHEMA, TODO_DOMAIN_READ_RECORD_SCHEMA, TODO_DOMAIN_RECORD_CONTRACT,
 } from "../../loopx/control_plane/coordination/coordination_state_contract.ts";
 import { executeCoordinationTodoUpdate } from "../../loopx/control_plane/coordination/todo_update.ts";
+import {configureGoalAcceptance} from "../../loopx/control_plane/goals/acceptance_authority.ts";
 import {updateLocalCoordinationTodo} from "../../loopx/control_plane/coordination/local_authority_runtime.ts";
 
 test("Monitor observation is versioned before any provider access", async () => {
@@ -588,4 +589,134 @@ test("schema-less historical canonical leases retain active execution semantics 
   assert.equal(leaseIsActive(normalized, new Date("2030-01-01T00:00:00Z")), true);
   assert.equal(Object.hasOwn(original, "schema_version"), false);
   assert.throws(() => canonicalTaskLease({...original, schema_version: "unknown"}, "goal-a", "todo_a"), /schema/);
+});
+
+
+test("retained lease diagnostics distinguish recovery without granting execution", async () => {
+  for (const mode of ["legacy", "soft_claim", "hard_lease"]) {
+    for (const state of ["released", "expired", "active"]) {
+      for (const owner of ["agent-a", "agent-b"]) {
+        const {store, request} = await seeded();
+        const head = await store.loadAuthority();
+        assert.equal(head.status, "loaded");
+        if (head.status !== "loaded") continue;
+        await store.commitAuthority({operation_id: "lease-fixture", expected_provider_revision: head.provider_revision,
+          events: [], receipts: [], next_projection: {...head.head, handoff_mode: mode,
+            leases: [{todo_id: "todo_a", owner, idempotency_key: "private-execution-key",
+              version: 4, lease_epoch: 2, status: state === "released" ? "released" : "active",
+              expires_at: state === "expired" ? "2026-09-04T00:00:00Z" : "2026-09-06T00:00:00Z", write_scopes: []}]}});
+        const before = await store.loadAuthority();
+        const result = await executeCoordinationTodoUpdate(store, {...request, dry_run: true});
+        assert.equal(result.status, "failed");
+        assert.equal(result.handoff_mode, mode);
+        const recovery = result.recovery as Record<string, unknown>;
+        assert.equal(recovery.lease_state, state);
+        assert.equal(recovery.owner_relation, owner === "agent-a" ? "same_owner" : "foreign_owner");
+        assert.equal(recovery.action, state === "active" ? owner === "agent-a" ? "inspect_current_proof" : "reconcile_lease_owner"
+          : mode === "soft_claim" ? "resolve_acquire_rejection" : "acquire_fresh_lease");
+        assert.equal(JSON.stringify(result).includes("private-execution-key"), false);
+        assert.deepEqual(await store.loadAuthority(), before);
+        assert.equal((await store.readReceipt(request.operation_id)).status, "missing");
+      }
+    }
+  }
+});
+
+
+test("recovery preserves stale-proof rejection and never offers foreign proof", async () => {
+  for (const [proof, code] of [
+    [{lease_idempotency_key: "stale-key", lease_expected_version: 4}, "lease_cas_mismatch"],
+    [{lease_idempotency_key: "current-key", lease_expected_version: 3}, "version_mismatch"],
+    [{lease_idempotency_key: "current-key"}, "version_required"],
+  ] as const) {
+    const {store, request} = await seeded();
+    const head = await store.loadAuthority();
+    if (head.status !== "loaded") assert.fail("missing fixture");
+    await store.commitAuthority({operation_id: "lease", expected_provider_revision: head.provider_revision,
+      events: [], receipts: [], next_projection: {...head.head, handoff_mode: "legacy",
+        leases: [{todo_id: "todo_a", owner: "agent-a", idempotency_key: "current-key",
+          version: 4, lease_epoch: 1, status: "active", expires_at: "2026-09-06T00:00:00Z", write_scopes: []}]}});
+    const before = await store.loadAuthority();
+    const result = await executeCoordinationTodoUpdate(store, {...request, ...proof});
+    assert.equal(result.reason_code, code);
+    assert.equal((result.recovery as Record<string, unknown>).action, "inspect_current_proof");
+    assert.equal(JSON.stringify(result).includes("current-key"), false);
+    assert.deepEqual(await store.loadAuthority(), before);
+  }
+  const {store, request} = await seeded();
+  const head = await store.loadAuthority();
+  if (head.status !== "loaded") assert.fail("missing fixture");
+  await store.commitAuthority({operation_id: "foreign-lease", expected_provider_revision: head.provider_revision,
+    events: [], receipts: [], next_projection: {...head.head, handoff_mode: "legacy",
+      leases: [{todo_id: "todo_a", owner: "agent-b", idempotency_key: "foreign-key",
+        version: 3, lease_epoch: 1, status: "active", expires_at: "2026-09-06T00:00:00Z", write_scopes: []}]}});
+  const before = await store.loadAuthority();
+  const result = await executeCoordinationTodoUpdate(store, request);
+  const recovery = result.recovery as Record<string, unknown>;
+  assert.equal(recovery.owner_relation, "foreign_owner");
+  assert.equal(recovery.action, "reconcile_lease_owner");
+  assert.equal(recovery.acquire, undefined);
+  assert.equal(recovery.retry, undefined);
+  assert.equal(JSON.stringify(result).includes("foreign-key"), false);
+  assert.deepEqual(await store.loadAuthority(), before);
+});
+
+test("inactive history does not invent an executable lease acquisition", async () => {
+  for (const [overrides, intent, mode, expected] of [
+    [{status: "blocked"}, {}, "legacy", "resolve_acquire_rejection"],
+    [{claimed_by: null}, {}, "legacy", "reconcile_lease_owner"],
+    [{}, {required_capabilities: ["code_review"]}, "legacy", "resolve_lifecycle_edit"],
+    [{}, {status: "blocked"}, "legacy", "resolve_lifecycle_edit"],
+    [{}, {}, "soft_claim", "resolve_acquire_rejection"],
+  ] as const) {
+    const {store, request} = await seeded(overrides);
+    const head = await store.loadAuthority();
+    if (head.status !== "loaded") assert.fail("missing fixture");
+    await store.commitAuthority({operation_id: "retired-lease", expected_provider_revision: head.provider_revision,
+      events: [], receipts: [], next_projection: {...head.head, handoff_mode: mode,
+        leases: [{todo_id: "todo_a", owner: "agent-a", idempotency_key: "old-key",
+          version: 2, lease_epoch: 1, status: "released", expires_at: "2026-09-06T00:00:00Z", write_scopes: []}]}});
+    const before = await store.loadAuthority();
+    const result = await executeCoordinationTodoUpdate(store, {...request, planning_intent: intent});
+    assert.equal(result.status, "failed");
+    assert.equal((result.recovery as Record<string, unknown>).action, expected);
+    assert.equal((result.recovery as Record<string, unknown>).acquire, undefined);
+    assert.deepEqual(await store.loadAuthority(), before);
+  }
+});
+
+for (const blocker of ["scope", "acceptance"]) test(`recovery respects ${blocker} acquisition admission`, async () => {
+  const {store, request} = await seeded({required_write_scopes: ["src/**"]});
+  const head = await store.loadAuthority();
+  if (head.status !== "loaded") assert.fail("missing fixture");
+  const other = todo({todo_id: "todo_other", claimed_by: "agent-b"});
+  const todos = [...head.head.todos as Record<string, unknown>[], other];
+  await store.commitAuthority({operation_id: "scope-conflict", expected_provider_revision: head.provider_revision,
+    events: [], receipts: [], next_projection: {...head.head, handoff_mode: "legacy", todos,
+      todo_read_model: {schema_version: TODO_DOMAIN_READ_RECORD_SCHEMA, todo_count: 2,
+        records_sha256: canonicalAuthoritySha256(todos), contract_fields: [...TODO_DOMAIN_RECORD_CONTRACT.fields]},
+      leases: [
+        {todo_id: "todo_a", owner: "agent-a", idempotency_key: "released-key", version: 2,
+          lease_epoch: 1, status: "released", expires_at: "2026-09-06T00:00:00Z", write_scopes: []},
+        {todo_id: "todo_other", owner: "agent-b", idempotency_key: "foreign-active-key", version: 1,
+          lease_epoch: 1, status: "active", expires_at: "2026-09-06T00:00:00Z", write_scopes: blocker === "scope" ? ["src/file.ts"] : []},
+      ]}});
+  if (blocker === "acceptance") {
+    const current = await store.loadAuthority();
+    if (current.status !== "loaded") assert.fail("missing fixture");
+    const configured = await configureGoalAcceptance(store, {goal_id: "goal-a", operation_id: "acceptance-hold",
+      actor_agent_id: null, expected_provider_revision: current.provider_revision,
+      document: {objective: "Validate selected work", non_goals: [],
+        scope: {kind: "selected_work", todo_ids: ["todo_a"]}, bindings: [],
+        criteria: [{id: "check", description: "Independent validation", validation_argv: ["true"], validation_timeout_seconds: 10}]}});
+    assert.equal(configured.status, "applied");
+  }
+  const before = await store.loadAuthority();
+  const result = await executeCoordinationTodoUpdate(store, request);
+  const recovery = result.recovery as Record<string, unknown>;
+  assert.equal(recovery.action, "resolve_acquire_rejection");
+  assert.equal(recovery.reason_code, blocker === "scope" ? "write_scope_conflict" : "goal_acceptance_unbound");
+  assert.equal(recovery.acquire, undefined);
+  assert.equal(JSON.stringify(result).includes("foreign-active-key"), false);
+  assert.deepEqual(await store.loadAuthority(), before);
 });

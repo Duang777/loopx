@@ -451,6 +451,76 @@ def test_concurrent_queued_turn_creation_is_idempotent(
     assert current["active_turn_id"] is None
 
 
+def test_enqueue_wakes_worker_after_empty_queue_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChatSessionStore(tmp_path)
+    session = store.create_session(
+        goal_id="goal-one",
+        agent_id="codex",
+        executor_endpoint_id="codex",
+        adapter_kind="codex_app_server",
+        upstream_thread_id="thread-one",
+        upstream_mode="chat",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(store=store, codex_bin="missing-codex")
+    adapter = _BlockingChatAdapter()
+    adapter.release.set()
+    runtime.adapters[session_id] = adapter  # type: ignore[assignment]
+    empty_queue_observed = threading.Event()
+    release_empty_observation = threading.Event()
+    original_claim = store.claim_next_queued_turn
+    claim_count = 0
+
+    def pause_after_first_empty_claim(
+        requested_session_id: str,
+        *,
+        host_claim_id: str | None = None,
+    ) -> dict[str, object] | None:
+        nonlocal claim_count
+        turn = original_claim(
+            requested_session_id,
+            host_claim_id=host_claim_id,
+        )
+        claim_count += 1
+        if claim_count == 1:
+            assert turn is None
+            empty_queue_observed.set()
+            assert release_empty_observation.wait(timeout=2)
+        return turn
+
+    monkeypatch.setattr(store, "claim_next_queued_turn", pause_after_first_empty_claim)
+    runtime.resume_session_queue(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="keep queued work moving",
+    )
+    worker = runtime.session_queue_threads[session_id]
+    assert empty_queue_observed.wait(timeout=2)
+
+    queued, created = runtime.enqueue_turn(
+        session_id=session_id,
+        client_turn_id="enqueue-during-worker-retirement",
+        message="process after the empty observation",
+        work_dir=tmp_path,
+        objective="keep queued work moving",
+    )
+    assert created is True
+    release_empty_observation.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    completed = store.load_turn(session_id, str(queued["turn_id"]))
+    assert completed is not None
+    assert completed["status"] == "completed"
+    assert claim_count >= 2
+    assert session_id not in runtime.session_queue_workers
+    assert session_id not in runtime.session_queue_threads
+    assert session_id not in runtime.session_queue_wakeups
+
+
 def test_queued_turn_rejects_closed_session(tmp_path: Path) -> None:
     store = ChatSessionStore(tmp_path)
     session = store.create_session(

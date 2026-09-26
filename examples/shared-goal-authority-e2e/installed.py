@@ -122,6 +122,7 @@ resources = {}
 for relative in ['control_plane/coordination/runtime_shadow.ts', 'control_plane/coordination/shadow_management.ts',
     'control_plane/coordination/file_authority_store.ts', 'control_plane/coordination/local_authority_shadow_identity.ts',
     'control_plane/coordination/legacy_writer_lock_paths.ts',
+    'control_plane/runtime/receipt_log_snapshot.ts',
     'control_plane/work_items/task_lease_acquire.ts',
     'control_plane/coordination/coordination_state_contract_v0.json',
     'control_plane/coordination/coordination_state_contract.generated.ts']:

@@ -14,6 +14,7 @@ import uuid
 
 from ..projects.registry_codec import (
     ProjectRegistryTransaction,
+    decode_registry_snapshot,
     project_registry_transaction,
 )
 from ...configuration_transaction import configuration_payload_revision
@@ -43,8 +44,10 @@ GOAL_DELETION_SOURCE_BASIS_SCHEMA_VERSION = "loopx_goal_deletion_source_basis_v1
 GOAL_DELETION_STATE_FINGERPRINT_SCHEMA_VERSION = (
     "loopx_goal_deletion_state_fingerprint_v1"
 )
+GOAL_DELETION_RECOVERY_SCHEMA_VERSION = "loopx_goal_deletion_recovery_v1"
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_MAX_RECOVERY_RECEIPT_BYTES = 64 * 1024
 
 
 def _require_opaque_id(value: str, *, field: str) -> str:
@@ -183,6 +186,9 @@ def _missing_stale_payload(
         "written": False,
         "partial_write": False,
         "backup_paths": [],
+        "recovery_pending": False,
+        "recovered": False,
+        "replayed": False,
         "readback": {
             "source_missing": True,
             "global_missing": True,
@@ -226,11 +232,17 @@ def _create_backup(path: Path, *, timestamp: str) -> Path:
         except Exception:
             backup.unlink(missing_ok=True)
             raise
+        _fsync_parent(backup)
         return backup
     raise FileExistsError(f"could not allocate a unique Goal deletion backup for {source_path}")
 
 
-def _remove_goal(payload: dict[str, Any], goal_id: str) -> tuple[dict[str, Any], bool]:
+def _remove_goal(
+    payload: dict[str, Any],
+    goal_id: str,
+    *,
+    updated_at: str | None = None,
+) -> tuple[dict[str, Any], bool]:
     goals = payload.get("goals")
     if not isinstance(goals, list):
         raise ValueError("registry goals must be a list")
@@ -243,8 +255,456 @@ def _remove_goal(payload: dict[str, Any], goal_id: str) -> tuple[dict[str, Any],
     updated = dict(payload)
     updated["goals"] = retained
     if changed:
-        updated["updated_at"] = now_local_iso()
+        updated["updated_at"] = now_local_iso() if updated_at is None else updated_at
     return updated, changed
+
+
+def _recovery_receipt_path(registry_path: Path, goal_id: str) -> Path:
+    registry = registry_path.expanduser().resolve()
+    goal_digest = hashlib.sha256(goal_id.encode("utf-8")).hexdigest()
+    return registry.with_name(
+        f".{registry.name}.goal-delete-{goal_digest}.recovery.json"
+    )
+
+
+def _fsync_parent(path: Path) -> None:
+    if os.name != "posix":
+        return
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _build_recovery_record(
+    *,
+    goal_id: str,
+    state_fingerprint: str,
+    source_basis: Mapping[str, str],
+    source_registry: Path,
+    declared_source_registry: Path,
+    target_registry: Path,
+    source_available: bool,
+    same_registry: bool,
+    paths: list[Path],
+    backup_paths: Mapping[Path, Path],
+) -> dict[str, Any]:
+    snapshots = []
+    for path in paths:
+        backup = backup_paths[path]
+        snapshots.append(
+            {
+                "registry_path": str(path.expanduser().resolve()),
+                "backup_path": str(backup.expanduser().resolve()),
+                "preimage_sha256": hashlib.sha256(backup.read_bytes()).hexdigest(),
+            }
+        )
+    return {
+        "schema_version": GOAL_DELETION_RECOVERY_SCHEMA_VERSION,
+        "goal_id": goal_id,
+        "state_fingerprint": state_fingerprint,
+        "source_basis": dict(source_basis),
+        "source_registry": str(source_registry.expanduser().resolve()),
+        "declared_source_registry": str(
+            declared_source_registry.expanduser().resolve()
+        ),
+        "target_registry": str(target_registry.expanduser().resolve()),
+        "source_available": source_available,
+        "same_registry": same_registry,
+        "snapshots": snapshots,
+    }
+
+
+def _validated_recovery_path(value: Any, *, field: str) -> Path:
+    text = str(value or "").strip()
+    path = Path(text)
+    if not text or not path.is_absolute():
+        raise ValueError(f"Goal deletion recovery {field} must be absolute")
+    return path.resolve()
+
+
+def _validated_recovery_record(
+    value: Mapping[str, Any],
+    *,
+    receipt_path: Path,
+    goal_id: str,
+) -> dict[str, Any]:
+    if value.get("schema_version") != GOAL_DELETION_RECOVERY_SCHEMA_VERSION:
+        raise ValueError("Goal deletion recovery schema is unsupported")
+    if value.get("goal_id") != goal_id:
+        raise ValueError("Goal deletion recovery goal identity does not match")
+    state_fingerprint = str(value.get("state_fingerprint") or "")
+    if not _SHA256.fullmatch(state_fingerprint):
+        raise ValueError("Goal deletion recovery state fingerprint is invalid")
+    source_basis_value = value.get("source_basis")
+    if not isinstance(source_basis_value, Mapping):
+        raise ValueError("Goal deletion recovery source basis is missing")
+    source_basis = _normalize_source_basis(source_basis_value)
+    if source_basis is None:
+        raise ValueError("Goal deletion recovery source basis is missing")
+    source_registry = _validated_recovery_path(
+        value.get("source_registry"),
+        field="source registry",
+    )
+    declared_source_registry = _validated_recovery_path(
+        value.get("declared_source_registry"),
+        field="declared source registry",
+    )
+    target_registry = _validated_recovery_path(
+        value.get("target_registry"),
+        field="target registry",
+    )
+    source_available = value.get("source_available")
+    same_registry = value.get("same_registry")
+    if not isinstance(source_available, bool) or not isinstance(same_registry, bool):
+        raise ValueError("Goal deletion recovery route flags are invalid")
+    if same_registry != _same_path(source_registry, target_registry):
+        raise ValueError("Goal deletion recovery same-registry flag is invalid")
+    if source_available != _same_path(source_registry, declared_source_registry):
+        raise ValueError("Goal deletion recovery source route is invalid")
+    if not source_available and not same_registry:
+        raise ValueError("Goal deletion recovery fallback route is invalid")
+    expected_source_identity = _goal_activation_source_identity(
+        declared_source_registry
+    )
+    if source_basis["source_identity"] != expected_source_identity:
+        raise ValueError("Goal deletion recovery source identity does not match")
+    snapshots_value = value.get("snapshots")
+    if not isinstance(snapshots_value, list):
+        raise ValueError("Goal deletion recovery snapshots are missing")
+    expected_paths = [target_registry]
+    if source_available and not same_registry:
+        expected_paths.insert(0, source_registry)
+    snapshots: list[dict[str, str]] = []
+    seen_paths: list[Path] = []
+    for snapshot_value in snapshots_value:
+        if not isinstance(snapshot_value, Mapping):
+            raise ValueError("Goal deletion recovery snapshot is invalid")
+        registry_path = _validated_recovery_path(
+            snapshot_value.get("registry_path"),
+            field="snapshot registry path",
+        )
+        backup_path = _validated_recovery_path(
+            snapshot_value.get("backup_path"),
+            field="snapshot backup path",
+        )
+        preimage_sha256 = str(snapshot_value.get("preimage_sha256") or "")
+        if not _SHA256.fullmatch(preimage_sha256):
+            raise ValueError("Goal deletion recovery preimage digest is invalid")
+        if backup_path.parent != registry_path.parent or not (
+            backup_path.name.startswith(f"{registry_path.name}.goal-delete-")
+            and backup_path.name.endswith(".bak")
+        ):
+            raise ValueError("Goal deletion recovery backup path is invalid")
+        if backup_path.is_symlink() or not backup_path.is_file():
+            raise ValueError("Goal deletion recovery backup is unavailable")
+        if any(_same_path(registry_path, seen) for seen in seen_paths):
+            raise ValueError("Goal deletion recovery repeats a registry path")
+        seen_paths.append(registry_path)
+        snapshots.append(
+            {
+                "registry_path": str(registry_path),
+                "backup_path": str(backup_path),
+                "preimage_sha256": preimage_sha256,
+            }
+        )
+    if len(seen_paths) != len(expected_paths) or any(
+        not _same_path(actual, expected)
+        for actual, expected in zip(seen_paths, expected_paths, strict=True)
+    ):
+        raise ValueError("Goal deletion recovery registry set is invalid")
+
+    normalized: dict[str, Any] = {
+        "schema_version": GOAL_DELETION_RECOVERY_SCHEMA_VERSION,
+        "goal_id": goal_id,
+        "state_fingerprint": state_fingerprint,
+        "source_basis": source_basis,
+        "source_registry": str(source_registry),
+        "declared_source_registry": str(declared_source_registry),
+        "target_registry": str(target_registry),
+        "source_available": source_available,
+        "same_registry": same_registry,
+        "snapshots": snapshots,
+    }
+    expected_receipts = [
+        _recovery_receipt_path(path, goal_id) for path in expected_paths
+    ]
+    if not any(_same_path(receipt_path, expected) for expected in expected_receipts):
+        raise ValueError("Goal deletion recovery receipt path is invalid")
+    return normalized
+
+
+def _load_recovery_record(path: Path, goal_id: str) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Goal deletion recovery receipt is unavailable")
+    if path.stat().st_size > _MAX_RECOVERY_RECEIPT_BYTES:
+        raise ValueError("Goal deletion recovery receipt exceeds its size limit")
+    return _validated_recovery_record(
+        read_json(path),
+        receipt_path=path,
+        goal_id=goal_id,
+    )
+
+
+def _matching_recovery_record(
+    *,
+    requested_registry: Path,
+    goal_id: str,
+    expected_state_fingerprint: str | None,
+    expected_source_basis: Mapping[str, str] | None,
+) -> dict[str, Any] | None:
+    if expected_state_fingerprint is None or expected_source_basis is None:
+        return None
+    receipt_path = _recovery_receipt_path(requested_registry, goal_id)
+    if not os.path.lexists(receipt_path):
+        return None
+    record = _load_recovery_record(receipt_path, goal_id)
+    if record["state_fingerprint"] != expected_state_fingerprint or record[
+        "source_basis"
+    ] != dict(expected_source_basis):
+        return None
+    return record
+
+
+def _write_recovery_receipts(record: Mapping[str, Any]) -> None:
+    goal_id = str(record["goal_id"])
+    for snapshot in record["snapshots"]:
+        receipt_path = _recovery_receipt_path(
+            Path(snapshot["registry_path"]),
+            goal_id,
+        )
+        if receipt_path.is_symlink() or (
+            receipt_path.exists() and not receipt_path.is_file()
+        ):
+            raise ValueError("Goal deletion recovery receipt path is unsafe")
+        atomic_write_json(receipt_path, dict(record), preserve_mode=True)
+        _fsync_parent(receipt_path)
+        if _load_recovery_record(receipt_path, goal_id) != record:
+            raise ValueError("Goal deletion recovery receipt readback did not verify")
+
+
+def _recovery_images(
+    record: Mapping[str, Any],
+) -> dict[Path, tuple[dict[str, Any], str]]:
+    images: dict[Path, tuple[dict[str, Any], str]] = {}
+    for snapshot in record["snapshots"]:
+        registry_path = Path(snapshot["registry_path"])
+        backup_path = Path(snapshot["backup_path"])
+        raw_preimage = backup_path.read_bytes()
+        preimage_sha256 = hashlib.sha256(raw_preimage).hexdigest()
+        if preimage_sha256 != snapshot["preimage_sha256"]:
+            raise ValueError("Goal deletion recovery backup digest does not match")
+        preimage = decode_registry_snapshot(registry_path, raw_preimage)
+        if _goal_or_none(preimage, str(record["goal_id"])) is None:
+            raise ValueError("Goal deletion recovery backup is missing its Goal")
+        images[registry_path] = (preimage, preimage_sha256)
+    return images
+
+
+def _recovery_states(
+    record: Mapping[str, Any],
+) -> tuple[
+    dict[Path, str],
+    dict[Path, tuple[dict[str, Any], str]],
+]:
+    images = _recovery_images(record)
+    states: dict[Path, str] = {}
+    for path, (preimage, preimage_sha256) in images.items():
+        try:
+            current_bytes = path.read_bytes()
+            current = load_registry(path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(
+                "Goal deletion recovery conflicts with current registry state"
+            ) from exc
+        if hashlib.sha256(current_bytes).hexdigest() == preimage_sha256:
+            states[path] = "preimage"
+            continue
+        postimage, changed = _remove_goal(
+            preimage,
+            str(record["goal_id"]),
+            updated_at=current.get("updated_at"),
+        )
+        if not changed or current != postimage:
+            raise ValueError(
+                "Goal deletion recovery conflicts with current registry state"
+            )
+        states[path] = "postimage"
+    return states, images
+
+
+def _recovery_readback(
+    record: Mapping[str, Any],
+    states: Mapping[Path, str],
+) -> dict[str, bool]:
+    source_registry = Path(record["source_registry"])
+    declared_source_registry = Path(record["declared_source_registry"])
+    target_registry = Path(record["target_registry"])
+    source_available = bool(record["source_available"])
+    source_missing = (
+        states[source_registry] == "postimage"
+        if source_available
+        else _source_basis(
+            {
+                "declared_source_registry": declared_source_registry,
+                "source_status": _source_status(
+                    declared_source_registry,
+                    goal_id=str(record["goal_id"]),
+                ).value,
+                "route_mode": record["source_basis"]["route_mode"],
+            }
+        )
+        == record["source_basis"]
+    )
+    global_missing = states[target_registry] == "postimage"
+    return {
+        "source_missing": source_missing,
+        "global_missing": global_missing,
+        "verified": source_missing and global_missing,
+    }
+
+
+def _recovery_result(
+    record: Mapping[str, Any],
+    states: Mapping[Path, str],
+    *,
+    execute: bool,
+    written: bool,
+) -> dict[str, Any]:
+    readback = _recovery_readback(record, states)
+    if not record["source_available"] and not readback["source_missing"]:
+        raise ValueError("Goal deletion recovery conflicts with current registry state")
+    source_registry = Path(record["source_registry"])
+    target_registry = Path(record["target_registry"])
+    return {
+        "ok": True,
+        "schema_version": GOAL_DELETION_SCHEMA_VERSION,
+        "dry_run": not execute,
+        "execute": execute,
+        "goal_id": record["goal_id"],
+        "source_registry": str(source_registry),
+        "target_global_registry": str(target_registry),
+        "source_registry_present": bool(
+            record["source_available"] and states[source_registry] == "preimage"
+        ),
+        "global_registry_present": states[target_registry] == "preimage",
+        "source_basis": dict(record["source_basis"]),
+        "authority_route_mode": record["source_basis"]["route_mode"],
+        "expected_state_fingerprint": record["state_fingerprint"],
+        "observed_state_fingerprint": record["state_fingerprint"],
+        "written": written,
+        "partial_write": any(state == "postimage" for state in states.values())
+        and not readback["verified"],
+        "backup_paths": [
+            str(snapshot["backup_path"]) for snapshot in record["snapshots"]
+        ],
+        "readback": readback,
+        "recovery_pending": not execute,
+        "recovered": execute and readback["verified"],
+        "replayed": execute and readback["verified"] and not written,
+    }
+
+
+def _recovery_receipts_match(record: Mapping[str, Any]) -> bool:
+    goal_id = str(record["goal_id"])
+    for snapshot in record["snapshots"]:
+        receipt_path = _recovery_receipt_path(
+            Path(snapshot["registry_path"]),
+            goal_id,
+        )
+        if not os.path.lexists(receipt_path):
+            return False
+        current = _load_recovery_record(receipt_path, goal_id)
+        if current != record:
+            return False
+    return True
+
+
+def _execute_recovery(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Converge every recorded preimage to deletion without overwriting drift."""
+
+    source_registry = Path(record["source_registry"])
+    declared_source_registry = Path(record["declared_source_registry"])
+    target_registry = Path(record["target_registry"])
+    source_available = bool(record["source_available"])
+    same_registry = bool(record["same_registry"])
+    locked_source_registry = (
+        source_registry if source_available else declared_source_registry
+    )
+    with ExitStack() as stack:
+        source_transaction = None
+        if not _same_path(locked_source_registry, target_registry):
+            if source_available and not same_registry:
+                source_transaction = stack.enter_context(
+                    project_registry_transaction(
+                        locked_source_registry,
+                        operation="recover_delete_stopped_goal",
+                    )
+                )
+            else:
+                stack.enter_context(
+                    exclusive_cross_runtime_file_lock(
+                        locked_source_registry,
+                        operation="recover_delete_stopped_goal",
+                    )
+                )
+        stack.enter_context(
+            exclusive_cross_runtime_file_lock(
+                target_registry,
+                operation="recover_delete_stopped_goal",
+            )
+        )
+        states, images = _recovery_states(record)
+        if not _recovery_receipts_match(record):
+            if any(state == "postimage" for state in states.values()):
+                raise ValueError(
+                    "Goal deletion recovery conflicts with current registry state"
+                )
+            _write_recovery_receipts(record)
+
+        written_paths: list[Path] = []
+        try:
+            for snapshot in record["snapshots"]:
+                path = Path(snapshot["registry_path"])
+                if states[path] == "postimage":
+                    continue
+                preimage, _digest = images[path]
+                postimage, changed = _remove_goal(
+                    preimage,
+                    str(record["goal_id"]),
+                )
+                if not changed:
+                    raise ValueError(
+                        "Goal deletion recovery backup is missing its Goal"
+                    )
+                _write_locked_registry(
+                    path=path,
+                    updated=postimage,
+                    source_registry=source_registry,
+                    source_transaction=source_transaction,
+                )
+                written_paths.append(path)
+            final_states, _final_images = _recovery_states(record)
+            result = _recovery_result(
+                record,
+                final_states,
+                execute=True,
+                written=bool(written_paths),
+            )
+            if not result["readback"]["verified"]:
+                raise ValueError("Goal deletion recovery readback did not verify")
+            return result
+        except Exception:
+            for path in reversed(written_paths):
+                preimage, _digest = images[path]
+                _restore_locked_registry(
+                    path=path,
+                    current=preimage,
+                    source_registry=source_registry,
+                    source_transaction=source_transaction,
+                )
+            raise
 
 
 def _resolve_route(
@@ -479,6 +939,27 @@ def _updated_payloads(
     return updated_payloads
 
 
+def _deletion_write_paths(
+    *,
+    current_payloads: Mapping[Path, dict[str, Any]],
+    source_registry: Path,
+    target_registry: Path,
+    source_available: bool,
+) -> list[Path]:
+    paths: list[Path] = []
+    if (
+        source_available
+        and not _same_path(source_registry, target_registry)
+        and source_registry in current_payloads
+    ):
+        paths.append(source_registry)
+    if target_registry in current_payloads:
+        paths.append(target_registry)
+    if len(paths) != len(current_payloads):
+        raise ValueError("Goal deletion registry set is invalid")
+    return paths
+
+
 def _write_deletion(
     *,
     current_payloads: dict[Path, dict[str, Any]],
@@ -488,6 +969,7 @@ def _write_deletion(
     target_registry: Path,
     source_available: bool,
     locked_source_basis: Mapping[str, str],
+    locked_state_fingerprint: str,
     goal_id: str,
     payload: dict[str, Any],
     source_transaction: ProjectRegistryTransaction | None,
@@ -495,10 +977,31 @@ def _write_deletion(
     written_paths: list[Path] = []
     try:
         timestamp = now_local_iso()
-        for path in current_payloads:
+        paths = _deletion_write_paths(
+            current_payloads=current_payloads,
+            source_registry=source_registry,
+            target_registry=target_registry,
+            source_available=source_available,
+        )
+        backup_paths: dict[Path, Path] = {}
+        for path in paths:
             backup = _create_backup(path, timestamp=timestamp)
+            backup_paths[path] = backup
             payload["backup_paths"].append(str(backup))
-        for path in sorted(updated_payloads, key=lambda item: str(item)):
+        recovery_record = _build_recovery_record(
+            goal_id=goal_id,
+            state_fingerprint=locked_state_fingerprint,
+            source_basis=locked_source_basis,
+            source_registry=source_registry,
+            declared_source_registry=declared_source_registry,
+            target_registry=target_registry,
+            source_available=source_available,
+            same_registry=_same_path(source_registry, target_registry),
+            paths=paths,
+            backup_paths=backup_paths,
+        )
+        _write_recovery_receipts(recovery_record)
+        for path in paths:
             _write_locked_registry(
                 path=path,
                 updated=updated_payloads[path],
@@ -533,6 +1036,8 @@ def _write_deletion(
         payload["written"] = bool(written_paths)
         payload["ok"] = True
         payload["partial_write"] = False
+        payload["recovered"] = False
+        payload["replayed"] = False
     except Exception:
         for path in reversed(written_paths):
             _restore_locked_registry(
@@ -648,6 +1153,7 @@ def _execute_deletion(
             target_registry=target_registry,
             source_available=source_available,
             locked_source_basis=locked_source_basis,
+            locked_state_fingerprint=locked_state_fingerprint,
             goal_id=goal_id,
             payload=payload,
             source_transaction=source_transaction,
@@ -667,7 +1173,8 @@ def delete_stopped_goal(
     Goal data such as state files and project files is intentionally retained;
     deletion removes only the registry entries that make the Goal visible to
     the LoopX control plane. Expected state and source values are checked again
-    while both registry locks are held.
+    while both registry locks are held. A matching write-ahead recovery receipt
+    makes retries from the same preview idempotent after process termination.
     """
 
     normalized_goal_id = _require_opaque_id(goal_id, field="goal_id")
@@ -678,6 +1185,22 @@ def delete_stopped_goal(
     ):
         raise ValueError("expected state fingerprint must be a SHA-256 digest")
     normalized_source_basis = _normalize_source_basis(expected_source_basis)
+    recovery_record = _matching_recovery_record(
+        requested_registry=requested_registry,
+        goal_id=normalized_goal_id,
+        expected_state_fingerprint=normalized_fingerprint,
+        expected_source_basis=normalized_source_basis,
+    )
+    if recovery_record is not None:
+        if execute:
+            return _execute_recovery(recovery_record)
+        recovery_states, _recovery_payloads = _recovery_states(recovery_record)
+        return _recovery_result(
+            recovery_record,
+            recovery_states,
+            execute=False,
+            written=False,
+        )
     try:
         route = _resolve_route(
             normalized_goal_id,
@@ -720,6 +1243,9 @@ def delete_stopped_goal(
         "written": False,
         "partial_write": False,
         "backup_paths": [],
+        "recovery_pending": False,
+        "recovered": False,
+        "replayed": False,
         "readback": {
             "source_missing": route["source_goal"] is None,
             "global_missing": False,
