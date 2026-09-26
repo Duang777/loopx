@@ -305,6 +305,7 @@ class ChatRuntimeController:
         self.session_adapter_locks: dict[str, threading.Lock] = {}
         self.session_queue_workers: set[str] = set()
         self.session_queue_threads: dict[str, threading.Thread] = {}
+        self.session_queue_wakeups: set[str] = set()
         self.closed = threading.Event()
         from .chat_loopx_mode import ChatLoopXMode
         self.loopx_mode = ChatLoopXMode(self)
@@ -1073,7 +1074,10 @@ class ChatRuntimeController:
         # Admission must not read session files: callers can hold their own
         # lifecycle fence here. The worker validates the session before effects.
         with self.lock:
-            if self.closed.is_set() or session_id in self.session_queue_workers:
+            if self.closed.is_set():
+                return
+            if session_id in self.session_queue_workers:
+                self.session_queue_wakeups.add(session_id)
                 return
             worker = threading.Thread(
                 target=self._drain_session_queue,
@@ -1133,8 +1137,17 @@ class ChatRuntimeController:
                     work_dir=work_dir,
                     objective=objective,
                 )
+                with self.lock:
+                    self.session_queue_wakeups.discard(session_id)
                 turn = self.store.claim_next_queued_turn(session_id)
                 if turn is None:
+                    with self.lock:
+                        if session_id in self.session_queue_wakeups:
+                            continue
+                        worker = self.session_queue_threads.get(session_id)
+                        if worker is threading.current_thread():
+                            self.session_queue_workers.discard(session_id)
+                            self.session_queue_threads.pop(session_id, None)
                     return
                 turn_id = str(turn["turn_id"])
                 with self.lock:
@@ -1148,8 +1161,11 @@ class ChatRuntimeController:
                 )
         finally:
             with self.lock:
-                self.session_queue_workers.discard(session_id)
-                self.session_queue_threads.pop(session_id, None)
+                worker = self.session_queue_threads.get(session_id)
+                if worker is threading.current_thread():
+                    self.session_queue_workers.discard(session_id)
+                    self.session_queue_threads.pop(session_id, None)
+                    self.session_queue_wakeups.discard(session_id)
 
     def _run_turn(
         self,

@@ -55,6 +55,16 @@ no durable authority and relaxes no writer fence or D2 gate. This runtime repair
 does not mechanically subtract one of the three remaining implementation packages.
 [Evidence and boundary](ledger/shared-goal-authority-state-provider-v0/2026-09-24-default-cutover-reconciliation.md#long-history-closeout-this-repair-and-its-remaining-boundary).
 
+For existing file-v0 Goals with a journal above the 128 MiB full-document
+cache limit, the Effect server now reuses a bounded, byte-and-identity-verified
+head and receipt read view. Commits and history scans still verify the complete
+journal. Canonical write callers allow the declared 30-second maintenance-lock
+wait, 5-second provider-lock wait and a bounded readback before declaring an
+ambiguous RPC; read-only lease inspection has its own budget. This is an
+interim L2/L5 reliability repair for existing Goals, not bounded file-v0 write
+amplification, SQLite D2 qualification or authorization to migrate a live Goal.
+Section 7.2's capacity, recovery, soak and fenced migration gates remain.
+
 Promotion admission now binds complete sources to a current registry witness
 and rechecks it inside the TS lock scope. Saved execution retains the reviewed
 handoff policy, and failures report durable fence presence. Recovery of a

@@ -16,7 +16,11 @@ from ..coordination.local_authority import (
     LocalCoordinationAuthorityUnavailable,
     read_canonical_todos_if_promoted,
 )
-from ..effect_runtime import EffectRuntimeResponseAmbiguous, effect_runtime_result
+from ..effect_runtime import (
+    CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    EffectRuntimeResponseAmbiguous,
+    effect_runtime_result,
+)
 from .contract import (
     normalize_todo_metadata_for_write,
     normalize_todo_task_class,
@@ -107,6 +111,7 @@ def create_canonical_todo_if_promoted(
                 "dry_run": dry_run,
                 "observed_at": now_local(),
             },
+            timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
         )
     except EffectRuntimeResponseAmbiguous as error:
         raise LocalCoordinationAuthorityUnavailable(

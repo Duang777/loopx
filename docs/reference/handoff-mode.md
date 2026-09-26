@@ -187,3 +187,52 @@ capability editor 会制造第二个 truth source。apply 之后，各入口的�
 预览不写入；旧 writer 不支持该幂等 ID。需要切回时，用新 ID 请求原 mode，仍须满足
 空闲门禁，不能通过关闭 fence 或恢复旧 Markdown 回滚。本功能不解除 provider
 默认值、长程资格化、PostgreSQL 部署或 D1–D3 的剩余条件。
+
+## Recover a canonical Todo edit with retained lease history
+
+A canonical Todo can retain a released or expired lease even in `legacy` mode.
+That record preserves execution lineage: `todo update` still requires a current
+active owner proof. `handoff_mode_requires_lease` does **not** mean that the Goal
+has silently switched to `hard_lease`.
+
+Lease-proof rejections of canonical metadata edits now include the actual `handoff_mode` and a
+read-only `recovery` projection. It contains no execution key and grants no
+permission. The original rejection code and all fences remain unchanged:
+
+| Observation | Recovery |
+| --- | --- |
+| Active lease held by the current claim owner; missing/stale proof | Inspect the lease and retry using its current proof. Do not acquire a competing execution. |
+| Released/expired lease; current owner is eligible and acquisition passes the current mode, acceptance and scope checks | Inspect the version, acquire a short lease with a fresh key, update using the returned proof, then release it. |
+| Active foreign holder, divergent claim, or absent claim | Reconcile ownership through its lifecycle; never borrow another holder's proof. |
+| `soft_claim`, non-open Todo, acceptance hold or conflicting write scopes | Resolve the reported acquisition blocker. No acquire action is offered. |
+| Edit changes retained leased work requirements or status | Use the owning lifecycle transition; acquiring another lease cannot authorize the metadata edit. |
+
+The recovery descriptor uses the standalone `loopx task-lease acquire` command.
+Combined `todo claim --task-lease-idempotency-key` is restricted to `hard_lease`
+and is not the recovery route for `legacy`. Acquire uses `--owner`, a **fresh**
+`--idempotency-key`, `--expected-version` from `task-lease inspect`, a bounded
+`--ttl-seconds`, and any projected `--write-scope` values. Retry the original
+update with `--task-lease-idempotency-key` and `--task-lease-expected-version`
+from the new lease. Release with `task-lease release --owner ...
+--idempotency-key ... --expected-version ...` using current owner readback.
+
+An observed version is not a reservation. Concurrent changes can reject the
+acquire or update; reread instead of bypassing CAS. Preview and rejected writes
+do not acquire/release a lease or publish Todo changes. Recovery does not change
+the configured mode, promote a provider, or waive acceptance.
+
+### 保留租约历史时的更新恢复
+
+canonical Todo 在 `legacy` 模式下也可能保留 released／expired lease。它记录的是
+执行世代，不能因为过期或已释放就绕过写入 fence。`handoff_mode_requires_lease`
+不表示 Goal 已自动切成 `hard_lease`；拒绝结果会返回真实 mode 与只读 `recovery`。
+
+有效的本主租约应 inspect 后使用当前 proof 重试；已释放或过期的租约，只有当前
+claim owner 满足相同的 acquire 准入规则时，才提示“inspect version → 用新 key
+申请短 lease → 带新 proof 更新 → release”。legacy 必须用独立 `task-lease acquire`，
+不能用仅限 hard_lease 的合并式 claim+lease。
+
+异主有效 lease、claim 不一致、soft_claim、不允许执行的 Todo、验收阻塞或 scope
+冲突不会得到不可执行的 acquire 建议；修改已租用工作的要求或状态须走对应 lifecycle。
+提示不包含 execution key、不授予权限，也不修改 mode 或 provider。并发造成 version
+变化时重新读取，不能绕过 CAS；dry-run 和拒绝路径不产生 Todo 或租约写入。

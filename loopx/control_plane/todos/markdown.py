@@ -5,6 +5,20 @@ from typing import Any
 from .contract import TODO_STATUS_OPEN, todo_marker_for_status
 
 
+def _render_lease_recovery(payload: dict[str, Any]) -> list[str]:
+    """Render the typed rejection's guidance without deciding lease eligibility."""
+    recovery = payload.get("recovery")
+    if not isinstance(recovery, dict) or not recovery.get("reason") or not payload.get("handoff_mode"):
+        return []
+    lines = [f"- handoff_mode: `{payload['handoff_mode']}`", f"- recovery: {recovery['reason']}"]
+    for step in ("inspect", "acquire", "retry", "release"):
+        instruction = recovery.get(step)
+        if isinstance(instruction, dict) and instruction.get("command"):
+            lines.append(f"- {step}: `{instruction['command']}`")
+    lines.append("- Use `--format json` for the recovery arguments and current-version requirements.")
+    return lines
+
+
 def render_todo_markdown(payload: dict[str, Any]) -> str:
     if payload.get("command") == "project-markdown":
         return "\n".join(
@@ -231,6 +245,7 @@ def render_todo_markdown(payload: dict[str, Any]) -> str:
         )
     if payload.get("error"):
         lines.append(f"- error: {payload.get('error')}")
+        lines.extend(_render_lease_recovery(payload))
         if payload.get("operator_action"):
             action = payload["operator_action"]
             lines.append(f"- error_code: `{payload.get('error_code')}`")
