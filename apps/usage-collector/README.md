@@ -50,8 +50,12 @@ Then point a client at it without a release:
 LOOPX_USAGE_PING_ENDPOINT=https://<worker-host>/v0/ping loopx usage-ping
 ```
 
-Clients send by default only after `DEFAULT_ENDPOINT` in
-`loopx/usage_ping.py` is set to the deployed URL and released.
+The project collector is deployed at
+`https://loopx-usage-collector.huangrt01.workers.dev`; its public statistics are
+available at [`/v0/stats`](https://loopx-usage-collector.huangrt01.workers.dev/v0/stats).
+This source version uses its `/v0/ping` endpoint by default after explicit
+machine opt-in. Older builds with an empty `DEFAULT_ENDPOINT` can use the
+environment override above. A deployment alone never enables a machine.
 
 ## Limits
 

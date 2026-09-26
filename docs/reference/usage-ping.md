@@ -42,11 +42,14 @@ check it.
   until the next day.
 - `loopx usage-ping` itself never triggers a send.
 
-The endpoint is `LOOPX_USAGE_PING_ENDPOINT` if set, otherwise the release
-default. It must be `https://` (plain `http://` is accepted only for
-loopback addresses, for local testing). Until the project collector is
-deployed the release default is empty, so enabling records consent but sends
-nothing; `loopx usage-ping` shows `sending: false` in that case.
+The default endpoint in this source version is
+`https://loopx-usage-collector.huangrt01.workers.dev/v0/ping`.
+`LOOPX_USAGE_PING_ENDPOINT` overrides it with another `https://` collector
+(plain `http://` is accepted only for loopback addresses, for local testing).
+Endpoint availability does not grant consent: machines remain off until
+`enable`. Older builds with an empty default can use this environment variable
+without waiting for a release. A network that cannot reach `workers.dev` will
+not send successfully; the command still completes normally.
 
 ## Switches
 
