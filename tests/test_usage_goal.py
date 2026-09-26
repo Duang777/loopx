@@ -110,10 +110,19 @@ def test_metadata_cannot_redirect_timing_read_outside_selected_home(tmp_path, mo
     assert usage_goal._bound_codex_session(registry, "goal", "agent") is None
 
 
-def test_real_detached_cycle_and_bound_codex_event_reach_shared_ts_aggregator(tmp_path, monkeypatch):
+def _bound_cycle_through_detached_ts(tmp_path, monkeypatch, *, header_characters: int = 0):
+    """Drive the real quota observer -> detached TS chain over one bound session.
+
+    `header_characters` widens the session_meta line the way Codex's recorder
+    does with base_instructions, so the same entry point covers a header that
+    does not fit in one fixed read.
+    """
     from datetime import datetime, timezone
     from pathlib import Path
     registry, rollout = _bound_fixture(tmp_path, monkeypatch)
+    if header_characters:
+        rollout.write_text(json.dumps({"type": "session_meta", "payload": {
+            "id": "thread-a", "base_instructions": {"text": "i" * header_characters}}}) + "\n")
     monkeypatch.setattr(usage_ping, "DEFAULT_RUNTIME_ROOT", tmp_path)
     for name in ("CI", "DO_NOT_TRACK", "LOOPX_USAGE_PING", "LOOPX_USAGE_POLICY"):
         monkeypatch.delenv(name, raising=False)
@@ -150,6 +159,11 @@ def test_real_detached_cycle_and_bound_codex_event_reach_shared_ts_aggregator(tm
     goals = Path(str(usage_ping.state_path()) + ".goals")
     wait_for(lambda: len(json.loads(goals.read_text())["goals"]) == 2)
     preview = usage_ping.control("status")["goal_preview"]
+    return preview, cycle_path, goals, publish
+
+
+def test_real_detached_cycle_and_bound_codex_event_reach_shared_ts_aggregator(tmp_path, monkeypatch):
+    preview, cycle_path, goals, publish = _bound_cycle_through_detached_ts(tmp_path, monkeypatch)
     assert {row["measurement"] for row in preview["counters"]} == {"quota_cycle", "codex_turn"}
     assert all(row["host"] == "codex_app" for row in preview["counters"])
     assert "PRIVATE CONTENT" not in cycle_path.read_text() + goals.read_text()
@@ -158,3 +172,18 @@ def test_real_detached_cycle_and_bound_codex_event_reach_shared_ts_aggregator(tm
     monkeypatch.setattr(usage_ping, "_detach", lambda *a, **k: pytest.fail("disabled observer spawned"))
     publish("start")
     assert not cycle_path.exists() and not goals.exists()
+
+
+def test_bound_session_with_a_long_metadata_header_still_reaches_ts(tmp_path, monkeypatch):
+    """Codex records base_instructions in session_meta; a long header must bind."""
+    characters = 72_000
+    header = json.dumps({"type": "session_meta", "payload": {
+        "id": "thread-a", "base_instructions": {"text": "i" * characters}}}) + "\n"
+    assert len(header) > 65536, "fixture header must exceed one fixed read"
+    preview, _, _, publish = _bound_cycle_through_detached_ts(
+        tmp_path, monkeypatch, header_characters=characters)
+    assert {row["measurement"] for row in preview["counters"]} == {"quota_cycle", "codex_turn"}
+    assert all(row["host"] == "codex_app" for row in preview["counters"])
+    usage_ping.control("disable")
+    monkeypatch.setattr(usage_ping, "_detach", lambda *a, **k: pytest.fail("disabled observer spawned"))
+    publish("start")

@@ -1,20 +1,64 @@
 /** Read only timing envelopes from one explicitly bound session, in bounded chunks. */
 import { open } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import type { GoalObservation, Host } from "./usage_statistics_goal_contract.ts";
 import { object } from "./usage_statistics_contract.ts";
 export type CodexCursor = { offset: number; inode: string; since: number; seen: number; skipping?: boolean; open?: { id: string; start: number; confirmed: number } };
 const BUDGET = 1024 * 1024;
+// The first line is not a short id record: Codex's recorder writes
+// `base_instructions` and the dynamic tool list into `session_meta`, and the
+// first lines observed in this project's Codex homes reach ~50 KiB. Frame the
+// line by LF under its own bounded budget instead of assuming one fixed 64 KiB
+// chunk holds it, which truncated the JSON and stranded the whole session.
+const HEADER_CHUNK = 65536;
+const HEADER_BUDGET = 2 * 1024 * 1024;
+type HeaderLine = { line: string } | { error: "incomplete" | "too_large" };
 function timestamp(value: unknown): number { return typeof value === "string" ? Date.parse(value) : NaN; }
+/**
+ * Read the opening record whole, framed by LF, up to a fixed budget.
+ *
+ * `incomplete` means the writer has not finished the record yet and the caller
+ * should read it again later; `too_large` means the identity cannot be verified
+ * at all, which is named rather than reported as a mismatch.
+ */
+async function readHeaderLine(file: FileHandle, size: number): Promise<HeaderLine> {
+  const parts: Buffer[] = [];
+  let offset = 0;
+  while (offset < size && offset < HEADER_BUDGET) {
+    const take = Math.min(HEADER_CHUNK, size - offset, HEADER_BUDGET - offset);
+    const buffer = Buffer.alloc(take);
+    const read = await file.read(buffer, 0, take, offset);
+    if (read.bytesRead <= 0) break;
+    const chunk = buffer.subarray(0, read.bytesRead);
+    offset += read.bytesRead;
+    const newline = chunk.indexOf(10);
+    parts.push(newline < 0 ? chunk : chunk.subarray(0, newline));
+    if (newline >= 0) return { line: Buffer.concat(parts).toString("utf8") };
+  }
+  return offset >= HEADER_BUDGET ? { error: "too_large" } : { error: "incomplete" };
+}
 export async function readCodexTiming(path: string, thread: string, previous: CodexCursor | undefined, now: number, key: string, host: Host) {
   const file = await open(path, "r");
   try {
     const stat = await file.stat();
-    const header = Buffer.alloc(65536);
-    const head = await file.read(header, 0, header.length, 0);
-    const first = header.subarray(0, head.bytesRead).toString().split("\n")[0];
-    const meta = JSON.parse(first);
-    if (meta.type !== "session_meta" || (meta.payload?.id ?? meta.payload?.session_id) !== thread) throw new Error("usage_session_identity_mismatch");
     const inode = `${stat.dev}:${stat.ino}`;
+    const header = await readHeaderLine(file, stat.size);
+    if ("error" in header) {
+      if (header.error === "incomplete") {
+        // Nothing may be emitted before the identity is verified, and nothing is
+        // lost: the record is simply not written yet, so read it again later.
+        const cursor: CodexCursor = previous?.inode === inode && previous.offset <= stat.size
+          ? { ...structuredClone(previous), seen: now }
+          : { offset: 0, inode, since: now, seen: now };
+        return { cursor, observations: [] as GoalObservation[] };
+      }
+      throw new Error(`usage_session_header_too_large:${stat.size}`);
+    }
+    let meta: unknown;
+    try { meta = JSON.parse(header.line); } catch { throw new Error("usage_session_header_unparsable"); }
+    const record = object(meta) ? meta : {};
+    const payload = object(record.payload) ? record.payload : {};
+    if (record.type !== "session_meta" || (payload.id ?? payload.session_id) !== thread) throw new Error("usage_session_identity_mismatch");
     const reusable = previous?.inode === inode && previous.offset <= stat.size;
     const cursor: CodexCursor = reusable ? structuredClone(previous!) : { offset: Math.max(0, stat.size - BUDGET), inode, since: now, seen: now };
     cursor.seen = now;

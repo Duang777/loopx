@@ -85,6 +85,47 @@ test("opt-out prevents opening bound transcript files; disable erases cycle curs
   await assert.rejects(readFile(path+".cycles"),/ENOENT/);
 });
 
+test("a session_meta header larger than one chunk still binds and recovers timing", async t => {
+  const path=join(await fixture(t),"long-header.jsonl");
+  // Codex's recorder writes base_instructions and the tool list into this line;
+  // 72 KiB already exceeds the old fixed 64 KiB read and is well inside the
+  // framing budget, so it must bind exactly like a short header.
+  const header=JSON.stringify({type:"session_meta",payload:{id:"thread",base_instructions:{text:"i".repeat(72000)},dynamic_tools:[{name:"shell"}]}});
+  assert.ok(header.length>65536,"fixture header must exceed the fixed chunk this reader used");
+  await writeFile(path,header+"\n"+event("task_started",at-1000,{turn_id:"first",started_at:new Date(at-1000).toISOString()}));
+  let result=await readCodexTiming(path,"thread",undefined,at,key,"codex_app");
+  assert.equal(result.observations.length,0);
+  await assert.rejects(readCodexTiming(path,"other-thread",undefined,at,key,"codex_app"),/identity_mismatch/);
+  await appendFile(path,event("task_complete",at+60000,{turn_id:"first",started_at:new Date(at-1000).toISOString(),completed_at:new Date(at+60000).toISOString()}));
+  result=await readCodexTiming(path,"thread",result.cursor,at+60001,key,"codex_app");
+  assert.equal(result.observations.length,1);
+  assert.equal(result.observations[0].end-result.observations[0].start,60000);
+  assert.equal(result.observations[0].measurement,"codex_turn");
+});
+
+test("an unfinished header waits for the rest of the line instead of failing the session", async t => {
+  const path=join(await fixture(t),"partial-header.jsonl");
+  const header=JSON.stringify({type:"session_meta",payload:{id:"thread",base_instructions:{text:"j".repeat(72000)}}});
+  await writeFile(path,header.slice(0,70000));
+  const waiting=await readCodexTiming(path,"thread",undefined,at,key,"codex_app");
+  assert.equal(waiting.observations.length,0);
+  assert.equal(waiting.cursor.offset,0,"an incomplete header must not advance the cursor past unread bytes");
+  await writeFile(path,header+"\n"+event("task_started",at-1000,{turn_id:"first",started_at:new Date(at-1000).toISOString()}));
+  const started=await readCodexTiming(path,"thread",waiting.cursor,at,key,"codex_app");
+  await appendFile(path,event("task_complete",at+30000,{turn_id:"first",completed_at:new Date(at+30000).toISOString()}));
+  const done=await readCodexTiming(path,"thread",started.cursor,at+30001,key,"codex_app");
+  assert.equal(done.observations.length,1);
+  // A start observed before the first scan is clamped to the cursor's `since`,
+  // so the span reaches back only to the first read that saw this session.
+  assert.equal(done.observations[0].end-done.observations[0].start,30000);
+});
+
+test("a header above the framing budget is named instead of reported as a mismatch", async t => {
+  const path=join(await fixture(t),"oversized-header.jsonl");
+  await writeFile(path,JSON.stringify({type:"session_meta",payload:{id:"thread",base_instructions:{text:"k".repeat(2*1024*1024+16)}}})+"\n");
+  await assert.rejects(readCodexTiming(path,"thread",undefined,at,key,"codex_app"),/usage_session_header_too_large/);
+});
+
 test("oversized transcript content cannot strand later terminal timing", async t => {
   const path=join(await fixture(t),"large.jsonl");
   await writeFile(path,JSON.stringify({type:"session_meta",payload:{id:"thread"}})+"\n");
