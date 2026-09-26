@@ -5,7 +5,11 @@ import json
 from ..agent_registry import registered_agent_ids_from_registry
 from ..history import load_registry
 from ..paths import resolve_runtime_root
-from ..control_plane.effect_runtime import effect_runtime_result
+from ..control_plane.effect_runtime import (
+    CANONICAL_AUTHORITY_READ_TIMEOUT_SECONDS,
+    CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    effect_runtime_result,
+)
 
 
 def _render_digest(payload: dict) -> str:
@@ -166,7 +170,11 @@ def handle_todo_continuation(args, *, registry_path, runtime_root_arg, output_fo
         version = args.task_lease_expected_version
         if key is not None or version is not None:
             request["lease_proof"] = {"idempotency_key": key, "expected_version": version}
-        payload = effect_runtime_result("coordination.local_authority.todo_continuation", request)
+        payload = effect_runtime_result(
+            "coordination.local_authority.todo_continuation", request,
+            timeout=(CANONICAL_AUTHORITY_READ_TIMEOUT_SECONDS if args.action == "inspect"
+                     else CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS),
+        )
     except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
         payload = {"ok": False, "status": "failed",
             "reason_code": "invalid_continuation_request", "reason": str(exc)}

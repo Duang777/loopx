@@ -8,7 +8,10 @@ from ..coordination.local_authority import (
     LocalCoordinationAuthorityUnavailable,
     local_authority_is_promoted, read_canonical_todos_if_promoted,
 )
-from ..effect_runtime import effect_runtime_result
+from ..effect_runtime import (
+    CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    effect_runtime_result,
+)
 from ..runtime.time import now_local_iso
 
 
@@ -29,7 +32,7 @@ def set_canonical_handoff_mode(*, runtime_root: Path, goal_id: str, mode: str,
         "runtime_root": str(runtime_root.expanduser().resolve()), "goal_id": goal_id,
         "operation_id": (operation_id if operation_id is not None else f"handoff-mode:{goal_id}:{uuid4().hex}"),
         "requested_mode": mode, "observed_at": now_local_iso(), "dry_run": dry_run,
-    })
+    }, timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS)
     if (not isinstance(result, dict) or result.get("status") not in {"applied", "replayed", "recovered", "planned"}
         or result.get("source_authority") not in LOCAL_AUTHORITY_SOURCES
         or result.get("decision_read_from_provider") is not True or result.get("legacy_fallback_used") is not False):

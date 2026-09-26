@@ -371,7 +371,10 @@ def execute_native_task_lease_acquire(
 ) -> dict[str, Any]:
     """Transport one compact acquire request to the native TypeScript owner."""
 
-    from ..effect_runtime import effect_runtime_result
+    from ..effect_runtime import (
+        CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+        effect_runtime_result,
+    )
 
     from ..coordination.local_authority import local_authority_is_promoted
 
@@ -402,7 +405,10 @@ def execute_native_task_lease_acquire(
                 "provider": "file_v0",
             }
         payload = _require_native_acquire_shape(
-            effect_runtime_result("task_lease.acquire.native", request, timeout=15.0)
+            effect_runtime_result(
+                "task_lease.acquire.native", request,
+                timeout=(CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS if canonical else 15.0),
+            )
         )
         if (
             payload.get("error_code") == "authority_source_changed"
@@ -724,12 +730,16 @@ def execute_native_task_lease_lifecycle(
         compacted_todo = _compact_lifecycle_todo(todo, todo_id=str(todo_id))
         if compacted_todo is not None and not canonical_lifecycle:
             request["todo"] = compacted_todo
-        from ..effect_runtime import effect_runtime_result
+        from ..effect_runtime import (
+            CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+            effect_runtime_result,
+        )
 
         payload = effect_runtime_result(
             "task_lease.lifecycle.native",
             request,
-            timeout=15.0,
+            timeout=(CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS
+                     if canonical_lifecycle else 15.0),
         )
         if not isinstance(payload, dict):
             raise RuntimeError("native task-lease lifecycle result shape mismatch")
@@ -780,7 +790,11 @@ def inspect_native_task_lease(
         LOCAL_AUTHORITY_SOURCES, LocalCoordinationAuthorityUnavailable,
         local_authority_is_promoted,
     )
-    from ..effect_runtime import effect_runtime_result
+    from ..effect_runtime import (
+        CANONICAL_AUTHORITY_READ_TIMEOUT_SECONDS,
+        DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        effect_runtime_result,
+    )
 
     for attempt in range(TASK_LEASE_AUTHORITY_SNAPSHOT_ATTEMPTS):
         canonical = local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id)
@@ -796,7 +810,11 @@ def inspect_native_task_lease(
             "runtime_root": str(runtime_root.resolve()), "goal_id": goal_id,
             "todo_id": todo_id, "authority": authority,
         }
-        result = effect_runtime_result("task_lease.inspect.native", request)
+        result = effect_runtime_result(
+            "task_lease.inspect.native", request,
+            timeout=(CANONICAL_AUTHORITY_READ_TIMEOUT_SECONDS
+                     if canonical else DEFAULT_REQUEST_TIMEOUT_SECONDS),
+        )
         if isinstance(result, dict) and result.get("todo_projection_required") is True:
             if canonical or result.get("schema_version") != TASK_LEASE_SCHEMA_VERSION or result.get("ok") is not True or result.get("action") != "inspect":
                 raise RuntimeError("native lease inspection requested an invalid source projection")
@@ -806,7 +824,10 @@ def inspect_native_task_lease(
             )
             # Re-read the lease and fence: neither the record nor its expiry is
             # assumed unchanged while Python prepares the Todo projection.
-            result = effect_runtime_result("task_lease.inspect.native", request)
+            result = effect_runtime_result(
+                "task_lease.inspect.native", request,
+                timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            )
         if not isinstance(result, dict) or result.get("schema_version") != TASK_LEASE_SCHEMA_VERSION or result.get("action") != "inspect" or not isinstance(result.get("ok"), bool):
             raise RuntimeError("native lease inspection result shape mismatch")
         if result.get("error_code") == "authority_source_changed" and attempt + 1 < TASK_LEASE_AUTHORITY_SNAPSHOT_ATTEMPTS:
