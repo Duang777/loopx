@@ -136,3 +136,86 @@ def test_several_candidates_keep_the_unbound_lifecycle_state(
     assert several["state"] == single["state"]
     assert none["state"] == "registered"
     assert "session_binding_candidates" not in none
+
+
+def test_two_long_thread_ids_sharing_a_visible_prefix_are_two_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The display budget is 120 characters; the owner accepts 128.
+
+    Two identifiers that differ only past the visible edge collapse into the
+    same rendered text, so counting rendered text would report one route where
+    the registry holds two.
+    """
+
+    prefix = "t" * 120
+    row = _row(
+        monkeypatch,
+        [
+            [
+                _binding(prefix + "AAA"),
+                _binding(prefix + "BBB"),
+            ]
+        ],
+    )
+
+    assert row["session_binding_count"] == 2
+    assert len(row["session_binding_candidates"]) == 2
+    assert (
+        row["session_binding_candidates"][0]["thread_id"]
+        == row["session_binding_candidates"][1]["thread_id"]
+    )
+    # Counting uses the full identity; rendering stays inside the display budget.
+    assert len(row["session_binding_candidates"][0]["thread_id"]) == 120
+
+
+def test_two_long_host_surfaces_sharing_a_visible_prefix_are_two_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = _row(
+        monkeypatch,
+        [
+            [
+                _binding("thread-one", host_surface="s" * 60 + "X"),
+                _binding("thread-one", host_surface="s" * 60 + "Y"),
+            ]
+        ],
+    )
+
+    assert row["session_binding_count"] == 2
+    assert len(row["session_binding_candidates"]) == 2
+
+
+def test_an_identical_binding_republished_under_a_long_id_still_counts_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prefix = "t" * 120
+    row = _row(
+        monkeypatch,
+        [
+            [_binding(prefix + "AAA")],
+            [_binding(prefix + "AAA"), _binding(prefix + "BBB")],
+        ],
+    )
+
+    assert row["session_binding_count"] == 2
+
+
+def test_padding_a_thread_id_does_not_create_a_second_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner strips a thread identifier before matching it.
+
+    Keying the count on the untouched value would therefore split one binding
+    into two candidates and offer a route that no resolver would confirm.
+    """
+
+    row = _row(
+        monkeypatch,
+        [[_binding("thread-one")], [_binding("  thread-one  ")]],
+    )
+
+    assert row["session_binding_count"] == 1
+    assert row["session_binding_candidates"] == [
+        {"thread_id": "thread-one", "host_surface": "codex-app"}
+    ]

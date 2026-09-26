@@ -589,6 +589,7 @@ def build_agent_management_projection(
     # keep a bounded candidate summary plus the full count, so no consumer can
     # read the surviving row as the only route to that peer.
     session_binding_candidates: dict[str, list[dict[str, str]]] = {}
+    seen_binding_identities: set[tuple[str, str, str]] = set()
     run_history = _as_dict(status_payload.get("run_history"))
     for raw_goal in _as_list(run_history.get("goals")):
         if not isinstance(raw_goal, dict):
@@ -597,18 +598,29 @@ def build_agent_management_projection(
         for raw_binding in _as_list(coordination.get("thread_agent_bindings")):
             if not isinstance(raw_binding, dict):
                 continue
-            agent_id = _compact(raw_binding.get("agent_id"), limit=120)
-            thread_id = _compact(raw_binding.get("thread_id"), limit=120)
-            host_surface = _compact(raw_binding.get("host_surface"), limit=60)
+            raw_agent = str(raw_binding.get("agent_id") or "").strip()
+            raw_thread = str(raw_binding.get("thread_id") or "").strip()
+            raw_host = str(raw_binding.get("host_surface") or "").strip()
+            agent_id = _compact(raw_agent, limit=120)
+            thread_id = _compact(raw_thread, limit=120)
+            host_surface = _compact(raw_host, limit=60)
             if not agent_id or not thread_id:
                 continue
-            candidates = session_binding_candidates.setdefault(agent_id, [])
-            candidate = {
-                "thread_id": thread_id,
-                "host_surface": host_surface or "unknown",
-            }
-            if candidate not in candidates:
-                candidates.append(candidate)
+            # The display budget is not an identity key. The binding owner accepts
+            # thread identifiers to 128 characters and host surfaces to 64, both
+            # wider than what this projection shows, so two valid bindings that
+            # share a visible prefix are still two routes. Identity is therefore
+            # the untouched value; compaction only renders it.
+            identity = (raw_agent, raw_thread, raw_host)
+            if identity in seen_binding_identities:
+                continue
+            seen_binding_identities.add(identity)
+            session_binding_candidates.setdefault(agent_id, []).append(
+                {
+                    "thread_id": thread_id,
+                    "host_surface": host_surface or "unknown",
+                }
+            )
 
     seen_todos: set[tuple[str, str, str, str]] = set()
     for todo in _iter_status_todos(status_payload):

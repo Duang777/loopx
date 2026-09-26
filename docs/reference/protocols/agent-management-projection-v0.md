@@ -118,7 +118,9 @@ Optional fields:
   to three distinct `{thread_id, host_surface}` candidates in first-seen order
   and `session_binding_count` is the number of distinct bindings observed, so a
   shorter list than the count means candidates were capped, not that the
-  remainder is invalid. Neither field selects an execution route: absence is
+  remainder is invalid. Distinctness is decided on the full binding identity, not
+  on the rendered text: the owner accepts wider identifiers than this projection
+  displays, so two counted bindings can render alike. Neither field selects an execution route: absence is
   not evidence of a stopped host, a binding does not prove executable capacity,
   and several candidates for one Agent are resolved by the owning binding
   resolver, not by this display projection;
