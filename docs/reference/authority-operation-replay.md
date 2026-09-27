@@ -54,6 +54,9 @@ The shared-authority RFC owns this storage/recovery boundary. Goal lifetime
 identity, lease epochs and provider revisions remain separate contracts.
 This change does not implement Goal replacement isolation, semantic correctness
 of model output, default provider activation or long-horizon qualification.
+The [deferred Goal continuity note](../architecture/rfcs/goal-immutability-coherence-defense-v0.md)
+preserves related restart, instance-replacement and constraint-recovery scenarios
+under their existing RFC owners; those scenarios are not qualified by this PR.
 
 `authority_operation_replay_conformance.ts` runs on both File and SQLite. It
 checks full body drift, canonical key ordering, historical replay and concurrent
