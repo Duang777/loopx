@@ -8,7 +8,7 @@
 - Scope: an incremental, replacement-first migration of the LoopX control-plane
   core from Python to TypeScript without maintaining two semantic
   implementations
-- Tracking issue: [#3225](https://github.com/huangruiteng/loopx/issues/3225)
+- Tracking issue: [#3225](https://github.com/loopx-project/loopx/issues/3225)
 - Language note: the
   [Chinese version](./typescript-control-plane-migration-v0.zh-CN.md) and this
   English version are semantic mirrors. A difference between them is a defect.
@@ -29,16 +29,24 @@ required for the first App outcome. These are planned product consumers of
 T0–T4, not additional provider promotion or completed migration claims.
 
 
-## Current delivery frontier (2026-09-25)
+## Current delivery frontier (2026-09-27)
 
-Audit `37bbaec79` and current PR states: complete-source transport, transaction
-capture, source assembly and the five previously open caller/event fixes are
-merged, not future implementation. After the current promotion-admission repair,
-three named code boundaries remain planned: external-effect execution fencing;
-event-writer binding plus whole-Goal migration/rollback; default onboarding plus
-bounded Python retirement. #4931 and outstanding D2 evidence are tracked
-separately. Three is a delivery plan, not a guaranteed total PR count.
-[Current inventory and exits](ledger/shared-goal-authority-state-provider-v0/2026-09-24-default-cutover-reconciliation.md).
+Audit `157ab7b11` and current PR states: source capture, pagination, File format
+upgrade and Python prototype retirement are delivered. This delivery repairs
+reviewed-input recovery and adds independent retained-history audit. Plan four
+scoped PRs starting here: this recovery slice, external execution interval
+protection, whole-Goal activation/rollback integration, and default entrypoints
+with final bounded Python retirement. Three planned scopes follow this PR;
+existing #5054/#4931 and D2/D3 evidence remain separate. This is not a guaranteed
+count of future defect repairs.
+[Current inventory, rationale and exits](ledger/shared-goal-authority-state-provider-v0/2026-09-27-recovery-audit.md).
+
+Managed Host supervision lands in the same window as a separate delivered slice:
+one TS supervisor now owns generic command and Codex CLI process lifetimes, so
+authority-bound execution stays open rather than closing here, and the old three
+architectural packages remain a pointer instead of a decrementing PR counter.
+Its named plan, changed estimate and boundaries are recorded separately.
+[Named plan, changed estimate and boundaries](ledger/shared-goal-authority-state-provider-v0/2026-09-27-host-supervision.md).
 
 ## Native authority qualification and prototype retirement (2026-09-26)
 
@@ -49,6 +57,21 @@ provider. The existing TS domain owners and shared fixtures are reused; Python
 `authority_core.py` remains a live adapter and is not removed. This is an early
 bounded T4 deletion slice, not default cutover or all Python retirement.
 [Coverage, behavior differences and format boundary](../../../examples/shared-goal-authority-e2e/README.md#native-qualification-and-prototype-retirement).
+
+## Todo event retirement (2026-09-25)
+
+PR #5054 replaces its original event-writer capture proposal with removal of
+that experimental Todo source. `events.jsonl` is no longer projected, overlaid,
+backfilled or used for completion. Nonempty default/aliased sources are refused
+without changing their bytes; empty/absent sources permit the Markdown path.
+Promoted Goals continue reading their selected provider even if stale legacy
+files remain. The supervisor uses its own local-private experimental log.
+
+This closes the *retired source* branch by deletion, not by claiming event-writer
+capture was qualified. Whole-Goal migration/rollback and default onboarding
+still require their existing acceptance; this change does not make all Python
+writers or PostgreSQL deployment ready. Do not add a replacement event capture
+PR to the remaining work. [Decision and exits](ledger/shared-goal-authority-state-provider-v0/2026-09-25-todo-event-retirement.md).
 
 ## Observation writer retirement (2026-09-24)
 
@@ -108,7 +131,7 @@ Handoff-mode transition now shares typed ownership facts and an explicit
 valid/invalid previous-mode state across legacy and canonical paths. Python's
 blocker classification, artificial previous mode and whole-text rewrite are
 removed; its retained boundary is source projection/locking and capture IO.
-The legacy scan includes event-only claims, and canonical mode receipts reuse
+The legacy scan refuses retired nonempty event sources, and canonical mode receipts reuse
 command recovery with strict historical decisions. Full-source snapshot and
 real-provider validation guard this T1/T2 replacement. This closes a rule and
 caller discrepancy, not a whole default-cutover package; use the current
@@ -1144,6 +1167,29 @@ qualify distributed execution. Cursor/checkpoint reduction remains a measured
 follow-up with complete-source parity, not a second Python policy. See the
 [history decision evidence](ledger/typescript-control-plane-migration-v0/2026-09-22-replan-history-policy.md).
 
+**Checkpoint read-context transport.** A long-lived Goal can exceed the Effect
+runtime's 2 MiB socket limit even when the original Turn receipt is small:
+complete shared Goal prose and archived Todo facts are part of the read basis,
+and the basis may also exceed the response limit. Checkpoint source, evaluation,
+replay inspection and commit explicitly opt into same-UID private request and
+response files with byte counts and SHA-256 digests. The 2 MiB socket boundary
+and default behavior of other effects remain intact. File/SQLite and legacy
+Markdown still use the same TypeScript checkpoint reducer and exact receipt;
+the transport neither truncates history nor creates a Python decision or new
+authority. Missing, changed, non-private or over-64-MiB files fail closed.
+After a handler may have committed, an unverifiable response stays ambiguous
+and requires exact receipt readback, never automatic mutation retry.
+
+This removes the immediate transport ceiling, not the cost of projecting a
+complete multi-megabyte basis. The next measured T3 cut should combine the
+canonical source read and checkpoint reduction inside one TypeScript call, then
+offer a versioned manifest with bounded pages for human/Agent inspection.
+Every page must bind to the same source head and disclose omitted components;
+the receipt must still hash the complete relevant Todo/dependency, User Todo,
+Goal prose, acceptance and vision basis. A display limit must never become a
+settlement limit. Retain the current complete read until that parity and stale-
+head recovery are qualified on legacy, File and SQLite backends.
+
 **Recovery boundary (2026-09-22).** The
 [authority archive command](../../reference/authority-archive.md) places retained
 history validation, delta reconstruction and resumable restore in the existing
@@ -1389,15 +1435,15 @@ choice is now implemented rather than hypothetical.
 
 | Slice | Canonical TypeScript ownership now shipped | Remaining migration debt |
 | --- | --- | --- |
-| Effect runtime and Turn journal ([#3416](https://github.com/huangruiteng/loopx/pull/3416)) | Effect algebra, settlement rules, runtime lifecycle, typed Turn-journal interpretation, and durable checkpoint effects | Python settlement facades still expose fine-grained calls and duplicate DTO/enum shapes |
-| Todo, quota, and scheduler proof slices ([#3431](https://github.com/huangruiteng/loopx/pull/3431)–[#3434](https://github.com/huangruiteng/loopx/pull/3434)) | Completion fence/state, workspace causality, and scheduler transitions each have one TS rule owner | The cuts are mostly leaf-shaped; Python still composes several product transactions |
-| Scheduler durable state ([#3440](https://github.com/huangruiteng/loopx/pull/3440)) | State normalization, persistence, replay, and one coarse transition are TS-owned | The Python compatibility path still pays a cross-runtime transport tax |
+| Effect runtime and Turn journal ([#3416](https://github.com/loopx-project/loopx/pull/3416)) | Effect algebra, settlement rules, runtime lifecycle, typed Turn-journal interpretation, and durable checkpoint effects | Python settlement facades still expose fine-grained calls and duplicate DTO/enum shapes |
+| Todo, quota, and scheduler proof slices ([#3431](https://github.com/loopx-project/loopx/pull/3431)–[#3434](https://github.com/loopx-project/loopx/pull/3434)) | Completion fence/state, workspace causality, and scheduler transitions each have one TS rule owner | The cuts are mostly leaf-shaped; Python still composes several product transactions |
+| Scheduler durable state ([#3440](https://github.com/loopx-project/loopx/pull/3440)) | State normalization, persistence, replay, and one coarse transition are TS-owned | The Python compatibility path still pays a cross-runtime transport tax |
 | Scheduler heartbeat/state transaction | TypeScript owns receipt freshness, ACK and host-failure validation, state construction, failure-cache transitions, replay/CAS fencing, atomic writes, and the public JSON/Markdown projection | Generated, receipt-bound host follow-up runs through the native TS CLI; Python remains only for unbound/manual compatibility calls and external host mutation |
 | Quota spend commit transaction | TypeScript owns final spend-transition validation, typed event construction, effect replay/CAS fencing, crash repair, and the JSON/Markdown/index write set | Python still projects `should-run` and settlement readback facts, and holds the legacy cross-writer index lock until the CLI/index writers move in-process |
 | Quota void commit transaction | TypeScript owns spend-target resolution, before/after reduction, canonical correction construction, effect replay/index CAS, prepared-receipt repair, and the JSON/Markdown/index write set | Python retains `should-run` facts, clock/effect identity, the legacy cross-writer index lock, one transport call, and compatibility entry points |
 | Quota monitor-poll commit transaction | TypeScript owns monitor admission revalidation, target/event/result construction, effect replay/index CAS, provider intent, and repairable JSON/Markdown/index persistence | Python projects compact `should-run` facts, invokes the real Todo provider between at most two reductions, reloads legacy status, and holds the cross-writer index lock |
-| Runtime decoders ([#3443](https://github.com/huangruiteng/loopx/pull/3443)) | Stable primitive decoding has one small shared module; domain decoders remain local | No larger schema framework is justified |
-| Transaction payoff ([#3464](https://github.com/huangruiteng/loopx/pull/3464), [#3481](https://github.com/huangruiteng/loopx/pull/3481), and Todo completion) | Turn settlement, quota delivery routing, and Todo completion each cross one coarse TS boundary; the Todo transaction owns identity, replay fencing, validation planning/result reduction, continuation/recovery, and completion metadata | Python still executes explicitly external providers and materializes legacy Markdown/event results; other domains still need their own bounded cutovers |
+| Runtime decoders ([#3443](https://github.com/loopx-project/loopx/pull/3443)) | Stable primitive decoding has one small shared module; domain decoders remain local | No larger schema framework is justified |
+| Transaction payoff ([#3464](https://github.com/loopx-project/loopx/pull/3464), [#3481](https://github.com/loopx-project/loopx/pull/3481), and Todo completion) | Turn settlement, quota delivery routing, and Todo completion each cross one coarse TS boundary; the Todo transaction owns identity, replay fencing, validation planning/result reduction, continuation/recovery, and completion metadata | Python still executes explicitly external providers and materializes legacy Markdown results; other domains still need their own bounded cutovers |
 | Projection envelope | TypeScript owns decoding of `loopx_projection_envelope_v0` and every freshness, alert, completeness and replay decision | Python gathers read facts for `status`, `global-summary` and `global-gates` until those projections migrate |
 | Promoted-authority Todo claim | TypeScript owns the provider-head read, lifecycle validation, complete-record update, hard-lease check, CAS, receipt, and readback-safe result for claims after authority promotion | Default local Markdown mode remains on the legacy writer; other Todo mutations and Markdown regeneration remain bounded follow-ups |
 

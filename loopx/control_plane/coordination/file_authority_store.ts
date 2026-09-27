@@ -50,6 +50,9 @@ interface VerifiedDocument {
   document?: FileAuthorityJournal;
 }
 let verifiedDocument: VerifiedDocument | null = null;
+// Only identical immutable input bytes share in-flight verification. Failed
+// proofs are removed too; neither a path nor a pending promise grants authority.
+const pendingVerification = new Map<string, Promise<FileAuthorityJournal>>();
 
 function documentDigest(raw: Uint8Array): string {
   return createHash("sha256").update(raw).digest("hex");
@@ -153,7 +156,7 @@ function decodeDocument(
   value: unknown,
   goalId: string,
   storeIdentity: string,
-): FileAuthorityJournal {
+): Promise<FileAuthorityJournal> {
   return FileAuthorityJournal.decode(value, goalId, storeIdentity, (previous, transaction) =>
     fileAuthorityRevision(goalId, storeIdentity, previous, transaction));
 }
@@ -177,8 +180,9 @@ export class FileAuthorityStore implements AuthorityStore {
   readonly path: string;
   readonly identityPath: string;
   private readonly existingOnly: boolean;
+  private readonly expectedIdentity: string | undefined;
 
-  constructor(directory: string, goalId: string, options: { existingOnly?: boolean } = {}) {
+  constructor(directory: string, goalId: string, options: { existingOnly?: boolean; expectedIdentity?: string } = {}) {
     this.goalId = requireAuthorityStoreId(goalId, "goal id");
     if (typeof directory !== "string" || directory.length === 0) {
       throw new AuthorityStoreProtocolError("store directory is required");
@@ -188,6 +192,7 @@ export class FileAuthorityStore implements AuthorityStore {
     this.path = join(this.directory, `authority-store-${digest}.json`);
     this.identityPath = join(this.directory, "store-identity");
     this.existingOnly = options.existingOnly === true;
+    this.expectedIdentity = options.expectedIdentity;
   }
 
   /** Narrow effect seam for crash-window qualification; not a semantic hook. */
@@ -199,7 +204,7 @@ export class FileAuthorityStore implements AuthorityStore {
   protected async archiveRenamed(): Promise<void> {}
 
   /** Full-history verification seam; unchanged byte-identical reads may reuse it. */
-  protected decodeStoredDocument(value: unknown, identity: string): FileAuthorityJournal {
+  protected decodeStoredDocument(value: unknown, identity: string): Promise<FileAuthorityJournal> {
     return decodeDocument(value, this.goalId, identity);
   }
 
@@ -211,20 +216,22 @@ export class FileAuthorityStore implements AuthorityStore {
   private async readStoreIdentity(createIfMissing = !this.existingOnly): Promise<string> {
     try {
       const identity = await readFile(this.identityPath, "utf8");
-      if (!STORE_IDENTITY_PATTERN.test(identity)) {
-        throw new AuthorityStoreProtocolError("store identity does not match file:<32 lowercase hex>");
+      if (!STORE_IDENTITY_PATTERN.test(identity) ||
+          (this.expectedIdentity !== undefined && identity !== this.expectedIdentity)) {
+        throw new AuthorityStoreProtocolError("store identity is invalid or differs from the expected File lineage");
       }
       if (createIfMissing) await syncAuthorityDirectory(this.directory);
       return identity;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    if (!createIfMissing) throw new FileStoreUnavailableError("existing store identity is missing");
+    if (!createIfMissing || this.expectedIdentity !== undefined) throw new FileStoreUnavailableError("existing store identity is missing");
     return await withFileMutationLock(this.identityPath, async () => {
       try {
         const identity = await readFile(this.identityPath, "utf8");
-        if (!STORE_IDENTITY_PATTERN.test(identity)) {
-          throw new AuthorityStoreProtocolError("store identity does not match file:<32 lowercase hex>");
+        if (!STORE_IDENTITY_PATTERN.test(identity) ||
+          (this.expectedIdentity !== undefined && identity !== this.expectedIdentity)) {
+          throw new AuthorityStoreProtocolError("store identity is invalid or differs from the expected File lineage");
         }
         await syncAuthorityDirectory(this.directory);
         return identity;
@@ -272,7 +279,17 @@ export class FileAuthorityStore implements AuthorityStore {
           (!requireHistory || verifiedDocument.document !== undefined)) {
         return verifiedDocument;
       }
-      const document = this.decodeStoredDocument(JSON.parse(raw.toString("utf8")), identity);
+      const key = JSON.stringify([this.path, identity, digest]);
+      let proof = pendingVerification.get(key);
+      if (!proof) {
+        proof = this.decodeStoredDocument(JSON.parse(raw.toString("utf8")), identity);
+        pendingVerification.set(key, proof);
+      }
+      let document: FileAuthorityJournal;
+      try { document = await proof; }
+      finally {
+        if (pendingVerification.get(key) === proof) pendingVerification.delete(key);
+      }
       return rememberVerifiedDocument(this.path, identity, raw, digest, document,
         this.fullDocumentCacheLimitBytes());
     } catch (error) {
@@ -498,7 +515,7 @@ export class FileAuthorityStore implements AuthorityStore {
         const identity = await this.readStoreIdentity(false);
         let archived: FileAuthorityJournal | null = null;
         try {
-          archived = decodeDocument(
+          archived = await decodeDocument(
             JSON.parse(await readFile(archivePath, "utf8")),
             this.goalId,
             identity,

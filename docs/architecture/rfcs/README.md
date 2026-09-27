@@ -108,13 +108,22 @@ failure leaves the generated files untouched.
     community and adoption. Domain contracts retain their authority gates.
 
 - [App conversations and reusable asynchronous work delivery](app-conversation-and-async-inbox-v0.md)
-  - **RFC status:** Draft integration proposal under R1–R3/T0–T4.
-  - **Delivery on `main`:** Existing Chat, collaboration and provider inbox owners;
+  ([中文版](app-conversation-and-async-inbox-v0.zh-CN.md))
+  - **Delivery on `main`:** Conversation-entry repair through existing Chat and explicit typed forms;
     the full managed/attached App journey is not qualified.
   - **Current boundary:** App-first conversation continuity, truthful activity,
     public-safe golden queries and a replacement-first TS async inbox plan.
 
 ## Control-Plane Kernel, State, And Migration
+
+- [Monorepo Distribution Split v0](monorepo-distribution-split-v0.md)
+  ([中文版](monorepo-distribution-split-v0.zh-CN.md))
+  - **Delivery on `main`:** Proposal only; tracking [#5072](https://github.com/loopx-project/loopx/issues/5072).
+  - **Current boundary:** Keeps one repository; splits the installed wheel into
+    `loopx-core`, `loopx-workspace` and `packages/` capability distributions,
+    regroups `loopx/` top-level modules with compatibility shims, and pins the
+    top-level module count with an architecture test. No kernel semantics,
+    licence or schema change; multi-repository split remains a non-goal.
 
 - [Automatic Execution Admission v0](automatic-execution-admission-v0.md)
   ([中文版](automatic-execution-admission-v0.zh-CN.md))
