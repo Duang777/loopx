@@ -286,7 +286,7 @@ type WriteBasis = {
 
 ## 附录 C：证据注册表 — Goal A/B 实验
 
-> 完整证据位于 `.local/research/loopx-semantic-fault-research-2026-09-26.md` L569–L696。本附录总结公共安全的结果。
+> 本附录总结受控 Goal A/B 语义故障实验的公共安全结果。原始 episode 轨迹和内部研究笔记已排除。
 
 | 证据 ID | 声明 | 基线/环境 | 结果 | 隐私边界 |
 | --- | --- | --- | --- | --- |

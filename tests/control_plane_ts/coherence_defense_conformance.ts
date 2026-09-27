@@ -12,11 +12,25 @@
  *  C5: An initial commit (null provider_revision) succeeds; a second
  *      initial commit on the same store is rejected because the revision
  *      has advanced.
+ *  C6: Same events/receipts with a different projection is rejected
+ *      (projection-only drift is not an idempotent replay).
+ *  C7: Same projection/receipts with different events is rejected.
+ *  C8: Historical A→B→replay-A returns A's original receipt and leaves
+ *      B's state unchanged.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {AuthorityStoreConformanceFactory} from "./authority_store_conformance.ts";
 import {authorityStoreCommitFixture as commit} from "./authority_store_conformance.ts";
+
+/** Build an AuthorityStoreCommit with a specific projection override for
+ *  testing projection-only drift detection. */
+function driftCommit(expectedRevision: string | null, opId: string,
+  revision: number, epoch: number, projectionOverride: Record<string, unknown>,
+) {
+  const base = commit(expectedRevision, opId, revision, epoch);
+  return {...base, next_projection: {...base.next_projection as Record<string, unknown>, ...projectionOverride}};
+}
 
 export function registerCoherenceDefenseConformance(
   provider: string,
@@ -66,7 +80,8 @@ export function registerCoherenceDefenseConformance(
     const replayResult = await store.commitAuthority(replay);
     assert.equal(replayResult.status, "applied"); // replayed, not double-committed
 
-    // Verify the store didn't change — no second event was appended.
+    // Verify the store didn't change — no second event was appended,
+    // head projection is unchanged, and the committed transaction is intact.
     const after = await store.loadAuthority();
     assert.equal(after.status, "loaded");
     if (after.status !== "loaded") return;
@@ -74,6 +89,15 @@ export function registerCoherenceDefenseConformance(
     assert.equal(receipt.status, "found");
     assert.equal(receipt.provider_revision, firstResult.provider_revision);
     assert.equal(receipt.cursor, firstResult.cursor);
+    const scan = await store.scanCommitted(null, 10);
+    assert.equal(scan.status, "page");
+    if (scan.status === "page") {
+      // Only 2 transactions: seed + unique-operation (no duplicate).
+      assert.equal(scan.transactions.length, 2);
+      const unique = scan.transactions.find(tx => tx.operation_id === "unique-operation")!;
+      assert.ok(unique);
+      assert.equal((unique.projection as Record<string, unknown>).authority_revision, 2);
+    }
   });
 
   // ─── C3: stale rejected then fresh succeeds on same operation_id ───
@@ -156,5 +180,94 @@ export function registerCoherenceDefenseConformance(
     const rejected = await store.commitAuthority(second);
     assert.equal(rejected.status, "conflict");
     assert.equal((rejected as Record<string, unknown>).conflict_kind, "provider_revision_mismatch");
+  });
+
+  // ─── C6: projection-only drift is not an idempotent replay ───
+  test(`${provider}: C6 projection-only drift rejected`, async (t) => {
+    const {store} = await factory(t);
+    const seed = commit(null, "seed-proj-drift", 1, 1);
+    assert.equal((await store.commitAuthority(seed)).status, "applied");
+
+    const head = await store.loadAuthority();
+    assert.equal(head.status, "loaded");
+    if (head.status !== "loaded") return;
+
+    // First write creates a commit with specific projection.
+    const first = commit(head.provider_revision, "drift-op", 2, 1);
+    assert.equal((await store.commitAuthority(first)).status, "applied");
+
+    // Replay with same operation_id, same events/receipts, but
+    // different projection (authority_revision 99 instead of 2).
+    const drifted = driftCommit(head.provider_revision, "drift-op", 99, 1,
+      {authority_revision: 99});
+    const result = await store.commitAuthority(drifted);
+    // Must be rejected — projection differs even though events/receipts match.
+    assert.equal(result.status, "conflict");
+    assert.equal((result as Record<string, unknown>).conflict_kind, "operation_id_exists");
+
+    // Verify the original projection (authority_revision: 2) is preserved.
+    const after = await store.loadAuthority();
+    assert.equal(after.status, "loaded");
+    if (after.status !== "loaded") return;
+    assert.equal((after.head as Record<string, unknown>).authority_revision, 2);
+  });
+
+  // ─── C7: event-only drift is not an idempotent replay ───
+  test(`${provider}: C7 event-only drift rejected`, async (t) => {
+    const {store} = await factory(t);
+    const seed = commit(null, "seed-event-drift", 1, 1);
+    assert.equal((await store.commitAuthority(seed)).status, "applied");
+
+    const head = await store.loadAuthority();
+    assert.equal(head.status, "loaded");
+    if (head.status !== "loaded") return;
+
+    // First write succeeds.
+    const first = commit(head.provider_revision, "event-drift-op", 2, 1);
+    assert.equal((await store.commitAuthority(first)).status, "applied");
+
+    // Same operation_id, same projection/receipts, but different events.
+    const drifted = {...first, events: [{...first.events[0], type: "todo_created"}]};
+    const result = await store.commitAuthority(drifted);
+    assert.equal(result.status, "conflict");
+    assert.equal((result as Record<string, unknown>).conflict_kind, "operation_id_exists");
+  });
+
+  // ─── C8: historical A→B→replay-A returns A's receipt, B unchanged ───
+  test(`${provider}: C8 historical A→B→replay-A preserves original receipt`, async (t) => {
+    const {store} = await factory(t);
+    const seed = commit(null, "seed-historical", 1, 1);
+    assert.equal((await store.commitAuthority(seed)).status, "applied");
+
+    let head = await store.loadAuthority();
+    assert.equal(head.status, "loaded");
+    if (head.status !== "loaded") return;
+
+    // Commit A: operation "hist-op" with authority_revision 2.
+    const commitA = commit(head.provider_revision, "hist-op", 2, 1);
+    const resultA = await store.commitAuthority(commitA);
+    assert.equal(resultA.status, "applied");
+
+    head = await store.loadAuthority();
+    assert.equal(head.status, "loaded");
+    if (head.status !== "loaded") return;
+
+    // Commit B: different operation advances the revision.
+    const commitB = commit(head.provider_revision, "hist-op-b", 3, 2);
+    assert.equal((await store.commitAuthority(commitB)).status, "applied");
+
+    // Replay A: same operation_id, same full body.
+    const replayA = commit(resultA.provider_revision, "hist-op", 2, 1);
+    const replayResult = await store.commitAuthority(replayA);
+    // Must return A's original receipt, not B's state.
+    assert.equal(replayResult.status, "applied");
+    assert.equal(replayResult.provider_revision, resultA.provider_revision);
+    assert.equal(replayResult.cursor, resultA.cursor);
+
+    // B's state must be unchanged.
+    head = await store.loadAuthority();
+    assert.equal(head.status, "loaded");
+    if (head.status !== "loaded") return;
+    assert.equal((head.head as Record<string, unknown>).authority_revision, 3);
   });
 }

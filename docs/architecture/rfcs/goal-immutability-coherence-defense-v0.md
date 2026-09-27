@@ -125,7 +125,7 @@ At baseline `fd96e5e25`, the following coherence-relevant machinery exists on `m
 
 The **authority store** (TypeScript `NoKVAuthorityStore` / `FileAuthorityStore`, behind the `AuthorityStore` interface) is the single owner of provider revision. Every state-changing write passes through `commitAuthority`, which atomically validates `expected_provider_revision` against the current document. No model output, compaction artifact, or agent self-report can bypass this check.
 
-The **CAS verifier** at [`nokv_authority_store.ts:376`](file:///Users/bytedance/develop/duang/loopx/loopx/control_plane/coordination/nokv_authority_store.ts#L376) is the single gate: `(currentDocument?.provider_revision ?? null) !== normalized.expected_provider_revision`. This is a machine-enforced contract — it does not depend on model behavior.
+The **CAS verifier** at `nokv_authority_store.ts` (`commitAuthority`) is the single gate: `(currentDocument?.provider_revision ?? null) !== normalized.expected_provider_revision`. This is a machine-enforced contract — it does not depend on model behavior.
 
 The **Goal lifecycle owner** (`todo_terminal_lifecycle.ts`), **Todo owner** (`todo_create.ts`, `todo_update.ts`), and **effect receipt owner** (`CoordinationCommandReceipt`) remain unchanged. They consume the authority store's CAS gate; they do not implement independent revision checks.
 
@@ -173,7 +173,7 @@ type AuthorityStoreCommit = {
 };
 ```
 
-When any Goal state changes (Todo created, lifecycle transition, acceptance update), the `provider_revision` advances. A write computed against an old `provider_revision` fails with `conflict_kind: "provider_revision_mismatch"` at [`nokv_authority_store.ts:376-383`](file:///Users/bytedance/develop/duang/loopx/loopx/control_plane/coordination/nokv_authority_store.ts#L376-L383).
+When any Goal state changes (Todo created, lifecycle transition, acceptance update), the `provider_revision` advances. A write computed against an old `provider_revision` fails with `conflict_kind: "provider_revision_mismatch"` at `nokv_authority_store.ts` (`commitAuthority` revision check).
 
 The in-flight PRs #5106 and #5130 will add an explicit `goal_instance_id` field to GoalRef and collaboration requests, providing an additional instance-level identity fence on top of the CAS revision chain. This RFC documents both the current CAS defense and the in-flight instance-id defense as complementary layers.
 
@@ -304,7 +304,7 @@ Use immutable Goal identity + CAS as the coherence gate. **Selected.** LoopX alr
 
 ## Appendix C: Evidence registry — Goal A/B experiment
 
-> Full evidence is in `.local/research/loopx-semantic-fault-research-2026-09-26.md` L569–L696. This appendix summarizes public-safe results.
+> This appendix summarizes public-safe results from the controlled Goal A/B semantic-fault experiment. Raw episode traces and internal research notes are excluded.
 
 | Evidence id | Claim | Baseline / environment | Result | Privacy boundary |
 | --- | --- | --- | --- | --- |
