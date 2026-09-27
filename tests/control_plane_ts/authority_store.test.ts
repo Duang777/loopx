@@ -13,7 +13,7 @@ import {
   authorityStoreCommitFixture as commit,
   registerAuthorityStoreConformance,
 } from "./authority_store_conformance.ts";
-import {registerCoherenceDefenseConformance} from "./coherence_defense_conformance.ts";
+import {registerAuthorityOperationReplayConformance} from "./authority_operation_replay_conformance.ts";
 
 async function fixture(t: test.TestContext, goalId = "goal-a") {
   const root = await mkdtemp(join(tmpdir(), "loopx-authority-store-"));
@@ -24,9 +24,9 @@ async function fixture(t: test.TestContext, goalId = "goal-a") {
 registerAuthorityStoreConformance("file provider", async (t) => {
   const { root, store } = await fixture(t);
   return { store, contender: new FileAuthorityStore(root, "goal-a") };
-});
+}, "applied");
 
-registerCoherenceDefenseConformance("file provider", async (t) => {
+registerAuthorityOperationReplayConformance("file provider", async (t) => {
   const { root, store } = await fixture(t);
   return { store, contender: new FileAuthorityStore(root, "goal-a") };
 });

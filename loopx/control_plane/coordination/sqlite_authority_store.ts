@@ -463,22 +463,22 @@ export class SqliteAuthorityStore implements AuthorityStore {
       const cursor = current?.state.cursor ?? null;
       const revision = current?.provider_revision ?? null;
       let conflict: "provider_revision_mismatch" | "operation_id_exists" | null = null;
-      // Content-aware idempotency: same operation_id with matching body (via
-      // commit_digest) returns the original receipt; the check precedes the
-      // revision gate so an already-committed replay is never blocked.
-      const existingRow = db.prepare("SELECT cursor, operation_id, commit_digest FROM commits WHERE operation_id = ?").get(normalized.operation_id);
+      // Replay proves the retained transaction in this same write snapshot.
+      // A matching stored digest alone is not evidence that its row is intact.
+      const existingRow = db.prepare(`SELECT ${COMMIT_COLUMNS} FROM commits WHERE operation_id = ?`)
+        .get(normalized.operation_id);
       if (existingRow) {
-        const existingCursorValue = existingRow.cursor;
-        if (existingCursorValue === null || typeof existingCursorValue !== "number" && typeof existingCursorValue !== "bigint") {
-          db.exec("ROLLBACK"); transactionOpen = false;
-          return {status: "failed", reason_code: "provider_protocol_violation", reason: "corrupt cursor in commits"};
+        const retained = this.decodeCommitRow(existingRow);
+        const window = this.verifiedRange(db, retained.cursor, retained.cursor);
+        const original = window.transactions[0];
+        if (!original || original.operation_id !== normalized.operation_id) {
+          protocol("SQLite replay is not part of its retained window");
         }
-        const existingCursor = BigInt(existingCursorValue);
-        const identity = current?.identity ?? this.identity(db);
-        const digest = commitDigest(identity, existingCursor, normalized.operation_id, normalized.next_projection, normalized.events, normalized.receipts);
-        if (digest === existingRow.commit_digest) {
+        const digest = commitDigest(window.identity, retained.cursor, normalized.operation_id,
+          normalized.next_projection, normalized.events, normalized.receipts);
+        if (digest === retained.commit_digest) {
           db.exec("ROLLBACK"); transactionOpen = false;
-          return {status: "applied", provider_revision: `${identity}:${existingCursor}`, cursor: existingCursor.toString()};
+          return {status: "applied", provider_revision: original.provider_revision, cursor: original.cursor};
         }
         conflict = "operation_id_exists";
       }
