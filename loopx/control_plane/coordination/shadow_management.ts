@@ -16,6 +16,7 @@ import {
   SHADOW_MANAGEMENT_MANIFEST_SCHEMA, SHADOW_MANAGEMENT_EXACT_MANIFEST_SCHEMA,
   SHADOW_OUTBOX_MANIFEST_SCHEMA, SHADOW_EXACT_OUTBOX_MANIFEST_SCHEMA,
 } from "./coordination_state_contract.generated.ts";
+import { ENVELOPED_SHA256_PATTERN } from "../content_digest.ts";
 
 export {
   SHADOW_MANAGEMENT_STATE_SCHEMA,
@@ -26,7 +27,7 @@ export {
   SHADOW_EXACT_OUTBOX_MANIFEST_SCHEMA,
 };
 export const SHADOW_CAPTURE_PROFILE = "file_outbox_v1";
-const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const DIGEST = ENVELOPED_SHA256_PATTERN;
 
 export interface WireGoalRef extends JsonObject {
   goal_id: string;
