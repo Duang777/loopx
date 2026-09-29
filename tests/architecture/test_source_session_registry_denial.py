@@ -18,6 +18,8 @@ DIRECT_LOADER_ALLOWLIST = {
     "loopx/control_plane/collaboration/goal_instance_scope.py",
     "loopx/control_plane/collaboration/peers.py",
     "loopx/control_plane/goals/first_party_host_admission.py",
+    "loopx/control_plane/coordination/runtime_shadow.py",
+    "loopx/control_plane/coordination/shadow_goal_scope.py",
     "loopx/control_plane/projects/registry.py",
     "loopx/kunluncode_goal_mode/cli.py",
     "loopx/state_migration.py",
@@ -48,6 +50,8 @@ def test_direct_project_registry_loaders_have_source_session_denial() -> None:
         "loopx/control_plane/collaboration/goal_instance_scope.py",
         "loopx/control_plane/collaboration/peers.py",
         "loopx/control_plane/goals/first_party_host_admission.py",
+        "loopx/control_plane/coordination/runtime_shadow.py",
+        "loopx/control_plane/coordination/shadow_goal_scope.py",
         "loopx/control_plane/projects/registry.py",
     }
     for relative in callers - source_session_owners:
