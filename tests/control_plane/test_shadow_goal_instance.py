@@ -14,7 +14,10 @@ from loopx.control_plane.coordination.runtime_shadow_writer_adapter import (
     begin_todo_runtime_shadow_capture,
     write_captured_todo_state,
 )
-from loopx.control_plane.coordination.shadow_management import ShadowManagementError
+from loopx.control_plane.coordination.shadow_management import (
+    ShadowManagementError,
+    read_shadow_management_state,
+)
 from loopx.control_plane.goals.source_session_recreation import (
     RecreateGoalRequest,
     recreate_goal_instance,
@@ -152,6 +155,42 @@ def _outbox_bytes(runtime_root: Path) -> dict[str, bytes]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def test_source_session_bootstrap_defaults_to_the_current_exact_goal_ref(
+    tmp_path: Path,
+) -> None:
+    registry_path, runtime_root, state_path, goal_ref = _register(tmp_path)
+    goal = find_registry_goal(load_project_registry(registry_path), GOAL_ID)
+    assert goal is not None
+    projection, snapshot = build_runtime_shadow_source_snapshot(
+        goal=goal,
+        runtime_root=runtime_root,
+        state_path=state_path,
+        registry_path=registry_path,
+    )
+
+    result = bootstrap_coordination_runtime_shadow(
+        goal=goal,
+        runtime_root=runtime_root,
+        goal_id=GOAL_ID,
+        operation_id="bootstrap:implicit-goal-ref",
+        source_version="bootstrap:implicit-goal-ref",
+        projection=projection,
+        source_snapshot=snapshot,
+    )
+
+    assert result["status"] in {"applied", "recovered", "replayed"}, result
+    _add_todo(
+        registry_path,
+        runtime_root,
+        state_path,
+        "Capture work after an implicit exact bootstrap.",
+        "todo_shadow_implicit",
+    )
+    state = read_shadow_management_state(runtime_root, GOAL_ID)
+    assert state is not None
+    assert state["binding"]["goal_ref"] == goal_ref
 
 
 def test_recreated_goal_cannot_capture_or_drain_the_retired_shadow(
