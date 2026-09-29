@@ -18,6 +18,7 @@ from loopx.control_plane.coordination.shadow_management import (
     ShadowManagementError,
     read_shadow_management_state,
 )
+from loopx.control_plane.coordination.shadow_goal_scope import shadow_goal_scope
 from loopx.control_plane.goals.source_session_recreation import (
     RecreateGoalRequest,
     recreate_goal_instance,
@@ -157,7 +158,7 @@ def _outbox_bytes(runtime_root: Path) -> dict[str, bytes]:
     }
 
 
-def test_source_session_bootstrap_defaults_to_the_current_exact_goal_ref(
+def test_source_session_bootstrap_uses_the_current_typed_goal_scope(
     tmp_path: Path,
 ) -> None:
     registry_path, runtime_root, state_path, goal_ref = _register(tmp_path)
@@ -169,16 +170,17 @@ def test_source_session_bootstrap_defaults_to_the_current_exact_goal_ref(
         state_path=state_path,
         registry_path=registry_path,
     )
-
-    result = bootstrap_coordination_runtime_shadow(
-        goal=goal,
-        runtime_root=runtime_root,
-        goal_id=GOAL_ID,
-        operation_id="bootstrap:implicit-goal-ref",
-        source_version="bootstrap:implicit-goal-ref",
-        projection=projection,
-        source_snapshot=snapshot,
-    )
+    with shadow_goal_scope(registry_path, goal_id=GOAL_ID) as scope:
+        result = bootstrap_coordination_runtime_shadow(
+            goal=scope.goal,
+            runtime_root=runtime_root,
+            goal_id=GOAL_ID,
+            operation_id="bootstrap:implicit-goal-ref",
+            source_version="bootstrap:implicit-goal-ref",
+            projection=projection,
+            source_snapshot=snapshot,
+            goal_ref=scope.goal_ref,
+        )
 
     assert result["status"] in {"applied", "recovered", "replayed"}, result
     _add_todo(

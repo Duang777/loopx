@@ -452,7 +452,7 @@ def bootstrap_coordination_runtime_shadow(
     source_version: str,
     projection: Mapping[str, Any],
     source_snapshot: Mapping[str, Any] | None = None,
-    goal_ref: Mapping[str, Any] | None = None,
+    goal_ref: Mapping[str, Any] | None,
     runtime_invoker: RuntimeInvoker = effect_runtime_result,
 ) -> dict[str, object]:
     """Import one legacy baseline into an empty shadow without promoting it."""
@@ -466,23 +466,13 @@ def bootstrap_coordination_runtime_shadow(
             "primary_writeback_preserved": True,
             "decision_read_from_shadow": False,
         }
-    requested_goal_ref = goal_ref
-    if (
-        requested_goal_ref is None
-        and goal is not None
-        and "goal_instance_id" in goal
-    ):
-        requested_goal_ref = {
-            "goal_id": goal.get("id"),
-            "goal_instance_id": goal.get("goal_instance_id"),
-        }
     exact_ref: dict[str, str] | None = None
-    if requested_goal_ref is not None:
+    if goal_ref is not None:
         from ..goals.source_session_registry_state import exact_goal_ref
 
         exact_ref = exact_goal_ref(
-            str(requested_goal_ref.get("goal_id") or ""),
-            str(requested_goal_ref.get("goal_instance_id") or ""),
+            str(goal_ref.get("goal_id") or ""),
+            str(goal_ref.get("goal_instance_id") or ""),
         )
         if (
             exact_ref["goal_id"] != goal_id

@@ -33,6 +33,21 @@ def _legacy_scope(registry: dict[str, Any], goal_id: str) -> ShadowGoalScope:
     return ShadowGoalScope(registry=registry, goal=goal, goal_ref=None)
 
 
+def resolve_shadow_goal_scope(
+    registry: dict[str, Any],
+    *,
+    goal_id: str,
+) -> ShadowGoalScope:
+    if registry.get("profile_id") != SOURCE_SESSION_PROFILE_ID:
+        return _legacy_scope(registry, goal_id)
+    goal_ref, goal = current_goal_ref(registry, goal_id=goal_id)
+    return ShadowGoalScope(
+        registry=registry,
+        goal=goal,
+        goal_ref=goal_ref,
+    )
+
+
 @contextmanager
 def shadow_goal_scope(
     registry_path: Path,
@@ -44,16 +59,11 @@ def shadow_goal_scope(
     path = registry_path.expanduser().resolve()
     registry = load_project_registry(path)
     if registry.get("profile_id") != SOURCE_SESSION_PROFILE_ID:
-        yield _legacy_scope(registry, goal_id)
+        yield resolve_shadow_goal_scope(registry, goal_id=goal_id)
         return
     with exclusive_cross_runtime_file_lock(
         guard_path(path, goal_id),
         operation="shadow_outbox_goal_lifetime",
     ):
         registry = load_project_registry(path)
-        goal_ref, goal = current_goal_ref(registry, goal_id=goal_id)
-        yield ShadowGoalScope(
-            registry=registry,
-            goal=goal,
-            goal_ref=goal_ref,
-        )
+        yield resolve_shadow_goal_scope(registry, goal_id=goal_id)

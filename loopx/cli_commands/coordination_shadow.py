@@ -24,6 +24,7 @@ from ..control_plane.coordination.runtime_shadow import (  # noqa: F401
     rollback_coordination_runtime_shadow,
 )
 from ..control_plane.coordination.promotion_review import execute_reviewed_coordination_promotion
+from ..control_plane.coordination.shadow_goal_scope import shadow_goal_scope
 from ..history import load_registry
 from ..paths import resolve_runtime_root
 from ..registry import find_registry_goal
@@ -315,15 +316,18 @@ def handle_coordination_shadow_command(
                 operation_digest = _projection_version({"predecessor": predecessor, "projection": projection,
                     "source_snapshot": source_snapshot, "runtime_root": str(runtime_root)})
                 operation_id = f"shadow-bootstrap:{args.goal_id}:{operation_digest}"
-            bootstrap = bootstrap_coordination_runtime_shadow(
-                goal=goal,
-                runtime_root=runtime_root,
-                goal_id=args.goal_id,
-                operation_id=operation_id,
-                source_version=str(payload["source_version"]),
-                projection=projection,
-                source_snapshot=source_snapshot,
-            )
+            with shadow_goal_scope(registry_path, goal_id=args.goal_id) as scope:
+                goal = scope.goal
+                bootstrap = bootstrap_coordination_runtime_shadow(
+                    goal=goal,
+                    runtime_root=runtime_root,
+                    goal_id=args.goal_id,
+                    operation_id=operation_id,
+                    source_version=str(payload["source_version"]),
+                    projection=projection,
+                    source_snapshot=source_snapshot,
+                    goal_ref=scope.goal_ref,
+                )
             payload["executed"] = True
             payload["bootstrap"] = bootstrap
             if bootstrap.get("status") in {"applied", "replayed", "recovered"}:
