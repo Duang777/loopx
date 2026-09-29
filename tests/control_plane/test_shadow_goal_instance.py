@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +37,7 @@ from loopx.registry import find_registry_goal
 
 GOAL_ID = "shadow-lifetime"
 AGENT_ID = "shadow-worker"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _register(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
@@ -156,6 +161,46 @@ def _outbox_bytes(runtime_root: Path) -> dict[str, bytes]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def test_source_session_bootstrap_is_reachable_from_shipped_cli(
+    tmp_path: Path,
+) -> None:
+    registry_path, runtime_root, _state_path, goal_ref = _register(tmp_path)
+
+    command = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "loopx.entrypoint",
+            "--registry",
+            str(registry_path),
+            "--format",
+            "json",
+            "coordination-shadow",
+            "bootstrap",
+            "--goal-id",
+            GOAL_ID,
+            "--execute",
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT), "LOOPX_USAGE_PING": "0"},
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=45,
+    )
+
+    assert command.returncode == 0, command.stdout + command.stderr
+    assert json.loads(command.stdout)["bootstrap"]["status"] in {
+        "applied",
+        "recovered",
+        "replayed",
+    }
+    state = read_shadow_management_state(runtime_root, GOAL_ID)
+    assert state is not None
+    assert state["schema_version"] == "loopx_shadow_management_state_v2"
+    assert state["binding"]["goal_ref"] == goal_ref
 
 
 def test_source_session_bootstrap_uses_the_current_typed_goal_scope(

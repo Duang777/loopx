@@ -57,7 +57,11 @@ def _run(
     assert isinstance(goals, list)
     goal = goals[0]
     assert isinstance(goal, dict)
-    monkeypatch.setattr(command, "load_registry", lambda _path: registry_data)
+    monkeypatch.setattr(
+        command,
+        "load_project_registry",
+        lambda _path: registry_data,
+    )
     monkeypatch.setattr(
         command, "resolve_runtime_root", lambda *_args, **_kwargs: tmp_path
     )
@@ -536,7 +540,7 @@ def test_coordination_shadow_rejects_goal_without_exact_opt_in(
 ) -> None:
     monkeypatch.setattr(
         command,
-        "load_registry",
+        "load_project_registry",
         lambda _path: {"goals": [{"id": "goal-a"}]},
     )
     monkeypatch.setattr(

@@ -25,7 +25,7 @@ from ..control_plane.coordination.runtime_shadow import (  # noqa: F401
 )
 from ..control_plane.coordination.promotion_review import execute_reviewed_coordination_promotion
 from ..control_plane.coordination.shadow_goal_scope import shadow_goal_scope
-from ..history import load_registry
+from ..control_plane.projects.registry_codec import load_project_registry
 from ..paths import resolve_runtime_root
 from ..registry import find_registry_goal
 from ..state_refresh import resolve_goal_state
@@ -216,7 +216,7 @@ def handle_coordination_shadow_command(
     if args.command != "coordination-shadow":
         return None
     try:
-        registry = load_registry(registry_path)
+        registry = load_project_registry(registry_path)
         goal = find_registry_goal(registry, args.goal_id)
         if goal is None:
             raise ValueError(f"goal {args.goal_id!r} is not present in the registry")
