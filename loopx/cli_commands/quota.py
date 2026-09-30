@@ -337,6 +337,35 @@ def _dispatch_quota_turn_start_hooks(
     return dispatch, local_private_state_mutated
 
 
+def _prepare_quota_command_execution(
+    args: argparse.Namespace,
+    *,
+    registry_path: Path,
+    runtime_root_arg: str | None,
+) -> tuple[
+    dict[str, str] | None,
+    dict[str, object] | None,
+    QuotaCommandContext,
+]:
+    goal_ref = _quota_goal_ref(args, registry_path=registry_path)
+    turn_start_hook_dispatch, turn_start_mutated = _dispatch_quota_turn_start_hooks(
+        args,
+        registry_path=registry_path,
+        runtime_root_arg=runtime_root_arg,
+    )
+    context = prepare_quota_command_context(
+        args,
+        registry_path=registry_path,
+        runtime_root_arg=runtime_root_arg,
+        status_collector=collect_status,
+        operator_inbox_urgency_projector_factory=(
+            build_lark_operator_inbox_urgency_projector
+        ),
+        force_projection_refresh=turn_start_mutated,
+    )
+    return goal_ref, turn_start_hook_dispatch, context
+
+
 def _attach_turn_start_hook_dispatch(
     payload: dict[str, object],
     dispatch: Mapping[str, object] | None,
@@ -407,21 +436,12 @@ def handle_quota_command(
     context: QuotaCommandContext | None = None
     goal_ref: dict[str, str] | None = None
     try:
-        goal_ref = _quota_goal_ref(args, registry_path=registry_path)
-        turn_start_hook_dispatch, turn_start_mutated = _dispatch_quota_turn_start_hooks(
-            args,
-            registry_path=registry_path,
-            runtime_root_arg=runtime_root_arg,
-        )
-        context = prepare_quota_command_context(
-            args,
-            registry_path=registry_path,
-            runtime_root_arg=runtime_root_arg,
-            status_collector=collect_status,
-            operator_inbox_urgency_projector_factory=(
-                build_lark_operator_inbox_urgency_projector
-            ),
-            force_projection_refresh=turn_start_mutated,
+        goal_ref, turn_start_hook_dispatch, context = (
+            _prepare_quota_command_execution(
+                args,
+                registry_path=registry_path,
+                runtime_root_arg=runtime_root_arg,
+            )
         )
         (
             heartbeat_turn_id,

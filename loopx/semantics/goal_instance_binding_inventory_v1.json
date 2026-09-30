@@ -188,6 +188,7 @@
       ],
       "consumer_sites": [
         "loopx/control_plane/quota/settlement_readback.ts::readQuotaSettlement",
+        "loopx/control_plane/quota/slot_accounting.py::_latest_unspent_turn_settlement_run",
         "loopx/control_plane/quota/slot_accounting.py::net_quota_slot_spend"
       ],
       "effect_boundary": "loopx/control_plane/quota/accounting_artifact_transaction.ts::commitQuotaAccountingArtifactTransaction",

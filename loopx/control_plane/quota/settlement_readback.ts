@@ -162,7 +162,10 @@ function normalizeAgentId(value: unknown): string | null {
   return candidate && AGENT_ID_PATTERN.test(candidate) ? candidate : null;
 }
 
-function decodeRequest(value: unknown): ReadbackRequest {
+function decodeRequest(
+  value: unknown,
+  admittedOwner?: QuotaAccountingOwner,
+): ReadbackRequest {
   const request = requireJsonObject(value, "quota settlement readback request");
   if (request.schema_version !== QUOTA_SETTLEMENT_READBACK_REQUEST_SCHEMA) {
     throw new EffectRuntimeRequestError(
@@ -194,7 +197,25 @@ function decodeRequest(value: unknown): ReadbackRequest {
       "borrow_source_admission must be a boolean",
     );
   }
-  const owner = parseQuotaAccountingOwner({
+  if (
+    admittedOwner !== undefined
+    && (request.goal_ref !== undefined || request.source_admission !== undefined)
+  ) {
+    throw new EffectRuntimeRequestError(
+      "admitted settlement readback must use its parsed quota owner",
+      "quota_source_admission_invalid",
+    );
+  }
+  if (
+    admittedOwner?.kind === "exact_source"
+    && admittedOwner.goalRef.goalId.value !== goalId
+  ) {
+    throw new EffectRuntimeRequestError(
+      "admitted quota owner does not match settlement goal_id",
+      "quota_source_admission_invalid",
+    );
+  }
+  const owner = admittedOwner ?? parseQuotaAccountingOwner({
     goalRefValue: request.goal_ref,
     sourceAdmissionValue: request.source_admission,
     runtimeRoot,
@@ -1183,6 +1204,15 @@ export function readAdmittedQuotaSettlementFromSnapshot(
   snapshot: QuotaSettlementReadbackSnapshot,
 ): JsonObject {
   return readQuotaSettlementFromRequest(decodeRequest(value), snapshot);
+}
+
+/** Read under the parsed owner already admitted by the enclosing transaction. */
+export function readQuotaSettlementForAdmittedOwnerFromSnapshot(
+  value: unknown,
+  owner: QuotaAccountingOwner,
+  snapshot: QuotaSettlementReadbackSnapshot,
+): JsonObject {
+  return readQuotaSettlementFromRequest(decodeRequest(value, owner), snapshot);
 }
 
 export async function readQuotaSettlement(value: unknown): Promise<JsonObject> {

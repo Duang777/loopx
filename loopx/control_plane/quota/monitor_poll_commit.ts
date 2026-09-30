@@ -10,13 +10,13 @@ import { normalizeTodoCapabilities } from "../todos/work_requirements.ts";
 import { parseProjectionDelivery } from "../todos/projection_delivery.ts";
 import {
   QUOTA_SETTLEMENT_READBACK_REQUEST_SCHEMA,
-  readAdmittedQuotaSettlementFromSnapshot,
+  readQuotaSettlementForAdmittedOwnerFromSnapshot,
   readQuotaSettlementSnapshot,
 } from "./settlement_readback.ts";
 import {
   parseQuotaAccountingOwner,
   quotaGoalRef,
-  withQuotaAccountingOwner,
+  withBorrowedQuotaAccountingOwner,
   type QuotaAccountingOwner,
 } from "./source_admission.ts";
 
@@ -569,19 +569,13 @@ async function readAuxiliarySettlement(request: MonitorRequest): Promise<JsonObj
     request.runtime_root,
     request.goal_id,
   );
-  return readAdmittedQuotaSettlementFromSnapshot({
+  return readQuotaSettlementForAdmittedOwnerFromSnapshot({
     schema_version: QUOTA_SETTLEMENT_READBACK_REQUEST_SCHEMA,
     runtime_root: request.runtime_root, goal_id: request.goal_id,
     agent_id: request.observation.actor_agent_id, todo_id: request.observation.settlement_todo_id,
     turn_instance_id: request.turn_instance_id, replan_obligation_id: null,
     infer_turn_instance_id: false, allow_unbound_binding: false,
-    ...(quotaGoalRef(request.owner) === null ? {} : {
-      goal_ref: quotaGoalRef(request.owner),
-      source_admission: request.owner.kind === "exact_source"
-        ? request.owner.admission
-        : undefined,
-    }),
-  }, snapshot);
+  }, request.owner, snapshot);
 }
 
 async function auxiliaryMonitorAllowed(
@@ -2441,7 +2435,7 @@ export async function evaluateQuotaMonitorPollCommit(
   value: unknown,
 ): Promise<QuotaMonitorPollCommitResult> {
   const request = requestObject(value);
-  return await withQuotaAccountingOwner(
+  return await withBorrowedQuotaAccountingOwner(
     request.owner,
     async (indexLockHeld) =>
       await evaluateQuotaMonitorPollRequest(request, indexLockHeld),

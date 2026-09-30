@@ -400,6 +400,8 @@ def _latest_unspent_turn_settlement_run(
 
     safe_agent_id = normalize_todo_claimed_by(agent_id)
     for run in reversed(_load_goal_run_index_records(runtime_root, goal_id)):
+        if goal_ref is None and "goal_ref" in run:
+            continue
         if goal_ref is not None and run.get("goal_ref") != dict(goal_ref):
             continue
         run_agent_id = normalize_todo_claimed_by(run.get("agent_id"))
