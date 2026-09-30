@@ -26,6 +26,7 @@ from ..effect_program import (
     receipt_bound_terminal_phase,
     settlement_result_payload,
 )
+from ..goals.goal_instance_identity import exact_goal_ref
 
 __all__ = [
     "SETTLEMENT_IDENTITY_SCHEMA_VERSION",
@@ -83,7 +84,6 @@ def _settlement_goal_ref(
 ) -> dict[str, str] | None:
     if goal_ref is None:
         return None
-    from ..goals.source_session_registry_state import exact_goal_ref
 
     normalized = exact_goal_ref(
         str(goal_ref.get("goal_id") or ""),
