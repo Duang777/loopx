@@ -733,6 +733,7 @@ def interaction_next_cli_actions(
     settlement_plan: Mapping[str, Any] | None = None,
     turn_instance_id: str | None = None,
     runtime_root: str | None = None,
+    registry_path: str | None = None,
 ) -> list[str]:
     if unadmitted_action_selection(payload):
         return [_selection_recovery_command(
@@ -741,7 +742,7 @@ def interaction_next_cli_actions(
             turn_instance_id=turn_instance_id, runtime_root=runtime_root,
         )]
     goal_id = str(payload.get("goal_id") or "<GOAL_ID>")
-    command_prefix = selection.render_cli_command_prefix(runtime_root=runtime_root)
+    command_prefix = selection.render_cli_command_prefix(runtime_root=runtime_root, registry_path=registry_path)
     agent_identity = payload.get("agent_identity") if isinstance(payload.get("agent_identity"), dict) else {}
     scoped_cli_args = _scoped_cli_args(
         agent_identity,
@@ -1337,6 +1338,7 @@ def _build_interaction_cli_channel(
             settlement_plan=settlement_plan,
             turn_instance_id=turn_instance_id,
             runtime_root=runtime_root,
+            registry_path=registry_path,
         ),
         "spend_allowed_now": False,
         "spend_after_validation": spend_after_selection,

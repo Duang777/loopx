@@ -31,6 +31,7 @@ from ..control_plane.quota.effective_action import EffectiveAction
 from ..control_plane.quota.effect_program import SettlementIdentity
 from ..control_plane.quota.error_codes import (
     CloseoutQueryUnavailableError,
+    HeartbeatReceiptIdentityConflictError,
     QuotaCommandValidationError,
 )
 from ..control_plane.quota.heartbeat_receipt import (
@@ -632,6 +633,10 @@ def handle_quota_command(
         )
     except Exception as exc:  # noqa: BLE001 - CLI fail-safe boundary; error_code is typed below.
         closeout_query_unavailable = isinstance(exc, CloseoutQueryUnavailableError)
+        # A rejected rebind performed no receipt write. Preserve the committed
+        # guard and the identity diagnostic instead of calling it failed IO.
+        if isinstance(exc, HeartbeatReceiptIdentityConflictError):
+            action_selection_preflight_failed = True
         payload = quota_failure_payload(
             args,
             registry_path=registry_path,
