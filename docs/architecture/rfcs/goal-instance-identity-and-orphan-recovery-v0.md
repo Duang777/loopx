@@ -840,6 +840,28 @@ promotion retain their own acceptance. No new paid cohort or soak is authorized.
   drain, unsupported/warm binary coverage, or any other M3 row.
   `execution_authority: false` and the overall activation hold remain.
 
+### 2026-09-30: M3 quota settlement owner candidate
+
+- **Baseline:** `3ec049e13`.
+- **Proposed:** Bind source-profile quota spend, replay, receipt repair, void,
+  settlement readback, and rolling-window accounting to the caller-captured
+  exact GoalRef. Python hands the ordered run-index and Goal-lifecycle lock
+  witnesses to the TypeScript accounting owner. TypeScript validates and claims
+  both witnesses, reuses `decideFirstPartyHostRuntime(require_current)`, and
+  keeps the owner fence through receipt and artifact commit.
+- **Evidence:** TypeScript and Python integration tests publish same-alias Goal
+  B after Goal A capture and prove that stale A writes nothing. They also cover
+  B-only spend and void, cross-instance replay and prepared-receipt repair
+  rejection, exact settlement readback, and per-instance rolling-window
+  accounting.
+- **Compatibility:** Non-source spend, replay, void, and readback requests omit
+  GoalRef and source admission. Their persisted records, receipts, response
+  payloads, and lock behavior retain the legacy shape.
+- **Remaining hold:** This qualifies only the `quota_settlement` inventory row.
+  Unsupported and warm binaries, downstream external-effect drain, and every
+  other unqualified M3 owner remain blocked. `execution_authority: false` and
+  the overall activation hold remain unchanged.
+
 ## Appendix B: Decision log
 
 | Date | Decision | Owner / approval | Alternatives | Normative sections changed |
