@@ -26,7 +26,7 @@ from ..effect_program import (
     receipt_bound_terminal_phase,
     settlement_result_payload,
 )
-from ..goals.goal_instance_identity import exact_goal_ref
+from ..goals.goal_ref_validation import exact_goal_ref
 
 __all__ = [
     "SETTLEMENT_IDENTITY_SCHEMA_VERSION",
