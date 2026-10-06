@@ -42,7 +42,6 @@ from ..control_plane.goals.task_planning import (
 )
 from ..control_plane.goals.first_party_host_admission import (
     FirstPartyHostGoalAdmission,
-    FirstPartyHostRuntimeRejected,
     capture_first_party_host_goal_ref,
 )
 from ..control_plane.goals.source_session_registry_state import exact_goal_ref
@@ -822,7 +821,9 @@ def handle_todo_command(
                             projection_builder=post_writeback_projection_builder,
                         )
                     )
-            except FirstPartyHostRuntimeRejected:
+            except Exception:
+                # Optional post-writeback composition cannot invalidate or
+                # repeat the Todo completion that already committed above.
                 payload.pop("available_capabilities", None)
                 payload["post_writeback_hooks"] = post_writeback_source_failure(
                     post_writeback_hooks
