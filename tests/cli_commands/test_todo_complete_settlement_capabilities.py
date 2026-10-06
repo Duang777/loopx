@@ -188,6 +188,62 @@ def test_todo_complete_isolates_lifetime_lock_timeout_and_recovers_on_replay(
     assert replay["post_writeback_hooks"]["intent_count"] == 1
 
 
+def test_todo_complete_isolates_admission_codec_failure_and_recovers_on_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_path = tmp_path / "repo" / "registry.json"
+    original_registry = b""
+
+    class CorruptingAdmissionFactory:
+        @staticmethod
+        def for_plan(**kwargs: object) -> FirstPartyHostGoalAdmission:
+            nonlocal original_registry
+            requested_registry = kwargs["registry_path"]
+            assert isinstance(requested_registry, Path)
+            original_registry = requested_registry.read_bytes()
+            requested_registry.write_bytes(b"{")
+            return FirstPartyHostGoalAdmission.for_plan(**kwargs)
+
+    monkeypatch.setattr(
+        todo_command,
+        "FirstPartyHostGoalAdmission",
+        CorruptingAdmissionFactory,
+    )
+
+    failed, _registry, runtime = complete_todo_via_cli(
+        tmp_path,
+        journal_capabilities=["network"],
+        write_state=_write_stage_state,
+    )
+
+    assert original_registry
+    assert failed["changed"] is True
+    assert "available_capabilities" not in failed
+    assert failed["post_writeback_hooks"]["invoked_count"] == 0
+    assert failed["post_writeback_hooks"]["intent_count"] == 0
+    assert {
+        failure["error_code"]
+        for failure in failed["post_writeback_hooks"]["failures"]
+    } == {"source_projection_failed"}
+    assert "Expecting property name" not in str(failed)
+    committed_state = Path(str(failed["state_file"])).read_bytes()
+    completion_receipt_id = failed["completion_receipt_id"]
+
+    registry_path.write_bytes(original_registry)
+    monkeypatch.setattr(
+        todo_command,
+        "FirstPartyHostGoalAdmission",
+        FirstPartyHostGoalAdmission,
+    )
+    replay = run_todo_completion_via_cli(registry_path, runtime)
+
+    assert replay["changed"] is False
+    assert replay["completion_receipt_id"] == completion_receipt_id
+    assert Path(str(replay["state_file"])).read_bytes() == committed_state
+    assert replay["post_writeback_hooks"]["intent_count"] == 1
+
+
 def test_todo_complete_isolates_lifetime_transport_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -784,12 +784,12 @@ def handle_todo_command(
         committed_at = str(payload.get("updated_at") or "").strip()
         receipt_id = payload.get("completion_receipt_id")
         if committed_at:
-            admission = FirstPartyHostGoalAdmission.for_plan(
-                registry_path=registry_path,
-                goal_id=args.goal_id,
-                planned_goal_ref=goal_ref,
-            )
             try:
+                admission = FirstPartyHostGoalAdmission.for_plan(
+                    registry_path=registry_path,
+                    goal_id=args.goal_id,
+                    planned_goal_ref=goal_ref,
+                )
                 with admission.current_lifetime(
                     operation="todo_post_writeback_hooks",
                 ):
