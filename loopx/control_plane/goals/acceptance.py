@@ -14,13 +14,19 @@ from typing import Any
 from uuid import uuid4
 
 from ...agent_registry import load_goal_from_registry, registered_agent_ids_for_goal
+from ...paths import resolve_runtime_root
 from ..coordination.local_authority import local_authority_is_promoted
 from ..coordination.local_authority_shadow_adapter import effective_runtime_root
-from ..effect_runtime import effect_runtime_result
+from ..effect_runtime import (
+    CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    effect_runtime_result,
+)
+from ..projects.registry_codec import load_project_registry
 from ..todos.completion_validation import (
     _resolve_completion_validation_workspace,
     run_declared_completion_validation_effect,
 )
+from .goal_ref_validation import exact_goal_ref
 
 
 _INSPECT_METHOD = "goal.acceptance.inspect"
@@ -41,11 +47,27 @@ def _routing(
         raise ValueError(
             "Goal acceptance requires an existing canonical authority; activation never promotes a provider"
         )
-    return {"runtime_root": str(root.resolve()), "goal_id": goal_id}
+    route: dict[str, Any] = {
+        "runtime_root": str(root.resolve()),
+        "goal_id": goal_id,
+    }
+    goal_instance_id = goal.get("goal_instance_id")
+    if goal_instance_id is not None:
+        route["goal_ref"] = exact_goal_ref(goal_id, goal_instance_id)
+    return route
 
 
-def _result(method: str, request: Mapping[str, Any]) -> dict[str, Any]:
-    value = effect_runtime_result(method, dict(request))
+def _result(
+    method: str,
+    request: Mapping[str, Any],
+    *,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    value = effect_runtime_result(
+        method,
+        dict(request),
+        **({"timeout": timeout} if timeout is not None else {}),
+    )
     if not isinstance(value, dict):
         raise TypeError("Goal acceptance authority returned an invalid result")
     if value.get("status") not in {
@@ -64,6 +86,33 @@ def _result(method: str, request: Mapping[str, Any]) -> dict[str, Any]:
             )
         )
     return value
+
+
+def transition_goal_acceptance_lifecycle(
+    *,
+    registry_path: Path,
+    goal_id: str,
+    transition: Mapping[str, Any],
+    operation_id: str,
+) -> dict[str, Any] | None:
+    """Commit one source-owned acceptance lifecycle transition if promoted."""
+    root = resolve_runtime_root(
+        load_project_registry(registry_path),
+        registry_path=registry_path,
+    )
+    if not local_authority_is_promoted(runtime_root=root, goal_id=goal_id):
+        return None
+    return _result(
+        "goal.acceptance.lifecycle.transition",
+        {
+            "runtime_root": str(root.resolve()),
+            "goal_id": goal_id,
+            "actor_agent_id": None,
+            "operation_id": operation_id,
+            "transition": dict(transition),
+        },
+        timeout=CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
+    )
 
 
 def inspect_goal_acceptance(
