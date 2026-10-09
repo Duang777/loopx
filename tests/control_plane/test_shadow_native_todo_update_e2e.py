@@ -418,7 +418,7 @@ def test_goal_recreation_waits_for_an_admitted_canonical_update(
 
     def observed_transition(
         *,
-        registry_path: Path,
+        runtime_root: Path,
         goal_id: str,
         transition: dict[str, object],
         operation_id: str,
@@ -426,7 +426,7 @@ def test_goal_recreation_waits_for_an_admitted_canonical_update(
         if transition.get("kind") == "bind_existing":
             fence_started.set()
         return actual_transition(
-            registry_path=registry_path,
+            runtime_root=runtime_root,
             goal_id=goal_id,
             transition=transition,
             operation_id=operation_id,

@@ -14,14 +14,12 @@ from typing import Any
 from uuid import uuid4
 
 from ...agent_registry import load_goal_from_registry, registered_agent_ids_for_goal
-from ...paths import resolve_runtime_root
 from ..coordination.local_authority import local_authority_is_promoted
 from ..coordination.local_authority_shadow_adapter import effective_runtime_root
 from ..effect_runtime import (
     CANONICAL_AUTHORITY_WRITE_TIMEOUT_SECONDS,
     effect_runtime_result,
 )
-from ..projects.registry_codec import load_project_registry
 from ..todos.completion_validation import (
     _resolve_completion_validation_workspace,
     run_declared_completion_validation_effect,
@@ -90,16 +88,13 @@ def _result(
 
 def transition_goal_acceptance_lifecycle(
     *,
-    registry_path: Path,
+    runtime_root: Path,
     goal_id: str,
     transition: Mapping[str, Any],
     operation_id: str,
 ) -> dict[str, Any] | None:
     """Commit one source-owned acceptance lifecycle transition if promoted."""
-    root = resolve_runtime_root(
-        load_project_registry(registry_path),
-        registry_path=registry_path,
-    )
+    root = runtime_root.resolve()
     if not local_authority_is_promoted(runtime_root=root, goal_id=goal_id):
         return None
     return _result(

@@ -63,10 +63,16 @@ class _RecreationState:
     decision: dict[str, Any]
 
 
-def _canonical_writer_guard_path(registry_path: Path, goal_id: str) -> Path:
+def _canonical_runtime_root(registry_path: Path) -> Path:
     registry = load_project_registry(registry_path)
-    runtime_root = resolve_runtime_root(registry, registry_path=registry_path)
-    return shadow_maintenance_lock_target(runtime_root.resolve(), goal_id)
+    return resolve_runtime_root(registry, registry_path=registry_path).resolve()
+
+
+def _canonical_writer_guard_path(registry_path: Path, goal_id: str) -> Path:
+    return shadow_maintenance_lock_target(
+        _canonical_runtime_root(registry_path),
+        goal_id,
+    )
 
 
 def _acceptance_lifecycle_operation_id(
@@ -84,14 +90,15 @@ def _retire_acceptance_lifecycle(
     *,
     requested_goal_ref: dict[str, str],
 ) -> None:
+    runtime_root = _canonical_runtime_root(request.registry_path)
     transition_goal_acceptance_lifecycle(
-        registry_path=request.registry_path,
+        runtime_root=runtime_root,
         goal_id=request.goal_id,
         operation_id=_acceptance_lifecycle_operation_id(request, "bind"),
         transition={"kind": "bind_existing", "goal_ref": requested_goal_ref},
     )
     transition_goal_acceptance_lifecycle(
-        registry_path=request.registry_path,
+        runtime_root=runtime_root,
         goal_id=request.goal_id,
         operation_id=_acceptance_lifecycle_operation_id(request, "retire"),
         transition={"kind": "retire", "goal_ref": requested_goal_ref},
@@ -105,7 +112,7 @@ def _activate_recreated_acceptance_lifecycle(
     goal_ref: dict[str, str],
 ) -> None:
     transition_goal_acceptance_lifecycle(
-        registry_path=request.registry_path,
+        runtime_root=_canonical_runtime_root(request.registry_path),
         goal_id=request.goal_id,
         operation_id=_acceptance_lifecycle_operation_id(request, "activate"),
         transition={
