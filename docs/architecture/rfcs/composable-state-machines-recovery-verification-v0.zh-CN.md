@@ -255,7 +255,7 @@ PostgreSQL authority、successor 调度和 App/Lark 送达尚未覆盖。因此 
 | --- | --- | --- |
 | 声明来源链不可用时，阻止新的依赖使用 | `Delegations._read_current/start`、`delegation_results.require_dependencies/adoption_evidence`、`delegation.ts` | 遵循对齐 §3.8：source → A → B 中 A input 失效，即使 A output 不变也须拒绝当前依赖使用；验证真实 read/start/adopt/settlement 和打包证据读回，保留历史完成。 |
 | 独立检查失败可复核原任务 | `executor`、`task_validation_failure.ts`、canonical controller JSON、`Delegations.revalidate` | 已资格化 task-postcondition 失败保留 repair/replan；旧记录仍 generic repair。CLI/MCP/App 显式复核原 Turn 的缓存结果，未修复继续失败，修复产物后沿原效果结算；持久化复核意图及原提交回执支持响应丢失后的同一执行恢复，不重复 Host 或扣额度。 |
-| 可选语义审查说明证据和覆盖范围 | 既有 progress-review receipt/loader 与 canonical Goal acceptance inspect | 在 shadow 读回绑定选中 criterion 和证据覆盖；显示缺失/陈旧依据及独立判断维度。模型质量和干预另行资格化。 |
+| shadow 说明条款及观察范围 | progress-review receipt/context、`progress_review_evidence.ts`、canonical acceptance inspect | 可选择任务当前规范 criterion；精确 GoalRef 保持实例身份，任务变化或实例重建撤回旧判断。独立旧核心只保留手工研究的旧格式；规范 scope 不降级。显示独立维度、净文件变化覆盖、缺失及存储未知。默认 off 和 assist 既有触发规则保持不变。 |
 
 `validation_failed` 的 controller 扩展来自 canonical JSON、生成器和既有词汇定义；
 未手改 generated code。独立细节须来自原 validation 边界，矛盾状态不被接纳；
@@ -276,6 +276,13 @@ result，只重跑 validation，不再次调用 Host。**实际修复工作**需
 修复/复验，并在打包 App 读回成功或继续失败；CLI 与受影响 Lark 入口共用 owner。
 复制命令按钮或后端 receipt 不能独自完成旅程。用实际测量限制重复验证和来源链遍历
 成本；经既有 owner 回退代码，同时保留 receipt、已提交效果和未解决恢复义务。
+
+规范审查 basis 的 `acceptance_scope` 只引用选定 workspace 内的 registry/runtime，
+条款内容从当前 owner 读取，原命令及私有路径不进入模型问题。criterion hash、
+版本和覆盖是来源观察，不证明模型答案正确、完整业务 checkpoint 或全部任务完成。
+前端沿既有团队证据和能力设置入口读回；受影响 CLI/MCP 共用 owner，未新增
+Lark 专有协议。真实模型纠错、远端 exactly-once、接管、observer 质量与受控干预
+仍由原 RFC 验收所有者负责。
 
 ## 12. 未决事项
 

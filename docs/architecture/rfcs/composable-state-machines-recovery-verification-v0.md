@@ -310,7 +310,7 @@ The table tracks independent composition boundaries within M2/M3 and roadmap R2/
 | --- | --- | --- |
 | Unavailable declared ancestry prevents new dependent use | `Delegations._read_current/start`, `delegation_results.require_dependencies/adoption_evidence`, `delegation.ts` | Alignment §3.8: source → A → B with A input invalidated must refuse current dependent use even if A output is unchanged. Qualify real read/start/adopt/settlement and packaged evidence readback; keep historical completion. |
 | Independent failure can recheck the original task | `executor`, `task_validation_failure.ts`, canonical controller JSON, `Delegations.revalidate` | Qualified postcondition failures retain repair/replan; legacy detail still routes to generic repair. Explicit CLI/MCP/App revalidation uses the original Turn's cached result: unchanged failure remains rejected, repaired artifacts continue original settlement without repeating Host work. A retained recheck intent and original committed receipts recover response loss through the same operation; replay produces no new Host or quota effects. |
-| Optional semantic review explains its evidence and coverage | Existing progress-review receipt/loader and canonical Goal acceptance inspection | Bind a selected criterion and evidence coverage in shadow readback; show missing/stale basis and separate judgment dimensions. Model quality and intervention qualify separately. |
+| Shadow review explains criteria and coverage | progress-review receipt/context, `progress_review_evidence.ts`, canonical acceptance inspect | Select current canonical task criteria; exact GoalRef preserves instance identity, while changed tasks or recreated instances withdraw old judgments. Independent older cores retain only the legacy manual-study shape; canonical scope never downgrades. Show separate dimensions, declared-file net change, missing evidence and unreadable storage. Default off and existing assist trigger rules retain their semantics. |
 
 `validation_failed` extension updates canonical JSON, the generator and
 existing vocabulary definitions; generated bindings are regenerated. Conflicting
@@ -339,6 +339,15 @@ entries share the owner. A command-copy button or backend receipt alone does not
 complete the journey. Bound repeated verification and source-chain traversal
 using measured workloads. Roll back code through its owner while retaining
 receipts, completed effects and unresolved recovery obligations.
+
+An optional `acceptance_scope` refers only to registry/runtime paths inside the
+selected workspace. Criteria come from the current owner; private commands and
+paths stay out of model questions. Hashes, versions and declared coverage are
+observations, not proof of model correctness, a durable business checkpoint or
+whole-task completion. Existing team evidence and capability settings carry App
+readback, and CLI/MCP share the owner; no Lark-specific protocol is introduced.
+Live correction, remote exactly-once, takeover, observer quality and intervention
+retain their existing RFC acceptance owners.
 
 ## 12. Open decisions
 
