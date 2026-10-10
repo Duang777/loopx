@@ -758,6 +758,87 @@ class Delegations:
             time.sleep(3)
         return self.read(operation_id)
 
+    def _task_failure(self, row, binding):
+        turn_key = self._matching_turn_key(row, binding)
+        if not turn_key:
+            return None
+        journal = load_turn_journal(turn_journal_path(self.root, goal_id=self.goal_id, turn_key=turn_key))
+        if not journal or journal.get("result_kind") != "validation_failed":
+            return None
+        return effect_runtime_result("turn.task_validation_failure", {
+            "result_kind": journal.get("result_kind"), "status": journal.get("status"),
+            "receipt": journal.get("receipt"), "validation": journal.get("task_validation"),
+            **({"validation_stage": journal["validation_stage"]} if "validation_stage" in journal else {}),
+        })["failure"]
+
+    def _committed_revalidation_key(self, row, binding):
+        """A retained recheck intent can outlive the original failed journal."""
+        intent = row.get("validation_failure")
+        if not isinstance(intent, dict):
+            return None
+        turn_key = self._matching_turn_key(row, binding)
+        if not turn_key or intent.get("turn_key") != turn_key:
+            return None
+        journal = load_turn_journal(turn_journal_path(self.root, goal_id=self.goal_id, turn_key=turn_key))
+        if journal and journal.get("status") == "committed" and journal.get("result_kind") == "validated_progress":
+            return turn_key
+        return None
+
+    def _record_revalidation_result(self, path, row, binding, result):
+        from .control_plane.turn_driver.loop_controller import ValidatedTurnReceipt
+        receipt = ValidatedTurnReceipt.from_execution(result)
+        intent = row.get("validation_failure") or {}
+        decision = effect_runtime_result("collaboration.delegation.revalidated", {
+            "from": row["status"],
+            "original_task_failure": intent.get("stage") == "task_postcondition"
+                and intent.get("turn_key") == receipt.turn_key
+                and receipt.turn_key == self._matching_turn_key(row, binding)
+                and receipt.lineage == {"goal_id": self.goal_id, "agent_id": binding["agent_id"], "todo_id": binding["todo_id"]},
+            "committed_progress": receipt.result_kind.value == "validated_progress",
+            "host_reinvoked": result.get("effects", {}).get("host_invoked"),
+        })
+        self._record_turn_result(path, row, result, publish=False)
+        row["status"] = decision["status"]
+        row.pop("error", None)
+        self._fenced_write(path, row)
+
+    def revalidate(self, operation_id: str) -> dict:
+        """Explicitly rerun the original postcondition; never repeat Host work."""
+        path = self.path(require_operation_id(operation_id))
+        with exclusive_file_lock(path, policy=LockAcquisitionPolicy.SINGLE_FLIGHT):
+            if self._read_stop(path) is not None:
+                raise ValueError(DELEGATION_STOPPED_MESSAGE)
+            row = _read(path)
+            binding = self._bound(row, require_active=True)
+            if row["status"] != "rejected":
+                raise ValueError("revalidation requires the original independent task failure")
+            failure = self._task_failure(row, binding)
+            if failure is None:
+                # A previous recheck may have committed before its response or
+                # projection write arrived. Reconcile that same execution first.
+                recovered = self._recover_validated_settlement(path, row, binding)
+                if not recovered:
+                    raise ValueError("revalidation requires the original independent task failure")
+            else:
+                delegation_results.require_dependencies(self, binding, delegation_results.operation_brief(self, row))
+                row.setdefault("validation_failure", failure)
+                self._fenced_write(path, row)  # Durable intent precedes the effect.
+                result = self._cli(binding, "turn", "run-once", "--goal-id", self.goal_id,
+                    "--agent-id", binding["agent_id"], "--resume-turn-key", failure["turn_key"],
+                    *self._execution_arguments(binding, operation_id), "--retry-failed-turn", "--execute",
+                    timeout=binding["timeout_seconds"] + 60,
+                    delegated_lease=self._delegated_lease_context(row, binding),
+                    host_record=self._host_process_record(path))
+                if result.get("status") == "committed":
+                    self._record_revalidation_result(path, row, binding, result)
+                    recovered = True
+                else:
+                    self._record_turn_result(path, row, result, publish=False)
+                    recovered = self._recover_validated_settlement(path, row, binding)
+        if recovered:
+            self._spawn(operation_id)
+        return self.read(operation_id)
+
     def _bound(self, row: dict, *, require_active: bool = False) -> dict:
         binding = self.binding(row["identity"]["binding"]["id"], require_active=require_active)
         if row["identity"]["binding"] != binding:
@@ -813,6 +894,19 @@ class Delegations:
     ) -> bool:
         """Reopen only an exact, independently validated settlement boundary."""
 
+        committed_key = self._committed_revalidation_key(row, binding)
+        if committed_key is not None:
+            self._bound(row, require_active=True)
+            delegation_results.require_dependencies(self, binding, delegation_results.operation_brief(self, row))
+            # Read the original committed result through the Turn replay owner;
+            # do not fabricate durable effect flags from a saved status string.
+            result = self._cli(binding, "turn", "run-once", "--goal-id", self.goal_id,
+                "--agent-id", binding["agent_id"], "--resume-turn-key", committed_key,
+                *self._execution_arguments(binding, row["identity"]["operation_id"]), "--execute",
+                timeout=binding["timeout_seconds"] + 60,
+                host_record=self._host_process_record(path))
+            self._record_revalidation_result(path, row, binding, result)
+            return True
         journal = self._validated_turn_journal(row, binding)
         if journal is None:
             return False
@@ -884,6 +978,12 @@ class Delegations:
             result.update(accepted)
         if row.get("error"):
             result["error"] = row["error"]
+        if row["status"] == "rejected":
+            if not active and stop is None and self._committed_revalidation_key(row, binding) is not None:
+                result["recovery_required"] = True
+            failure = self._task_failure(row, binding)
+            if failure is not None:
+                result["task_failure"] = failure
         return result
 
     def _observe(self, path: Path, row: dict, status: str, *, already_locked: bool = False, **facts) -> None:
@@ -1914,6 +2014,11 @@ def register_delegation_tools(server, delegations: Delegations) -> None:
     def resume_delegation(operation_id: str) -> dict:
         """Reconnect an interrupted original execution; never launch a replacement Turn."""
         return delegations.resume(operation_id)
+
+    @server.tool()
+    def revalidate_delegation(operation_id: str) -> dict:
+        """After repairing the original task, recheck its cached result without repeating Host work."""
+        return delegations.revalidate(operation_id)
 
     @server.tool()
     async def stop_delegation(operation_id: str) -> dict:
