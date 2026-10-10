@@ -159,7 +159,26 @@ lost, readback exposes recovery and the team view offers **恢复原执行**. Re
 `revalidate` or using `resume` reconciles the original committed receipts without
 repeating Host work or quota spending.
 
-中文：先修复真实产物或校验环境，再复核原执行；通过后继续原 Turn 结算，保留失败证据，不重复 Host 或扣额。停止与撤权仍阻止恢复。
+Current grants, stop state and declared ancestry are checked again before
+revalidation or committed-result recovery. Restoring the task output alone
+does not restore unavailable source inputs.
+
+中文：先修复真实产物或校验环境，再复核原执行；通过后继续原 Turn 结算，保留失败证据，不重复 Host 或扣额。停止、撤权与来源链失效仍阻止复验或提交后的恢复；仅修复输出不能恢复失效的来源输入。
+
+## Source use and recheck
+
+`read` qualifies the current use of declared source operations separately from
+historical acceptance. A result with `current_use.state`
+`unavailable` cannot supply current evidence for another launch or adoption.
+The team evidence view shows the blocking input/source and withdraws its report.
+Repair the declared input/source under its existing authority, then use `read`
+or the view's recheck. That read runs validators; it never redispatches an
+accepted worker. Traversal is limited to 64 operations, 16 levels and a
+15-second elapsed budget for starting checks. An already running validator keeps
+its configured timeout. Undeclared assumptions and concurrent file snapshots
+are outside this check.
+
+中文：历史 accepted 与当前来源资格分开；获授权修复声明输入或来源后，重新读取恢复资格，不重派已验收 worker。
 
 ## Use an existing Agent conversation through its shell
 

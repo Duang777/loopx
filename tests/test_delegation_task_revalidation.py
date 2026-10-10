@@ -107,3 +107,70 @@ def test_committed_revalidation_response_loss_recovers_same_turn(service, monkey
     assert (root / "analyst/initial/host-invocations").read_text().strip() == "1"
     restarted.resume("analysis-1")
     assert restarted.read("analysis-1")["status"] == "accepted"
+
+
+def test_revalidation_and_committed_recovery_require_current_ancestry(service, monkeypatch):
+    from test_delegation_result_use import accepted_chain
+
+    root, runner = service
+    request = accepted_chain(root, runner)
+    # Use an unfinished Todo; the accepted chain's synthesis already completed
+    # its Todo and must not be dispatched again as a new failed task.
+    workspace = root / "reviewer/initial"
+    (workspace / "declared-input.json").write_bytes(
+        (root / "reviewer/corrected/declared-input.json").read_bytes())
+    config = json.loads(runner.config.read_text())
+    config["bindings"].append({**config["bindings"][0], "id": "failure",
+        "agent_id": "reviewer", "todo_id": "todo_reviewer-initial", "workspace": str(workspace)})
+    runner.config.write_text(json.dumps(config))
+    output = workspace / "output.json"
+    saved_output = output.read_bytes()
+    output.write_text("{}")
+    runner.start("failure", "failed-synthesis", request)
+    failed = wait(runner, "failed-synthesis")
+    assert failed["status"] == "rejected", failed
+    turn_key = failed["task_failure"]["turn_key"]
+    output.write_bytes(saved_output)
+    ancestor_input = root / "analyst/corrected/declared-input.json"
+    saved_input = ancestor_input.read_bytes()
+    ancestor_input.write_text("{}")
+    frozen = runner.path("failed-synthesis").read_bytes()
+    assert runner.read("failed-synthesis")["current_use"]["state"] == "unavailable"
+    with pytest.raises(ValueError, match="input version unavailable"):
+        runner.revalidate("failed-synthesis")
+    assert runner.path("failed-synthesis").read_bytes() == frozen
+    ancestor_input.write_bytes(saved_input)
+
+    cli = runner._cli
+    committed = []
+
+    def lose_response(binding, *args, **kwargs):
+        result = cli(binding, *args, **kwargs)
+        if "--retry-failed-turn" in args:
+            assert result["status"] == "committed"
+            committed.append(result["receipt"]["settlement_effect_id"])
+            raise subprocess.TimeoutExpired("lost committed response", 1)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner, "_cli", lose_response)
+        with pytest.raises(subprocess.TimeoutExpired):
+            runner.revalidate("failed-synthesis")
+    restarted = Delegations(runner.root, runner.registry, runner.goal_id, runner.agent_id, runner.config)
+    assert restarted.read("failed-synthesis")["recovery_required"] is True
+    ancestor_input.write_text("{}")
+    frozen = restarted.path("failed-synthesis").read_bytes()
+    for entrypoint in ("resume", "revalidate"):
+        with pytest.raises(ValueError, match="input version unavailable"):
+            getattr(restarted, entrypoint)("failed-synthesis")
+        assert restarted.path("failed-synthesis").read_bytes() == frozen
+    ancestor_input.write_bytes(saved_input)
+    restarted.revalidate("failed-synthesis")
+    accepted = wait(restarted, "failed-synthesis")
+    assert accepted["status"] == "accepted"
+    assert accepted["current_use"]["state"] == "current"
+    assert json.loads(restarted.path("failed-synthesis").read_text())["turn_key"] == turn_key
+    from loopx.control_plane.turn_driver.journal_store import load_turn_journal, turn_journal_path
+    journal = load_turn_journal(turn_journal_path(runner.root, goal_id=runner.goal_id, turn_key=turn_key))
+    assert journal["receipt"]["settlement_effect_id"] == committed[0]
+    assert (workspace / "host-invocations").read_text() == "1"
