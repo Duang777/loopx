@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { AgentContextProvider } from "../agent_context.ts";
 import type { JsonObject } from "../effect_program.ts";
 import { jsonObject, requireJsonObject } from "../runtime_decode.ts";
+import { ENVELOPED_SHA256_PATTERN } from "../content_digest.ts";
 
 const DEFAULTS: JsonObject = { mode: "off", discovery_budget_minutes: 5, max_trials: 1 };
 const FIELDS = Object.keys(DEFAULTS);
@@ -91,7 +92,7 @@ export function planCapabilityImprovement(policyValue: unknown, observationValue
     if (trial.trial_feedback != null) {
       const feedback = requireJsonObject(trial.trial_feedback, "capability trial feedback");
       if (!identifier(feedback.outcome_ref) || typeof feedback.trial_basis_digest !== "string"
-        || !/^sha256:[a-f0-9]{64}$/u.test(feedback.trial_basis_digest)
+        || !ENVELOPED_SHA256_PATTERN.test(feedback.trial_basis_digest)
         || typeof feedback.status !== "string" || !["succeeded", "failed", "no_evidence"].includes(feedback.status)) {
         throw new Error("capability trial feedback requires an outcome reference, basis digest and receipt status");
       }
