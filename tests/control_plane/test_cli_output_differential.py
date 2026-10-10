@@ -131,6 +131,14 @@ def test_authoring_observations_require_complete_structured_or_rendered_guidance
         assert not authoring_input_observations(rendered.replace(purpose, surrounding))[
             "complete_todo_readback"
         ]
+    # Existential across rendered candidates: a structurally matching line whose purpose
+    # is not exact must not mask a later complete instruction, in either order.
+    incomplete = rendered.replace(purpose, f"{purpose} extra")
+    assert authoring_input_observations(incomplete + "\n" + rendered)["complete_todo_readback"]
+    assert authoring_input_observations(rendered + "\n" + incomplete)["complete_todo_readback"]
+    assert not authoring_input_observations(incomplete + "\n" + incomplete)[
+        "complete_todo_readback"
+    ]
     hint = (
         "Replace example claims/refs with evidence; obey the live contract and total limit. "
         "For ordinary CLI writeback, pass the packet with --agent-vision-json <file>. "
