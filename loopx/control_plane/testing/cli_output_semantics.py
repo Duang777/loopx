@@ -47,12 +47,14 @@ def authoring_input_observations(text: str) -> dict[str, bool]:
     try:
         collect(json.loads(text))
     except json.JSONDecodeError:
-        observed["complete_todo_readback"] = bool(re.search(
-            r"^\d+\. `read_back_authored_todos` \(operator_or_agent_actions\): "
-            + re.escape(readback_purpose)
-            + r"\n   - command/source: `loopx [^\n]*--todo-id '<todo-id>'`$",
+        rendered = re.search(
+            r"^\d+\. `read_back_authored_todos` \(operator_or_agent_actions\): (?P<purpose>.*?)\n"
+            r"   - command/source: `loopx [^\n]*--todo-id '<todo-id>'`$",
             text, re.MULTILINE,
-        ))
+        )
+        observed["complete_todo_readback"] = (
+            rendered is not None and rendered.group("purpose") == readback_purpose
+        )
     return observed
 
 
