@@ -18,6 +18,12 @@ def _pin_utf8_stdio() -> None:
     `tests/test_loopx_text_io_utf8.py` and `tests/test_runtime_subprocess_utf8.py`);
     its own streams are the remaining locale-dependent surface. A real console
     and a stream that is already UTF-8 are left untouched.
+
+    Input and output keep separate error handling. `stdin` decodes strictly so
+    a malformed request is rejected exactly like the `--metadata-json <file>`
+    route instead of being silently repaired into valid JSON; `stdout`/`stderr`
+    use `replace` so an unencodable character cannot abort an already-computed
+    result.
     """
 
     for stream in (sys.stdin, sys.stdout, sys.stderr):
@@ -26,8 +32,9 @@ def _pin_utf8_stdio() -> None:
             continue
         if str(getattr(stream, "encoding", "") or "").lower().replace("_", "-") == "utf-8":
             continue
+        errors = "strict" if stream is sys.stdin else "replace"
         try:
-            reconfigure(encoding="utf-8", errors="replace")
+            reconfigure(encoding="utf-8", errors=errors)
         except (OSError, ValueError):
             continue
 

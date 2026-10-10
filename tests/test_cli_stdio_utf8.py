@@ -9,6 +9,10 @@ crashes the command or silently corrupts the request.
 `test_loopx_text_io_utf8.py` and `test_runtime_subprocess_utf8.py` guard the
 files and subprocesses LoopX opens; these tests cover the process's own
 streams, which were the remaining locale-dependent surface.
+
+Input stays strict, so a malformed request is refused exactly like the
+`--metadata-json <file>` route instead of being silently repaired into valid
+JSON; only output falls back to `replace`.
 """
 
 from __future__ import annotations
@@ -38,8 +42,24 @@ _PREVIEW = (
 )
 
 
-def _metadata() -> bytes:
-    return json.dumps({"number": 123, "state": "open", "title": EMOJI_TITLE}).encode("utf-8")
+# A lone byte that is illegal in both the pinned UTF-8 codec and the `gbk`
+# locale codec, so a lenient decode is observable as a replacement character.
+MALFORMED_BYTE = b"\xff"
+
+
+def _metadata_bytes() -> bytes:
+    """Raw JSON bytes that keep the non-ASCII title literal rather than ASCII-escaped."""
+
+    payload = json.dumps(
+        {"number": 123, "state": "open", "title": EMOJI_TITLE}, ensure_ascii=False
+    )
+    return payload.encode("utf-8")
+
+
+def _malformed_metadata_bytes() -> bytes:
+    """A structurally valid request whose title carries an illegal byte."""
+
+    return _metadata_bytes().replace("修复".encode("utf-8"), MALFORMED_BYTE)
 
 
 def _run_preview(
@@ -75,11 +95,15 @@ def _title(payload_bytes: bytes) -> str:
     return payload["issue_fix_intake"]["issue_metadata"]["title_summary"]
 
 
+def _is_ok(payload_bytes: bytes) -> bool:
+    return json.loads(payload_bytes.decode("utf-8"))["ok"] is True
+
+
 def test_non_ascii_stdout_survives_a_locale_codec(tmp_path: Path) -> None:
     """A non-ASCII title must not raise `UnicodeEncodeError` on gbk stdout."""
 
     metadata = tmp_path / "metadata.json"
-    metadata.write_bytes(_metadata())
+    metadata.write_bytes(_metadata_bytes())
 
     result = _run_preview(tmp_path / "runtime", "--metadata-json", str(metadata))
 
@@ -90,11 +114,16 @@ def test_non_ascii_stdout_survives_a_locale_codec(tmp_path: Path) -> None:
 def test_utf8_stdin_is_not_decoded_with_the_locale_codec(tmp_path: Path) -> None:
     """`--metadata-json -` must read UTF-8 stdin, matching the file route."""
 
+    raw = _metadata_bytes()
+    # The fixture must carry raw non-ASCII bytes: ASCII-escaped input would
+    # decode identically under `gbk` and UTF-8 and hide a missing stdin pin.
+    assert EMOJI_TITLE.encode("utf-8") in raw
+
     stdin_result = _run_preview(
-        tmp_path / "stdin-runtime", "--metadata-json", "-", stdin=_metadata()
+        tmp_path / "stdin-runtime", "--metadata-json", "-", stdin=raw
     )
     metadata = tmp_path / "metadata.json"
-    metadata.write_bytes(_metadata())
+    metadata.write_bytes(raw)
     file_result = _run_preview(
         tmp_path / "file-runtime", "--metadata-json", str(metadata)
     )
@@ -103,3 +132,44 @@ def test_utf8_stdin_is_not_decoded_with_the_locale_codec(tmp_path: Path) -> None
     assert file_result.returncode == 0, file_result.stderr.decode("utf-8", "replace")
     assert _title(stdin_result.stdout) == EMOJI_TITLE
     assert stdin_result.stdout == file_result.stdout
+
+
+def test_malformed_input_is_rejected_on_both_routes(tmp_path: Path) -> None:
+    """Illegal bytes must be refused as strictly on stdin as on the file route."""
+
+    malformed_stdin = _run_preview(
+        tmp_path / "stdin-bad-runtime",
+        "--metadata-json",
+        "-",
+        stdin=_malformed_metadata_bytes(),
+    )
+    malformed_file = tmp_path / "malformed.json"
+    malformed_file.write_bytes(_malformed_metadata_bytes())
+    malformed_file_result = _run_preview(
+        tmp_path / "file-bad-runtime", "--metadata-json", str(malformed_file)
+    )
+
+    for result in (malformed_stdin, malformed_file_result):
+        rendered = result.stdout.decode("utf-8", "replace")
+        assert result.returncode != 0, rendered
+        assert not _is_ok(result.stdout)
+        # The illegal byte must never survive as a replacement character.
+        assert "\ufffd" not in rendered
+
+    # The same command succeeds once the request is corrected.
+    corrected_file = tmp_path / "corrected.json"
+    corrected_file.write_bytes(_metadata_bytes())
+    recovered_stdin = _run_preview(
+        tmp_path / "stdin-recovery-runtime",
+        "--metadata-json",
+        "-",
+        stdin=_metadata_bytes(),
+    )
+    recovered_file = _run_preview(
+        tmp_path / "file-recovery-runtime",
+        "--metadata-json",
+        str(corrected_file),
+    )
+    for result in (recovered_stdin, recovered_file):
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        assert _title(result.stdout) == EMOJI_TITLE
