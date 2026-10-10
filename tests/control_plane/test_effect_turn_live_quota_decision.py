@@ -218,11 +218,7 @@ def test_live_quota_decision_maps_to_effect_turn(tmp_path: Path) -> None:
     assert turn.next_effect.cli_actions[0].startswith("loopx --runtime-root ")
 
 
-def _configure_waiting_automation_cadence(
-    runtime_root: Path,
-    *,
-    agent_id: str,
-) -> int:
+def _configure_automation_cadence(runtime_root: Path) -> dict[str, object]:
     configured = effect_runtime_result(
         "quota.automation_cadence.manage",
         {
@@ -239,6 +235,15 @@ def _configure_waiting_automation_cadence(
         retry_safe=False,
     )
     assert configured["configuration_revision"] == 1
+    return configured
+
+
+def _configure_waiting_automation_cadence(
+    runtime_root: Path,
+    *,
+    agent_id: str,
+) -> int:
+    _configure_automation_cadence(runtime_root)
     now_ms = int(time.time() * 1_000)
     admitted = effect_runtime_result(
         "quota.automation_cadence.admit",
@@ -363,6 +368,49 @@ def test_owner_cadence_wait_is_app_only_and_has_no_scheduler_side_effect(
     assert paused["state"] == "paused"
     assert paused["decision"] == "skip"
     assert paused["scheduler_hint"]["action"] == "stop_until_explicit_resume"
+
+
+def test_owner_interval_eligibility_does_not_override_paused_quota(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    agent_id = "cadence-agent"
+    configured = _configure_automation_cadence(runtime_root)
+    assert configured["configuration_revision"] == 1
+
+    packet = build_live_quota_should_run_decision(
+        quota_status_payload(
+            goal_id=GOAL_ID,
+            status="active",
+            agent_todo_items=[],
+            recommended_action="wait for quota resume",
+            quota_state="paused",
+            quota_extra={"compute": 0},
+            claim_scope_agent_id=agent_id,
+            coordination={
+                "registered_agents": [agent_id],
+                "agent_model": "peer_v1",
+            },
+        ),
+        goal_id=GOAL_ID,
+        agent_id=agent_id,
+        available_capabilities=["shell"],
+        include_scheduler_detail=False,
+        codex_app_current_rrule="FREQ=MINUTELY;INTERVAL=3",
+        registry_path=tmp_path / "registry.json",
+        runtime_root=runtime_root,
+        scheduler_execution_context={
+            "host_surface": "codex_app",
+            "scheduler_owner": "host_automation",
+            "execution_mode": "hosted_automation",
+        },
+    )
+
+    assert packet["automation_cadence_readback"]["eligibility"]["state"] == "eligible"
+    assert packet["state"] == "paused"
+    assert packet["decision"] == "skip"
+    assert packet["should_run"] is False
+    assert packet["scheduler_hint"]["action"] == "stop_until_explicit_resume"
 
 
 def test_cadence_read_failure_is_unknown_not_ready(

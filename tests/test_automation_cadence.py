@@ -148,8 +148,10 @@ def test_human_policy_readback_renders_owner_timestamp_without_countdown():
     )
 
     assert "Source revisions: 3, 4" in rendered
-    assert "Eligibility: waiting (minimum_interval_wait)" in rendered
-    assert "Next eligible at: 1970-01-01T00:00:01.000Z" in rendered
+    assert (
+        "Minimum-interval condition: waiting (minimum_interval_wait)" in rendered
+    )
+    assert "Interval threshold time: 1970-01-01T00:00:01.000Z" in rendered
     assert "remaining" not in rendered
 
 

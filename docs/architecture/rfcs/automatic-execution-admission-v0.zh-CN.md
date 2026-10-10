@@ -189,6 +189,7 @@ M3 现已让 quota、设置 API、人类可读 CLI、Dashboard 与选中 Agent �
 共同消费 owner 产生的 nested eligibility union。只有原本可运行的 hosted App 自动化会被降为
 安静等待；普通 CLI 查看以及更强的暂停、健康、gate、恢复、修复或结算状态保留原决策。
 所有界面展示 owner 给出的状态和精确下次可运行时间，不自行计算倒计时。
+`eligible` 仅表示最小间隔条件已满足。会话健康、quota、权限和工作可用性仍是独立准入条件。
 Lark 只为确切选中的 attached Agent 读取，作用域固定为 Agent-wide 且 automation id 为空，
 并把验证后的 public-safe 观察保存在既有状态快照中。runtime root 缺失、读取失败、结果格式错误
 或身份不匹配都变为 unavailable，绝不显示 eligible；投递重放使用冻结快照，不重新读取 owner。

@@ -256,6 +256,8 @@ runnable hosted App automation is demoted to a quiet wait; generic CLI
 inspection and stronger pause, health, gate, recovery, repair or settlement
 states retain their existing decision. Every surface shows the owner-produced
 state and exact next-eligible timestamp without computing its own countdown.
+`eligible` means only that the minimum-interval condition has elapsed. Session
+health, quota, permissions and work availability remain separate gates.
 Lark reads only for an exact selected attached Agent, at Agent-wide scope with
 no automation id, and persists the validated public-safe observation in the
 existing status snapshot. Missing roots, read failures and malformed or

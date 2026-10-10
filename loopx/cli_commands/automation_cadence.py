@@ -27,8 +27,8 @@ def _render_automation_cadence(result: dict[str, Any]) -> str:
         f"Automatic execution minimum: {result['min_interval_minutes']} minutes\n"
         f"Configuration revision: {result['configuration_revision']}\n"
         f"Source revisions: {source_revisions}\n"
-        f"Eligibility: {eligibility['state']} ({eligibility['reason']})\n"
-        f"Next eligible at: {next_at}\n"
+        f"Minimum-interval condition: {eligibility['state']} ({eligibility['reason']})\n"
+        f"Interval threshold time: {next_at}\n"
         f"Enforcement: {result['enforcement']}\n"
         "Host wake cadence and pre-model guarantees must be read back separately."
     )

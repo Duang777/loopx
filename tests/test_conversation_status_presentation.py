@@ -83,7 +83,7 @@ def test_attached_host_help_does_not_advertise_unsupported_controls():
                     "next_eligible_at_ms": 1791637200000,
                 },
             },
-            "自动执行最小间隔：60 分钟；等待至 2026-10-10T13:00:00.000Z。",
+            "自动执行最小间隔：60 分钟；最小间隔条件尚未满足，等待至 2026-10-10T13:00:00.000Z。",
         ),
         (
             {
@@ -93,7 +93,7 @@ def test_attached_host_help_does_not_advertise_unsupported_controls():
                     "next_eligible_at_ms": None,
                 },
             },
-            "自动执行最小间隔：15 分钟；当前可启动。",
+            "自动执行最小间隔：15 分钟；最小间隔条件已满足。",
         ),
         (
             {
@@ -117,6 +117,36 @@ def test_attached_status_renders_owner_cadence_without_a_countdown(cadence, expe
     )
     assert expected in rendered
     assert "剩余" not in rendered and "秒后" not in rendered
+
+
+@pytest.mark.parametrize(
+    "stronger_state",
+    [
+        {"session_status": "resume_failed"},
+        {
+            "active_turn_status": "running",
+            "active_turn_observation_available": False,
+        },
+    ],
+)
+def test_interval_condition_never_claims_session_start_readiness(stronger_state):
+    rendered = render_conversation_status(
+        snapshot(
+            recipient_agent_id="authorized-worker",
+            recipient_goal_id="authorized-goal",
+            automation_cadence={
+                "min_interval_minutes": 15,
+                "eligibility": {
+                    "state": "eligible",
+                    "next_eligible_at_ms": None,
+                },
+            },
+            **stronger_state,
+        )
+    )
+    assert rendered.startswith("⚠️")
+    assert "最小间隔条件已满足" in rendered
+    assert "当前可启动" not in rendered
 
 
 def test_timeout_is_actionable_and_does_not_recommend_blind_retry():

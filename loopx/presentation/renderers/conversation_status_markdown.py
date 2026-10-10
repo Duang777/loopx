@@ -36,10 +36,10 @@ def _automation_cadence_line(snapshot: Mapping[str, Any]) -> str | None:
         except (OverflowError, OSError, ValueError):
             return "自动执行状态暂不可读，不能据此判断可启动。"
     if state == "eligible":
-        suffix = f"（最早时间 {exact}）" if exact else ""
-        return f"自动执行最小间隔：{floor} 分钟；当前可启动{suffix}。"
+        suffix = f"（自 {exact} 起）" if exact else ""
+        return f"自动执行最小间隔：{floor} 分钟；最小间隔条件已满足{suffix}。"
     if state == "waiting" and exact:
-        return f"自动执行最小间隔：{floor} 分钟；等待至 {exact}。"
+        return f"自动执行最小间隔：{floor} 分钟；最小间隔条件尚未满足，等待至 {exact}。"
     return "自动执行状态暂不可读，不能据此判断可启动。"
 
 

@@ -47,13 +47,15 @@ failure; do not shorten the floor or activate an alternate scheduler. A daily
 wall-clock schedule and 1440 elapsed minutes can differ around timezone/DST
 changes; this policy uses elapsed minutes and projects a minute-based RRULE.
 
-## Inspect eligibility
+## Inspect the minimum-interval condition
 
 The human CLI read prints the configuration revision, contributing source
-revisions, eligibility state and exact UTC next-eligible time. The Chat
+revisions, minimum-interval state and exact UTC threshold time. The Chat
 Dashboard exposes the same facts under **Settings → Automatic execution
 interval**. Both consume the quota owner's typed readback; neither calculates
-eligibility from a local clock.
+the condition from a local clock. An `eligible` state means only that the
+minimum interval has elapsed. It does not assert session health, quota,
+permissions, work availability or launch readiness.
 
 For Lark, select an explicitly authorized attached Agent with `/agents` and its
 exact `/agent` command, then send `/status`. That status uses the Agent-wide
