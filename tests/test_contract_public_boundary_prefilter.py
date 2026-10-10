@@ -110,3 +110,69 @@ def test_prefilter_preserves_all_boundary_hit_categories(tmp_path: Path) -> None
         "sample.md:4: internal_task_id",
         "sample.md:5: private_ip",
     ]
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        "\n",
+        "\r",
+        "\r\n",
+        "\v",
+        "\f",
+        "\x1c",
+        "\x1d",
+        "\x1e",
+        "\x85",
+        "\u2028",
+        "\u2029",
+    ],
+)
+def test_prefilter_preserves_unicode_line_numbers_and_multiple_rules(
+    tmp_path: Path, separator: str
+) -> None:
+    # The folded necessary condition cannot change original line coordinates,
+    # rule order, the public-host exception, or credential-reference handling.
+    lines = [
+        "ordinary " * 50,
+        "Author\u0131zation: literal host 10" + ".1.2.3",
+        "pa\u017f\u017fword=${EXAMPLE_KEY}",
+        "https://open.lark" + "office.com host 172" + ".31.2.3",
+        "pa\u00dfword=literal",  # casefold expands; the authoritative regex refuses it
+        "ordinary again",
+    ]
+    (tmp_path / "sample.md").write_text(separator.join(lines), encoding="utf-8")
+    payload = contract.scan_public_boundary([tmp_path])
+    assert payload["hits"] == [
+        "sample.md:2: credential",
+        "sample.md:2: private_ip",
+        "sample.md:4: private_ip",
+    ]
+    assert payload["credential_reference_hits"] == ["sample.md:3: credential"]
+
+
+def test_prefilter_literals_are_substrings_not_regex_syntax(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RecordingPattern:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def search(self, line: str) -> None:
+            self.lines.append(line)
+
+    pattern = RecordingPattern()
+    monkeypatch.setattr(
+        contract,
+        "LEAK_RULES",
+        {
+            "private_ip": contract.LeakRule(
+                pattern=pattern,  # type: ignore[arg-type]
+                required_literals=("a|b", "10."),
+            ),
+        },
+    )
+    lines = ["a or b", "10x", "actual a|b", "actual 10.", "ordinary"]
+    (tmp_path / "sample.md").write_text("\n".join(lines), encoding="utf-8")
+    assert contract.scan_public_boundary([tmp_path])["ok"] is True
+    assert pattern.lines == ["actual a|b", "actual 10."]

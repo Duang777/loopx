@@ -1621,6 +1621,20 @@ TS 摘要批次；Python 保留旧格式解码、公开字段筛选及渲染。�
 查询命中情况覆盖。见[语义及回滚](../../reference/todo-work-counts.md)。这是 T3/L5 的
 共享读取边界推进，不替代 D2/D3 或 provider 默认切换。
 
+fresh 公共边界扫描成本仍未关闭，继续归现有专门 Python regex／Host IO owner。
+Characterization 已覆盖全部十一种 `splitlines` 分隔符、Unicode regex 折叠、
+casefold 扩展的假阳性、逐规则命中顺序、凭据引用、公共主机例外及字面量元字符；
+这些是 scanner 语义，不新增决策 owner 或缓存。
+
+折叠字面量合并的受控干预，在真实 quota 扫描集合上降低中位 wall／CPU 成本
+8.5%／6.9%，完整 scanner payload 相等。但每 provider 固定 32 对交替完整 CLI
+比较仍得到 File p95 976.33 → 986.84 ms（+10.52 ms／1.08%）、SQLite p95
+936.00 → 962.34 ms（+26.33 ms／2.81%）。后者未通过既有未解释 25 ms 目标，
+因此撤回运行时候选，保留全部样本；profile 不能证明尾延迟根因或豁免资格。
+后续修复须解释此尾延迟，并通过相同完整 File/SQLite 消费者、新 wheel/sdist
+入口及原成本门槛。历史 frontier／direct-loop hold 与新 Goal 默认、可恢复导入、
+开发者试用及最后调用方退役分别保留。
+
 2026-09-24：[完整源捕获的 TS 组装与剩余交付包](ledger/shared-goal-authority-state-provider-v0/2026-09-24-source-capture.zh-CN.md)统一源构造、身份拒绝和当前图成员规则；不关闭 L7/D2/D3 或启用默认 provider。
 
 2026-09-24: [带租约接力与剩余本地默认交付包](ledger/shared-goal-authority-state-provider-v0/2026-09-24-leased-continuation.zh-CN.md).

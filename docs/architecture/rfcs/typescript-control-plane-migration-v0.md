@@ -2223,6 +2223,24 @@ The same real File/SQLite entrypoints must qualify functional parity and the
 original full-CLI cost gate together. Fewer crossings alone do not explain a
 whole-CLI tail regression or complete writer/backup/default-provider retirement.
 
+Fresh public-boundary scan cost remains open in its existing specialized Python
+regex / Host IO owner. Characterization now covers all eleven `splitlines`
+separators, Unicode regex folding, casefold expansion false positives, ordered
+multi-rule hits, credential references, the public-host exception and literal
+metacharacters. These are scanner semantics, not a new decision owner or cache.
+
+A folded-literal union intervention reduced the exact quota scan population's
+median wall / CPU cost by 8.5% / 6.9% with complete scanner payload parity.
+Its fixed 32 alternating full-CLI pairs per provider still produced File p95
+976.33 → 986.84 ms (+10.52 ms / 1.08%) and SQLite p95 936.00 → 962.34 ms
+(+26.33 ms / 2.81%). The latter misses the unchanged unexplained 25 ms target,
+so the runtime candidate was withdrawn. All samples remain evidence; profiler
+observations do not establish the tail cause or waive the qualification.
+Next repair must explain that tail and pass the same complete File/SQLite
+consumer, fresh wheel/sdist entries and unchanged cost gate. Preserve the
+historical frontier/direct-loop holds independently of new-Goal defaults,
+recoverable imports, the developer trial and last-caller retirement.
+
 2026-09-24: [Typed complete-source assembly and remaining delivery packages](ledger/shared-goal-authority-state-provider-v0/2026-09-24-source-capture.md) unify source construction, identity rejection and current-graph membership; L7/D2/D3 and provider defaults remain open.
 
 2026-09-24: [Leased continuation and remaining local-default packages](ledger/shared-goal-authority-state-provider-v0/2026-09-24-leased-continuation.md).
