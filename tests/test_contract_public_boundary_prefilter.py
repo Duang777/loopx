@@ -1,11 +1,60 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import pytest
 
 from loopx import contract
+
+
+@pytest.mark.parametrize("tracked,pruned", [(False, False), (True, False), (True, True)])
+def test_scan_enumeration_uses_resolved_symlink_suffix_and_local_name(
+    tmp_path: Path, tracked: bool, pruned: bool
+) -> None:
+    scan_root = tmp_path / ("node_modules" if pruned else "public")
+    scan_root.mkdir()
+    target = tmp_path / "target.md"
+    target.write_text("public", encoding="utf-8")
+    distinct = tmp_path / "distinct.md"
+    distinct.write_text("public", encoding="utf-8")
+    unsupported = tmp_path / "target.ts"
+    unsupported.write_text("not a directory scan input", encoding="utf-8")
+    local = tmp_path / "target.local.json"
+    local.write_text("local", encoding="utf-8")
+    regular = scan_root / "regular.md"
+    regular.write_text("public", encoding="utf-8")
+    (scan_root / "regular.ts").write_text("unsupported", encoding="utf-8")
+    (scan_root / "alias.ts").symlink_to(target)
+    (scan_root / "distinct.txt").symlink_to(distinct)
+    (scan_root / "alias.local.json").symlink_to(target)
+    (scan_root / "unsupported.md").symlink_to(unsupported)
+    (scan_root / "local.md").symlink_to(local)
+    (scan_root / "broken.ts").symlink_to(tmp_path / "absent.md")
+    if tracked:
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-f", "--", scan_root.name], check=True)
+
+    # Git ownership includes tracked files under otherwise pruned directories.
+    # Directory eligibility follows the canonical target, not the alias name.
+    # The pruned-root fast path preserves Git's per-alias observations.
+    expected = [distinct, regular, target, target] if pruned else [distinct, regular, target]
+    assert contract.iter_scan_files(scan_root) == sorted(expected)
+    if tracked:
+        assert set(contract._tracked_scan_files(scan_root)) == {distinct, regular, target}
+
+    # A later retarget must be observed; no eligibility result may be cached.
+    (scan_root / "alias.ts").unlink()
+    (scan_root / "alias.ts").symlink_to(local)
+    (scan_root / "alias.local.json").unlink()
+    assert contract.iter_scan_files(scan_root) == sorted([distinct, regular])
+
+
+def test_explicit_scan_file_keeps_unsupported_suffix(tmp_path: Path) -> None:
+    explicit = tmp_path / "explicit.ts"
+    explicit.write_text("explicit input", encoding="utf-8")
+    assert contract.iter_scan_files(explicit) == [explicit]
 
 
 @pytest.mark.parametrize(
