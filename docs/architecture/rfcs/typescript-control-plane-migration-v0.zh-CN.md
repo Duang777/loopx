@@ -1631,7 +1631,13 @@ casefold 扩展的假阳性、逐规则命中顺序、凭据引用、公共主�
 比较仍得到 File p95 976.33 → 986.84 ms（+10.52 ms／1.08%）、SQLite p95
 936.00 → 962.34 ms（+26.33 ms／2.81%）。后者未通过既有未解释 25 ms 目标，
 因此撤回运行时候选，保留全部样本；profile 不能证明尾延迟根因或豁免资格。
-后续修复须解释此尾延迟，并通过相同完整 File/SQLite 消费者、新 wheel/sdist
+后续完整 payload 对照淘汰了 folded-line 复用及 literal regex 合并；既有
+direct-loop 与 line-union 组合仅降低 scanner wall 3.6%。另一次独立固定每 provider
+32 对 A/A 对照，在运行时字节及完整 CLI 负载相同的两个 checkout 间，仍得到
+File p95 -8.20 ms／-0.84%、SQLite p95 -85.95 ms／-9.90%；全部 128 次命令的
+selection／frontier 均符合预期。这证明比较存在混杂，尚未证明其根因或优化资格；
+此前候选失败及全部观察继续保留。后续先辨别 checkout、runtime 启动及采样影响，
+再归因尾延迟，并通过相同完整 File/SQLite 消费者、新 wheel/sdist
 入口及原成本门槛。历史 frontier／direct-loop hold 与新 Goal 默认、可恢复导入、
 开发者试用及最后调用方退役分别保留。
 

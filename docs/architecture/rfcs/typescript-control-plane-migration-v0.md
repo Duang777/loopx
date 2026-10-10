@@ -2236,7 +2236,16 @@ Its fixed 32 alternating full-CLI pairs per provider still produced File p95
 (+26.33 ms / 2.81%). The latter misses the unchanged unexplained 25 ms target,
 so the runtime candidate was withdrawn. All samples remain evidence; profiler
 observations do not establish the tail cause or waive the qualification.
-Next repair must explain that tail and pass the same complete File/SQLite
+Further full-payload controls rejected folded-line reuse and literal regex
+disjunctions; composing the existing direct-loop and line-union interventions
+improved scanner wall time by only 3.6%. An independent fixed 32-pair A/A control
+per provider, with identical runtime bytes and the same complete CLI workload,
+still differed by -8.20 ms / -0.84% File p95 and -85.95 ms / -9.90% SQLite p95
+between checkout contexts. All 128 commands retained the expected selection and
+frontier. This identifies a comparison confound, not its cause or an optimizer
+qualification; the earlier failed candidate and all observations remain.
+Next repair must distinguish checkout, runtime startup and sampling effects
+before attributing the tail, then qualify the same complete File/SQLite
 consumer, fresh wheel/sdist entries and unchanged cost gate. Preserve the
 historical frontier/direct-loop holds independently of new-Goal defaults,
 recoverable imports, the developer trial and last-caller retirement.
