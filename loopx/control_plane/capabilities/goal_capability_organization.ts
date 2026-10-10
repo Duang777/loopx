@@ -2,7 +2,6 @@
 import { createHash } from "node:crypto";
 import type { AgentContextProvider } from "../agent_context.ts";
 import type { JsonObject } from "../effect_program.ts";
-import { ENVELOPED_SHA256_PATTERN } from "../content_digest.ts";
 import { jsonObject, requireJsonObject } from "../runtime_decode.ts";
 import { ENVELOPED_SHA256_PATTERN } from "../content_digest.ts";
 
