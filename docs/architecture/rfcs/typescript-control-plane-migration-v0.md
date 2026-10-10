@@ -2223,8 +2223,8 @@ The same real File/SQLite entrypoints must qualify functional parity and the
 original full-CLI cost gate together. Fewer crossings alone do not explain a
 whole-CLI tail regression or complete writer/backup/default-provider retirement.
 
-Fresh public-boundary scan cost remains open in its existing specialized Python
-regex / Host IO owner. Characterization now covers all eleven `splitlines`
+Fresh public-boundary scanning retains its specialized Python regex / Host IO
+owner. Characterization covers all eleven `splitlines`
 separators, Unicode regex folding, casefold expansion false positives, ordered
 multi-rule hits, credential references, the public-host exception and literal
 metacharacters. These are scanner semantics, not a new decision owner or cache.
@@ -2244,11 +2244,26 @@ still differed by -8.20 ms / -0.84% File p95 and -85.95 ms / -9.90% SQLite p95
 between checkout contexts. All 128 commands retained the expected selection and
 frontier. This identifies a comparison confound, not its cause or an optimizer
 qualification; the earlier failed candidate and all observations remain.
-Next repair must distinguish checkout, runtime startup and sampling effects
-before attributing the tail, then qualify the same complete File/SQLite
-consumer, fresh wheel/sdist entries and unchanged cost gate. Preserve the
-historical frontier/direct-loop holds independently of new-Goal defaults,
-recoverable imports, the developer trial and last-caller retirement.
+A same-checkout cold/warm control then isolated runtime startup: all 32 cold
+samples changed the setup PID and were slower than their warm partner; warm
+samples retained substantial variability. This explains a startup contribution,
+not the historical A/A tail difference.
+
+The next intervention rejects unsupported regular filenames before repeated
+canonical resolution in both Git enumeration and directory traversal. Symlinks
+still resolve before suffix/local-name eligibility; tracked pruned-directory
+files, explicit file roots and fresh retargets retain their original behavior.
+On the unchanged package-root workload it removed 602 of 3,281 resolution calls
+with full payload parity; eight alternating scan pairs improved median wall
+time by 5.1%. Fixed 32-pair full quota CLI comparisons per provider used one
+physical checkout and verified warm setup PID reuse in every sample. File
+p50/p95 was 708.70/891.78 → 689.04/856.32 ms; SQLite was
+758.55/1036.27 → 769.41/1026.34 ms. Both pass the original additive 25 ms and
+5% tail budgets, while SQLite's slightly higher median limits the improvement
+claim. This qualifies this enumeration intervention, not the withdrawn filter,
+the historical frontier/direct-loop holds or a frozen multi-command deadline.
+Preserve those separately from new-Goal defaults, recoverable imports, the
+developer trial and last-caller retirement.
 
 2026-09-24: [Typed complete-source assembly and remaining delivery packages](ledger/shared-goal-authority-state-provider-v0/2026-09-24-source-capture.md) unify source construction, identity rejection and current-graph membership; L7/D2/D3 and provider defaults remain open.
 
