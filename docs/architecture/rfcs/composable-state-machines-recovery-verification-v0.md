@@ -304,27 +304,22 @@ lease/GoalRef fence, followed by M3's actual delivery callers.
 
 ### Source-grounded implementation sequence
 
-These are unimplemented composition deltas within existing M2/M3 and roadmap
-R2/R3/R4, not new milestones. Source owners were rechecked at
-`44931b6d22a50b949d43354e6ea498fb6b68d231`.
+The table tracks independent composition boundaries within M2/M3 and roadmap R2/R3/R4. Candidate checkpoints do not establish installed behavior or full M2 acceptance. The source baseline is `233cc76fd22760947d73e1501032b8b77e28148b`.
 
-| Bounded outcome | Existing entry and owner | Current gap and decisive exit |
+| Bounded outcome | Existing entry and owner | Current checkpoint and decisive exit |
 | --- | --- | --- |
 | Unavailable declared ancestry prevents new dependent use | `Delegations._read_current/start`, `delegation_results.require_dependencies/adoption_evidence`, `delegation.ts` | Alignment §3.8: source → A → B with A input invalidated must refuse current dependent use even if A output is unchanged. Qualify real read/start/adopt/settlement and packaged evidence readback; keep historical completion. |
-| Independent check failure reaches an actionable original-task recovery journey | `executor._task_validation_stage`, `ValidatedTurnReceipt`, canonical `turn_loop_controller_contract_v0.json`, `turn_journal.ts` | Preserve qualified failure scope and repair/replan detail; complete bounded repair or verifier-only retry, current validation and original-effect settlement. Host assertions cannot become trusted validation. |
+| Independent failure can recheck the original task | `executor`, `task_validation_failure.ts`, canonical controller JSON, `Delegations.revalidate` | Qualified postcondition failures retain repair/replan; legacy detail still routes to generic repair. Explicit CLI/MCP/App revalidation uses the original Turn's cached result: unchanged failure remains rejected, repaired artifacts continue original settlement without repeating Host work. A retained recheck intent and original committed receipts recover response loss through the same operation; replay produces no new Host or quota effects. |
 | Optional semantic review explains its evidence and coverage | Existing progress-review receipt/loader and canonical Goal acceptance inspection | Bind a selected criterion and evidence coverage in shadow readback; show missing/stale basis and separate judgment dimensions. Model quality and intervention qualify separately. |
 
-For the second outcome, `_task_validation_stage` already saves the independent
-result and blocks settlement. `ValidatedTurnReceipt` omits that validation's
-`recovery_kind`; the canonical controller intentionally maps legacy
-`validation_failed` to generic repair. Preserving a trusted validator's replan
-request is a disclosed contract extension, not a violation of today's rule.
-Change the canonical contract, `scripts/generate_turn_contract.py` and the
-existing `validation_failed`/`repair` definitions in
-`loopx/semantics/vocabulary_v0.json`, retaining legacy omitted detail as generic
-repair. Do not hand-edit generated code or add
-a parallel Python decision source. Review missing, malformed and contradictory
-detail and old/new reader compatibility before selecting a wire change.
+`validation_failed` extension updates canonical JSON, the generator and
+existing vocabulary definitions; generated bindings are regenerated. Conflicting
+independent detail is rejected and a Host format error is not a postcondition
+failure. `revalidate` is an explicit effectful recovery operation: success may
+continue existing settlement. Actual code repair still requires current execution
+authority; this operation does not edit code, rerun a model or switch Agents.
+Unknown effects remain subject to the original journal's reconciliation rule.
+A replacement validator cannot erase them.
 
 Failed-Turn retry at `validation_stage=task_postcondition` already reuses the
 cached Host result and reruns validation without invoking the Host again.

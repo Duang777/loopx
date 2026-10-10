@@ -249,23 +249,20 @@ PostgreSQL authority、successor 调度和 App/Lark 送达尚未覆盖。因此 
 
 ### 基于源码的实现顺序
 
-以下是既有 M2/M3 与路线图 R2/R3/R4 中尚未实现的组合增量，不新增里程碑。
-Source owner 在 `44931b6d22a50b949d43354e6ea498fb6b68d231` 复核。
+以下表格记录既有 M2/M3 与路线图 R2/R3/R4 的独立组合边界；候选 checkpoint 不表示已安装能力或完整 M2 验收。源码基线为 `233cc76fd22760947d73e1501032b8b77e28148b`。
 
-| 有界结果 | 既有入口与 owner | 当前缺口与决定性出口 |
+| 有界结果 | 既有入口与 owner | 当前 checkpoint 与决定性出口 |
 | --- | --- | --- |
 | 声明来源链不可用时，阻止新的依赖使用 | `Delegations._read_current/start`、`delegation_results.require_dependencies/adoption_evidence`、`delegation.ts` | 遵循对齐 §3.8：source → A → B 中 A input 失效，即使 A output 不变也须拒绝当前依赖使用；验证真实 read/start/adopt/settlement 和打包证据读回，保留历史完成。 |
-| 独立检查失败进入原任务可操作的恢复旅程 | `executor._task_validation_stage`、`ValidatedTurnReceipt`、canonical `turn_loop_controller_contract_v0.json`、`turn_journal.ts` | 传递已资格化失败范围与 repair/replan 细节；完成有界修复或只运行 verifier 的重试、当前验证与原效果结算。Host 声明不能冒充可信验证。 |
+| 独立检查失败可复核原任务 | `executor`、`task_validation_failure.ts`、canonical controller JSON、`Delegations.revalidate` | 已资格化 task-postcondition 失败保留 repair/replan；旧记录仍 generic repair。CLI/MCP/App 显式复核原 Turn 的缓存结果，未修复继续失败，修复产物后沿原效果结算；持久化复核意图及原提交回执支持响应丢失后的同一执行恢复，不重复 Host 或扣额度。 |
 | 可选语义审查说明证据和覆盖范围 | 既有 progress-review receipt/loader 与 canonical Goal acceptance inspect | 在 shadow 读回绑定选中 criterion 和证据覆盖；显示缺失/陈旧依据及独立判断维度。模型质量和干预另行资格化。 |
 
-第二项中，`_task_validation_stage` 已保存独立结果并阻断结算；`ValidatedTurnReceipt`
-未携带该验证的 `recovery_kind`，canonical controller 有意将 legacy
-`validation_failed` 统一映射 generic repair。保留可信 validator 的 replan 请求是
-须披露的合同扩展，不是当前实现违反规则。修改 canonical 合同、
-`scripts/generate_turn_contract.py` 与 `loopx/semantics/vocabulary_v0.json` 中
-既有 `validation_failed`/`repair` 定义，旧记录缺少 detail 时继续 generic repair；
-不手改 generated code，不新增平行 Python 决策源。选择 wire 变更前审查缺失、非法、
-矛盾细节以及新旧 reader 兼容。
+`validation_failed` 的 controller 扩展来自 canonical JSON、生成器和既有词汇定义；
+未手改 generated code。独立细节须来自原 validation 边界，矛盾状态不被接纳；
+Host 格式错误不会冒充后置条件失败。`revalidate` 是显式有副作用的恢复操作，
+不是只读检查：通过后会继续原有结算。实际代码修复仍须当前执行权限；本次复核
+不会编辑代码、自动重跑模型或换 Agent。未解决的 unknown effect 仍由原 journal
+恢复规则对账，替代 validator 不能清除它。
 
 `validation_stage=task_postcondition` 的 failed-Turn retry 已会复用缓存 Host
 result，只重跑 validation，不再次调用 Host。**实际修复工作**需要自己的当前有界

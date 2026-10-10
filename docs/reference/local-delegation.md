@@ -136,6 +136,31 @@ workspace、Goal、registry、runtime 与 operator execution configuration；模
 Todo 或外部动作权限。下方 shell 命令继续作为既有 Session、无 MCP host 或显式
 shell-only 协调的兼容入口；两种入口复用同一个 `Delegations` 服务和同一套验收规则。
 
+## Original task revalidation
+
+An independent task postcondition failure instead returns `task_failure`,
+including repair/replan direction, its original Turn and validator summary.
+After repairing the actual artifact or validation environment, explicitly run:
+
+```bash
+loopx --registry "$REGISTRY" --runtime-root "$RUNTIME_ROOT" --format json \
+  delegation revalidate --goal-id "$GOAL_ID" --agent-id "$AGENT_ID" \
+  --execution-config "$DELEGATION_CONFIG" --operation-id review-round-1 --execute
+```
+
+The team view offers **复核原任务** for that qualified failure, and MCP exposes
+`revalidate_delegation`. This is an effectful revalidation and original settlement
+continuation. It retains the original failed evidence, operation and Turn;
+Host work is not repeated. A failed check remains rejected. Unknown external
+effects still require the original Turn's reconciliation. Revalidation does not
+edit code, switch Agents or authorize compensation; new execution needs a
+separately admitted task. If the original recheck committed but its response was
+lost, readback exposes recovery and the team view offers **恢复原执行**. Repeating
+`revalidate` or using `resume` reconciles the original committed receipts without
+repeating Host work or quota spending.
+
+中文：先修复真实产物或校验环境，再复核原执行；通过后继续原 Turn 结算，保留失败证据，不重复 Host 或扣额。停止与撤权仍阻止恢复。
+
 ## Use an existing Agent conversation through its shell
 
 An attached Codex or other shell-capable Agent can use the same execution
