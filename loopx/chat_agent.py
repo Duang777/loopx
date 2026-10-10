@@ -1376,6 +1376,14 @@ class CodexChatAgentSession:
                     )
                     if step:
                         phase = "Agent 正在思考"
+                elif method in {"item/commandExecution/outputDelta", "item/mcpToolCall/progress"} and isinstance(params, dict):
+                    command_output = method == "item/commandExecution/outputDelta"
+                    step = steps.activity_delta(
+                        params.get("itemId"), params.get("delta" if command_output else "message"),
+                        kind="command" if command_output else "tool",
+                    )
+                    if step:
+                        phase = "Agent 收到命令新输出" if command_output else "Agent 收到工具进展"
                 if method == "item/started":
                     item_type = (
                         str(item.get("type") or "") if isinstance(item, dict) else ""
