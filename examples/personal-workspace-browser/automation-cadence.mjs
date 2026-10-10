@@ -231,7 +231,7 @@ export const automationCadenceScenario = {
       const nextEligibleIso = new Date(waiting.eligibility.next_eligible_at_ms).toISOString();
       await target.selectOption("goal");
       await target.selectOption("agent:codex-latest-lane");
-      await panel.getByText("等待最短间隔结束", { exact: true }).waitFor();
+      await panel.getByText("最小间隔条件尚未满足", { exact: true }).waitFor();
       await panel.getByText(nextEligibleIso, { exact: true }).waitFor();
       const files = await readdir(resolve(authority.root, "runtime"), { recursive: true });
       const policyPath = files.find((file) => file.endsWith(".json"));
@@ -247,7 +247,7 @@ export const automationCadenceScenario = {
       await page.getByRole("button", { name: "Automatic execution interval", exact: true }).click();
       await page.getByLabel("Applies to", { exact: true }).selectOption("agent:codex-latest-lane");
       await page.getByText("This scope: 10 min · inherited minimum: 0 min.", { exact: true }).waitFor();
-      await page.getByText("Waiting for the minimum interval", { exact: true }).waitFor();
+      await page.getByText("Minimum interval not yet satisfied", { exact: true }).waitFor();
       await page.getByText(nextEligibleIso, { exact: true }).waitFor();
       await page.getByLabel("Minimum interval (minutes)", { exact: true }).fill("20");
       if (!await page.getByRole("button", { name: "Save", exact: true }).isEnabled()) throw new Error("English Save required a note");
