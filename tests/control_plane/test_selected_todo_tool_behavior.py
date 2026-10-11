@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from loopx.control_plane.testing.model_tool_behavior import (
     QUOTA_FIRST_TOOL_INSTRUCTION,
     scripted_exec_tool_response as _tool_response,
@@ -15,6 +17,7 @@ from loopx.control_plane.testing.selected_todo_tool_behavior import (
     STALE_DONE_PRIMARY_TODO_ID,
     DoubaoSelectedTodoToolBehaviorActor,
     _build_fixture,
+    bounded_workspace_read_plan,
 )
 
 
@@ -591,15 +594,17 @@ def test_tool_loop_allows_bounded_state_and_fallback_discovery(
     ]
 
 
+@pytest.mark.parametrize("cat_options", ["", "-- "])
 def test_tool_loop_treats_fixture_state_read_as_metadata(
     tmp_path: Path,
+    cat_options: str,
 ) -> None:
     fixture = _build_fixture(tmp_path / "oracle")
     state_path = ".codex/goals/portfolio-goal/ACTIVE_GOAL_STATE.md"
     commands = [
         fixture.quota_guard_command.replace('"${LOOPX_TURN:?}"', "turn-001"),
-        f"sed -n 1,120p {state_path}",
-        f"cat fixture/selected-lane.json && head -n 40 {state_path}",
+        f"cat {cat_options}{state_path}" if cat_options else f"sed -n 1,120p {state_path}",
+        f"cat {cat_options}fixture/selected-lane.json && head -n 40 {state_path}",
     ]
     call_count = 0
 
@@ -623,6 +628,21 @@ def test_tool_loop_treats_fixture_state_read_as_metadata(
         "workspace_read",
         "selected_action",
     ]
+
+
+@pytest.mark.parametrize("command", [
+    "cat --",
+    "cat -- fixture/selected-lane.json fixture/deferred-lane.json",
+    "cat -- /etc/passwd",
+    "cat -- ../outside.json",
+    "cat -- fixture/selected-lane.json > output.json",
+    "cat -n -- fixture/selected-lane.json",
+])
+def test_end_of_options_does_not_expand_bounded_read_authority(
+    tmp_path: Path, command: str,
+) -> None:
+    fixture = _build_fixture(tmp_path)
+    assert bounded_workspace_read_plan(command, fixture=fixture) is None
 
 
 def test_tool_loop_allows_bounded_hermetic_registry_preview(

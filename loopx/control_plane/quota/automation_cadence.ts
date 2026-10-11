@@ -225,6 +225,10 @@ export async function confirmAutomationStart(p: JsonObject): Promise<JsonObject>
   const request = text(p.request_id, "request_id");
   const record = async (store: Store): Promise<JsonObject> => {
     const matches = store.starts.filter(start => start.agent_id === s.agent_id && start.request_id === request);
+    if (matches.length === 0) {
+      return {schema_version: RESULT, ok: true, goal_id: goal, ...s, request_id: request, confirmed: false,
+        reason: "reservation_missing"};
+    }
     const pending = matches.some(start => start.state === "reserved");
     if (pending) {
       store.starts = store.starts.map(start => start.agent_id === s.agent_id && start.request_id === request

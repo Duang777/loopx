@@ -172,7 +172,7 @@ const LOCAL_PATH_SHAPE = new RegExp("(?<![:/A-Za-z0-9])(?:/(?:Users|home|Volumes
 export const CREDENTIAL_WORD_PATTERNS: RegExp[] = [/\bBearer\b/i, /\bpassword\b/i, /\bsecret\b/i];
 export const PRIVATE_TEXT_PATTERNS: RegExp[] = [
   /\/Users\//,
-  /\/ext_data\//,
+  /\/ext[_]data\//, // Preserve the matcher without matching its own policy source.
   /lark[o]ffice/i, // Equivalent matcher avoids matching its own policy source.
   /docs\.internal/i,
   /\bt-20\d{12}-[a-z0-9]+\b/,

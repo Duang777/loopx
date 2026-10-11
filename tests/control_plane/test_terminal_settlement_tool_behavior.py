@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from loopx.control_plane.testing.model_tool_behavior import (
     QUOTA_FIRST_TOOL_INSTRUCTION,
     ScriptedAssistantAction,
@@ -111,7 +113,10 @@ def _reentry_quota_action(request: Mapping[str, Any]) -> ScriptedExecToolAction:
     return ScriptedExecToolAction(command=command)
 
 
-def test_real_tool_loop_settles_final_todo_after_spend(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cat_options", ["", "-- "])
+def test_real_tool_loop_settles_final_todo_after_spend(
+    tmp_path: Path, cat_options: str,
+) -> None:
     fixture = _build_fixture(tmp_path / "oracle")
     transport = ScriptedDoubaoExecTransport(
         [
@@ -121,7 +126,7 @@ def test_real_tool_loop_settles_final_todo_after_spend(tmp_path: Path) -> None:
                     "turn-test-001",
                 )
             ),
-            ScriptedExecToolAction(command="cat fixture/settlement-proof.json"),
+            ScriptedExecToolAction(command=f"cat {cat_options}fixture/settlement-proof.json"),
             _writeback_action,
             _spend_action,
             _terminal_action,

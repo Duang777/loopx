@@ -412,6 +412,17 @@ def _is_fixture_metadata_target(
     return target.resolve() in allowed
 
 
+def _single_cat_operand(tokens: list[str]) -> str | None:
+    """Accept one file, including the shell's explicit end of options."""
+    if not tokens or Path(tokens[0]).name != "cat":
+        return None
+    if (len(tokens) == 2 and tokens[1] != "--") or (
+        len(tokens) == 3 and tokens[1] == "--"
+    ):
+        return tokens[-1]
+    return None
+
+
 def _metadata_pipeline_step(
     segment: list[str],
     *,
@@ -459,9 +470,10 @@ def _metadata_pipeline_step(
             operator=operator,
             line_limit=limit,
         )
-    if len(left) != 2 or Path(left[0]).name != "cat":
+    operand = _single_cat_operand(left)
+    if operand is None:
         return None
-    target = _resolve_metadata_path(left[1], fixture=fixture)
+    target = _resolve_metadata_path(operand, fixture=fixture)
     allowed_registries = {
         fixture.global_registry_path.resolve(),
         (fixture.project_root / ".loopx" / "registry.json").resolve(),
@@ -472,7 +484,7 @@ def _metadata_pipeline_step(
             ("head", "-n", str(limit), str(target)),
             operator=operator,
         )
-    content_target = _resolve_project_path(left[1], fixture=fixture)
+    content_target = _resolve_project_path(operand, fixture=fixture)
     if content_target is None:
         return None
     return BoundedWorkspaceReadStep(
@@ -593,7 +605,7 @@ def bounded_workspace_read_plan(
             )
             continue
         content_shape = bool(
-            (executable == "cat" and len(segment) == 2)
+            _single_cat_operand(segment) is not None
             or (
                 executable == "head"
                 and (

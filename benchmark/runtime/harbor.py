@@ -59,6 +59,7 @@ class BenchmarkCodex(CodexOffline):
         task_entry=None,
         planning_timeout_sec=300,
         turn_envelope=False,
+        task_objective=None,
         **kwargs,
     ):
         if isinstance(validation_command, str):
@@ -97,6 +98,11 @@ class BenchmarkCodex(CodexOffline):
         self._task_path = "/usr/local/bin:/usr/bin:/bin"
         self._phase_number = 0
         self._seeded_todo_id: str | None = None
+        if task_objective is not None and (not isinstance(task_objective, str)
+                                          or not task_objective.strip()):
+            raise ValueError("Task objective must be a non-empty string")
+        self.task_objective = (task_objective if task_objective is not None else
+                              "Complete the current benchmark task through validated LoopX Todos.")
         super().__init__(*args, **kwargs)
 
     def _replan_configuration(self) -> tuple[str, str, int]:
@@ -372,7 +378,7 @@ class BenchmarkCodex(CodexOffline):
                     "--goal-id",
                     _GOAL_ID,
                     "--objective",
-                    "Complete the current benchmark task through validated LoopX Todos.",
+                    self.task_objective,
                     "--goal-doc",
                     _TASK_DOC,
                     "--adapter-kind",

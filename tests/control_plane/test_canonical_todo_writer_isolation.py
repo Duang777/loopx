@@ -99,6 +99,13 @@ def _remove_source_todo_writers(package):
     capture_adapter.write_text("".join(lines))
 
 
+def _remove_monitor_source_modules(package):
+    (package / "control_plane/scheduler/legacy_monitor_poll.py").unlink()
+    for name in ("runtime_shadow", "runtime_shadow_writer_adapter",
+                 "local_authority_shadow_adapter", "local_authority_shadow_outbox"):
+        (package / f"control_plane/coordination/{name}.py").unlink()
+
+
 @pytest.mark.parametrize("window", ["before_commit", "after_commit"])
 @pytest.mark.parametrize("corrupt_cursor", [False, True], ids=["recover", "reject-unproved-cursor"])
 def test_pending_source_outbox_survives_producer_retirement(
@@ -478,6 +485,7 @@ def test_monitor_recovery_with_source_writer_isolation(
     _package, command = isolated_todo_distribution
     if not source_writers_present:
         command = request.getfixturevalue("without_source_todo_writers")
+        _remove_monitor_source_modules(_package)
     registry, runtime, display, monitor = _canonical(
         tmp_path, native=True, provider=provider, lease=LEASE,
     )

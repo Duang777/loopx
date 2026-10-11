@@ -167,7 +167,7 @@ def test_projection_source_pointer_uses_the_same_privacy_validator() -> None:
         [
             "validation:public-fixture",
             "../report.md",
-            "token=fixture-value",
+            "token=<fixture-value>",
             "validation:public-fixture",
         ],
         source_ref="evidence:issue-fix:fix_7_candidate",
@@ -184,7 +184,7 @@ def test_projection_source_pointer_uses_the_same_privacy_validator() -> None:
         "../report.md",
         "file:///fixture/report.md",
         "C:\\fixture\\report.md",
-        "token=fixture-value",
+        "token=<fixture-value>",
     ],
 )
 def test_public_writer_keeps_rejecting_private_refs(private_ref: str) -> None:

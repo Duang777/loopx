@@ -7,6 +7,15 @@ SForge owns submission, grading and selection; these wrappers describe the actua
 from __future__ import annotations
 
 
+def native_task_objective() -> str:
+    """Keep continued research, rather than Todo completion, in the Goal."""
+    return (
+        "Continue researching and improving the original task objective. "
+        "Treat implementation, passing checks, and submission as milestones; "
+        "pursue the next useful experiment and preserve the best validated candidate."
+    )
+
+
 def native_task_instructions(submit_paths: list[str], *,
                              submission_cooldown: int, eval_interval: int, internet: bool,
                              selection: str, score_direction: str) -> str:
@@ -73,6 +82,7 @@ def native_task_instructions(submit_paths: list[str], *,
         "or feedback, repeatedly retry a refused submission, or make meaningless "
         "changes to fill the interval. Experimentation is encouraged; local evidence "
         "and evaluator feedback have different coverage.\n\n"
+        f"{native_task_objective()}\n\n"
         "### Scoring\n\n"
         f"Native selection policy: `{selection}`; score direction: `{score_direction}`. "
         "The task's grading and final-selection rules determine your result; feedback "

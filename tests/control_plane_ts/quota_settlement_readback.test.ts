@@ -29,6 +29,10 @@ import {
   readQuotaSettlement,
   readQuotaSettlementSnapshot,
 } from "../../loopx/control_plane/quota/settlement_readback.ts";
+import {
+  PRIOR_HOST_TURN_CLOSEOUT_PREFLIGHT_REQUEST_SCHEMA,
+  preflightPriorHostTurnCloseout,
+} from "../../loopx/control_plane/quota/unsettled_host_turn_recovery.ts";
 import { requireJsonObject } from "../../loopx/control_plane/runtime_decode.ts";
 
 const goalId = "settlement-goal";
@@ -966,6 +970,117 @@ test("names the argument-less guard reentry for a deferred explicit selection", 
     turn_instance_id: turnId,
     deferred_selection_todo_id: todoId,
   });
+});
+
+const priorTurnId = "turn-settlement-0";
+
+/**
+ * An earlier Turn of the same Agent whose guard bound the Todo and required a
+ * host closeout, followed by the current Turn's unbound guard. `settled` adds
+ * the earlier Turn's writeback and spend receipts.
+ */
+async function owedPriorTurnFixture(
+  options: { settled?: boolean; closeoutRequired?: boolean } = {},
+): Promise<string> {
+  const runtimeRoot = await fixture({
+    turnId: priorTurnId,
+    writeback: options.settled,
+    spend: options.settled,
+  });
+  const eventsPath = join(runtimeRoot, "goals", goalId, "rollout-event-log.jsonl");
+  const events = (await readFile(eventsPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  events[0].event_id = "event-guard-prior";
+  events[0].details.closeout_required = options.closeoutRequired ?? true;
+  await writeFile(
+    eventsPath,
+    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+  );
+  await appendHistory(runtimeRoot, await fixture({ guardUnbound: true }));
+  return runtimeRoot;
+}
+
+test("names the earlier Turn that owes its closeout instead of a rebind that only replays", async () => {
+  // While an earlier Turn owes its closeout, the guard preempts selection with
+  // that Turn's recovery for every later Turn, so rebinding the current Turn
+  // only replays the recovery. The refusal has to name the owed Turn.
+  const runtimeRoot = await owedPriorTurnFixture();
+
+  const result = await readQuotaSettlement(request(runtimeRoot));
+
+  const failure = (result.settlement as any).result.failure;
+  assert.equal(failure.kind, "receipt_unbound");
+  assert.match(failure.reason, /carries no settlement binding yet/);
+  assert.match(
+    failure.reason,
+    new RegExp(`earlier Turn owes its closeout \\(turn_instance_id ${priorTurnId}, todo ${todoId}`),
+  );
+  assert.match(failure.reason, /interaction_contract\.cli_channel\.next_cli_actions/);
+  assert.doesNotMatch(
+    failure.reason,
+    new RegExp(`--turn-instance-id ${turnId} --todo-id`),
+  );
+  assert.deepEqual(failure.details, {
+    binding_kind: "unbound",
+    requested_binding_kind: "todo",
+    turn_instance_id: turnId,
+    owed_prior_turn: {
+      prior_turn_instance_id: priorTurnId,
+      event_id: "event-guard-prior",
+      binding_kind: "todo",
+      binding_id: todoId,
+      settlement_effect_id: settlementIdentity({
+        goal_id: goalId,
+        agent_id: agentId,
+        todo_id: todoId,
+        turn_instance_id: priorTurnId,
+      }).effect_id,
+      missing_receipts: ["durable_writeback_receipt", "quota_spend_receipt"],
+    },
+    recovery_actions_ref: "interaction_contract.cli_channel.next_cli_actions",
+  });
+
+  // The guard's own preflight reads the same snapshot and must name the same
+  // Turn and receipts; the refusal never runs a second selection rule.
+  const preflight = await preflightPriorHostTurnCloseout({
+    schema_version: PRIOR_HOST_TURN_CLOSEOUT_PREFLIGHT_REQUEST_SCHEMA,
+    runtime_root: runtimeRoot,
+    goal_id: goalId,
+    agent_id: agentId,
+    exclude_turn_instance_id: turnId,
+  });
+  assert.equal(preflight.status, "candidate");
+  const { missing_receipts: missingReceipts, ...owedCandidate } = failure.details.owed_prior_turn;
+  assert.deepEqual(preflight.candidate, owedCandidate);
+  assert.deepEqual(preflight.missing_receipts, missingReceipts);
+});
+
+test("keeps the same-turn rebind when no earlier Turn owes a closeout", async t => {
+  for (const [name, options] of [
+    ["settled earlier Turn", { settled: true }],
+    ["earlier Turn without a closeout obligation", { closeoutRequired: false }],
+  ] as const) {
+    await t.test(name, async () => {
+      const runtimeRoot = await owedPriorTurnFixture(options);
+
+      const result = await readQuotaSettlement(request(runtimeRoot));
+
+      const failure = (result.settlement as any).result.failure;
+      assert.equal(failure.kind, "receipt_unbound");
+      assert.match(
+        failure.reason,
+        new RegExp(`quota should-run --turn-instance-id ${turnId} --todo-id ${todoId}`),
+      );
+      assert.doesNotMatch(failure.reason, /earlier Turn/);
+      assert.deepEqual(failure.details, {
+        binding_kind: "unbound",
+        requested_binding_kind: "todo",
+        turn_instance_id: turnId,
+      });
+    });
+  }
 });
 
 test("still reports a receipt bound to another work item as a mismatch", async () => {

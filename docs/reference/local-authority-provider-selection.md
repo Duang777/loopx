@@ -206,6 +206,22 @@ already-canonical Goals use the [reviewed File/SQLite cutover](file-authority-st
 Retain verified backups, stop writers, settle leases and preserve newer writes
 on reverse migration. Supported historical backup/format/receipt readers remain.
 
+After reviewed import or promotion, reconnect the registered Goal with ordinary
+bootstrap, without `--force`:
+
+```sh
+loopx --format json --registry REGISTRY bootstrap --project PROJECT \
+  --goal-id GOAL --objective OBJECTIVE --no-global-sync
+```
+
+The reconnect reports `state_action=kept-existing` and `authority_read` from the
+current canonical provider. It preserves later Todos, leases and the original
+import receipt; an old v0 creation preference cannot retarget that provider.
+Missing Markdown display is not recreated. Missing selected authority fails,
+even when the old display still exists. `--force` and redirected state routes
+are rejected; use the owning restore/migration operation instead. Reconnection
+does not create a new creation receipt or execution grant.
+
 This implementation candidate does not close full existing-Goal upgrade, D2
 sustained qualification or authorize release-default activation. Trial admission and release
 default admission remain separate; the existing RFC acceptance is unchanged.
@@ -236,6 +252,13 @@ SQLite/hard-lease 默认，不能用于关闭。两者均不会迁回已有数�
 删除 fence 或重新开放旧 writer。既有 Goal 升级仍需备份、停止写入、结算租约和
 审核计划；反向迁移须保留新增写入。受支持的旧备份、格式和原回执恢复能力保留。
 配置损坏明确失败，不视为未配置；候选实现不代表完整升级、D2 长期资格或发布默认已通过。
+
+审核导入或晋升后，使用上面的普通 bootstrap 命令重连已注册 Goal，不加
+`--force`。结果含 `state_action=kept-existing` 和当前 canonical provider 的
+`authority_read`；保留后续 Todo、租约及原导入回执，旧 v0 创建偏好不能重新选源。
+缺失 Markdown 显示不补建；选定权威丢失时，即使旧显示仍在也明确失败。
+`--force` 和改向其他 state 路径被拒绝，恢复或迁移须走其归属操作。
+重连不生成新的创建回执，也不增加执行授权。
 
 Prose-only source maintenance compares the exact canonical JSON bytes of the
 existing stable partition view. Only the resume evaluation clock is excluded;

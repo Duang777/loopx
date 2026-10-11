@@ -19,7 +19,12 @@ from .control_plane.runtime.promotion_readiness import (
 from .control_plane.runtime.time import chronology_key
 from .install_contract import NO_CLONE_INSTALL_URL
 from .paths import configured_runtime_route, default_runtime_route, global_registry_path
-from .python_install_owner import PythonInstallOwner, python_distribution_upgrade_command, resolve_python_install_owner
+from .python_install_owner import (
+    PythonInstallOwner,
+    interpreter_invocation,
+    python_distribution_upgrade_command,
+    resolve_python_install_owner,
+)
 from .capabilities.project_skill_delivery import discover_project_scoped_skill_ids
 from .registry_writability import probe_registry_write_path
 from .release_manifest import load_release_manifest, release_runtime_identity, release_version_tag
@@ -1201,7 +1206,7 @@ def collect_doctor(
             else (
                 "Run `loopx workflow-skills --install`, then "
                 "`loopx slash-commands --install`, and rerun doctor. Upgrade this "
-                f"installation with `{shlex.quote(sys.executable)} -m pip install --upgrade loopx`."
+                f"installation with `{interpreter_invocation(sys.executable)} -m pip install --upgrade loopx`."
                 if python_distribution.get("available")
                 else (
                     f"Run `{local_install_command(repo_root, skip_skills=externally_managed_skills)}` "

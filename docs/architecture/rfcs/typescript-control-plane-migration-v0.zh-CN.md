@@ -101,8 +101,23 @@ SQLite、租约工作、一次结算及可回退出口，以及冷 File／SQLite
 阻塞；删除活跃 producer 仍须其最后调用方退出。App／Lark 合同、provider 事务、
 cohort 采用及冻结 D2 证据保持独立。
 
+Monitor router 同样隔离活跃旧源 writer；历史回执 codec／replay 共用 scheduler
+只读 IO owner，原操作身份和决策继续归既有 TS batch。File/SQLite CLI 与正常
+wheel 删源检查须保留后来写入及原 successor；晋升后重放保持旧 outbox 静止，
+未晋升的 markerless batch 恢复保留原 drain。本批只移除 canonical 导入依赖，
+不删除受支持的旧 writer；缺席臂复用上述 CLI 启动隔离，同时移除四个 shadow
+producer module。
+见[保留义务及回滚](../../reference/canonical-todo-completion-update.md#monitor-source-writer-isolation)。
+
 存量 Goal 迁移、两策略退役和格式升级仍各有独立回执及出口；原回执恢复不能成为
 保留 legacy 活跃策略的理由，必要迁移 reader 保留。
+
+导入后 canonical bootstrap 重连复用既有 typed authority reader，保留当前
+Todo、租约及原导入回执，避开 Markdown writer。File／SQLite 真实 CLI 覆盖旧
+v0 偏好指向另一 provider、显示缺失、选定权威丢失、force／改向拒绝，以及旧
+producer 不存在时的后续写入重放。Python 保留 bootstrap registry／Host IO，
+不新增决策 owner 或创建回执。本批关闭重连依赖，未关闭未晋升 writer、活跃
+outbox、Host 或发布默认验收。
 
 有界 cohort 在安装恢复和相关执行控制通过后可开始，不代表发布默认值或正式十天
 D2 已通过；冻结的失败／缺项保持可见。T4 随实现删除已证明重复的 owner，不等 R6

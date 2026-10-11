@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import test from "node:test";
 import {mkdtemp, mkdir, rm, readFile, writeFile, readdir} from "node:fs/promises";
+import {syncBuiltinESMExports} from "node:module";
 import {tmpdir} from "node:os";
 import {dirname, join} from "node:path";
 import {execFileSync} from "node:child_process";
@@ -215,6 +217,39 @@ test("an unconfirmed reservation resumes while a confirmed start fails closed", 
     await writeFile(path, JSON.stringify(store));
     assert.equal((await start("turn:1", 1000 + 3 * 3_600_000)).reason, "duplicate_or_stale_trigger");
   } finally {await rm(root, {recursive: true, force: true});}
+});
+
+test("confirmation rejects a reservation replaced before its locked read", async t => {
+  const root = await mkdtemp(join(tmpdir(), "cadence-confirm-race-"));
+  const base = {runtime_root: root, goal_id: "fixture", agent_id: "a", automation_id: null};
+  const path = cadenceStorePath(root, "fixture");
+  t.after(() => rm(root, {recursive: true, force: true}));
+  await manage({...base, operation: "configure", expected_revision: 0, min_interval_minutes: 60,
+    owner_reference: "owner-request", execute: true});
+  assert.equal((await admit({...base, request_id: "turn:a", now_ms: 1000,
+    trigger_at_ms: 1000})).reserved, true);
+  const staleSnapshot = await readFile(path, "utf8");
+  assert.equal((await admit({...base, request_id: "turn:b", now_ms: 1001,
+    trigger_at_ms: 1001, manual_reason: "owner-request"})).reserved, true);
+
+  const realReadFile = fs.readFile;
+  let cadenceReads = 0;
+  const read = t.mock.method(fs, "readFile", async (...args) => {
+    if (String(args[0]) === path && cadenceReads++ === 0) return staleSnapshot;
+    return realReadFile(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    read.mock.restore();
+    syncBuiltinESMExports();
+  });
+
+  const result = await confirm({...base, request_id: "turn:a"});
+  assert.equal(result.confirmed, false);
+  assert.equal(result.reason, "reservation_missing");
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).starts.map(
+    (row: {request_id: string; state: string}) => [row.request_id, row.state]),
+  [["turn:b", "reserved"]]);
 });
 
 test("an M1 policy file upgrades in place without losing its configured floor", async () => {

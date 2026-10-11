@@ -74,7 +74,7 @@ def write_monitor_poll_todo_state(
     legacy_batch_version: int | None = 1,
 ) -> dict[str, Any] | None:
     """Route one typed Monitor transaction to its owning storage adapter."""
-    from .legacy_monitor_poll import apply_legacy_monitor_poll, replay_legacy_monitor_poll
+    from .monitor_batch_receipts import replay_legacy_monitor_poll
     from .provider_monitor_poll import poll_canonical_monitor_if_promoted
 
     lease_proof = ({"idempotency_key": task_lease_idempotency_key,
@@ -104,18 +104,18 @@ def write_monitor_poll_todo_state(
         previous = replay_legacy_monitor_poll(registry_path=registry_path, request=request)
         if previous is not None:
             from ..coordination.local_authority import local_authority_is_promoted
-            from ..coordination.local_authority_shadow_adapter import drain_local_authority_shadow_outbox
-            from ..coordination.local_authority_shadow_outbox import outbox_root
-
             # A crash after the one Markdown install can leave its prepared
             # shadow entry without a commit marker. The existing drain proves
             # that source replacement and recovers it from durable readback.
             # Historical receipts after promotion must not drain stale legacy
             # state into the canonical authority.
-            if (outbox_root(runtime_root, goal_id).exists() and
-                    not local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id)):
-                drain_local_authority_shadow_outbox(
-                    registry_path=registry_path, runtime_root=runtime_root, goal_id=goal_id)
+            if not local_authority_is_promoted(runtime_root=runtime_root, goal_id=goal_id):
+                from ..coordination.local_authority_shadow_adapter import drain_local_authority_shadow_outbox
+                from ..coordination.local_authority_shadow_outbox import outbox_root
+
+                if outbox_root(runtime_root, goal_id).exists():
+                    drain_local_authority_shadow_outbox(
+                        registry_path=registry_path, runtime_root=runtime_root, goal_id=goal_id)
             return previous
     canonical = poll_canonical_monitor_if_promoted(
         registry_path=registry_path, runtime_root=runtime_root, goal_id=goal_id,
@@ -127,5 +127,7 @@ def write_monitor_poll_todo_state(
         return canonical
     if lease_proof is not None:
         raise ValueError("Monitor lease proof requires promoted canonical authority; no legacy write attempted")
+    from .legacy_monitor_poll import apply_legacy_monitor_poll
+
     return apply_legacy_monitor_poll(
         registry_path=registry_path, runtime_root=runtime_root, request=request)

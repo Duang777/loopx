@@ -221,6 +221,15 @@ creates a new submission. Older clients may lack result lookup; unavailable
 commands, missing sessions and missing results remain unresolved feedback,
 and never justify blind resubmission. This does not add restart persistence.
 
+New non-game native trials include brief guidance to keep researching the original
+task objective, treating implementation, passing checks and submission as milestones.
+The same text reaches the startup prompt, workspace `AGENTS.md` and LoopX Goal;
+the complete original task remains the planning input. Trial budgets and deadlines
+stay with the existing runner, without extra agent-facing budget instructions.
+This changes guidance for new native attempts across all five workers, preserving
+grading, cooldown, selection, blind/best-only controls, game prompts and frozen runs.
+Instruction readback does not establish model adoption or outcome gains.
+
 | Mode | Agent-visible evaluator feedback | Evaluation access |
 | --- | --- | --- |
 | native | Exact score, pass rate, counts, summary, metrics and failed names; `--details` exposes per-check messages; `--list` shows active-submission history | Agent may submit within the native cooldown/budget; automatic samples are hidden |

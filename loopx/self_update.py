@@ -17,6 +17,7 @@ from .activation_qualification import (
 )
 from .doctor import collect_doctor
 from .install_contract import NO_CLONE_INSTALL_URL
+from .python_install_owner import interpreter_invocation
 from .runtime_activation import restart_services_for_runtime_activation
 from .self_update_download import run_archive_installer
 
@@ -479,7 +480,7 @@ def _python_distribution_rollback_plan(
             "rollback_command": None,
         }
     command = (
-        f"{shlex.quote(sys.executable)} -m pip install "
+        f"{interpreter_invocation(sys.executable)} -m pip install "
         f"{shlex.quote(f'loopx=={current_version}')}\n"
         "loopx workflow-skills --install\n"
         "loopx slash-commands --install\n"

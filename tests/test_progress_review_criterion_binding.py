@@ -183,4 +183,3 @@ def test_recreated_goal_with_same_task_never_reuses_the_retired_observation(serv
         assert latest["criterion_current"] is False and latest["status"] == "stale"
         assert latest["drift_signal"] == {"noul": None, "choice": None}
     assert path.read_bytes() == historical
-

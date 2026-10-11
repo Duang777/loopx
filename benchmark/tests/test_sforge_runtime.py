@@ -505,6 +505,10 @@ def test_edgebench_receipt_records_resolved_entry_and_enabled_treatment(tmp_path
         assert kwargs["agent"].resume_cmd is None
         assert kwargs["timeout"] == kwargs["config"].agent_timeout == expected
         assert kwargs["eval_interval"] == interval
+        agent = kwargs["agent"]
+        assert "total trial budget" not in agent.workspace_instructions
+        assert agent.task_objective in agent.workspace_instructions
+        assert agent.feedback_prompt.startswith(agent.workspace_instructions)
         raise RuntimeError("synthetic launch failure")
     monkeypatch.setattr(run, "run_agent", stop_before_solver)
     args = ["--task", task, "--tasks-dir", str(tmp_path), "--log-dir", str(tmp_path),

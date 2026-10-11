@@ -37,7 +37,7 @@ def canonical_todos(runtime, receiver, env, cwd):
     return result
 
 
-def workspace(tmp_path, monkeypatch):
+def workspace(tmp_path, monkeypatch, *, storage_target=None):
     isolate_sqlite_runtime(tmp_path, monkeypatch)
     project, runtime = tmp_path / "project", tmp_path / "runtime"
     registry = project / ".loopx/registry.json"
@@ -52,6 +52,8 @@ def workspace(tmp_path, monkeypatch):
     (state.parent / "GOAL.md").write_text("Original human objective, never a new execution grant.\n")
     goal = {"id": "cold", "repo": str(project), "state_file": str(state.relative_to(project)),
         "coordination": {"registered_agents": ["agent-a"]}}
+    if storage_target is not None:
+        goal["coordination"]["storage_target"] = storage_target
     registry.write_text(json.dumps({"schema_version": 1, "common_runtime_root": str(runtime), "goals": [goal]}))
     runtime.mkdir()
     backup = execute_state_backup_plan(build_state_backup_plan(project=project, runtime_root=runtime,
@@ -228,10 +230,13 @@ def test_cold_cli_import_and_source_free_original_recovery(
 
 @pytest.mark.parametrize("provider", ["file", "sqlite"])
 @pytest.mark.parametrize("old_producers_present", [True, False])
+@pytest.mark.parametrize("old_target", [False, True], ids=["no-creation-target", "v0-opposite-target"])
 def test_cold_import_recovery_preserves_later_canonical_writes(
-    tmp_path, monkeypatch, provider, old_producers_present,
+    tmp_path, monkeypatch, provider, old_producers_present, old_target,
 ):
-    cli, state, backup, body, runtime, receiver, env = workspace(tmp_path, monkeypatch)
+    target = ({"schema_version": "loopx_new_goal_storage_target_v0",
+        "provider": "sqlite" if provider == "file" else "file"} if old_target else None)
+    cli, state, backup, body, runtime, receiver, env = workspace(tmp_path, monkeypatch, storage_target=target)
     if not old_producers_present:
         for path in ("control_plane/todos/legacy_mutation.py", "control_plane/todos/line_update.py",
                      "control_plane/coordination/runtime_shadow.py",
@@ -293,7 +298,34 @@ def test_cold_import_recovery_preserves_later_canonical_writes(
     assert len(complete_after["leases"]) == 1
     assert complete_after["leases"][0]["todo_id"] == "todo_current"
     assert complete_after["leases"][0]["owner"] == "agent-a"
+    reconnect = ["bootstrap", "--project", str(tmp_path / "project"), "--goal-id", "cold",
+        "--objective", "Reconnect without replacing imported work", "--no-global-sync"]
+    source_bytes = state.read_bytes()
+    connected = run(*reconnect)
+    assert connected["state_action"] == "kept-existing"
+    assert connected["storage_selection"] is None
+    assert connected["authority_read"]["provider_revision"] == complete_after["provider_revision"]
+    assert connected["authority_read"]["source_authority"] == f"{provider}_v0"
+    assert connected["authority_read"]["legacy_fallback_used"] is False
+    assert state.read_bytes() == source_bytes
+    assert canonical_todos(runtime, receiver, env, tmp_path) == complete_after
+    registered = registry.read_bytes()
+    registered_goal = json.loads(registered)["goals"][0]
+    assert registered_goal["coordination"].get("storage_target") == target
+    assert "creation_operation_id" not in registered_goal
+    preview = run(*reconnect, "--dry-run")
+    assert preview["authority_read"] == connected["authority_read"]
+    assert registry.read_bytes() == registered and state.read_bytes() == source_bytes
+    for extra in (["--force"], ["--force", "--preserve-todos"],
+                  ["--state-file", str(tmp_path / "other-state.md")]):
+        refused = run(*reconnect, *extra, succeeds=False)
+        assert refused["ok"] is False
+        assert registry.read_bytes() == registered and state.read_bytes() == source_bytes
+        assert not (tmp_path / "other-state.md").exists()
+        assert canonical_todos(runtime, receiver, env, tmp_path) == complete_after
     state.unlink()
+    assert run(*reconnect)["authority_read"] == connected["authority_read"]
+    assert not state.exists()
     recovered = cli("recover-import", "--plan-sha256", digest, "--execute")["cold_import"]
     # This is the original import receipt, not the current provider revision.
     assert recovered["status"] == "replayed" and recovered["cursor"] == imported["cursor"]
@@ -313,6 +345,16 @@ def test_cold_import_recovery_preserves_later_canonical_writes(
     offline = backend.with_name(backend.name + "-offline")
     backend.rename(offline)
     try:
+        refused = run(*reconnect, succeeds=False)
+        assert refused["ok"] is False
+        assert registry.read_bytes() == registered
+        assert not backend.exists() and not state.exists()
+        state.write_bytes(source_bytes)
+        refused = run(*reconnect, "--dry-run", succeeds=False)
+        assert refused["ok"] is False
+        assert state.read_bytes() == source_bytes and registry.read_bytes() == registered
+        assert not backend.exists()
+        state.unlink()
         refused = cli("recover-import", "--plan-sha256", digest, "--execute", success=False)["cold_import"]
         assert refused["ok"] is False and refused["status"] == "failed"
         assert refused["executed"] is False and refused["legacy_fallback_used"] is False

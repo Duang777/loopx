@@ -27,6 +27,7 @@ from benchmark.runtime.sforge_backend import RecordingDockerBackend
 from benchmark.runtime.source import source_pins
 from benchmark.edgebench.prompts import (
     blind_task_prompt, best_only_task_prompt, native_task_prompt, native_task_instructions,
+    native_task_objective,
 )
 from benchmark.edgebench.online_sampling import OnlineSampler
 from benchmark.edgebench.feedback import BestOnlyFeedback, FEEDBACK_MODES, validate_best_only
@@ -149,6 +150,7 @@ def main(argv=None):
     blind_endpoint = None
     feedback_prompt = None
     workspace_instructions = None
+    task_objective = None
     if args.feedback != "native":
         proxy = urlsplit(args.api_proxy_url or "")
         judge = urlsplit(args.judge_url)
@@ -169,6 +171,7 @@ def main(argv=None):
             selection=task.judge.selection, score_direction=task.judge.score_direction)
         feedback_prompt = native_task_prompt(task.work.agent_query, task.submit_paths, **native_policy)
         workspace_instructions = native_task_instructions(task.submit_paths, **native_policy)
+        task_objective = native_task_objective()
     config = SForgeConfig(
         agent_model=args.model, agent_effort=args.effort,
         agent_timeout=args.timeout, log_dir=args.log_dir, tasks_dir=args.tasks_dir,
@@ -182,6 +185,7 @@ def main(argv=None):
     agent = SForgeWorker(config, profile=args.worker, cwd=task.cwd,
                          timeout_seconds=args.timeout, feedback_prompt=feedback_prompt, feedback=args.feedback,
                          workspace_instructions=workspace_instructions,
+                         task_objective=task_objective,
                          task_entry=args.task_entry,
                          turn_envelope=args.turn_envelope,
                          replan_after_turns=args.replan_after_turns,

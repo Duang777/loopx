@@ -23,7 +23,7 @@ DIRECT_LOADER_ALLOWLIST = {
     "loopx/control_plane/goals/first_party_host_admission.py",
     "loopx/control_plane/goals/source_session_recreation.py",
     "loopx/control_plane/goals/source_session_turn_effects.py",
-    "loopx/control_plane/coordination/runtime_shadow.py",
+    "loopx/control_plane/coordination/authority_source_capture.py",
     "loopx/control_plane/coordination/shadow_goal_scope.py",
     "loopx/control_plane/projects/registry.py",
     "loopx/control_plane/turn_driver/codex_sessions.py",
@@ -59,7 +59,7 @@ def test_direct_project_registry_loaders_have_source_session_denial() -> None:
         "loopx/control_plane/goals/first_party_host_admission.py",
         "loopx/control_plane/goals/source_session_recreation.py",
         "loopx/control_plane/goals/source_session_turn_effects.py",
-        "loopx/control_plane/coordination/runtime_shadow.py",
+        "loopx/control_plane/coordination/authority_source_capture.py",
         "loopx/control_plane/coordination/shadow_goal_scope.py",
         "loopx/control_plane/projects/registry.py",
     }

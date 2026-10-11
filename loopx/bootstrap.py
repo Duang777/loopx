@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from uuid import uuid4
 from pathlib import Path
 
@@ -10,7 +11,8 @@ from .control_plane.projects.identity import (
     default_goal_id as default_goal_id,
     derive_goal_display_name as derive_goal_display_name,
 )
-from .registry import find_registry_goal
+from .registry import find_registry_goal, resolve_state_file
+from .control_plane.coordination.local_authority import read_canonical_todos_if_promoted
 from .control_plane.coordination.legacy_writer_fence import legacy_todo_write_transaction, require_legacy_state_replacement_allowed
 from .control_plane.coordination.legacy_writer_fence import require_registry_source_write_allowed
 from .control_plane.projects.registry_codec import (
@@ -384,14 +386,27 @@ def bootstrap_project(
     if storage_target is not None:
         goal_entry.setdefault("coordination", {})["storage_target"] = storage_target
     canonical_creation = (storage_target or {}).get("schema_version") == "loopx_new_goal_storage_target_v1"
+    # Imported/promoted Goals have no canonical *creation* receipt. Resolve
+    # their current authority through the existing typed reader, never by
+    # manufacturing a creation target or reviving their old Markdown source.
+    existing_authority = (read_canonical_todos_if_promoted(runtime_root=runtime_root, goal_id=goal_id)
+        if previous_goal is not None and not canonical_creation else None)
+    canonical_existing = existing_authority is not None
     if canonical_creation and previous_goal is not None and force:
         raise ValueError("Canonical creation cannot rebuild existing state; restore or migrate through its owning operation")
+    if canonical_existing and force:
+        raise ValueError("Canonical authority cannot rebuild existing state; restore or migrate through its owning operation")
+    if canonical_existing:
+        registered_state = resolve_state_file(Path(previous_goal["repo"]), previous_goal["state_file"])
+        if (registered_state is None or registered_state.resolve(strict=False) != state_file.resolve(strict=False)
+            or Path(previous_goal["repo"]).expanduser().resolve() != project):
+            raise ValueError("Canonical reconnect must use its registered project and state route")
     if canonical_creation:
         goal_entry["creation_operation_id"] = creation_operation_id or (previous_goal or {}).get("creation_operation_id") or f"goal-create:{uuid4().hex}"
     registry, registry_goal_action = merge_goal(registry, goal_entry, force=force)
 
     state_exists = state_file.exists()
-    state_action = "kept-existing" if canonical_creation and previous_goal is not None else "created"
+    state_action = "kept-existing" if canonical_existing or (canonical_creation and previous_goal is not None) else "created"
     if state_exists and force and preserve_todos:
         state_action = "kept-existing-preserve-todos"
     elif state_exists and not force:
@@ -401,7 +416,7 @@ def bootstrap_project(
 
     repaired_state_text: str | None = None
     repaired_todo_source_roles: list[str] = []
-    if not canonical_creation and state_exists and state_action in {
+    if not canonical_creation and not canonical_existing and state_exists and state_action in {
         "kept-existing",
         "kept-existing-preserve-todos",
     }:
@@ -523,18 +538,20 @@ def bootstrap_project(
         if canonical_creation and previous_goal is not None:
             storage_selection = initialize_goal_storage_target(runtime_root,
                 {**previous_goal, "state_file": str(state_file)}, registry_path=registry_path)
-        canonical_reconnect = storage_selection is not None and storage_selection.get("authority_initialized") is True
+        canonical_reconnect = canonical_existing or (storage_selection is not None and storage_selection.get("authority_initialized") is True)
         canonical_bootstrap_transport = canonical_creation
         with project_registry_transaction(
             registry_path,
             operation="bootstrap_registry",
             create=dict,
-        ) as registry_transaction, legacy_todo_write_transaction(
+        ) as registry_transaction, (nullcontext() if canonical_existing else legacy_todo_write_transaction(
             registry_path, goal_id, state_file, None, "bootstrap_state", canonical_creation,
             runtime_root=runtime_root,
-        ):
+        )):
             current_registry = registry_transaction.payload_copy()
             current_goal = find_registry_goal(current_registry, goal_id)
+            if canonical_existing and current_goal != previous_goal:
+                raise ValueError("Canonical Goal registration changed; retry bootstrap")
             if creation_operation_id is not None and current_goal is not None:
                 # The App is creating a new Goal, not reconnecting one. Recheck
                 # under the publication lock before state/provider side effects.
@@ -583,7 +600,7 @@ def bootstrap_project(
                     execution_profile=execution_profile,
                     handoff_mode=declared_handoff_mode,
                 )
-            elif not canonical_creation:
+            elif not canonical_creation and not canonical_reconnect:
                 planned, repaired_todo_source_roles = repair_missing_todo_source_sections(original)
             if planned != original:
                 if canonical_bootstrap_transport:
@@ -613,7 +630,8 @@ def bootstrap_project(
         # Registry intent survives an interrupted initialization. Reconnect retries
         # it outside the legacy/registry locks; changing machine defaults cannot
         # retarget that Goal. The TS owner refuses replacing an existing provider.
-        storage_selection = initialize_goal_storage_target(runtime_root, find_registry_goal(registry, goal_id) or {}, registry_path=registry_path)
+        if not canonical_existing:
+            storage_selection = initialize_goal_storage_target(runtime_root, find_registry_goal(registry, goal_id) or {}, registry_path=registry_path)
         if shadow_capture is not None:
             from .control_plane.coordination.runtime_shadow_writer_adapter import settle_todo_runtime_shadow_capture
 
@@ -630,6 +648,9 @@ def bootstrap_project(
 
     return {
         **shadow_evidence,
+        **({"authority_read": {key: existing_authority[key] for key in (
+            "provider_revision", "cursor", "source_authority", "decision_read_from_provider", "legacy_fallback_used",
+        )}} if existing_authority is not None else {}),
         "storage_selection": storage_selection,
         "storage_target": (find_registry_goal(registry, goal_id) or {}).get("coordination", {}).get("storage_target"),
         "ok": True,
