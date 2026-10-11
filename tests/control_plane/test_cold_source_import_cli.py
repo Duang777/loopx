@@ -79,6 +79,84 @@ def workspace(tmp_path, monkeypatch, *, storage_target=None):
     return cli, state, backup, body, runtime, receiver, env
 
 
+@pytest.mark.parametrize("old_producers_present", [True, False])
+@pytest.mark.parametrize("configuration", ["absent", "disabled", "retired"])
+def test_unpromoted_default_off_lease_lifecycle_without_shadow_producers(
+    tmp_path, monkeypatch, old_producers_present, configuration,
+):
+    _, state, _, _, runtime, receiver, env = workspace(tmp_path, monkeypatch)
+    registry = tmp_path / "project/.loopx/registry.json"
+    data = json.loads(registry.read_text())
+    coordination = data["goals"][0]["coordination"]
+    coordination["registered_agents"] = ["agent-a", "agent-b"]
+    if configuration == "disabled":
+        coordination["runtime_shadow"] = {
+            "schema_version": "loopx_coordination_runtime_shadow_config_v0",
+            "enabled": False, "provider": "file_v0",
+        }
+    elif configuration == "retired":
+        coordination["authority_shadow"] = {
+            "schema_version": "loopx_local_authority_shadow_config_v0",
+            "mode": "file_one_way",
+        }
+    registry.write_text(json.dumps(data))
+    state.write_text(state.read_text().replace("handoff_mode: legacy", "handoff_mode: hard_lease")
+                     .replace(" claimed_by=agent-a", ""))
+    original_state, original_registry = state.read_bytes(), registry.read_bytes()
+    if not old_producers_present:
+        for name in ("runtime_shadow.py", "runtime_shadow_writer_adapter.py",
+                     "local_authority_shadow_adapter.py", "local_authority_shadow_outbox.py"):
+            (receiver / "loopx/control_plane/coordination" / name).unlink()
+
+    def lease(action, *args, owner="agent-a", key="original", success=True):
+        child = subprocess.run([sys.executable, "-c",
+            "import loopx,runpy,sys; print(loopx.__file__,file=sys.stderr); runpy.run_module('loopx.cli',run_name='__main__')",
+            "--registry", str(registry), "--runtime-root", str(runtime), "--format", "json",
+            "task-lease", action, "--goal-id", "cold", "--todo-id", "todo_current",
+            "--owner", owner, "--idempotency-key", key, *map(str, args)],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+        assert str(receiver / "loopx/__init__.py") in child.stderr
+        assert "Traceback" not in child.stderr, child.stderr
+        assert (child.returncode == 0) is success, child.stdout + child.stderr
+        result = json.loads(child.stdout)
+        assert "coordination_runtime_shadow_capture" not in result
+        assert "coordination_runtime_shadow" not in result
+        assert state.read_bytes() == original_state
+        assert registry.read_bytes() == original_registry
+        assert not (runtime / "authority-shadow").exists()
+        assert not any(path.is_file() for path in (runtime / "authority-transition").rglob("*"))
+        return result
+
+    acquired = lease("acquire", "--ttl-seconds", 120, "--write-scope", "docs/**")
+    assert acquired["acquired"] is True
+    version = acquired["lease"]["version"]
+    path = Path(acquired["lease_path"])
+    original_lease = path.read_bytes()
+    replay = lease("acquire", "--ttl-seconds", 120, "--write-scope", "docs/**")
+    assert replay["idempotent"] is True and replay["lease"] == acquired["lease"]
+    assert path.read_bytes() == original_lease
+    rejected = lease("renew", "--expected-version", version + 1, "--ttl-seconds", 180, success=False)
+    assert rejected["error_code"] == "version_mismatch"
+    assert path.read_bytes() == original_lease
+    renewed = lease("renew", "--expected-version", version, "--ttl-seconds", 180)
+    assert renewed["lease"]["version"] == version + 1
+    assert renewed["lease"]["lease_epoch"] == acquired["lease"]["lease_epoch"]
+    transferred = lease("transfer", "--expected-version", version + 1,
+                        "--new-owner", "agent-b", "--new-idempotency-key", "receiver",
+                        "--ttl-seconds", 180)
+    assert transferred["lease"]["owner"] == "agent-b"
+    assert transferred["lease"]["version"] == version + 2
+    assert transferred["lease"]["lease_epoch"] == acquired["lease"]["lease_epoch"] + 1
+    released = lease("release", "--expected-version", version + 2, owner="agent-b", key="receiver")
+    assert released["released"] is True and released["lease"]["status"] == "released"
+    assert released["lease"]["write_scopes"] == ["docs/**"]
+    assert released["lease"]["lease_epoch"] == transferred["lease"]["lease_epoch"]
+    retained = path.read_bytes()
+    assert lease("release", "--expected-version", version + 2,
+                 owner="agent-b", key="receiver")["idempotent"] is True
+    assert path.read_bytes() == retained
+
+
 def test_coordination_command_help_and_rejections_match_full_cli(tmp_path):
     # Independently compare the existing compatibility parser/handler with the
     # selected dispatcher, including diagnostics that deliberately fall back.

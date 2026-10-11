@@ -356,3 +356,69 @@ test("vision ACK compares strict calendar timestamps at microsecond precision", 
       acceptance_gaps: [gap("2026-02-28T00:00:00Z")]}).acknowledged, false);
   }
 });
+
+
+test("canonical no-follow-up restores only its exact admitted review and still owes Vision", () => {
+  const id = "replan-1111111111111111", agent = "synthetic-agent";
+  const row = {todo_id: "todo_original", text: "Verify independent source", status: "done", done: true,
+    task_class: "advancement_task", claimed_by: agent, last_actor_agent_id: agent,
+    completed_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:01Z",
+    completion_turn_key: "original-completion", no_followup: true, completion_continuation: "no_followup",
+    completion_recovery: "lifecycle_reentry_terminal_closeout"};
+  const original = {required: true, obligation_id: id, resolution_mode: "todo_lifecycle_settlement",
+    triggers: [{kind: "completed_advancement_without_successor", todo_id: row.todo_id,
+      completion_turn_key: row.completion_turn_key, agent_id: agent}]};
+  const candidate = {obligation: original, source_obligation: original, lifecycle_settled: true,
+    guard_recorded_at: "2026-08-01T00:00:01.123456Z", items: [row]};
+  const request = {operation: "receipt_bound_obligation", guard_scoped: true, replay_phase: "open",
+    selected_obligation_id: id, agent_id: agent, current_obligation: null, transition_candidates: [candidate]};
+  const result = projectReplanSemantics(request).obligation as JsonObject;
+  assert.equal(result.obligation_id, id);
+  assert.equal(result.resolution_mode, "receipt_bound_replan_settlement");
+  assert.deepEqual(result.todo_actions, []);
+  const packet = result.settlement_action_packet as JsonObject;
+  assert.equal(packet.settlement_only, true);
+  assert.equal(packet.semantic_delta, null);
+  assert.equal(projectReplanSemantics({operation: "qualify", obligation: result}).accepted, false);
+  assert.equal(projectReplanSemantics({operation: "qualify", obligation: result, agent_vision: vision}).accepted, true);
+  const historical = {...row, todo_id: "todo_historical", completion_turn_key: "historical-completion",
+    completed_at: "2026-07-31T23:59:00Z", updated_at: "2026-07-31T23:59:01Z"};
+  for (const items of [[historical, row], [row, historical]]) {
+    assert.equal((projectReplanSemantics({...request,
+      transition_candidates: [{...candidate, items}]}).obligation as JsonObject).obligation_id, id);
+  }
+  // A whole-second timestamp cannot prove which side of admission this row
+  // closed on. The exact trigger/digest check still rejects the ambiguous source.
+  assert.throws(() => projectReplanSemantics({...request, transition_candidates: [{...candidate,
+    items: [row, {...historical, updated_at: row.updated_at}]}]}), /identity conflicts/);
+  for (const change of [{status: "open"}, {done: false}, {claimed_by: "peer"}, {last_actor_agent_id: "peer"},
+    {no_followup: false}, {completion_continuation: "active_goal"}, {completion_recovery: null},
+    {completion_turn_key: "changed"}, {completed_at: "2026-08-01T00:00:02Z"},
+    {successor_todo_ids: ["todo_new"]}, {archive_state: "archived"},
+    {updated_at: "2026-08-01T00:00:00Z"}, {updated_at: "2026-02-30T00:00:02Z"}, {updated_at: null}]) {
+    assert.throws(() => projectReplanSemantics({...request,
+      transition_candidates: [{...candidate, items: [{...row, ...change}]}]}), /identity conflicts/);
+  }
+  assert.throws(() => projectReplanSemantics({...request, guard_scoped: false}), /identity conflicts/);
+  assert.throws(() => projectReplanSemantics({...request,
+    selected_obligation_id: "replan-2222222222222222"}), /identity conflicts/);
+});
+
+test("lifecycle reconstruction restores completion order before its trigger bound", () => {
+  const agent = "synthetic-agent";
+  const rows = [1, 2, 3, 4].map(index => ({todo_id: `todo_${index}`, index,
+    status: "done", done: true, task_class: "advancement_task", claimed_by: agent,
+    last_actor_agent_id: agent, completed_at: `2026-08-01T00:00:0${index}Z`,
+    updated_at: "2026-08-01T00:00:10Z", completion_turn_key: `completion-${index}`,
+    no_followup: true, completion_continuation: "no_followup",
+    completion_recovery: "lifecycle_reentry_terminal_closeout"}));
+  const facts = projectReplanSemantics({operation: "lifecycle_source", agent_id: agent,
+    guard_recorded_at: "2026-08-01T00:00:05Z", items: rows});
+  assert.deepEqual((facts.items as JsonObject[]).map(item => item.todo_id),
+    ["todo_4", "todo_3", "todo_2", "todo_1"]);
+  assert.equal(facts.settled, true);
+  const ties = rows.map(item => ({...item, completed_at: "2026-08-01T00:00:01Z"}));
+  assert.deepEqual((projectReplanSemantics({operation: "lifecycle_source", agent_id: agent,
+    guard_recorded_at: "2026-08-01T00:00:05Z", items: ties}).items as JsonObject[])
+    .map(item => item.todo_id), ["todo_4", "todo_3", "todo_2", "todo_1"]);
+});

@@ -87,11 +87,13 @@ export function registerTerminalReentryConformance(provider: string, factory: Au
       if (before.status === "loaded" && after.status === "loaded") {
         const prior = (before.head.todos as JsonObject[])[0];
         assert.deepEqual((after.head.todos as JsonObject[])[0], {...prior, no_followup: true,
-          completion_continuation: "no_followup", completion_recovery: "lifecycle_reentry_terminal_closeout"});
+          completion_continuation: "no_followup", completion_recovery: "lifecycle_reentry_terminal_closeout",
+          updated_at: "2026-09-07T07:00:00Z"});
         assert.deepEqual(after.head.leases, before.head.leases);
       }
       assert.deepEqual(await store.readReceipt("migrated"), originalReceipt);
-      assert.equal((await execute(contender, request, async () => {throw new Error("Historical replay needs no fresh authority");})).status,
+      assert.equal((await execute(contender, {...request, now: new Date("2026-09-08T07:00:00Z")},
+        async () => {throw new Error("Historical replay needs no fresh authority");})).status,
         "replayed");
       assert.equal((await execute(store, {...request, actor_agent_id: "agent-b"})).reason_code,
         "coordination_operation_identity_mismatch");

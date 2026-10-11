@@ -570,3 +570,29 @@ L3/R5 的独立领取/接管及维护由此可用，跨外部 effect 的 executo
 锁和自动结果返回仍需各自验收。D2 soak、D3、默认 profile、活动 Goal 迁移和跨主机
 部署没有改变。回滚保留 canonical state/receipt/fence 并恢复兼容代码，不得复活旧
 lease 文件。演练仅修改隔离副本，核对源与无关记录不变，不能代替完整持久性资格。
+
+## Unpromoted lease capture isolation / 未迁移租约的 capture 隔离
+
+For an unpromoted Goal with no enabled runtime shadow and no active durable
+binding, lease acquire, replay, renew, transfer and release do not require the
+legacy shadow producer modules. Python loads capture settlement only when the
+existing typed lease result carries a capture request. The normal CLI keeps
+the original source and registry unchanged, creates no shadow outbox, and
+preserves lease versions, generations, scopes and idempotent receipts. A stale
+renewal still fails without changing the stored lease.
+
+Removing a setting does not retire an active binding: enabled capture and
+active-binding recovery retain durable preparation and delivery. This removes
+an unused default-off dependency; it does not change provider defaults,
+promote a Goal, retire supported Markdown writers, or authorize deleting
+capture history and pending outbox records.
+
+未迁移 Goal 没有启用 runtime shadow、也没有活跃持久 binding 时，领取、重放、
+续约、转交和释放不依赖旧 shadow producer 模块。Python 仅在既有 typed 租约结果
+带有 capture 请求时加载结算适配器。正常 CLI 保持源和 registry 不变，不产生
+shadow outbox，并保留租约版本、generation、scope 及幂等回执；陈旧续约仍须拒绝，
+且不修改已存租约。
+
+移除配置不会退役活跃 binding：启用 capture 及已有 binding 的恢复仍须持久准备
+并送达。本项只移除默认关闭时无用途的依赖，不改变 provider 默认值、不迁移 Goal、
+不删除受支持的 Markdown writer，也不授予删除 capture 历史和待处理 outbox 的权限。

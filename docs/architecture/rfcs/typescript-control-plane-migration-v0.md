@@ -77,6 +77,13 @@ is disabled. This removes optional capture work from ordinary legacy writes,
 without changing their output, history retention or outbox recovery. Python
 retains this Host IO adapter until its last supported source writer is replaced;
 this is neither whole-writer retirement nor default-provider qualification.
+Unpromoted lease acquire now loads the capture adapter only when the typed
+result carries a capture request. The real CLI and normal-wheel oracle cover
+acquire/replay, rejected stale renewal, renewal, transfer and release with the
+four legacy shadow producer modules physically absent and with no enabled
+capture or active binding. An active binding still delivers capture after the
+setting is removed. This retires a default-off dependency, not the supported
+source writer or pending capture/history recovery.
 
 Handoff/continuation display decisions now belong to the existing TypeScript Todo
 context owner. Summary reuses its normalized identity/claim/exclusion/class
@@ -135,6 +142,20 @@ recovery retains its existing drain. This removes a canonical import dependency,
 not the supported legacy writer. The absent arm also removes all four shadow
 producer modules using the qualified CLI startup isolation above.
 [Retained duties and rollback](../../reference/canonical-todo-completion-update.md#monitor-source-writer-isolation).
+
+Shadow diagnostics now have an independent read-only boundary: retained outbox
+disk codecs live in `local_authority_shadow_history.py`, and status/candidate
+read transport in `local_authority_shadow_readback.py`. The public status CLI
+does not load source producers; drain still uses its existing orchestration.
+Original entry identity, malformed evidence, cursor residue and missing-store
+behavior remain unchanged. Python retains historical filesystem decoding and
+presentation IO; TS retains history proof, delivery and cleanup authority.
+Existing producer imports are aliases for supported callers, not duplicate
+implementations. Source and normal-wheel File/SQLite recipient checks compare
+complete status results and unchanged original bytes with producers present or
+absent. This is a historical-reader exit prerequisite, not writer deletion,
+outbox disposition, installed cohort adoption or release-default qualification.
+See [operator readback and rollback](../../reference/authority-observation-retirement.md#retained-readback-without-source-producers).
 
 Existing Goal migration, two-policy ownership retirement and storage-format
 upgrade retain separate receipts and exits. Original-receipt recovery does not

@@ -1499,6 +1499,7 @@ def build_goal_frontier_projection_context_from_status(
     goal_status: str | None = None,
     agent_profile: dict[str, Any] | None = None,
     receipt_bound_replan_obligation_id: str | None = None,
+    receipt_bound_guard_recorded_at: str | None = None,
 ) -> dict[str, Any]:
     """Build the quota-facing goal-frontier read model.
 
@@ -1718,6 +1719,21 @@ def build_goal_frontier_projection_context_from_status(
             )
             frontier_transition_candidate = {"obligation": source, "ack": source_ack}
 
+    lifecycle_candidate = None
+    if receipt_bound_replan_obligation_id and receipt_bound_guard_recorded_at:
+        from ...work_items.lifecycle_recovery import receipt_bound_lifecycle_candidate
+        lifecycle_candidate = receipt_bound_lifecycle_candidate(
+            selected_obligation_id=receipt_bound_replan_obligation_id,
+            guard_recorded_at=receipt_bound_guard_recorded_at, agent_id=agent_id,
+            items=agent_todo_source_items or [],
+            derive=lambda summary: derive_goal_frontier_replan_obligation_from_summaries(
+                user_todo_summary=user_todo_summary, agent_todo_summary=summary,
+                work_lane_contract=work_lane_contract, agent_id=agent_id,
+                existing_replan_obligation=None, agent_todo_source_items=agent_todo_source_items,
+                _frontier_counts=frontier_counts,
+            ),
+        )
+
     if (
         frontier_replan_obligation
         and autonomous_replan_ack_satisfies_obligation(
@@ -1795,7 +1811,7 @@ def build_goal_frontier_projection_context_from_status(
         "projected_replan_ack": projected_replan_ack,
         "replan_transition_ack": replan_transition_ack,
         "run_replan_transition_ack": run_replan_transition_ack,
-        "replan_transition_candidates": [run_transition_candidate, frontier_transition_candidate],
+        "replan_transition_candidates": [run_transition_candidate, frontier_transition_candidate, *([lifecycle_candidate] if lifecycle_candidate else [])],
     }
 
 

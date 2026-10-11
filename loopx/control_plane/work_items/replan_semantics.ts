@@ -94,6 +94,70 @@ function projectTurnTransition(request: JsonObject): JsonObject {
   return {semantic_delta: delta};
 }
 
+/** Reconstruct only the exact lifecycle source which could be open at admission.
+ * Canonical no-follow-up reentry preserves the original completion identity.
+ * The selected obligation digest additionally binds Todo and completion identities.
+ */
+function lifecycleSource(request: JsonObject): JsonObject {
+  const agent = optionalNonEmptyString(request.agent_id, "agent_id");
+  const admitted = typeof request.guard_recorded_at === "string"
+    ? parseTodoTimestampMicros(request.guard_recorded_at) : null;
+  if (!agent || admitted === null || !Array.isArray(request.items)) return {items: [], settled: false};
+  // Canonical Todo updates use whole seconds. A closeout in the admission
+  // second is possible; the exact obligation digest must still prove identity.
+  // Older terminal rows were already absent from the admitted frontier.
+  const admissionSecond = admitted / 1_000_000n * 1_000_000n;
+  const items = request.items.map(object).filter(item => {
+    const completed = typeof item.completed_at === "string" ? parseTodoTimestampMicros(item.completed_at) : null;
+    const updated = typeof item.updated_at === "string" ? parseTodoTimestampMicros(item.updated_at) : null;
+    return item.status === "done" && item.done === true &&
+      (item.archive_state ?? "active") === "active" && item.task_class === "advancement_task" &&
+      item.claimed_by === agent && item.last_actor_agent_id === agent &&
+      completed !== null && completed <= admitted &&
+      strings(item.successor_todo_ids).length === 0 && !item.superseded_by &&
+      (item.no_followup !== true || (item.completion_recovery === "lifecycle_reentry_terminal_closeout" &&
+        updated !== null && updated >= admissionSecond));
+  }).sort((left, right) => {
+    // Terminal reentry changes updated_at, never the original completed_at.
+    // Restore the original summary's ordering before its three-trigger bound.
+    const a = parseTodoTimestampMicros(String(left.completed_at))!;
+    const b = parseTodoTimestampMicros(String(right.completed_at))!;
+    return a === b ? Number(right.index ?? 0) - Number(left.index ?? 0) : a > b ? -1 : 1;
+  });
+  const settled = items.length > 0 && items.slice(0, 3).every(item =>
+    item.no_followup === true && item.completion_continuation === "no_followup" &&
+    typeof item.todo_id === "string" && !!item.todo_id &&
+    typeof item.completion_turn_key === "string" && !!item.completion_turn_key &&
+    item.completion_recovery === "lifecycle_reentry_terminal_closeout");
+  return {items, settled};
+}
+
+function lifecycleObligation(request: JsonObject): JsonObject | null {
+  const obligation = object(request.obligation);
+  if (obligation.obligation_id !== request.selected_obligation_id ||
+      obligation.resolution_mode !== "todo_lifecycle_settlement") return null;
+  const source = lifecycleSource(request);
+  const items = source.items as JsonObject[];
+  const triggers = Array.isArray(obligation.triggers) ? obligation.triggers.map(object) : [];
+  if (source.settled !== true || triggers.length !== Math.min(3, items.length) ||
+      triggers.some((trigger, index) => trigger.kind !== "completed_advancement_without_successor" ||
+        trigger.agent_id !== request.agent_id || trigger.todo_id !== items[index].todo_id ||
+        trigger.completion_turn_key !== items[index].completion_turn_key)) return null;
+  const reason = "The exact completed Todo lifecycle is settled. Reassess the original acceptance with evidence, then write back and settle this Turn once; do not repeat the original work.";
+  return {...obligation, required: true, selection_binding: "heartbeat_receipt",
+    resolution_mode: "receipt_bound_replan_settlement", satisfying_semantic_outcomes: [...VISION_OUTCOMES],
+    recommended_action: reason, todo_actions: [], guidance_actions: [reason],
+    settlement_action_packet: {
+      schema_version: "replan_action_packet_v0", obligation_id: obligation.obligation_id,
+      decision: "vision_outcome_checkpoint_required", settlement_only: true,
+      required_outcome: "durable_writeback_receipt", semantic_delta: null,
+      writeback_contract: {preferred_input: "evidence_linked_vision_path",
+        cli_semantic_args: VISION_CLI_ARGS, vision_authoring: visionAuthoringContract(),
+        required_fields: ["vision_patch.acceptance_summary", "path_delta.outcome", "path_delta.evidence_refs"],
+        path_outcomes: [...FRESH_PATH_DISPOSITIONS], rule: reason},
+    }};
+}
+
 /** A changed frontier cannot rebind work already admitted by a Turn receipt.
  * Current canonical transition candidates must carry their original source
  * obligation. After validated writeback the settlement owner's replay phase,
@@ -114,6 +178,11 @@ function preserveReceiptBoundObligation(request: JsonObject): JsonObject {
   for (const value of request.transition_candidates) {
     const candidate = object(value);
     const obligation = object(candidate.obligation);
+    if (request.guard_scoped && candidate.lifecycle_settled === true) {
+      const recovered = lifecycleObligation({...candidate, obligation: candidate.source_obligation,
+        selected_obligation_id: selected, agent_id: request.agent_id});
+      if (recovered) return {obligation: recovered};
+    }
     if (obligation.obligation_id !== selected || !requiredSemanticOutcomes(obligation).includes("new_runnable_successor")) continue;
     const result = projectTurnTransition({guard_scoped: request.guard_scoped,
       selected_obligation_id: selected, transition_acks: [candidate.ack]});
@@ -242,6 +311,12 @@ function acknowledgeVisionEvidence(request: JsonObject): JsonObject {
 
 export function projectReplanSemantics(value: unknown): JsonObject {
   const request = requireJsonObject(value, "work_item.replan_semantics params");
+  if (request.operation === "lifecycle_source") return lifecycleSource(request);
+  if (request.operation === "lifecycle_obligation") {
+    const obligation = lifecycleObligation(request);
+    if (!obligation) throw new EffectRuntimeRequestError("lifecycle source does not match the admitted obligation");
+    return {obligation};
+  }
   if (request.operation === "vision_ack") return acknowledgeVisionEvidence(request);
   if (request.operation === "turn_transition") return projectTurnTransition(request);
   if (request.operation === "receipt_bound_obligation") return preserveReceiptBoundObligation(request);

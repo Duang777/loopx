@@ -1067,6 +1067,7 @@ def refresh_state_run(
             settlement_guard_scoped=(
                 settlement_replan_guard.get("scope") == "turn_guard"
             ),
+            receipt_bound_guard_recorded_at=(settlement_readback.heartbeat_receipt or {}).get("recorded_at") if settlement_readback else None,
             settlement_guard_semantic_replan_obligation_id=(
                 settlement_replan_guard.get("selected_obligation_id")
                 if isinstance(

@@ -1050,3 +1050,20 @@ def test_vision_ack_and_gap_from_same_durable_run_do_not_rearm() -> None:
 
     timestamp = "2026-08-13T09:00:00+08:00"
     assert _vision_gap_acknowledged(_vision_gap_with_generated_at(timestamp), _ack(timestamp))
+
+
+def test_lifecycle_review_identity_binds_todo_and_original_completion_not_display_text() -> None:
+    def identity(todo_id: str, completion: str, text: str = "Verified source") -> str:
+        result = derive_goal_frontier_replan_obligation_from_summaries(
+            user_todo_summary={"open_count": 0},
+            agent_todo_summary={"open_count": 0, "completed_without_successor_items": [
+                {"todo_id": todo_id, "completion_turn_key": completion, "text": text,
+                 "task_class": "advancement_task", "claimed_by": "current-agent"}]},
+            work_lane_contract=None, agent_id="current-agent", existing_replan_obligation=None,
+        )
+        assert result is not None
+        return result["obligation_id"]
+    original = identity("todo_original", "original-completion")
+    assert original == identity("todo_original", "original-completion", "Changed display wording")
+    assert original != identity("todo_other", "original-completion")
+    assert original != identity("todo_original", "later-completion")

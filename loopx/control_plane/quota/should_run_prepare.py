@@ -519,6 +519,7 @@ def _prepare_quota_should_run_item(
     receipt_bound_replay_phase: ReceiptBoundReplayPhase | None,
     receipt_bound_replan_obligation_id: str | None,
     receipt_bound_replan_guard_scoped: bool = False,
+    receipt_bound_guard_recorded_at: str | None = None,
 ) -> _QuotaDecisionPreparation:
     quota = item.get("quota") if isinstance(item.get("quota"), dict) else {}
     state = str(quota.get("state") or "unknown")
@@ -837,6 +838,7 @@ def _prepare_quota_should_run_item(
         goal_status=str(registry_goal.get("status") or ""),
         agent_profile=_quota_agent_profile(agent_identity),
         receipt_bound_replan_obligation_id=receipt_bound_replan_obligation_id,
+        receipt_bound_guard_recorded_at=receipt_bound_guard_recorded_at,
     )
     replan_obligation = (
         None
