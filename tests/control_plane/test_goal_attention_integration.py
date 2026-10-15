@@ -108,7 +108,10 @@ def test_status_automatically_rebuilds_stale_run_routing(tmp_path, monkeypatch, 
         else:
             assert item["source"] == "active_state"
             assert item["status"] == "active_state_agent_todo"
-            assert item["recommended_action"] == "Verify the current deliverable"
+            # Only the provider arm creates fresh work. Reading the historical
+            # unranked source must not apply a fresh-creation default.
+            expected = "[P1] Verify the current deliverable" if provider else "Verify the current deliverable"
+            assert item["recommended_action"] == expected
             assert item.get("stale_latest_run_warning") is None
         historical = status["run_history"]["goals"][0]["latest_status_run"]
         assert historical["generated_at"] == record["generated_at"]

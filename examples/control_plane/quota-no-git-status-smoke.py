@@ -126,7 +126,7 @@ def main() -> int:
         )
         assert quota.get("status") != "quota_collection_failed", quota
         assert quota["should_run"] is True, quota
-        assert quota["recommended_action"] == "Solve the no-git quota fixture.", quota
+        assert quota["recommended_action"] == "[P1] Solve the no-git quota fixture.", quota
         assert quota["selected_todo"]["todo_id"] == todo["todo_id"], quota
         after = run_cli(registry_path, "todo", "list", "--goal-id", GOAL_ID, env=env)
         assert after["todos"] == before["todos"], after

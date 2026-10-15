@@ -23,13 +23,13 @@ from loopx.quota import build_quota_should_run  # noqa: E402
 
 
 GOAL_ID = "todo-cli-goal"
-USER_TODO = "Review the owner decision checklist before approving delivery."
-SCOPED_USER_GATE = "Choose the side-agent publishing channel before posting externally."
-AGENT_TODO = "Summarize the read-only evidence after the user checklist is done."
+USER_TODO = "[P1] Review the owner decision checklist before approving delivery."
+SCOPED_USER_GATE = "[P1] Choose the side-agent publishing channel before posting externally."
+AGENT_TODO = "[P1] Summarize the read-only evidence after the user checklist is done."
 AGENT_TODO_NOTE = "Start from the public-safe evidence summary."
 UPDATED_AGENT_TODO_NOTE = "Preserve the validated summary as the handoff context."
-UPDATED_AGENT_TODO = "Publish the compact evidence summary after validation passes."
-MONITOR_TODO = "Monitor the release-note draft PR until the next scheduled check."
+UPDATED_AGENT_TODO = "[P1] Publish the compact evidence summary after validation passes."
+MONITOR_TODO = "[P1] Monitor the release-note draft PR until the next scheduled check."
 MONITOR_DUE_AT = "2026-01-02T00:00:00+00:00"
 MONITOR_NEXT_DUE_AT = "2026-01-03T00:00:00+00:00"
 MONITOR_EXPIRES_AT = "2026-01-04T00:00:00+00:00"
@@ -59,7 +59,7 @@ def write_fixture(root: Path, *, register_agents: bool = True, folded_source: bo
     if folded_source:
         text = state_file.read_text(encoding="utf-8")
         state_file.write_text(text.replace("## Agent Todo\n\n",
-            "## Agent Todo\n\n- [ ] Summarize the read-only evidence after the user\n"
+            "## Agent Todo\n\n- [ ] [P1] Summarize the read-only evidence after the user\n"
             "  checklist is done.\n"
             "  <!-- loopx:todo todo_id=todo_folded status=open task_class=advancement_task -->\n\n"),
             encoding="utf-8")
@@ -404,7 +404,7 @@ def main() -> int:
             }
         ], metadata_payload
         after_metadata = state_file.read_text(encoding="utf-8")
-        assert after_metadata.count("- [ ] Summarize the read-only evidence after the user") == 1, after_metadata
+        assert after_metadata.count("- [ ] [P1] Summarize the read-only evidence after the user") == 1, after_metadata
         assert metadata_todo["text"] == AGENT_TODO, metadata_todo
         assert "continuation_policy=independent_handoff" in after_metadata
         assert "required_capabilities=shell%2Cbenchmark_runner" in after_metadata

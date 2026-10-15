@@ -22,10 +22,10 @@ from loopx.status import parse_active_state_todos  # noqa: E402
 
 
 GOAL_ID = "todo-concurrent-write-lock-goal"
-CHILD_ADD_TODO = "Child add should preserve the concurrently committed parent todo."
-PARENT_ADD_TODO = "Parent todo committed while child add awaits readable projection."
-UPDATE_TARGET_TODO = "Update target todo should keep unrelated concurrent additions."
-PARENT_UPDATE_TODO = "Parent todo committed while child update awaits readable projection."
+CHILD_ADD_TODO = "[P1] Child add should preserve the concurrently committed parent todo."
+PARENT_ADD_TODO = "[P1] Parent todo committed while child add awaits readable projection."
+UPDATE_TARGET_TODO = "[P1] Update target todo should keep unrelated concurrent additions."
+PARENT_UPDATE_TODO = "[P1] Parent todo committed while child update awaits readable projection."
 
 
 def write_fixture(root: Path) -> tuple[Path, Path]:

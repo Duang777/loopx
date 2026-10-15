@@ -44,6 +44,18 @@ existing typed owners. Do not schedule those deletions again from the older
 writer inventory below. The additive 1.x line and an open 2.0 proposal remain
 different delivery baselines; this checkpoint does not claim a released cutoff.
 
+The next integration pairs `7c0215f26` with pinned main `77d6b07fb` through a
+normal two-parent merge. Keep `2.0.0a1` as the retirement candidate while
+carrying the compatible 1.4.2 fixes; preserving source bytes in a one-parent
+snapshot would lose the main ancestry needed for a reviewable upstream diff.
+Fresh canonical-create checks retain both structured P1 and its compatibility
+display, while original receipts keep their recorded intent. Retained outbox
+recovery uses the existing native delivery/drain counterexamples after producer
+removal. The released-lease cutover check moves to backed-up cold import on
+File/SQLite, preserving the complete terminal record, later canonical work and
+original-import replay without recreating a source writer. Later main revisions
+and installed Host adoption still require their own applicable evidence.
+
 New execution/configuration targets share `ExecutionHandoffMode`, derived from
 `EXECUTION_HANDOFF_MODES` (`soft_claim` / `hard_lease`). Historical `HandoffMode`
 and receipt codecs still recognize `legacy`. The typed policy owner refuses

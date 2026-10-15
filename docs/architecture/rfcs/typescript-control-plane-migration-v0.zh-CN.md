@@ -40,6 +40,15 @@ team-plan、Monitor 和 lease 消费者复用既有 typed owner。不能根据�
 再次派生同样的删除工作。兼容的 1.x 线和仍开放的 2.0 提案是不同交付基线；
 本 checkpoint 不宣称截止行为已发布。
 
+后续整合以正常双亲 merge 连接 `7c0215f26` 与冻结主干 `77d6b07fb`。
+吸收兼容的 1.4.2 修复时保留退役候选 `2.0.0a1`；仅保留相同源码的单亲
+snapshot 会丢失主干祖先关系，破坏上游 diff 的可评审性。新 canonical 创建
+同时保留结构化 P1 和兼容显示，原回执仍保持记录时的意图。producer 删除后，
+历史 outbox 恢复复用既有 native delivery／drain 反例；已释放 lease 的 cutover
+检查迁到有备份的 File／SQLite cold import，保留完整终态记录、后续 canonical
+工作与原导入回执重放，不重建 source writer。后续主干 revision 和安装后的
+Host 采用仍需分别验证其适用证据。
+
 新执行／配置目标统一使用 `ExecutionHandoffMode`，从既有
 `EXECUTION_HANDOFF_MODES`（`soft_claim`／`hard_lease`）派生；历史 `HandoffMode`
 及回执 codec 仍识别 `legacy`。typed 策略 owner 拒绝 fresh legacy 执行、

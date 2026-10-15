@@ -39,7 +39,7 @@ def test_concurrent_create_refuses_reviewed_intent(tmp_path, monkeypatch, provid
     assert conflict.value.receipt["write_attempted"] is (timing == "after-final-preview")
     assert ("current_preview_id" in conflict.value.receipt) is (timing == "before-confirmation")
     snapshot = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id="goal-a")
-    assert [todo["text"] for todo in snapshot["todos"]] == ["Independent accepted request"]
+    assert [todo["text"] for todo in snapshot["todos"]] == ["[P1] Independent accepted request"]
     if timing != "before-confirmation":
         monkeypatch.setattr(chat, "_add_review_todo", original)
     refreshed = chat.build_todo_review_preview(
@@ -48,7 +48,7 @@ def test_concurrent_create_refuses_reviewed_intent(tmp_path, monkeypatch, provid
         text="Reviewed request", preview_id=refreshed["preview_id"])
     assert applied["todo"]["todo_id"] == refreshed["todo"]["todo_id"]
     snapshot = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id="goal-a")
-    assert {todo["text"] for todo in snapshot["todos"]} == {"Independent accepted request", "Reviewed request"}
+    assert {todo["text"] for todo in snapshot["todos"]} == {"[P1] Independent accepted request", "[P1] Reviewed request"}
 
 
 @pytest.mark.parametrize("provider", ["file", "sqlite"])
@@ -67,7 +67,7 @@ def test_current_review_creates_once_and_duplicate_remains_noop(tmp_path, monkey
         assert result["applied"] is True
         assert result["todo"]["todo_id"] == preview["todo"]["todo_id"]
     snapshot = read_canonical_todos_if_promoted(runtime_root=runtime, goal_id="goal-a")
-    assert [todo["text"] for todo in snapshot["todos"]] == ["Reviewed request"]
+    assert [todo["text"] for todo in snapshot["todos"]] == ["[P1] Reviewed request"]
 
 
 @pytest.mark.parametrize("provider", ["file", "sqlite"])

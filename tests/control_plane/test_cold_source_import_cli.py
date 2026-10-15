@@ -40,7 +40,7 @@ def canonical_todos(runtime, receiver, env, cwd):
     return result
 
 
-def workspace(tmp_path, monkeypatch, *, storage_target=None):
+def workspace(tmp_path, monkeypatch, *, storage_target=None, retained_lease=None):
     isolate_sqlite_runtime(tmp_path, monkeypatch)
     project, runtime = tmp_path / "project", tmp_path / "runtime"
     registry = project / ".loopx/registry.json"
@@ -59,6 +59,15 @@ def workspace(tmp_path, monkeypatch, *, storage_target=None):
         goal["coordination"]["storage_target"] = storage_target
     registry.write_text(json.dumps({"schema_version": 1, "common_runtime_root": str(runtime), "goals": [goal]}))
     runtime.mkdir()
+    if retained_lease is not None:
+        # A completed Task may remain in the current graph. Archived Tasks are
+        # separate historical records and do not retain live lease edges.
+        state.write_text(state.read_text().replace("## Completed Work Archive",
+            f'- [x] Retained completed work\n  <!-- loopx:todo todo_id={retained_lease["todo_id"]} '
+            'role=agent status=done task_class=advancement_task -->\n\n## Completed Work Archive'))
+        lease_path = runtime / "goals/cold/task-leases" / f"{retained_lease['todo_id']}.json"
+        lease_path.parent.mkdir(parents=True)
+        lease_path.write_text(json.dumps(retained_lease, indent=2))
     backup = execute_state_backup_plan(build_state_backup_plan(project=project, runtime_root=runtime,
         output_dir=tmp_path / "backups", backup_id="cold-original", include_automations=False,
         include_skills=False, include_registry_projects=False, registry_path=registry))
@@ -303,7 +312,8 @@ def test_cold_import_recovery_preserves_later_canonical_writes(
     assert records["todo_current"]["text"] == body
     assert records["todo_current"]["note"] == "Work retained after migration"
     assert records["todo_archived"]["evidence"] == "original"
-    assert records[created["todo_id"]]["text"] == "New work after migration"
+    later = records[created["todo_id"]]
+    assert (later["text"], later["priority"]) == ("[P1] New work after migration", "P1")
     assert len(complete_after["leases"]) == 1
     assert complete_after["leases"][0]["todo_id"] == "todo_current"
     assert complete_after["leases"][0]["owner"] == "agent-a"
@@ -375,6 +385,49 @@ def test_cold_import_recovery_preserves_later_canonical_writes(
     assert current["todos"] == after["todos"]
     assert canonical_todos(runtime, receiver, env, tmp_path) == complete_after
     assert current["authority_read"]["provider_revision"] == after["authority_read"]["provider_revision"]
+
+
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+def test_cold_import_preserves_terminal_lease_and_later_work_on_original_recovery(
+    tmp_path, monkeypatch, provider, isolated_todo_distribution,  # noqa: F811 -- shared fixture
+):
+    # Released history is inert input. Never revive an ordinary source writer
+    # to generate the migration fixture in the canonical-only distribution.
+    monkeypatch.setenv("LOOPX_COLD_IMPORT_PACKAGE", str(isolated_todo_distribution[0]))
+    expected = {
+        "schema_version": "task_lease_v0", "goal_id": "cold", "todo_id": "todo_terminal",
+        "owner": "agent-a", "version": 2, "lease_epoch": 1, "status": "released",
+        "released_at": "2026-09-01T00:00:00Z", "idempotency_key": "retained-identity",
+        "future_extension": {"missing_value": None, "flag": False},
+    }
+    cli, state, backup, _, runtime, receiver, env = workspace(
+        tmp_path, monkeypatch, retained_lease=expected)
+    lease_path = runtime / "goals/cold/task-leases/todo_terminal.json"
+    original = lease_path.read_bytes()
+    plan = cli("prepare-import", "--backup-manifest", backup["manifest_path"],
+        "--provider", provider, "--target-handoff-mode", "hard_lease")["cold_import"]
+    imported = cli("apply-import", "--plan-sha256", plan["plan_sha256"],
+        "--writers-stopped", "--execute")["cold_import"]
+    assert imported["status"] == "applied" and imported["execution_authority_granted"] is False
+    assert canonical_todos(runtime, receiver, env, tmp_path)["leases"] == [expected]
+    added = subprocess.run([sys.executable, "-S", "-m", "loopx.cli", "--format", "json",
+        "--registry", str(tmp_path / "project/.loopx/registry.json"), "--runtime-root", str(runtime),
+        "todo", "add", "--goal-id", "cold", "--role", "agent",
+        "--text", "Later canonical work must survive recovery", "--operation-id", "later-terminal-import"],
+        cwd=tmp_path, env={**env, "PYTHONPATH": os.pathsep.join([str(receiver), os.environ["PYTHONPATH"]])},
+        capture_output=True, text=True, timeout=60)
+    assert added.returncode == 0, added.stdout + added.stderr
+    later_id = json.loads(added.stdout)["todo_id"]
+    before = canonical_todos(runtime, receiver, env, tmp_path)
+    later = next(row for row in before["todos"] if row["todo_id"] == later_id)
+    assert (later["text"], later["priority"]) == ("[P1] Later canonical work must survive recovery", "P1")
+    state.unlink()
+    for _ in range(2):
+        recovered = cli("recover-import", "--plan-sha256", plan["plan_sha256"], "--execute")["cold_import"]
+        assert recovered["status"] == "replayed"
+        assert canonical_todos(runtime, receiver, env, tmp_path) == before
+        assert lease_path.read_bytes() == original
+        assert not state.exists()
 
 
 @pytest.mark.parametrize("artifact", ["archive_path", "manifest_path"])

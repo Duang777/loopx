@@ -14,7 +14,7 @@ import {
 } from "../../../../../../loopx/control_plane/presentation/action_review_plan.js";
 import { refreshAttention } from "./attention-details";
 import { teamPlanAssignments, teamPlanAppliedLine, teamPlanAppliedOutcome, teamPlanFields, teamPlanGoalId, teamPlanLaneCount, teamPlanReceiptGapLanes, teamPlanTodoIds } from "./team-plan-preview";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode } from "react";
 import { AlertCircle, Bot, CalendarClock, FileText, ListPlus, MessageCircleQuestion, Paperclip, Plus, RefreshCw, Send, X } from "lucide-react";
 
 import {
@@ -84,10 +84,14 @@ import { goalWorkKind } from "./goal-activity";
 import { WorkspaceActionForm, type WorkspaceActionDraft } from "./workspace-action-form";
 import { GoalActivityChip, GoalIdentityMark } from "./goal-activity-view";
 import { ManagerBrief } from "./manager-brief";
-import { WorkspaceSettingsPage } from "./workspace-settings-page";
+// Loaded on demand: settings and their editors are a separate chunk that
+// arrives when the owner first opens Settings, not on every workspace visit.
+const WorkspaceSettingsPage = lazy(() => import("./workspace-settings-page").then((module) => ({ default: module.WorkspaceSettingsPage })));
 import { UsageStatisticsNotice } from "./usage-statistics-notice";
 import { readWorkspaceTheme, writeWorkspaceTheme, type WorkspaceTheme } from "./workspace-theme";
 import { compareProposalRecency } from "./proposal-recency";
+import { deriveGoalSuggestions, type GoalSuggestion } from "./goal-suggestions";
+import { projectGoalAcceptanceCriteria } from "../../data/goal-acceptance-observation";
 import { WorkspaceShell } from "./workspace-shell";
 import type { StatusSourceControl } from "./status-source-switcher";
 import "./personal-workspace.css";
@@ -1246,6 +1250,46 @@ export function PersonalWorkspacePage({
     && (selectedGoalTab === "overview" || selectedGoalTab === "tasks") && !selectedGoal?.loadState, selectionScope);
   const workspaceDigest = useGoalWorkspaceDigest(selectedGoal, model.userTodos, items,
     workspaceReview.usable ? workspaceReview.snapshot?.goal_map : null);
+  const goalSuggestions = useMemo<GoalSuggestion[]>(() => {
+    if (!selectedGoal) return [];
+    const contract = selectedGoal.acceptanceObservation?.goal_acceptance_contract;
+    return deriveGoalSuggestions({
+      digest: workspaceDigest,
+      todos: selectedGoal.agentTodos.map((todo) => ({ todoId: todo.todoId, text: todo.text })),
+      execution: selectedGoal.execution ? { kind: selectedGoal.execution.kind } : null,
+      criteria: contract?.enabled ? projectGoalAcceptanceCriteria(contract) : null,
+    });
+  }, [selectedGoal, workspaceDigest]);
+  function goalSuggestionLabel(suggestion: GoalSuggestion): string {
+    switch (suggestion.kind) {
+      case "open_decisions": return t("suggestions.openDecisions", { count: suggestion.count });
+      case "explain_blocked": return t("suggestions.explainBlocked", { count: suggestion.count });
+      case "explain_failed_criterion": return t("suggestions.explainFailedCriterion", { criterion: suggestion.criterion });
+      case "continue_idle": return t("suggestions.continueIdle", { count: suggestion.open });
+      case "review_results": return t("suggestions.reviewResults", { count: suggestion.done });
+    }
+  }
+  function applyGoalSuggestion(suggestion: GoalSuggestion) {
+    const quote = (title: string) => locale === "zh-CN" ? `「${title}」` : `“${title}”`;
+    switch (suggestion.kind) {
+      case "open_decisions":
+        setSelectedGoalTab("overview");
+        setRailScope(selectionScope);
+        return;
+      case "review_results":
+        setSelectedGoalTab("files");
+        return;
+      case "explain_blocked":
+        void sendMessage(t("suggestions.explainBlockedPrompt", { count: suggestion.count, titles: suggestion.titles.map(quote).join(locale === "zh-CN" ? "、" : ", ") }));
+        return;
+      case "explain_failed_criterion":
+        void sendMessage(t("suggestions.explainFailedCriterionPrompt", { criterion: suggestion.criterion }));
+        return;
+      case "continue_idle":
+        void sendMessage(t("suggestions.continueIdlePrompt", { count: suggestion.open }));
+        return;
+    }
+  }
   const drawerSelection = useMemo<Exclude<WorkspaceDrawerSelection, { kind: "settings" }> | null>(() => {
     if (selection?.kind === "settings") return null;
     if (selection?.kind === "proposal") {
@@ -2091,6 +2135,7 @@ export function PersonalWorkspacePage({
   }
 
   const settingsPage = settingsOpen ? (
+    <Suspense fallback={<p className="personal-lazy-loading" role="status">{t("common.loading")}</p>}>
       <WorkspaceSettingsPage
         callbacks={effectiveDrawerCallbacks}
         focusGoalConnection={Boolean(selection?.kind === "settings" && selection.goalId)}
@@ -2103,6 +2148,7 @@ export function PersonalWorkspacePage({
         onThemeChange={updateTheme}
         theme={theme}
       />
+    </Suspense>
   ) : null;
 
   const composerSuggestions = !selectedWorkspaceRef && (!conversationOpen || !conversationMessages.length) ? <details className="personal-composer-tools" key={conversationKey} onKeyDown={(event) => {
@@ -2110,7 +2156,18 @@ export function PersonalWorkspacePage({
     event.currentTarget.open = false;
     event.currentTarget.querySelector("summary")?.focus();
   }}>
-              <summary>{locale === "zh-CN" ? "快捷提问" : "Suggestions"}</summary>
+              <summary>{selectedGoal && goalSuggestions.length
+                ? t("suggestions.summary", { first: goalSuggestionLabel(goalSuggestions[0]) })
+                : locale === "zh-CN" ? "快捷提问" : "Suggestions"}</summary>
+            <div className="personal-composer-tools-panel">
+            {selectedGoal && goalSuggestions.length ? (
+              <div aria-label={t("suggestions.row")} className="personal-goal-suggestions" data-testid="goal-suggestions" role="group">
+                {goalSuggestions.map((suggestion) => (
+                  <button data-suggestion={suggestion.kind} disabled={quickPromptBlocked && suggestion.kind !== "open_decisions" && suggestion.kind !== "review_results"}
+                    key={suggestion.kind} onClick={() => applyGoalSuggestion(suggestion)} type="button">{goalSuggestionLabel(suggestion)}</button>
+                ))}
+              </div>
+            ) : null}
             {selectedGoal ? (
               <div className="personal-quick-prompts">
                 <button aria-label={t("composer.nextAction")} disabled={quickPromptBlocked} onClick={() => void sendMessage(t("composer.nextActionPrompt"))} title={t("composer.sendMessageHint")} type="button"><MessageCircleQuestion size={13} /><span>{t("composer.nextAction")}</span></button>
@@ -2126,6 +2183,7 @@ export function PersonalWorkspacePage({
                 <button aria-label={t("composer.createGoal")} onClick={requestGoalCreate} title={t("composer.createGoalHint")} type="button"><Plus size={13} /><span>{t("composer.createGoal")}</span></button>
               </div>
             )}
+            </div>
             </details> : null;
   const taskBoard = (active: boolean) => selectedGoal ? (<GoalTasksView digest={workspaceDigest}
                     historyEnabled={!readOnly} historyActive={active}
