@@ -17,6 +17,7 @@ from ...control_plane.capability_hooks import (
 )
 from ...control_plane.effect_runtime import effect_runtime_result
 from ...control_plane.digest_envelope import sha256_envelope
+from ...control_plane.goals.activation import goal_is_stopped
 from ...history import load_registry
 from .todo_source import read_report_todo_source
 from ...registry import (
@@ -231,7 +232,11 @@ def _active_delivery_subscription(
 
     registry = load_registry(registry_path)
     goal = find_registry_goal(registry, goal_id)
-    if not isinstance(goal, Mapping) or goal.get("status") in {"stopped", "paused", "archived"}:
+    if (
+        not isinstance(goal, Mapping)
+        or goal_is_stopped(goal)
+        or goal.get("status") in {"stopped", "paused", "archived"}
+    ):
         return None
     subscription = resolve_goal_periodic_report_subscription(
         goal,
