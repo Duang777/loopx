@@ -108,6 +108,8 @@ import {
   type WorkspaceGoalTab,
   type WorkspaceGoalUsage,
   type WorkspaceImageAttachment,
+  type WorkspaceHomeOnboarding,
+  type WorkspaceRefreshResult,
   type WorkspaceSystemHealth,
   type WorkspaceTimelineItem,
   type WorkspaceWorker,
@@ -504,6 +506,7 @@ type PersonalHomeModel = {
   goalNotifications?: WorkspaceGoalNotification[];
   goals: PersonalGoalItem[];
   openUserTodoCount: number;
+  onboarding?: WorkspaceHomeOnboarding;
   systemHealth?: WorkspaceSystemHealth;
   attentionHistory?: PersonalNeedsYouItem[];
   userTodos: PersonalNeedsYouItem[];
@@ -1013,16 +1016,19 @@ function buildPersonalHomeModel(
       (right.lastActivity ?? "").localeCompare(left.lastActivity ?? ""),
     );
     const knownAgentIds = new Set(sortedGoalAgentRows.map((agent) => agent.agentId));
+    const agentHostSurfaces = (id: string) => Array.from(new Set((goal.coordination?.thread_agent_bindings ?? [])
+      .flatMap(binding => binding.agent_id === id && binding.host_surface ? [binding.host_surface] : [])));
     const goalAgentLanes = [
       ...sortedGoalAgentRows.map((agent) => ({
         agentId: agent.agentId,
         label: agent.agentId,
         lastActivityAt: agent.lastActivity,
         state: agent.status.label,
+        hostSurfaces: agentHostSurfaces(agent.agentId),
       })),
       ...registeredAgentIds
         .filter((agentId) => !knownAgentIds.has(agentId))
-        .map((agentId) => ({ agentId, label: agentId, lastActivityAt: null, state: "registered" })),
+        .map((agentId) => ({ agentId, label: agentId, lastActivityAt: null, state: "registered", hostSurfaces: agentHostSurfaces(agentId) })),
     ];
     const agentRow = sortedGoalAgentRows[0];
     const goalAgentTodos = mergePersonalAgentTodos(personalAgentTodos(row), sortedGoalAgentRows, row);
@@ -1105,20 +1111,23 @@ function buildPersonalHomeModel(
     }];
   });
 
+  // Owner language first: each issue is a localized sentence. The status
+  // source's own contract lines stay available to a collapsed disclosure.
   const systemHealthIssues: string[] = [];
   if (!payload.ok) {
-    systemHealthIssues.push("状态载荷未标记为正常 (payload.ok === false)");
+    systemHealthIssues.push(t("home.health.payloadNotOk"));
   }
   if (payload.contract && !payload.contract.ok) {
     const summary = payload.contract.summary;
-    const detail = summary
-      ? `${summary.errors} 项错误 / ${summary.warnings} 项警告`
-      : (payload.contract.errors?.[0] || "请检查控制面契约");
-    systemHealthIssues.push(`契约检查未通过: ${detail}`);
+    systemHealthIssues.push(summary
+      ? t("home.health.contractFailed", { errors: summary.errors, warnings: summary.warnings })
+      : payload.contract.errors?.[0]
+        ? t("home.health.contractFailedDetail", { detail: payload.contract.errors[0] })
+        : t("home.health.contractFailedUnknown"));
   }
   if (payload.global_registry) {
     if (!payload.global_registry.ok) {
-      systemHealthIssues.push(`注册表状态异常: ${payload.global_registry.summary.high} 项高危`);
+      systemHealthIssues.push(t("home.health.registryHigh", { count: payload.global_registry.summary.high }));
     }
     for (const finding of payload.global_registry.findings || []) {
       if (finding.severity === "high") {
@@ -1127,17 +1136,24 @@ function buildPersonalHomeModel(
     }
   }
   const freshnessWarning = payload.decision_freshness_summary?.summary?.stale_count
-    ? `${payload.decision_freshness_summary.summary.stale_count} 项决策状态已过期`
+    ? t("home.health.freshness", { count: payload.decision_freshness_summary.summary.stale_count })
     : null;
   const isHealthy = systemHealthIssues.length === 0 && !freshnessWarning;
   const systemHealth: WorkspaceSystemHealth = {
     ok: isHealthy,
     summary: isHealthy
-      ? "所有控制面契约与注册表检查均正常"
-      : `发现 ${systemHealthIssues.length + (freshnessWarning ? 1 : 0)} 项系统健康关注点`,
+      ? t("home.health.allClear")
+      : t("home.health.concerns", { count: systemHealthIssues.length + (freshnessWarning ? 1 : 0) }),
     issues: systemHealthIssues,
     freshnessWarning,
+    diagnostics: [...(payload.contract?.errors ?? []), ...(payload.contract?.warnings ?? [])],
   };
+  // A healthy source with no registered Goal and no execution history is a
+  // first-Goal workspace, not a failure. Any health issue keeps its banner.
+  const onboarding: WorkspaceHomeOnboarding | undefined = isHealthy
+    && payload.goal_count === 0 && goals.length === 0 && (payload.run_history?.goals ?? []).length === 0
+    ? { kind: "no_goals", diagnostics: [...(payload.contract?.warnings ?? []), ...(payload.contract?.checks ?? [])] }
+    : undefined;
 
   return {
     blockingTodoCount: allUserTodos.filter((todo) => todo.blocking).length,
@@ -1159,6 +1175,7 @@ function buildPersonalHomeModel(
     })),
     goals,
     openUserTodoCount: allUserTodos.length,
+    onboarding,
     systemHealth,
     attentionHistory: [...attentionHistory, ...pendingOperatorGates],
     userTodos: allUserTodos,
@@ -1174,8 +1191,11 @@ function buildPersonalHomeModel(
 }
 function PersonalGoalHome({
   goalArchiveLoadState,
+  sourceError,
   selectedView,
   selectedTodoId,
+  selectedWorkAgentId,
+  onSelectWorkAgent,
   onSelectTodo,
   onSelectView,
   onGoalActivationStateChange,
@@ -1194,8 +1214,12 @@ function PersonalGoalHome({
   theme,
 }: {
   goalArchiveLoadState: WorkspaceGoalArchiveLoadState;
+  /** The current source's latest read failed; the retained payload is stale. */
+  sourceError: string | null;
   selectedView?: WorkspaceGoalTab;
   selectedTodoId?: string | null;
+  selectedWorkAgentId?: string | null;
+  onSelectWorkAgent: (agentId: string | null) => void;
   onSelectTodo: (todoId: string | null) => void;
   onSelectView: (view: WorkspaceGoalTab) => void;
   onGoalActivationStateChange: (goalId: string, activationState: "active" | "stopped") => void;
@@ -1204,7 +1228,7 @@ function PersonalGoalHome({
   onSelectWorkspace: (projectRef: string | null) => void;
   selectedWorkspaceRef: string | null;
   onReconcileStatus: (options?: { invalidateGoalIds?: string[] }) => void | Promise<void>;
-  onRefresh: (scope?: WorkspaceReadScope) => void | Promise<void>;
+  onRefresh: (scope?: WorkspaceReadScope) => Promise<WorkspaceRefreshResult>;
   onRetryGoalArchive: () => void | Promise<void>;
   payload: StatusPayload;
   progress: WorkspaceProgress | null;
@@ -1235,7 +1259,7 @@ function PersonalGoalHome({
   const [managerRuntime, setManagerRuntime] = useState<ManagerRuntimeSessionReadback | null>(null);
   const [managerChannelBinding, setManagerChannelBinding] = useState<ManagerChannelBinding | null>(null);
   const [capabilityRevision, setCapabilityRevision] = useState(0);
-  const model = useMemo(() => {
+  const loadedModel = useMemo<PersonalHomeModel>(() => {
     const base = buildPersonalHomeModel(payload, rows, t, goalSubagentConfigurationEnabled);
     if (!progress) return base;
     const models = Object.values(progress.snapshots).map((snapshot) => buildPersonalHomeModel(
@@ -1256,13 +1280,32 @@ function PersonalGoalHome({
       openUserTodoCount: userTodos.length, blockingTodoCount: userTodos.filter((todo) => todo.blocking).length,
       workers: [...new Map(models.flatMap((item) => item.workers ?? []).map((worker) => [worker.agentId, worker])).values()],
       goalNotifications: models.flatMap((item) => item.goalNotifications ?? []),
+      onboarding: incomplete ? undefined : base.onboarding,
       systemHealth: incomplete || models.length === 0 ? undefined : {
         ok: models.every((item) => item.systemHealth?.ok), issues,
-        summary: issues.length ? `发现 ${issues.length} 项系统健康关注点` : "状态检查已完成",
+        summary: issues.length ? t("home.health.concerns", { count: issues.length }) : t("home.health.checked"),
         freshnessWarning: models.map((item) => item.systemHealth?.freshnessWarning).filter(Boolean).join("；") || null,
+        diagnostics: [...new Set(models.flatMap((item) => item.systemHealth?.diagnostics ?? []))],
       },
     };
   }, [payload, rows, progress, goalSubagentConfigurationEnabled, t]);
+  // A retained payload is not a current fact once the source's latest read
+  // failed: the first-Goal invitation is withdrawn and the failure is shown
+  // with a retry, instead of an empty workspace that claims to be updated.
+  const model = useMemo<PersonalHomeModel>(() => {
+    if (!sourceError) return loadedModel;
+    return {
+      ...loadedModel,
+      onboarding: undefined,
+      systemHealth: {
+        ok: false, retryable: true,
+        summary: t("home.health.sourceUnreadable"),
+        issues: [t("home.health.sourceUnreadableDetail", { error: sourceError })],
+        freshnessWarning: null,
+        diagnostics: loadedModel.systemHealth?.diagnostics ?? [],
+      },
+    };
+  }, [sourceError, loadedModel, t]);
   // A workspace conversation has no Goal, so no Goal projection may apply to it.
   const selectedGoal = selectedWorkspaceRef ? null : model.goals.find((goal) => goal.goalId === selectedGoalId) ?? null;
   const workspaceProjects = useChatProjects(readOnly);
@@ -1776,7 +1819,10 @@ function PersonalGoalHome({
             pending: false,
             reconnect: error instanceof ChatApiError && error.payload.reconnectable === true,
             sourceLabel: "LoopX Chat 本地后端",
-            text: interrupted ? [streamedText.trim(), "已中断。你可以在当前会话继续发送消息。"].filter(Boolean).join("\n\n") : error instanceof Error ? error.message : "无法恢复进行中的 Agent 回合。",
+            text: interrupted ? [streamedText.trim(), "已中断。你可以在当前会话继续发送消息。"].filter(Boolean).join("\n\n")
+              : error instanceof ChatApiError && error.payload.error_code === "server_restarted"
+                ? t("feedback.turnRestarted")
+                : error instanceof Error ? error.message : "无法恢复进行中的 Agent 回合。",
           });
         } finally {
           releaseObservation();
@@ -2368,7 +2414,9 @@ function PersonalGoalHome({
         pending: false,
         reconnect: payloadError?.reconnectable === true,
         sourceLabel: "LoopX Chat 本地后端",
-        text: payloadError?.error_code === "resume_failed"
+        text: payloadError?.error_code === "server_restarted"
+          ? t("feedback.turnRestarted")
+          : payloadError?.error_code === "resume_failed"
           ? `原 ${answerIdentityLabel(targetContextId, selectedRoute.label)} 会话无法恢复。本地历史已经保留，请在运行详情里选择“重试恢复”或“开始新 Session”。`
           : payloadError?.delivery_state === "not_delivered" && payloadError.turn_replay_safe === true && !submittedTurnId
             ? `${locale === "zh-CN" ? "请求未提交；草稿和图片已保留，可以修改后重新发送。" : "Request not submitted. Draft and images retained; edit and send again."}\n\n${error instanceof Error ? error.message : ""}`
@@ -2925,14 +2973,16 @@ function PersonalGoalHome({
             URL.revokeObjectURL(url);
           },
           onRefresh: async (scope) => {
-            await onRefresh(scope);
+            const result = await onRefresh(scope);
             setCapabilityRevision((revision) => revision + 1);
+            return result;
           },
           onRetryResumeRun: retryManagerSession,
           onSelectAgent: chooseAgent,
           onSelectAgentModel: chooseAgentModel,
           onSelectGoal: (goalId, view) => onSelectGoal(goalId ?? "", view),
           onSelectView,
+          onSelectWorkAgent,
           onSelectTodo,
           onSendMessage: async (message, agentId, targetContextId, attachments) => sendManagerQuestion(message, { agentId, contextId: targetContextId, attachments }),
           onPrepareLoopX: (agentId, goalId) => prepareGoalConversation(goalId, agentId),
@@ -2942,6 +2992,7 @@ function PersonalGoalHome({
         goalArchiveLoadState={goalArchiveLoadState}
         selectedView={selectedView}
         selectedTodoId={selectedTodoId}
+        selectedWorkAgentId={selectedWorkAgentId}
         managerChannelBinding={managerChannelBinding}
         managerRuntime={managerRuntime}
         conversationSessionId={runtimeBindings[contextId]?.sessionId}
@@ -3164,6 +3215,7 @@ export function DashboardPage() {
         search: (current) => ({
           ...current,
           statusUrl: url,
+          workAgent: "statusUrl" in current && (!current.statusUrl || current.statusUrl === url) ? current.workAgent : undefined,
         }),
       });
     }
@@ -3417,6 +3469,7 @@ export function DashboardPage() {
         ...current,
         goalId,
         workspace: undefined,
+        workAgent: undefined,
         todo: undefined,
         view: view === "chat" ? "conversation" : view,
       }),
@@ -3424,7 +3477,7 @@ export function DashboardPage() {
   }
 
   function selectWorkspace(projectRef: string | null) {
-    void navigate({ search: (current) => ({ ...current, goalId: "", todo: undefined, workspace: projectRef ?? undefined, view: "conversation" }) });
+    void navigate({ search: (current) => ({ ...current, goalId: "", todo: undefined, workAgent: undefined, workspace: projectRef ?? undefined, view: "conversation" }) });
   }
 
   if (statusRequestActive) {
@@ -3443,7 +3496,14 @@ export function DashboardPage() {
   return (
     <PersonalGoalHome
       goalArchiveLoadState={goalArchiveLoadState}
+      sourceError={loadError}
       selectedTodoId={search.todo ?? null}
+      selectedWorkAgentId={search.workAgent ?? null}
+      onSelectWorkAgent={(agentId) => {
+        const goalId = search.goalId, statusUrl = search.statusUrl;
+        void navigate({search: current => "goalId" in current && current.goalId === goalId && current.statusUrl === statusUrl
+          ? {...current, todo: undefined, workAgent: agentId ?? undefined, view: agentId === null ? "overview" : "conversation"} : current});
+      }}
       onSelectTodo={(todoId) => {
         const goalId = search.goalId, statusUrl = search.statusUrl;
         void navigate({search: current => "goalId" in current && current.goalId === goalId && current.statusUrl === statusUrl
@@ -3451,7 +3511,7 @@ export function DashboardPage() {
       }}
       selectedView={search.view === "conversation" ? "chat" : search.goalId ? search.view ?? "chat" : "overview"}
       onSelectView={(view) => {
-        void navigate({ search: current => ({ ...current, view: view === "chat" ? "conversation" : view }) });
+        void navigate({ search: current => ({ ...current, workAgent: undefined, view: view === "chat" ? "conversation" : view }) });
       }}
       onGoalActivationStateChange={(goalId, activationState) => {
         statusRequestFenceRef.current.projectionRevision += 1;
@@ -3474,7 +3534,14 @@ export function DashboardPage() {
         { rejectOnError: true, background: true, invalidateGoalIds: options?.invalidateGoalIds, readScope: "missing" },
       )}
       onRetryGoalArchive={retryGoalArchive}
-      onRefresh={(readScope = "all") => loadFromUrl(source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl), { readScope })}
+      onRefresh={async (readScope = "all") => {
+        try {
+          await loadFromUrl(source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl), { readScope, rejectOnError: true });
+          return { ok: true } as const;
+        } catch (error) {
+          return { ok: false, error: formatStatusError(error) } as const;
+        }
+      }}
       payload={payload}
       progress={progress}
       rows={goalRows}

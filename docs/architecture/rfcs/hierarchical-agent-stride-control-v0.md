@@ -619,6 +619,16 @@ with invented evidence. The field never qualifies execution, scientific novelty,
 utility, effective-Turn counts or acceptance; these remain independent checks.
 No new scheduler, selection rule, quota debit or per-result settlement is added.
 
+The history reader covers both legacy Todo-bound decisions and autonomous
+replan decisions. For an autonomous decision, the recorded Goal, Agent, Turn,
+obligation, settlement identity and accepted acknowledgement must agree; the
+derived decision reference includes that obligation instead of inventing a
+Todo. The existing settlement owner defines the binding, while the Python
+codec only transports its facts. Enabled reviews therefore receive the prior
+decision through the same `previous_review` requirement. Feature-off context
+and legacy decision references remain unchanged. This repairs feedback
+delivery; execution quality and goal benefit still require separate evidence.
+
 #### An iterative strategy and engineering boundary
 
 The first strategy is **model-guided, evidence-conditioned work planning**.
@@ -932,8 +942,19 @@ checks the session's actual workspace and current source binding/profile, and re
 probe. A later source Turn in the read-to-probe gap is rejected; the artifact
 owner's witness checks cover subsequent writes. It seals rollout/index/paged
 stores and verifies native forks at fixed guest paths. These source-basis checks
-are qualified separately from research utility. An explicit source-checkout
-controller now prepares a verified fork through the existing registry/session
+are qualified separately from research utility.
+
+Both completed-wake and interrupted-replan benchmark capture reuse the existing
+native inspection process across the two full reads and keep it open through
+artifact sealing or controller handoff. Native shutdown can checkpoint SQLite;
+closing it between the byte probe and sealing can invalidate the source witness.
+This changes inspection lifetime only: history pagination, cursor/profile
+freshness, byte witnesses, optional activation and the original capture/phase
+deadlines remain unchanged. Reduced preflight cost does not establish sustained
+capture reliability for growing histories or qualify a later receiver point.
+
+An explicit source-checkout controller now prepares a verified fork through the
+existing registry/session
 owners, with distinct registered Goal/Agent identities and a matching captured
 session profile. The registry fence guards configuration through the binding write;
 existing lifetime semantics remain. The lifecycle-only source-session profile
@@ -996,7 +1017,13 @@ The automatic supervisor keeps the prepared deadline for the live-source
 barrier and native capture. After successful source release it seals only its
 private exported files under the captured original Host phase deadline, which
 also bounds typed artifact publication. Later source work cannot enter that
-point. This separates source hold time from final sealing; it grants no trial
+point. The worker reply wait and controller publication share a completion
+deadline of the original capture deadline plus at most 30 seconds, capped by
+that phase. This closes the mismatch where the controller sealed successfully
+after release but the worker already reported capture failure. It also bounds
+an absent controller or stalled sealing without waiting out the whole trial.
+The original 30-second preparation/live-capture deadline is unchanged; the
+extra allowance never admits a late source/native capture. This grants no trial
 time, cooldown or opportunities. Direct callers retain their total timeout.
 
 Warm continuation preserves its captured remaining phase by default. An
@@ -1023,6 +1050,18 @@ Goals. Codex storage and fork IO live in its Host provider; benchmark adapters
 call inward and add evaluator/budget participants. Capture and adoption are
 separate explicit operations. This CLI/Host stage does not complete the packaged
 frontend or disaster-replacement acceptance.
+
+File coverage and knowledge adoption are separate acceptance dimensions. An
+integrity-verified archive proves its declared roots, not the availability of
+every candidate, data file or report mentioned in native history. The SForge
+receiver now offers explicit selection of captured research components outside
+the workspace, with fresh data destinations and post-copy byte/mode verification.
+Source capture still requires explicit roots; neither path inference nor later
+salvage completes an earlier point. Validate a retained experiment requiring
+those files before claiming usable research-state continuity. Existing points,
+active runs, default workspace-only restoration, budgets and feedback are
+unchanged. This closes a provider transport omission; automatic dependency
+coverage and the generic frontend remain open.
 
 Retaining historical research files alone does not deliver them to a current
 typed review. Explicit warm-context adoption now seeds the fresh Goal's Explore

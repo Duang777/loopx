@@ -1,0 +1,210 @@
+"""Disposable original-owner protocol peer shared with the HTTP regression."""
+
+import json
+from pathlib import Path
+import sys
+import signal
+import subprocess
+import tempfile
+import threading
+
+from contextlib import ExitStack
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from loopx.chat_server import ChatRequestHandler, default_chat_assets_dir
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from codex_attached_peer import append_message, fixture, provider
+
+stop = threading.Event()
+signal.signal(signal.SIGTERM, lambda *_: stop.set())
+with (
+    tempfile.TemporaryDirectory(prefix="lx-ui-", dir="/tmp") as directory,
+    ExitStack() as patches,
+):
+    with fixture(
+        Path(directory), goal_id="product-release", uncertain="--uncertain" in sys.argv
+    ) as (
+        request,
+        rollout,
+        _methods,
+        _inputs,
+        registry,
+        _home,
+    ):
+        # The directory includes Agents without this provider or without a binding.
+        value = json.loads(registry.read_text())
+        coordination = value["goals"][0]["coordination"]
+        coordination["registered_agents"] += ["other-worker", "remote-worker"]
+        coordination["thread_agent_bindings"].append(
+            {
+                "agent_id": "remote-worker",
+                "host_surface": "cursor",
+                "thread_id": "synthetic-cursor-thread",
+            }
+        )
+        registry.write_text(json.dumps(value))
+        launches = []
+        patches.enter_context(
+            patch.object(provider, "sys", SimpleNamespace(platform="darwin"))
+        )
+        fail_next_open = False
+
+        def open_spy(argv, **options):
+            global fail_next_open
+            if fail_next_open:
+                fail_next_open = False
+                raise OSError("synthetic unavailable App")
+            launches.append((argv, options))
+
+        patches.enter_context(
+            patch.object(
+                provider,
+                "subprocess",
+                SimpleNamespace(
+                    run=open_spy, SubprocessError=subprocess.SubprocessError
+                ),
+            )
+        )
+
+        class Handler(ChatRequestHandler):
+            def do_GET(self):
+                if self.path == "/fixture/opened":
+                    self._send_json({"ok": True, "count": len(launches)})
+                elif self.path == "/fixture/inputs":
+                    self._send_json({"ok": True, "count": len(_inputs)})
+                else:
+                    super().do_GET()
+
+            def do_POST(self):
+                global fail_next_open
+                if self.path == "/fixture/work-records":
+                    records = [
+                        {
+                            "type": "function_call",
+                            "name": "validate",
+                            "call_id": "work-1",
+                            "arguments": "Check the release artifact",
+                        },
+                        {
+                            "type": "function_call_output",
+                            "call_id": "work-1",
+                            "output": [
+                                {
+                                    "type": "text",
+                                    "text": "Validation output\n"
+                                    + "🧭验证结果\n" * 6000
+                                    + "COMPLETE TOOL RESULT",
+                                }
+                            ],
+                        },
+                    ]
+                    with rollout.open("a") as stream:
+                        for item in records:
+                            stream.write(
+                                json.dumps({"type": "response_item", "payload": item})
+                                + "\n"
+                            )
+                    append_message(rollout, "assistant", "工作结果已返回。")
+                    self._send_json({"ok": True})
+                elif self.path == "/fixture/metadata-gap":
+                    # A real rollout page with no displayable rows, between two
+                    # visible records. Boundaries belong to the production reader.
+                    with rollout.open("a") as stream:
+                        for _ in range(5):
+                            stream.write(
+                                json.dumps(
+                                    {
+                                        "type": "response_item",
+                                        "payload": {
+                                            "type": "reasoning",
+                                            "encrypted_content": "x" * (1024 * 1024),
+                                        },
+                                    }
+                                )
+                                + "\n"
+                            )
+                    self._send_json({"ok": True})
+                elif self.path == "/fixture/tool-envelope":
+                    with rollout.open("a") as stream:
+                        stream.write(
+                            json.dumps(
+                                {
+                                    "type": "response_item",
+                                    "payload": {
+                                        "type": "custom_tool_call_output",
+                                        "output": [
+                                            {
+                                                "type": "text",
+                                                "text": json.dumps(
+                                                    {
+                                                        "output": "Readable shell result\nSecond line",
+                                                        "exit_code": 1,
+                                                        "wall_time_seconds": 0.25,
+                                                        "chunk_id": "synthetic",
+                                                    }
+                                                ),
+                                            }
+                                        ],
+                                    },
+                                }
+                            )
+                            + "\n"
+                        )
+                    self._send_json({"ok": True})
+                elif self.path == "/fixture/burst":
+                    for index in range(330):
+                        append_message(rollout, "assistant", f"Activity {index}")
+                    self._send_json({"ok": True})
+                elif self.path == "/fixture/append":
+                    append_message(
+                        rollout, "assistant", "原 Agent 的新结果：已保留原会话。"
+                    )
+                    with rollout.open("a") as stream:
+                        stream.write(
+                            json.dumps(
+                                {
+                                    "type": "event_msg",
+                                    "timestamp": "2026-01-01T00:00:03Z",
+                                    "payload": {"type": "task_complete"},
+                                }
+                            )
+                            + "\n"
+                        )
+                    self._send_json({"ok": True})
+                elif self.path == "/fixture/busy":
+                    with rollout.open("a") as stream:
+                        stream.write(
+                            json.dumps(
+                                {
+                                    "type": "event_msg",
+                                    "timestamp": "2026-01-01T00:00:02Z",
+                                    "payload": {"type": "task_started"},
+                                }
+                            )
+                            + "\n"
+                        )
+                    self._send_json({"ok": True})
+                elif self.path == "/fixture/rebind":
+                    value = json.loads(registry.read_text())
+                    value["goals"][0]["coordination"]["thread_agent_bindings"][0][
+                        "thread_id"
+                    ] = "22222222-2222-4222-8222-222222222222"
+                    registry.write_text(json.dumps(value))
+                    self._send_json({"ok": True})
+                elif self.path == "/fixture/fail-open":
+                    fail_next_open = True
+                    self._send_json({"ok": True})
+                else:
+                    super().do_POST()
+
+        request.server.RequestHandlerClass = Handler
+        request.server.assets_dir = default_chat_assets_dir()
+        print(
+            json.dumps(
+                {"url": f"http://127.0.0.1:{request.server.server_address[1]}/chat/"}
+            ),
+            flush=True,
+        )
+        stop.wait()
