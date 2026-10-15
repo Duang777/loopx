@@ -35,6 +35,7 @@ from ..scheduler.execution_context import (
 from .unsettled_host_turn import (
     apply_unsettled_host_turn_recovery_if_required,
     apply_receipt_bound_wait_recovery,
+    restore_receipt_bound_todo_source,
 )
 
 
@@ -586,6 +587,9 @@ def build_live_quota_should_run_decision(
     receipt_bound_replay_phase = (
         settlement_readback.replay_phase if settlement_readback else None
     )
+    receipt_bound_guard_fields = _receipt_bound_guard_fields(
+        settlement_readback, receipt_bound_replan_obligation_id,
+    )
     fresh_operator_inbox_read = _fresh_operator_inbox_read_required(
         turn_start_hook_dispatch
     )
@@ -612,6 +616,12 @@ def build_live_quota_should_run_decision(
                 for item in queue.get("items") or []
             ],
         }
+    decision_status_payload = restore_receipt_bound_todo_source(
+        decision_status_payload, registry_path=registry_path, runtime_root=runtime_root,
+        goal_id=goal_id, todo_id=receipt_bound_todo_id,
+        replay_phase=receipt_bound_replay_phase,
+        replan_guard_scoped=receipt_bound_guard_fields["receipt_bound_replan_guard_scoped"],
+    )
     decision_status_payload = overlay_active_turn_retries(
         decision_status_payload,
         goal_id=goal_id,
@@ -648,9 +658,7 @@ def build_live_quota_should_run_decision(
         receipt_bound_monitor_phase=receipt_bound_monitor_phase,
         receipt_bound_replay_phase=receipt_bound_replay_phase,
         receipt_bound_replan_obligation_id=receipt_bound_replan_obligation_id,
-        **_receipt_bound_guard_fields(
-            settlement_readback, receipt_bound_replan_obligation_id,
-        ),
+        **receipt_bound_guard_fields,
         turn_instance_id=turn_instance_id,
         runtime_root=runtime_root,
         workspace_path=workspace_path,

@@ -233,6 +233,8 @@ def test_original_receipt_replays_before_fresh_admission_without_effects(
     {"next_user_todo": "Request a different review"},
     {"agent_id": "another-agent"},
     {"result_hash": "a-different-observation"},
+    {"next_agent_priority": "P0"},
+    {"next_user_priority": "P3"},
 ])
 def test_historical_receipt_rejects_changed_identity(tmp_path: Path, promoted, change) -> None:
     registry, runtime, state = _fixture(tmp_path)

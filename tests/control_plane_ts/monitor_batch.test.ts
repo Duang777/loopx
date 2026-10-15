@@ -242,3 +242,39 @@ test("canonical fresh planning remains actor-owned", () => {
     /actor to match owner/,
   );
 });
+
+
+test("canonical monitor discoveries default independently and accept per-role priorities", () => {
+  const source = request();
+  source.todos = source.todos.map(todo => ({...todo, priority: "P0"}));
+  for (const [extra, expected] of [
+    [{}, ["P1", "P1"]],
+    [{next_agent_priority: "P0", next_user_priority: "P3"}, ["P0", "P3"]],
+  ] as const) {
+    const input = {...source, intent: {...source.intent,
+      next_user_todo: "Review result", next_user_task_class: "user_action", ...extra}};
+    const first = planMonitorBatch(input);
+    const writeback = first.writeback;
+    assert.deepEqual((writeback.next_todos as JsonObject[]).map(todo => todo.priority), expected);
+    assert.deepEqual((writeback.successor_receipts as JsonObject[]).map(todo => todo.priority), expected);
+  }
+  for (const extra of [{next_agent_priority: "P5"}, {next_user_priority: "P0"},
+    {next_agent_priority: "P0", next_agent_todo: "[P1] Conflict"}]) {
+    assert.throws(() => planMonitorBatch({...source, intent: {...source.intent, ...extra}}));
+  }
+});
+
+test("historical unranked monitor receipts replay without applying the new default", () => {
+  const input = request();
+  const receipt = historicalReceipt(input);
+  const result = replay({...input, todos: []}, receipt);
+  assert.equal(result.replayed, true);
+  assert.deepEqual(result.mutations, []);
+  const writeback = result.writeback as JsonObject;
+  assert.equal((writeback.next_todos as JsonObject[])[0].priority, undefined);
+  assert.equal((writeback.next_todos as JsonObject[])[0].todo, "Deliver observed result");
+  for (const intent of [{...input.intent, next_agent_priority: "P0"},
+    {...input.intent, next_user_priority: "P3"}]) {
+    assert.throws(() => replay({...input, intent}, receipt), /request mismatch/);
+  }
+});

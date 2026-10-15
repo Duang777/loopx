@@ -1736,10 +1736,13 @@ def build_goal_frontier_projection_context_from_status(
             guard_recorded_at=receipt_bound_guard_recorded_at, agent_id=agent_id,
             items=agent_todo_source_items or [],
             derive=lambda summary: derive_goal_frontier_replan_obligation_from_summaries(
-                user_todo_summary=user_todo_summary, agent_todo_summary=summary,
+                user_todo_summary=None, agent_todo_summary=summary,
                 work_lane_contract=work_lane_contract, agent_id=agent_id,
                 existing_replan_obligation=None, agent_todo_source_items=agent_todo_source_items,
-                _frontier_counts=frontier_counts,
+                # Reconstruct the admitted closed-row source, not the current
+                # frontier: independent agent work or user gates may have arrived
+                # after admission. This candidate still requires the original
+                # obligation digest; live gates retain authority over new work.
             ),
         )
 
