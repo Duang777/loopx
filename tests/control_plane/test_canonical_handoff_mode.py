@@ -27,6 +27,11 @@ def canonical_mode(tmp_path, monkeypatch, request):
         result = subprocess.run([sys.executable, "-m", "loopx.cli", "--registry", str(registry),
             "--format", "json", "handoff-mode", *args, "--goal-id", "mode-goal"],
             capture_output=True, text=True, timeout=90)
+        if result.returncode:
+            # Keep the complete native refusal in pytest's captured output;
+            # an assertion's abbreviated dictionary cannot diagnose a failure.
+            print(f"handoff-mode {args!r} exited {result.returncode}\n"
+                  f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         assert result.stdout, result.stderr
         return result.returncode, json.loads(result.stdout)
     return state, runtime, cli
