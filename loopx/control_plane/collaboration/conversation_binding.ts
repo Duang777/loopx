@@ -386,8 +386,21 @@ export function planBoundConversationRequest(params: JsonObject): JsonObject {
       response_code: "unsupported_attachment"};
   }
   if (command === "stop" || command === "new") {
+    if (command === "stop" && params.recovering_request === true && row.target_recorded !== true) {
+      // Older prepared journals may predate freezing before inventory. Their
+      // original scope is unknown; current work cannot reconstruct that intent.
+      throw new EffectRuntimeRequestError("the original stop scope was not recorded");
+    }
+    const rawBackground = command === "stop"
+      ? (row.target_recorded === true ? row.background_turn_ids : params.background_turn_ids) ?? [] : [];
+    if (!Array.isArray(rawBackground)) throw new EffectRuntimeRequestError("invalid background Turn observation");
+    const background = rawBackground.map(value => sessionIdentity(value, "completed background Turn"));
+    if (new Set(background).size !== background.length || (background.length && (!session || params.agent_target))) {
+      throw new EffectRuntimeRequestError("background Turns require the original ordinary Session");
+    }
     return {operation: command, session_id: session, turn_id: turn,
-      response_code: command === "new" ? "new_session" : turn ? "stop_requested" : "no_active_turn"};
+      ...(background.length ? {background_turn_ids: background} : {}),
+      response_code: command === "new" ? "new_session" : turn || background.length ? "stop_requested" : "no_active_turn"};
   }
   return {operation: "admit_turn", client_turn_id: `external-${request}`, session_id: session, turn_id: null};
 }
@@ -477,10 +490,19 @@ export function authorizeStewardCreation(params: JsonObject): JsonObject {
   const selected = normalizeStewardContext(params.context);
   const proposal = requireJsonObject(params.proposal, "creation proposal");
   const audience = requireJsonObject(proposal.context, "creation audience");
-  if (proposal.action_kind !== "goal.create" || audience.kind !== "manager"
+  const todoCreation = proposal.action_kind === "todo.create";
+  if ((!todoCreation && proposal.action_kind !== "goal.create") || audience.kind !== "manager"
       || audience.goal_id !== "loopx-manager") throw new EffectRuntimeRequestError("not a steward creation preview");
   for (const field of ["binding_id", "source_ref", "provider_ref", "operator_ref", "project_ref"]) {
     if (audience[field] !== selected[field]) throw new EffectRuntimeRequestError("confirmation audience changed");
+  }
+  if (todoCreation) {
+    const parameters = requireJsonObject(proposal.normalized_parameters, "Todo creation parameters");
+    if (!(selected.goal_ids as string[]).includes(String(parameters.goal_id))
+        || parameters.start_execution === true || parameters.agent_id != null
+        || ["stop", "resume"].includes(String(params.operation))) {
+      throw new EffectRuntimeRequestError("Todo confirmation requires its currently granted Goal and cannot start execution");
+    }
   }
   if (["stop", "resume"].includes(String(params.operation))) {
     const receipt = requireJsonObject(proposal.receipt, "commission receipt");

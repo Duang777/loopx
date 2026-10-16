@@ -548,6 +548,9 @@ def _turn_prompt(
         + (
             "When the operator explicitly requests a control-plane configuration or record edit (rather than asking its owner to do or correct work), "
             "describe the bounded proposal clearly so LoopX can route it through typed preview and explicit apply. "
+            "For a Todo proposal include goal_id from the verified Goal directory alongside kind='todo', text, priority and rationale. "
+            "If the intended Goal is unresolved, resolve it from authorized context or ask one focused question; never infer a durable target from whichever Goal the UI happens to show. "
+            "A Todo preview is not a recorded task; the host supplies its actual confirmation route. Do not invent a command or claim the write occurred. "
             if not project_work else ""
         )
         + protected_action_contract
@@ -1340,25 +1343,11 @@ class CodexChatAgentSession:
             # an acknowledged interrupt alone still allows late command items.
             self._control_wait(deadline)
 
-        with self._command_items_lock:
-            owned_items = set(self._command_items.get(selected_turn_id, set()))
-        for entry in self._control_items("thread/items/list", {"turnId": selected_turn_id}, deadline):
-            item = entry.get("item")
-            if entry.get("turnId") != selected_turn_id or not isinstance(item, dict):
-                raise self._runtime_error("Codex returned items outside the selected Turn.")
-            if item.get("type") == "commandExecution":
-                item_id = item.get("id")
-                if not isinstance(item_id, str) or not item_id:
-                    raise self._runtime_error("Codex returned an unbound command item.")
-                # Completed command items can still own a background terminal.
-                owned_items.add(item_id)
+        owned_items = self._command_item_ids(selected_turn_id, deadline)
 
         def owned_terminals() -> list[dict[str, Any]]:
-            terminals = list(self._control_items("thread/backgroundTerminals/list", {}, deadline))
-            for terminal in terminals:
-                if not isinstance(terminal.get("itemId"), str) or not isinstance(terminal.get("processId"), str):
-                    raise self._runtime_error("Codex returned an unbound background terminal.")
-            return [terminal for terminal in terminals if terminal["itemId"] in owned_items]
+            return [terminal for terminal in self._background_terminals(deadline)
+                    if terminal["itemId"] in owned_items]
 
         for terminal in owned_terminals():
             result = self._request("thread/backgroundTerminals/terminate", {
@@ -1370,6 +1359,38 @@ class CodexChatAgentSession:
         # native inventory readback, never transport closure, confirms stop.
         while owned_terminals():
             self._control_wait(deadline)
+
+    def background_turn_ids(self, turn_ids: list[str]) -> list[str]:
+        """Observe live terminals owned by the supplied canonical native Turns."""
+        deadline = time.monotonic() + self.response_timeout_sec
+        live_items = {terminal["itemId"] for terminal in self._background_terminals(deadline)}
+        if not live_items:
+            return []
+        return [turn_id for turn_id in dict.fromkeys(turn_ids)
+                if live_items & self._command_item_ids(turn_id, deadline)]
+
+    def _command_item_ids(self, turn_id: str, deadline: float) -> set[str]:
+        with self._command_items_lock:
+            owned_items = set(self._command_items.get(turn_id, set()))
+        for entry in self._control_items("thread/items/list", {"turnId": turn_id}, deadline):
+            item = entry.get("item")
+            if entry.get("turnId") != turn_id or not isinstance(item, dict):
+                raise self._runtime_error("Codex returned items outside the selected Turn.")
+            if item.get("type") == "commandExecution":
+                item_id = item.get("id")
+                if not isinstance(item_id, str) or not item_id:
+                    raise self._runtime_error("Codex returned an unbound command item.")
+                # Completed command items can still own a background terminal.
+                owned_items.add(item_id)
+        return owned_items
+
+    def _background_terminals(self, deadline: float) -> list[dict[str, Any]]:
+        terminals = list(self._control_items("thread/backgroundTerminals/list", {}, deadline))
+        for terminal in terminals:
+            if any(not isinstance(terminal.get(key), str) or not terminal[key]
+                   for key in ("itemId", "processId")):
+                raise self._runtime_error("Codex returned an unbound background terminal.")
+        return terminals
 
     def _control_items(self, method: str, params: dict[str, Any], deadline: float) -> Iterator[dict[str, Any]]:
         cursor = None
