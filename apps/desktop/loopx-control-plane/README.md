@@ -38,9 +38,19 @@ source revision is newer. A provably newer runtime remains selected. Both local 
 artifact's identity before the workspace opens.
 
 The bundled runtime carries its Core package version from the archived wheel
-metadata. Main App build numbers (`0.0.0-main.…`) identify the native shell;
-they are not compared with CLI package versions. Older bundle metadata retains
-its previous shell-version fallback; this correction requires an App update.
+metadata. Native validation and ordering use Python's [PEP 440 version format](https://packaging.python.org/en/latest/specifications/version-specifiers/),
+including alpha, beta, release candidate, development, post-release and local
+versions. The original version string remains in the identity; parsing does not
+rewrite receipts or installation metadata. A stable package is newer than its
+same-base prerelease, so even an App-owned or installer-default fallback cannot
+downgrade it. Equal package versions still need source ancestry or the existing
+same-installation ownership rule. Invalid versions remain unavailable.
+
+Main App build numbers (`0.0.0-main.…`) identify the native shell; they are not
+compared with CLI package versions. Older bundle metadata retains its previous
+shell-version fallback. Only those historical Main shell versions use their
+release base for comparison; real Core prereleases keep their order. This
+correction requires an App update; updating the CLI alone cannot patch it.
 
 If the bundle is newer, or no selected CLI qualifies, the App prepares its
 bundled snapshot in its own data directory through the existing installer.
