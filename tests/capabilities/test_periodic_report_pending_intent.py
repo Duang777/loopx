@@ -222,7 +222,9 @@ def test_calendar_reporter_replacement_uses_admitted_window_state(tmp_path, prep
         assert current["publication"] is None
 
 
-@pytest.mark.parametrize("change", ["reporter", "schedule", "disabled", "stopped"])
+@pytest.mark.parametrize(
+    "change", ["reporter", "schedule", "disabled", "stopped", "activation_stopped"]
+)
 def test_calendar_hook_rechecks_live_authority_after_construction(tmp_path, change):
     from datetime import datetime
     from loopx.control_plane.capability_hooks import dispatch_turn_start_hooks
@@ -241,8 +243,15 @@ def test_calendar_hook_rechecks_live_authority_after_construction(tmp_path, chan
         goal["control_plane"]["periodic_report"]["schedule"]["rrule"] = "FREQ=WEEKLY;BYDAY=FR;BYHOUR=17"
     elif change == "disabled":
         goal["control_plane"]["periodic_report"]["enabled"] = False
-    else:
+    elif change == "stopped":
         goal["status"] = "stopped"
+    else:
+        goal["activation"] = {
+            "schema_version": "loopx_goal_activation_v1",
+            "state": "stopped",
+            "updated_at": "2026-09-11T10:00:00Z",
+            "reason": "Owner stopped automatic work.",
+        }
     registry.write_text(json.dumps(config))
     dispatched = dispatch_turn_start_hooks(hooks)
     assert not dispatched["failures"]
@@ -257,10 +266,29 @@ def test_calendar_hook_rechecks_live_authority_after_construction(tmp_path, chan
         assert read_cadence_journal(runtime_root=runtime, goal_id=GOAL_ID)["window"]["agent_id"] == "replacement-peer"
 
 
-@pytest.mark.parametrize("status", ["stopped", "paused", "archived"])
-def test_inactive_goal_does_not_reactivate_an_admitted_report(tmp_path, status):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "stopped"),
+        ("status", "paused"),
+        ("status", "archived"),
+        (
+            "activation",
+            {
+                "schema_version": "loopx_goal_activation_v1",
+                "state": "stopped",
+                "updated_at": "2026-09-11T10:00:00Z",
+                "reason": "Owner stopped automatic work.",
+            },
+        ),
+    ],
+)
+def test_inactive_goal_does_not_reactivate_an_admitted_report(tmp_path, field, value):
     from datetime import datetime
-    from loopx.capabilities.periodic_report.cadence_runtime import extend_cadence_turn_start_dispatch
+    from loopx.capabilities.periodic_report.cadence_runtime import (
+        extend_cadence_turn_start_dispatch,
+        periodic_report_cadence_hooks,
+    )
     from loopx.capabilities.periodic_report.cadence_journal import read_cadence_journal
 
     registry, runtime = _calendar_fixture(tmp_path)
@@ -268,8 +296,9 @@ def test_inactive_goal_does_not_reactivate_an_admitted_report(tmp_path, status):
     extend_cadence_turn_start_dispatch({}, **kwargs, now=datetime.fromisoformat("2026-09-11T10:00:00+00:00"))
     original = read_cadence_journal(runtime_root=runtime, goal_id=GOAL_ID)
     config = json.loads(registry.read_text())
-    config["goals"][0]["status"] = status
+    config["goals"][0][field] = value
     registry.write_text(json.dumps(config))
+    assert periodic_report_cadence_hooks(**kwargs) == ()
     assert pending_periodic_report_intents(**kwargs) == []
     assert consume_pending_periodic_report_intent(**kwargs, execute=True)["status"] == "no_pending_intent"
     assert read_cadence_journal(runtime_root=runtime, goal_id=GOAL_ID) == original

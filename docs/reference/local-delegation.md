@@ -1188,6 +1188,17 @@ for example, `committed` requires the full phase prefix. These are enforced
 checks, not guidance. `turn inspect-journal` reports a contradictory snapshot
 as `replay_blocked` with `journal_status_phase_mismatch`.
 
+With `--retry-failed-turn`, journal inspection selects the persisted session
+reader from the retained plan's host and binding scope, for both one-shot and
+`--watch` reads. A DSH Turn therefore checks its DSH binding rather than the
+operator's current default host. Missing or mismatched host/scope/owner bindings
+remain blocked; inspection reports a recovery plan with no execution effects.
+This does not retry a failed Turn or authorize a new host invocation.
+
+`--retry-failed-turn` 的单次及 `--watch` 检查均按原计划的 host 和绑定范围读取
+原会话，DSH 不再被当前默认 Codex reader 误报为会话缺失。缺失或 host、范围、
+owner 不匹配仍拒绝；诊断读回不执行重试，也不授予新的执行权限。
+
 A digest-named journal that cannot be read cannot safely be skipped as evidence
 of absence or uniqueness. This also holds when another matching file is readable.
 Non-journal sidecars and identifiable other Turns are ignored; duplicate exact

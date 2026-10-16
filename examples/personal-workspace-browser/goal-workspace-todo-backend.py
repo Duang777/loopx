@@ -44,7 +44,7 @@ server = ChatHTTPServer(("127.0.0.1", 0), ChatRequestHandler)
 server.registry_path, server.runtime_root, server.runtime_root_override = registry, runtime, str(runtime)
 server.selected_goal_id, server.scan_roots, server.limit = "progress-projection", [], 20
 server.action_store = ChatActionStore(root / "actions")
-server.action_service = ChatActionService(store=server.action_store, registry_path=registry)
+server.action_service = ChatActionService(store=server.action_store, registry_path=registry, runtime_root_override=str(runtime))
 server.verbose = False
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 print(json.dumps({"port": server.server_port, "registry": str(registry)}), flush=True)

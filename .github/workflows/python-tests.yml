@@ -798,6 +798,9 @@ jobs:
           python -m pytest -q
           tests/canary/test_repository_root.py::test_plan_renders_repository_paths_in_canonical_posix_form
 
+      - name: Qualify the canary premerge contract smoke on native Windows
+        run: python examples/canary/premerge-validation-gate-smoke.py
+
       - name: Run native Windows lifecycle tests
         run: >-
           python -m pytest -q
