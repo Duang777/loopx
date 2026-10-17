@@ -915,6 +915,7 @@ class ChatRuntimeController:
                             kind="turn.failed",
                             payload={"error_code": "server_restarted", "message": failed["error"]},
                         )
+        native_recovery = None
         try:
             stored_messages = self.store.messages(session_id)
             history = [
@@ -986,17 +987,13 @@ class ChatRuntimeController:
             try:
                 observed_settings = self._observed_model_settings(adapter, session.get("requested_agent_reasoning_effort"),
                                                                   session.get("requested_agent_model_id"))
+                if session.get("upstream_mode") == CODEX_GOAL_CHAT_MODE:
+                    if not isinstance(adapter, CodexAppServerAdapter):
+                        raise CodexChatAgentError("Native Goal continuation requires a Codex adapter.", error_code="native_goal_adapter_mismatch", gate=None)
+                    native_recovery = self.loopx_mode.observe_recovery(adapter, commit)
             except Exception:
                 adapter.close_session()
                 raise
-            if session.get("upstream_mode") == CODEX_GOAL_CHAT_MODE:
-                try:
-                    if not isinstance(adapter, CodexAppServerAdapter):
-                        raise CodexChatAgentError("Native Goal continuation requires a Codex adapter.", error_code="native_goal_adapter_mismatch", gate=None)
-                    self.loopx_mode.recover(session_id, adapter)
-                except Exception:
-                    adapter.close_session()
-                    raise
         except Exception as exc:
             with commit():
                 self.store.update_session(
@@ -1013,6 +1010,7 @@ class ChatRuntimeController:
             ) from exc
         try:
             with commit():
+                self.loopx_mode.commit_recovery(session_id, native_recovery)
                 with self.lock:
                     self.adapters[session_id] = adapter
                 if isinstance(adapter, (ACPStdioAdapter, CodexAppServerAdapter)):

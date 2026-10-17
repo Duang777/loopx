@@ -16,7 +16,11 @@ from loopx.attached_session import (
 )
 from loopx.chat_agent import CodexChatAgentError
 from loopx.cli import main
-from loopx.chat_runtime import ChatRuntimeController
+from loopx.chat_runtime import (
+    CODEX_GOAL_CHAT_MODE,
+    ChatRuntimeController,
+    CodexAppServerAdapter,
+)
 from loopx.chat_store import ChatSessionStore
 from loopx.control_plane.goals.source_session_recreation import (
     RecreateGoalRequest,
@@ -226,6 +230,103 @@ def _chat_business_state(store: ChatSessionStore) -> dict[str, bytes]:
         for path in sorted(store.root.rglob("*"))
         if path.is_file() and path.suffix in {".json", ".jsonl"}
     }
+
+
+class _NativeRecoverySession:
+    def __init__(
+        self,
+        *,
+        block_second_read: bool,
+        read_entered: threading.Event,
+        release_read: threading.Event,
+    ) -> None:
+        self.thread_id = "native-thread"
+        self.resolved_model = None
+        self.resolved_reasoning_effort = None
+        self.service_tier = None
+        self.goal = {
+            "threadId": self.thread_id,
+            "status": "paused",
+            "tokenBudget": 1000,
+            "tokensUsed": 500,
+            "timeUsedSeconds": 10,
+        }
+        self.block_second_read = block_second_read
+        self.read_entered = read_entered
+        self.release_read = release_read
+        self.read_count = 0
+        self.closed = threading.Event()
+
+    def _request(
+        self,
+        method: str,
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        assert params["threadId"] == self.thread_id
+        if method == "thread/goal/get":
+            self.read_count += 1
+            if self.block_second_read and self.read_count == 2:
+                self.read_entered.set()
+                if not self.release_read.wait(timeout=2):
+                    raise TimeoutError("native Goal read was not released")
+            return {"goal": self.goal.copy()}
+        if method == "thread/goal/set":
+            self.goal.update(params)
+            return {"goal": self.goal.copy()}
+        raise AssertionError(f"unexpected native Goal method: {method}")
+
+    @staticmethod
+    def _runtime_error(message: str) -> RuntimeError:
+        return RuntimeError(message)
+
+    @staticmethod
+    def interrupt(*_args: object) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+def _native_managed_session(
+    store: ChatSessionStore,
+    *,
+    goal_instance_id: str,
+    accepted_turn: bool,
+) -> tuple[str, str | None]:
+    session = store.create_session(
+        goal_id=GOAL_ID,
+        goal_instance_id=goal_instance_id,
+        agent_id=AGENT_ID,
+        adapter_kind="codex_app_server",
+        upstream_thread_id="native-thread",
+        upstream_mode=CODEX_GOAL_CHAT_MODE,
+    )
+    session_id = str(session["session_id"])
+    store.update_session(
+        session_id,
+        native_goal={"status": "active", "tokenBudget": 1000, "tokensUsed": 400},
+    )
+    store.create_ingress_receipt(
+        session_id,
+        client_ingress_id="recovering-ingress",
+        mode="loopx_queue",
+        message="retain this delivery state",
+    )
+    store.update_ingress_receipt(
+        session_id,
+        "recovering-ingress",
+        status="delivering",
+        active_turn_id="native-turn",
+    )
+    if not accepted_turn:
+        return session_id, None
+    turn, created = store.create_turn(
+        session_id,
+        client_turn_id="accepted-native-resume",
+        message="continue the accepted request",
+    )
+    assert created and turn["status"] == "queued"
+    return session_id, str(turn["turn_id"])
 
 
 def test_recreated_goal_cannot_reuse_or_claim_from_attached_session(
@@ -549,6 +650,144 @@ def test_managed_resume_rechecks_goal_lifetime_after_adapter_start(
     assert _chat_business_state(store) == before_release
     assert adapter_closed.is_set()
     assert runtime.adapters == {}
+
+
+@pytest.mark.parametrize("accepted_turn", [False, True], ids=["idle", "accepted"])
+@pytest.mark.parametrize(
+    "race_point",
+    ["adapter_start", "native_read"],
+)
+def test_native_managed_resume_rechecks_before_local_recovery_writeback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    accepted_turn: bool,
+    race_point: str,
+) -> None:
+    registry_path, _runtime_root, store, instance_a = _register(tmp_path)
+    session_id, _turn_id = _native_managed_session(
+        store,
+        goal_instance_id=instance_a,
+        accepted_turn=accepted_turn,
+    )
+    runtime = ChatRuntimeController(
+        store=store,
+        codex_bin="missing-codex",
+        registry_path=registry_path,
+    )
+    external_wait = threading.Event()
+    release_external = threading.Event()
+    native_session = _NativeRecoverySession(
+        block_second_read=race_point == "native_read",
+        read_entered=external_wait,
+        release_read=release_external,
+    )
+    adapter = CodexAppServerAdapter(native_session)  # type: ignore[arg-type]
+
+    def start_adapter(*_args: object, **_kwargs: object) -> CodexAppServerAdapter:
+        if race_point == "adapter_start":
+            external_wait.set()
+            if not release_external.wait(timeout=2):
+                raise TimeoutError("managed adapter start was not released")
+        return adapter
+
+    monkeypatch.setattr(runtime, "_start_adapter", start_adapter)
+    resumed: list[dict[str, object]] = []
+    resume_errors: list[BaseException] = []
+    recreated: list[str] = []
+    recreation_errors: list[BaseException] = []
+    recreation_finished = threading.Event()
+
+    def resume() -> None:
+        try:
+            resumed.append(
+                runtime.resume_session(
+                    session_id=session_id,
+                    work_dir=tmp_path,
+                    objective="Ship the release.",
+                )
+            )
+        except BaseException as exc:
+            resume_errors.append(exc)
+
+    def recreate() -> None:
+        try:
+            recreated.append(_recreate(registry_path, instance_a))
+        except BaseException as exc:
+            recreation_errors.append(exc)
+        finally:
+            recreation_finished.set()
+
+    resume_thread = threading.Thread(target=resume)
+    recreate_thread = threading.Thread(target=recreate)
+    resume_thread.start()
+    assert external_wait.wait(timeout=2)
+    recreate_thread.start()
+    try:
+        assert recreation_finished.wait(timeout=2)
+        before_release = _chat_business_state(store)
+    finally:
+        release_external.set()
+    resume_thread.join(timeout=2)
+    recreate_thread.join(timeout=2)
+
+    assert not resume_thread.is_alive()
+    assert not recreate_thread.is_alive()
+    assert resumed == []
+    assert recreation_errors == []
+    assert recreated[0] != instance_a
+    assert len(resume_errors) == 1
+    assert isinstance(resume_errors[0], ValueError)
+    assert "stale_goal_instance" in str(resume_errors[0])
+    assert _chat_business_state(store) == before_release
+    ingress = store.loopx_ingress(session_id)
+    assert ingress[0]["status"] == "delivering"
+    assert native_session.read_count == (
+        0 if race_point == "adapter_start" else 2
+    )
+    assert native_session.closed.is_set()
+    assert runtime.adapters == {}
+
+
+def test_native_managed_resume_commits_recovery_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_path, _runtime_root, store, instance_a = _register(tmp_path)
+    session_id, _turn_id = _native_managed_session(
+        store,
+        goal_instance_id=instance_a,
+        accepted_turn=False,
+    )
+    runtime = ChatRuntimeController(
+        store=store,
+        codex_bin="missing-codex",
+        registry_path=registry_path,
+    )
+    native_session = _NativeRecoverySession(
+        block_second_read=False,
+        read_entered=threading.Event(),
+        release_read=threading.Event(),
+    )
+    adapter = CodexAppServerAdapter(native_session)  # type: ignore[arg-type]
+    monkeypatch.setattr(runtime, "_start_adapter", lambda **_kwargs: adapter)
+
+    restored = runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="Ship the release.",
+    )
+
+    assert restored["status"] == "ready"
+    assert restored["native_goal"] == {
+        "status": "paused",
+        "tokenBudget": 1000,
+        "tokensUsed": 500,
+        "timeUsedSeconds": 10,
+    }
+    assert store.loopx_ingress(session_id)[0]["status"] == "uncertain"
+    assert runtime.adapters[session_id] is adapter
+    assert not native_session.closed.is_set()
+    runtime.close()
 
 
 @pytest.mark.parametrize(
