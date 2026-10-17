@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from loopx.control_plane.goals.source_session_registration import (
     FreshSourceSessionRegistration,
     register_fresh_source_session_project,
 )
+from loopx.control_plane.goals.source_session_registry_state import guard_path
 from loopx.control_plane.projects.registry_codec import load_project_registry
 
 
@@ -350,6 +352,203 @@ def test_stale_attached_enqueue_is_rejected_without_mutation(
 
     assert store.load_session(session_a) == before
     assert store.turn_for_client(session_a, "late") is None
+
+
+def test_stale_managed_resume_rejects_accepted_turn_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_path, _runtime_root, store, instance_a = _register(tmp_path)
+    session = store.create_session(
+        goal_id=GOAL_ID,
+        goal_instance_id=instance_a,
+        agent_id=AGENT_ID,
+        adapter_kind="managed-test",
+        upstream_thread_id="managed-thread",
+    )
+    session_id = str(session["session_id"])
+    turn, created = store.create_turn(
+        session_id,
+        client_turn_id="accepted-before-recreation",
+        message="must remain in the retired Goal lifetime",
+    )
+    assert created and turn["status"] == "queued"
+    _recreate(registry_path, instance_a)
+
+    runtime = ChatRuntimeController(
+        store=store,
+        codex_bin="missing-codex",
+        registry_path=registry_path,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_start_adapter",
+        lambda **_kwargs: pytest.fail("stale Turn must not reach its adapter"),
+    )
+    before = _chat_business_state(store)
+
+    with pytest.raises(ValueError, match="stale_goal_instance"):
+        runtime.resume_session(
+            session_id=session_id,
+            work_dir=tmp_path,
+            objective="Ship the release.",
+        )
+
+    assert _chat_business_state(store) == before
+    assert runtime.adapters == {}
+
+
+def test_legacy_managed_resume_does_not_create_goal_lifetime_lock(
+    tmp_path: Path,
+) -> None:
+    registry_path = tmp_path / "legacy-project" / "registry.json"
+    registry_path.parent.mkdir()
+    registry_path.write_text(
+        json.dumps({"goals": [{"id": GOAL_ID}]}),
+        encoding="utf-8",
+    )
+    store = ChatSessionStore(tmp_path / "legacy-runtime")
+    session = store.create_session(
+        goal_id=GOAL_ID,
+        agent_id=AGENT_ID,
+        adapter_kind="managed-test",
+        upstream_thread_id="managed-thread",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(
+        store=store,
+        codex_bin="missing-codex",
+        registry_path=registry_path,
+    )
+    runtime.adapters[session_id] = SimpleNamespace(
+        upstream_thread_id="managed-thread",
+        healthcheck=lambda: True,
+        close_session=lambda: None,
+    )
+    lifetime_directory = guard_path(registry_path, GOAL_ID).parent
+
+    restored = runtime.resume_session(
+        session_id=session_id,
+        work_dir=tmp_path,
+        objective="Ship the release.",
+    )
+
+    assert restored["status"] == "ready"
+    assert not lifetime_directory.exists()
+
+
+def test_exact_managed_resume_fails_when_registry_disappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_path, _runtime_root, store, instance_a = _register(tmp_path)
+    session = store.create_session(
+        goal_id=GOAL_ID,
+        goal_instance_id=instance_a,
+        agent_id=AGENT_ID,
+        adapter_kind="managed-test",
+        upstream_thread_id="managed-thread",
+    )
+    registry_path.unlink()
+    runtime = ChatRuntimeController(
+        store=store,
+        codex_bin="missing-codex",
+        registry_path=registry_path,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_start_adapter",
+        lambda **_kwargs: pytest.fail("provider start must remain fenced"),
+    )
+
+    with pytest.raises(FileNotFoundError):
+        runtime.resume_session(
+            session_id=str(session["session_id"]),
+            work_dir=tmp_path,
+            objective="Ship the release.",
+        )
+
+
+def test_managed_resume_rechecks_goal_lifetime_after_adapter_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry_path, _runtime_root, store, instance_a = _register(tmp_path)
+    session = store.create_session(
+        goal_id=GOAL_ID,
+        goal_instance_id=instance_a,
+        agent_id=AGENT_ID,
+        adapter_kind="managed-test",
+        upstream_thread_id="managed-thread",
+    )
+    session_id = str(session["session_id"])
+    runtime = ChatRuntimeController(
+        store=store,
+        codex_bin="missing-codex",
+        registry_path=registry_path,
+    )
+    adapter_starting = threading.Event()
+    release_adapter = threading.Event()
+    recreation_finished = threading.Event()
+    resumed: list[dict[str, object]] = []
+    recreated: list[str] = []
+    errors: list[BaseException] = []
+    adapter_closed = threading.Event()
+
+    def start_adapter(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        adapter_starting.set()
+        if not release_adapter.wait(timeout=2):
+            raise TimeoutError("managed adapter start was not released")
+        return SimpleNamespace(
+            upstream_thread_id="managed-thread",
+            close_session=adapter_closed.set,
+        )
+
+    monkeypatch.setattr(runtime, "_start_adapter", start_adapter)
+
+    def resume() -> None:
+        try:
+            resumed.append(
+                runtime.resume_session(
+                    session_id=session_id,
+                    work_dir=tmp_path,
+                    objective="Ship the release.",
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def recreate() -> None:
+        try:
+            recreated.append(_recreate(registry_path, instance_a))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            recreation_finished.set()
+
+    resume_thread = threading.Thread(target=resume)
+    recreate_thread = threading.Thread(target=recreate)
+    resume_thread.start()
+    assert adapter_starting.wait(timeout=2)
+    recreate_thread.start()
+    try:
+        assert recreation_finished.wait(timeout=2)
+        before_release = _chat_business_state(store)
+    finally:
+        release_adapter.set()
+    resume_thread.join(timeout=2)
+    recreate_thread.join(timeout=2)
+
+    assert not resume_thread.is_alive()
+    assert not recreate_thread.is_alive()
+    assert resumed == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert "stale_goal_instance" in str(errors[0])
+    assert recreated[0] != instance_a
+    assert _chat_business_state(store) == before_release
+    assert adapter_closed.is_set()
+    assert runtime.adapters == {}
 
 
 @pytest.mark.parametrize(
