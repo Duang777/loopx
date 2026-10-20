@@ -78,9 +78,13 @@ def prepare_host_process_record(record_path: Path) -> None:
         })
 
 
-def _process_group_present(pgid: int) -> bool:
+def _process_group_present(pgid: int) -> bool | None:
+    """Return liveness, or unknown when the stored id cannot reach the OS."""
+
     try:
         os.killpg(pgid, 0)
+    except (OverflowError, ValueError):
+        return None
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -127,14 +131,20 @@ def _host_process_drain(record: dict[str, Any] | None, *, supervises: str,
     if record.get("phase") != "finished":
         if not isinstance(bridge, int) or bridge <= 1:
             return HOST_PROCESS_UNATTRIBUTABLE
-        if _process_group_present(bridge):  # the bridge leads its own session
+        bridge_present = _process_group_present(bridge)
+        if bridge_present is None:
+            return HOST_PROCESS_UNATTRIBUTABLE
+        if bridge_present:  # the bridge leads its own session
             return HOST_PROCESS_DRAINING
     if group is None:
         # The supervisor left before reporting a group it may already have spawned.
         return HOST_PROCESS_UNATTRIBUTABLE if record.get("phase") == "launching" else HOST_PROCESS_DRAINED
     if not isinstance(group, int) or group <= 1:
         return HOST_PROCESS_UNATTRIBUTABLE
-    return HOST_PROCESS_DRAINING if _process_group_present(group) else HOST_PROCESS_DRAINED
+    group_present = _process_group_present(group)
+    if group_present is None:
+        return HOST_PROCESS_UNATTRIBUTABLE
+    return HOST_PROCESS_DRAINING if group_present else HOST_PROCESS_DRAINED
 
 
 def execution_host_drain(record_path: Path, *, launch_possible: bool = False) -> str:
